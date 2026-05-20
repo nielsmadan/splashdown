@@ -1117,7 +1117,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add = devsub.add_parser("add", parents=[common], help="declare a device in splashdown.local.toml")
     add.add_argument("name")
-    add.add_argument("--type", required=True, choices=["ios-sim", "android-emulator"], dest="dtype")
+    add.add_argument("--type", required=True, choices=DEVICE_TYPES, dest="dtype")
     add.add_argument("--model")
     add.add_argument("--ios")
     add.add_argument("--device")
