@@ -486,3 +486,29 @@ range = [18900, 18910]
     code = sd.main(["--cwd", str(cwd)])
     assert code == 0
     assert (cwd / "splashdown.env").exists()
+
+
+def test_cli_provision_drops_local_skeleton(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cwd = tmp_path / "co"; cwd.mkdir()
+    (cwd / "splashdown.toml").write_text("""
+[resources.PORT]
+type  = "port"
+range = [18900, 18910]
+""")
+    sd.main(["--cwd", str(cwd)])
+    assert (cwd / "splashdown.local.toml").exists()
+    assert "devices.iphone" in (cwd / "splashdown.local.toml").read_text()
+
+
+def test_cli_provision_preserves_existing_local(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cwd = tmp_path / "co"; cwd.mkdir()
+    (cwd / "splashdown.toml").write_text("""
+[resources.PORT]
+type  = "port"
+range = [18920, 18930]
+""")
+    (cwd / "splashdown.local.toml").write_text('[devices.mine]\ntype = "ios-sim"\n')
+    sd.main(["--cwd", str(cwd)])
+    assert "devices.mine" in (cwd / "splashdown.local.toml").read_text()

@@ -1169,6 +1169,9 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
         return 1
 
     recipe = Recipe.load(cwd / RECIPE_NAME)
+    local_path = cwd / LOCAL_NAME
+    if not local_path.exists():
+        local_path.write_text(LOCAL_SKELETON)
     msgs = write_outputs(cwd, recipe, resolved)
     setup_msgs = run_setup(cwd, recipe, args.setup, resolved)
 
