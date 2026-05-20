@@ -34,7 +34,10 @@ PORT_REGISTRY = REGISTRY_DIR / "ports.tsv"
 KV_REGISTRY = REGISTRY_DIR / "kv.tsv"
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-RECIPE_NAME = ".worktree.toml"
+DEVICE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+RECIPE_NAME = "splashdown.toml"
+LOCAL_NAME = "splashdown.local.toml"
+ENV_FILE_NAME = "splashdown.env"
 DEFAULT_MISE_LOCAL = "mise.local.toml"
 
 

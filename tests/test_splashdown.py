@@ -109,7 +109,7 @@ def test_template_error_on_bad_expr(tmp_path):
 # ---------- recipe / topo ----------
 
 def test_recipe_loads(tmp_path):
-    p = tmp_path / ".worktree.toml"
+    p = tmp_path / "splashdown.toml"
     p.write_text("""
 [resources.A]
 type = "uuid"
@@ -122,7 +122,7 @@ template = "x-{{ A }}"
 
 
 def test_topo_sort_orders_refs(tmp_path):
-    p = tmp_path / ".worktree.toml"
+    p = tmp_path / "splashdown.toml"
     p.write_text("""
 [resources.B]
 type = "template"
@@ -137,7 +137,7 @@ type = "uuid"
 
 
 def test_topo_sort_detects_cycle(tmp_path):
-    p = tmp_path / ".worktree.toml"
+    p = tmp_path / "splashdown.toml"
     p.write_text("""
 [resources.A]
 type = "template"
@@ -152,7 +152,7 @@ template = "{{ A }}"
 
 
 def test_recipe_rejects_bad_name(tmp_path):
-    p = tmp_path / ".worktree.toml"
+    p = tmp_path / "splashdown.toml"
     p.write_text("""
 [resources."BAD-NAME"]
 type = "uuid"
@@ -164,7 +164,7 @@ type = "uuid"
 # ---------- end-to-end provision ----------
 
 def _write_recipe(cwd: Path, body: str) -> None:
-    (cwd / ".worktree.toml").write_text(body)
+    (cwd / "splashdown.toml").write_text(body)
 
 
 def test_provision_writes_mise_local(registry, checkout):
@@ -185,7 +185,7 @@ template = "http://localhost:{{ PORT }}"
     assert resolved["URL"] == f"http://localhost:{resolved['PORT']}"
     assert len(resolved["RUN_ID"]) == 36  # uuid string length
 
-    recipe = sd.Recipe.load(checkout / ".worktree.toml")
+    recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
     text = (checkout / "mise.local.toml").read_text()
     assert "[env]" in text
@@ -231,7 +231,7 @@ type  = "port"
 range = [18600, 18610]
 """)
     resolved = sd.provision(checkout, registry=registry)
-    recipe = sd.Recipe.load(checkout / ".worktree.toml")
+    recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
     text = (checkout / "mise.local.toml").read_text()
     assert 'USER_KEY = "keep-me"' in text
@@ -250,7 +250,7 @@ template = "hello"
 writer   = "envfile=.env.local"
 """)
     resolved = sd.provision(checkout, registry=registry)
-    recipe = sd.Recipe.load(checkout / ".worktree.toml")
+    recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
     text = (checkout / ".env.local").read_text()
     assert "MY_VAR=hello" in text
@@ -310,7 +310,7 @@ def test_find_table_missing(tmp_path):
 # ---------- recipe: devices + project ----------
 
 def test_recipe_parses_devices_and_project(tmp_path):
-    p = tmp_path / ".worktree.toml"
+    p = tmp_path / "splashdown.toml"
     p.write_text("""
 [devices.iphone]
 type  = "ios-sim"
@@ -329,7 +329,7 @@ framework = "react-native"
 
 
 def test_recipe_rejects_bad_device_name(tmp_path):
-    p = tmp_path / ".worktree.toml"
+    p = tmp_path / "splashdown.toml"
     p.write_text("""
 [devices."has spaces"]
 type = "ios-sim"
@@ -360,31 +360,31 @@ def test_resolve_device_name_default(tmp_path):
 
 def test_detect_framework_flutter(tmp_path):
     (tmp_path / "pubspec.yaml").write_text("name: x\n")
-    r = sd.Recipe({"project": {}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
     assert sd.detect_framework(tmp_path, r) == "flutter"
 
 
 def test_detect_framework_rn(tmp_path):
     (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.74"}}')
-    r = sd.Recipe({"project": {}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
     assert sd.detect_framework(tmp_path, r) == "react-native"
 
 
 def test_detect_framework_expo(tmp_path):
     (tmp_path / "package.json").write_text('{"dependencies": {"expo": "50"}}')
     (tmp_path / "app.json").write_text("{}")
-    r = sd.Recipe({"project": {}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
     assert sd.detect_framework(tmp_path, r) == "expo"
 
 
 def test_detect_framework_override_wins(tmp_path):
     (tmp_path / "pubspec.yaml").write_text("name: x\n")
-    r = sd.Recipe({"project": {"framework": "react-native"}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"project": {"framework": "react-native"}}, tmp_path / "splashdown.toml")
     assert sd.detect_framework(tmp_path, r) == "react-native"
 
 
 def test_detect_framework_errors_when_unknown(tmp_path):
-    r = sd.Recipe({"project": {}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
     with pytest.raises(sd.DeviceError):
         sd.detect_framework(tmp_path, r)
 
@@ -392,13 +392,13 @@ def test_detect_framework_errors_when_unknown(tmp_path):
 # ---------- pick_device ----------
 
 def test_pick_device_single(tmp_path):
-    r = sd.Recipe({"devices": {"only": {"type": "ios-sim"}}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"devices": {"only": {"type": "ios-sim"}}}, tmp_path / "splashdown.toml")
     name, spec = sd.pick_device(r, None)
     assert name == "only"
 
 
 def test_pick_device_multiple_requires_name(tmp_path):
-    r = sd.Recipe({"devices": {"a": {"type": "ios-sim"}, "b": {"type": "android-emulator"}}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"devices": {"a": {"type": "ios-sim"}, "b": {"type": "android-emulator"}}}, tmp_path / "splashdown.toml")
     with pytest.raises(sd.DeviceError):
         sd.pick_device(r, None)
     name, _ = sd.pick_device(r, "b")
@@ -406,18 +406,24 @@ def test_pick_device_multiple_requires_name(tmp_path):
 
 
 def test_pick_device_unknown_name(tmp_path):
-    r = sd.Recipe({"devices": {"a": {"type": "ios-sim"}}}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({"devices": {"a": {"type": "ios-sim"}}}, tmp_path / "splashdown.toml")
     with pytest.raises(sd.DeviceError):
         sd.pick_device(r, "nope")
 
 
 def test_pick_device_none_declared(tmp_path):
-    r = sd.Recipe({}, tmp_path / ".worktree.toml")
+    r = sd.Recipe({}, tmp_path / "splashdown.toml")
     with pytest.raises(sd.DeviceError):
         sd.pick_device(r, None)
 
 
 # ---------- CLI ----------
+
+def test_file_name_constants():
+    assert sd.RECIPE_NAME == "splashdown.toml"
+    assert sd.LOCAL_NAME == "splashdown.local.toml"
+    assert sd.ENV_FILE_NAME == "splashdown.env"
+
 
 def test_cli_prog_name_is_splash():
     assert sd._build_parser().prog == "splash"
@@ -435,7 +441,7 @@ def test_cli_help_shows_subcommands(capsys):
 def test_cli_provision_is_default(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     cwd = tmp_path / "co"; cwd.mkdir()
-    (cwd / ".worktree.toml").write_text("""
+    (cwd / "splashdown.toml").write_text("""
 [resources.PORT]
 type = "port"
 range = [18900, 18910]
