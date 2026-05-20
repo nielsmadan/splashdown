@@ -392,29 +392,32 @@ def test_detect_framework_errors_when_unknown(tmp_path):
 # ---------- pick_device ----------
 
 def test_pick_device_single(tmp_path):
-    r = sd.Recipe({"devices": {"only": {"type": "ios-sim"}}}, tmp_path / "splashdown.toml")
-    name, spec = sd.pick_device(r, None)
+    lc = sd.LocalConfig({"devices": {"only": {"type": "ios-sim"}}}, tmp_path / "splashdown.local.toml")
+    name, spec = sd.pick_device(lc, None)
     assert name == "only"
 
 
 def test_pick_device_multiple_requires_name(tmp_path):
-    r = sd.Recipe({"devices": {"a": {"type": "ios-sim"}, "b": {"type": "android-emulator"}}}, tmp_path / "splashdown.toml")
+    lc = sd.LocalConfig(
+        {"devices": {"a": {"type": "ios-sim"}, "b": {"type": "android-emulator"}}},
+        tmp_path / "splashdown.local.toml",
+    )
     with pytest.raises(sd.DeviceError):
-        sd.pick_device(r, None)
-    name, _ = sd.pick_device(r, "b")
+        sd.pick_device(lc, None)
+    name, _ = sd.pick_device(lc, "b")
     assert name == "b"
 
 
 def test_pick_device_unknown_name(tmp_path):
-    r = sd.Recipe({"devices": {"a": {"type": "ios-sim"}}}, tmp_path / "splashdown.toml")
+    lc = sd.LocalConfig({"devices": {"a": {"type": "ios-sim"}}}, tmp_path / "splashdown.local.toml")
     with pytest.raises(sd.DeviceError):
-        sd.pick_device(r, "nope")
+        sd.pick_device(lc, "nope")
 
 
 def test_pick_device_none_declared(tmp_path):
-    r = sd.Recipe({}, tmp_path / "splashdown.toml")
+    lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
     with pytest.raises(sd.DeviceError):
-        sd.pick_device(r, None)
+        sd.pick_device(lc, None)
 
 
 # ---------- CLI ----------

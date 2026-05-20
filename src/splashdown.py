@@ -973,18 +973,20 @@ def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     raise DeviceError(f"don't know how to run framework `{fw}`")
 
 
-def pick_device(recipe: Recipe, requested: str | None) -> tuple[str, dict[str, Any]]:
-    if not recipe.devices:
-        raise DeviceError("no [devices.*] declared in .worktree.toml")
+def pick_device(local: "LocalConfig", requested: str | None) -> tuple[str, dict[str, Any]]:
+    if not local.devices:
+        raise DeviceError(f"no [devices.*] declared in {LOCAL_NAME}")
     if requested:
-        if requested not in recipe.devices:
-            raise DeviceError(f"no device `{requested}`; declared: {', '.join(recipe.devices)}")
-        return requested, recipe.devices[requested]
-    if len(recipe.devices) == 1:
-        only = next(iter(recipe.devices))
-        return only, recipe.devices[only]
+        if requested not in local.devices:
+            raise DeviceError(
+                f"no device `{requested}`; declared: {', '.join(local.devices)}"
+            )
+        return requested, local.devices[requested]
+    if len(local.devices) == 1:
+        only = next(iter(local.devices))
+        return only, local.devices[only]
     raise DeviceError(
-        f"multiple devices declared ({', '.join(recipe.devices)}); pass NAME explicitly"
+        f"multiple devices declared ({', '.join(local.devices)}); pass NAME explicitly"
     )
 
 
@@ -1216,18 +1218,14 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
 
 
 def _device_dispatch(args, cwd: Path) -> int:
-    recipe_path = cwd / RECIPE_NAME
-    if not recipe_path.exists():
-        print(f"no {RECIPE_NAME} in {cwd}", file=sys.stderr)
-        return 1
-    recipe = Recipe.load(recipe_path)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
 
     if args.device_cmd == "list":
-        if not recipe.devices:
-            print("(no devices declared)", file=sys.stderr)
+        if not local.devices:
+            print(f"(no devices declared in {LOCAL_NAME})", file=sys.stderr)
             return 0
         rows = []
-        for name, spec in recipe.devices.items():
+        for name, spec in local.devices.items():
             resolved = _resolve_device_name(spec, cwd)
             try:
                 status = device_status(spec, resolved)
@@ -1235,13 +1233,16 @@ def _device_dispatch(args, cwd: Path) -> int:
                 status = f"error: {e}"
             rows.append((name, spec.get("type", "?"), resolved, status))
         if args.format == "json":
-            print(json.dumps([dict(zip(("name", "type", "device_name", "status"), r)) for r in rows], indent=2))
+            print(json.dumps(
+                [dict(zip(("name", "type", "device_name", "status"), r)) for r in rows],
+                indent=2,
+            ))
         else:
             for name, dtype, resolved, status in rows:
                 print(f"{name}\t{dtype}\t{resolved}\t{status}")
         return 0
 
-    name, spec = pick_device(recipe, args.name)
+    name, spec = pick_device(local, args.name)
     resolved = _resolve_device_name(spec, cwd)
 
     if args.device_cmd == "boot":
@@ -1249,6 +1250,8 @@ def _device_dispatch(args, cwd: Path) -> int:
         print(f"booted {name} ({info})", file=sys.stderr)
         return 0
     if args.device_cmd == "run":
+        recipe_path = cwd / RECIPE_NAME
+        recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
         info = device_boot(spec, resolved)
         return device_run(cwd, recipe, info)
     if args.device_cmd == "shutdown":
