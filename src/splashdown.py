@@ -336,6 +336,46 @@ class Recipe:
         return cls(data, path)
 
 
+LOCAL_SKELETON = """\
+# splashdown.local.toml — per-checkout device config. Gitignored, not committed.
+# Declare the simulator(s) / emulator(s) you want for THIS checkout. Each
+# checkout (worktree or clone) has its own copy of this file.
+#
+# [devices.iphone]
+# type = "ios-sim"
+# # model = "iPhone 16 Pro"   # optional; default = latest iPhone Pro
+# # ios   = "18.5"            # optional; default = latest installed runtime
+#
+# [devices.android]
+# type = "android-emulator"
+# # device = "pixel_7"
+# # image  = "system-images;android-34;google_apis;arm64-v8a"
+#
+# Or run:  splash device add iphone --type=ios-sim
+"""
+
+
+class LocalConfig:
+    """Per-checkout local config from splashdown.local.toml. Holds [devices.*]."""
+
+    def __init__(self, data: dict[str, Any], path: Path):
+        self.path = path
+        self.devices: dict[str, dict[str, Any]] = dict(data.get("devices", {}) or {})
+        for name in self.devices:
+            if not DEVICE_NAME_RE.match(name):
+                raise ValueError(
+                    f"device name `{name}` must match [A-Za-z][A-Za-z0-9_-]*"
+                )
+
+    @classmethod
+    def load(cls, path: Path) -> "LocalConfig":
+        if not path.exists():
+            return cls({}, path)
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        return cls(data, path)
+
+
 def topo_sort(recipe: Recipe) -> list[str]:
     """Sort resources so referents come before referrers."""
     names = list(recipe.resources.keys())

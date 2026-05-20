@@ -438,6 +438,33 @@ def test_cli_help_shows_subcommands(capsys):
     assert "init" in out
 
 
+def test_localconfig_parses_devices(tmp_path):
+    p = tmp_path / "splashdown.local.toml"
+    p.write_text("""
+[devices.iphone]
+type  = "ios-sim"
+model = "iPhone 16 Pro"
+
+[devices.android]
+type = "android-emulator"
+""")
+    lc = sd.LocalConfig.load(p)
+    assert set(lc.devices) == {"iphone", "android"}
+    assert lc.devices["iphone"]["model"] == "iPhone 16 Pro"
+
+
+def test_localconfig_missing_file_is_empty(tmp_path):
+    lc = sd.LocalConfig.load(tmp_path / "splashdown.local.toml")
+    assert lc.devices == {}
+
+
+def test_localconfig_rejects_bad_device_name(tmp_path):
+    p = tmp_path / "splashdown.local.toml"
+    p.write_text('[devices."has spaces"]\ntype = "ios-sim"\n')
+    with pytest.raises(ValueError):
+        sd.LocalConfig.load(p)
+
+
 def test_cli_provision_is_default(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     cwd = tmp_path / "co"; cwd.mkdir()
