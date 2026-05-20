@@ -994,12 +994,12 @@ def pick_device(local: "LocalConfig", requested: str | None) -> tuple[str, dict[
 
 PRESETS: dict[str, str] = {
     "minimal": """\
-# Recipe for per-checkout resources. See https://github.com/.../splashdown
+# splashdown.toml — committed recipe. Declares per-checkout resource slots.
 [resources.RUN_ID]
 type = "uuid"
 """,
     "rn": """\
-# React Native preset
+# splashdown.toml — React Native preset.
 [resources.RCT_METRO_PORT]
 type  = "port"
 range = [8081, 8200]
@@ -1010,17 +1010,13 @@ template = "{{ basename(parent) }}/{{ cwd }}"
 
 [resources.TEST_DB]
 type     = "template"
-template = "myapp_{{ cwd }}"
+template = "myapp_{{ slug(cwd) }}"
 
 [project]
 framework = "react-native"
-
-[devices.iphone]
-type = "ios-sim"
-# model = "iPhone 16 Pro"      # optional, defaults to latest iPhone Pro
-# ios   = "18.5"               # optional, defaults to latest installed runtime
 """,
     "flutter": """\
+# splashdown.toml — Flutter preset.
 [resources.DART_PORT]
 type  = "port"
 range = [9100, 9200]
@@ -1031,16 +1027,9 @@ template = "{{ basename(parent) }}/{{ cwd }}"
 
 [project]
 framework = "flutter"
-
-[devices.iphone]
-type = "ios-sim"
-
-[devices.android]
-type = "android-emulator"
-# device = "pixel_7"
-# image  = "system-images;android-34;google_apis;arm64-v8a"
 """,
     "nextjs": """\
+# splashdown.toml — Next.js preset.
 [resources.PORT]
 type  = "port"
 range = [3000, 3100]
@@ -1057,16 +1046,21 @@ template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
 
 
 def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
-    target = cwd / RECIPE_NAME
-    if target.exists() and not force:
+    recipe_path = cwd / RECIPE_NAME
+    if recipe_path.exists() and not force:
         print(f"refusing to overwrite existing {RECIPE_NAME} (use --force)", file=sys.stderr)
         sys.exit(2)
     body = PRESETS.get(preset)
     if body is None:
         print(f"unknown preset `{preset}`; available: {', '.join(PRESETS)}", file=sys.stderr)
         sys.exit(2)
-    target.write_text(body)
-    print(f"wrote {target} (preset={preset})", file=sys.stderr)
+    recipe_path.write_text(body)
+    print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
+
+    local_path = cwd / LOCAL_NAME
+    if not local_path.exists():
+        local_path.write_text(LOCAL_SKELETON)
+        print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
 
 # ---------- CLI ----------

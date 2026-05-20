@@ -468,6 +468,22 @@ def test_localconfig_rejects_bad_device_name(tmp_path):
         sd.LocalConfig.load(p)
 
 
+def test_init_writes_recipe_and_local_skeleton(tmp_path):
+    sd.cmd_init(tmp_path, preset="rn")
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    assert "[resources." in recipe
+    assert "[devices." not in recipe          # devices never in the committed recipe
+    assert (tmp_path / "splashdown.local.toml").exists()
+    skeleton = (tmp_path / "splashdown.local.toml").read_text()
+    assert "devices.iphone" in skeleton       # commented example present
+
+
+def test_init_does_not_clobber_existing_local(tmp_path):
+    (tmp_path / "splashdown.local.toml").write_text("[devices.mine]\ntype = \"ios-sim\"\n")
+    sd.cmd_init(tmp_path, preset="rn")
+    assert "devices.mine" in (tmp_path / "splashdown.local.toml").read_text()
+
+
 def test_cli_provision_is_default(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     cwd = tmp_path / "co"; cwd.mkdir()
