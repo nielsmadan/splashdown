@@ -419,6 +419,10 @@ def test_pick_device_none_declared(tmp_path):
 
 # ---------- CLI ----------
 
+def test_cli_prog_name_is_splash():
+    assert sd._build_parser().prog == "splash"
+
+
 def test_cli_help_shows_subcommands(capsys):
     with pytest.raises(SystemExit):
         sd.main(["--help"])

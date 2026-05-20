@@ -1034,7 +1034,7 @@ def _build_parser() -> argparse.ArgumentParser:
     common.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
     common.add_argument("--format", choices=["text", "json"], default="text")
 
-    parser = argparse.ArgumentParser(prog="spd", description="Per-checkout resource provisioner", parents=[common])
+    parser = argparse.ArgumentParser(prog="splash", description="Per-checkout resource provisioner", parents=[common])
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
 
     p = sub.add_parser("provision", parents=[common], help="provision per .worktree.toml (default if no command)")
