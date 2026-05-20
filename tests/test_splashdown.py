@@ -548,3 +548,52 @@ def test_device_remove_deletes_block(tmp_path):
 def test_device_remove_unknown_errors(tmp_path):
     with pytest.raises(sd.DeviceError, match="no device"):
         sd.device_remove(tmp_path, "ghost")
+
+
+POST_CHECKOUT_SENTINEL = "splash"
+
+
+def test_init_appends_gitignore(tmp_path):
+    sd.cmd_init(tmp_path, preset="minimal")
+    gi = (tmp_path / ".gitignore").read_text()
+    assert "splashdown.env" in gi
+    assert "splashdown.local.toml" in gi
+
+
+def test_init_gitignore_no_duplicates(tmp_path):
+    (tmp_path / ".gitignore").write_text("splashdown.env\n")
+    sd.cmd_init(tmp_path, preset="minimal")
+    gi = (tmp_path / ".gitignore").read_text()
+    assert gi.count("splashdown.env") == 1
+
+
+def test_init_adds_mise_file_directive_new_file(tmp_path):
+    sd.cmd_init(tmp_path, preset="minimal")
+    mise = (tmp_path / "mise.toml").read_text()
+    assert '_.file = "splashdown.env"' in mise
+    assert "[env]" in mise
+
+
+def test_init_adds_mise_file_directive_existing_env_table(tmp_path):
+    (tmp_path / "mise.toml").write_text('[env]\nFOO = "bar"\n\n[tools]\nnode = "20"\n')
+    sd.cmd_init(tmp_path, preset="minimal")
+    mise = (tmp_path / "mise.toml").read_text()
+    assert '_.file = "splashdown.env"' in mise
+    assert 'FOO = "bar"' in mise
+    assert 'node = "20"' in mise
+    assert mise.count('_.file = "splashdown.env"') == 1
+
+
+def test_init_mise_directive_idempotent(tmp_path):
+    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path, preset="minimal", force=True)
+    mise = (tmp_path / "mise.toml").read_text()
+    assert mise.count('_.file = "splashdown.env"') == 1
+
+
+def test_init_writes_post_checkout_hook(tmp_path):
+    sd.cmd_init(tmp_path, preset="minimal")
+    hook = tmp_path / ".githooks" / "post-checkout"
+    assert hook.exists()
+    assert os.access(hook, os.X_OK)
+    assert POST_CHECKOUT_SENTINEL in hook.read_text()

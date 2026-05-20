@@ -1054,6 +1054,73 @@ template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
 }
 
 
+POST_CHECKOUT_HOOK = """\
+#!/bin/sh
+# Splashdown per-checkout provisioning. Fires on git checkout / clone / worktree add.
+set -e
+TOP=$(git rev-parse --show-toplevel) || exit 0
+cd "$TOP"
+[ -f splashdown.toml ] || exit 0
+if command -v splash >/dev/null 2>&1; then
+    splash >&2 || true
+else
+    echo "post-checkout: \\`splash\\` not on PATH — install splashdown" >&2
+fi
+exit 0
+"""
+
+
+def _ensure_gitignore(cwd: Path) -> None:
+    path = cwd / ".gitignore"
+    existing = path.read_text() if path.exists() else ""
+    present = set(existing.splitlines())
+    additions = [e for e in (ENV_FILE_NAME, LOCAL_NAME) if e not in present]
+    if not additions:
+        return
+    prefix = existing if existing.endswith("\n") or not existing else existing + "\n"
+    path.write_text(prefix + "\n".join(additions) + "\n")
+    print(f"updated .gitignore (+{', '.join(additions)})", file=sys.stderr)
+
+
+def _ensure_mise_file_directive(cwd: Path) -> None:
+    """Ensure mise.toml has `_.file = "splashdown.env"` under [env]."""
+    directive = f'_.file = "{ENV_FILE_NAME}"'
+    path = cwd / "mise.toml"
+    if not path.exists():
+        path.write_text(f"[env]\n{directive}\n")
+        print(f"created mise.toml with {directive}", file=sys.stderr)
+        return
+    text = path.read_text()
+    if directive in text:
+        return
+    lines = text.splitlines()
+    start, _end = _find_table(lines, "env")
+    if start is None:
+        new_text = text.rstrip() + f"\n\n[env]\n{directive}\n"
+    else:
+        lines.insert(start + 1, directive)
+        new_text = "\n".join(lines) + "\n"
+    path.write_text(new_text)
+    print(f"updated mise.toml (+{directive})", file=sys.stderr)
+
+
+def _ensure_post_checkout_hook(cwd: Path) -> None:
+    hooks_dir = cwd / ".githooks"
+    hooks_dir.mkdir(exist_ok=True)
+    hook = hooks_dir / "post-checkout"
+    hook.write_text(POST_CHECKOUT_HOOK)
+    hook.chmod(0o755)
+    try:
+        subprocess.run(
+            ["git", "config", "core.hooksPath", ".githooks"],
+            cwd=cwd, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass
+    print("wrote .githooks/post-checkout, set core.hooksPath", file=sys.stderr)
+
+
 def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
@@ -1070,6 +1137,10 @@ def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     if not local_path.exists():
         local_path.write_text(LOCAL_SKELETON)
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
+
+    _ensure_gitignore(cwd)
+    _ensure_mise_file_directive(cwd)
+    _ensure_post_checkout_hook(cwd)
 
 
 # ---------- CLI ----------
