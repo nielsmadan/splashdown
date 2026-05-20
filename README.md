@@ -27,7 +27,7 @@ Read [`provision-spec.md`](./provision-spec.md) for the original design rational
 
 ## Status
 
-Working v1. Stdlib-only Python 3.11+. 41 tests passing.
+Working v1. Stdlib-only Python 3.11+. 64 tests passing.
 
 ## Install
 
