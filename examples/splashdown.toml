@@ -1,4 +1,4 @@
-# Example .worktree.toml — declares per-checkout machine-local resources and devices.
+# splashdown.toml — committed recipe. Per-checkout resource schema only.
 
 [resources.RCT_METRO_PORT]
 type  = "port"
@@ -15,23 +15,9 @@ type = "uuid"
 type     = "template"
 template = "{{ basename(parent) }}/{{ cwd }}"
 
-[resources.TEST_DB]
-type     = "template"
-template = "myapp_{{ slug(cwd) }}"
-
 [resources.METRO_URL]
 type     = "template"
 template = "http://localhost:{{ RCT_METRO_PORT }}"
 
 [project]
 framework = "react-native"   # auto | react-native | flutter | expo
-
-[devices.iphone]
-type = "ios-sim"
-# model = "iPhone 16 Pro"
-# ios   = "18.5"
-
-[devices.android]
-type = "android-emulator"
-# device = "pixel_7"
-# image  = "system-images;android-34;google_apis;arm64-v8a"

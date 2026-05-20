@@ -1,4 +1,4 @@
-# splashdown / `spd`
+# splashdown
 
 **Per-checkout simulators, emulators, and dev ports for mobile development on macOS.**
 
@@ -10,16 +10,18 @@ cd ../myapp.feat-auth
 # → already has its own sim "myapp/myapp.feat-auth"
 # → already has its own RCT_METRO_PORT (e.g. 8082, picked to not collide
 #   with any other checkout's pinned ports machine-wide)
-spd device run        # builds + installs + launches on that sim
+splash device run        # builds + installs + launches on that sim
 ```
 
-No new commands in day-to-day work: a `post-checkout` hook fires `spd` on every `git checkout` / `git worktree add`, and `mise activate` (already in your shell) loads the resolved env vars from a gitignored `mise.local.toml`.
+No new commands in day-to-day work: a `post-checkout` hook fires `splash` on every `git checkout` / `git worktree add`, and `mise activate` (already in your shell) loads the resolved env vars from a gitignored `splashdown.env`.
 
 The mobile bits work on macOS only (iOS via `xcrun simctl`, Android via the SDK's `avdmanager`/`emulator`). The generic resource provisioner (ports, UUIDs, templates) works on Linux too.
 
 ## Why it exists
 
 Mobile dev across parallel checkouts is a coordination nightmare. Two worktrees both want Metro `8081`. Two simulators both want to be named `myapp`. Two CocoaPods caches collide. You end up shutting down half your work to switch branches, or hand-rolling per-worktree sed scripts. `splashdown` makes the "you have N checkouts" case as smooth as the "you have one checkout" case.
+
+A key benefit of per-checkout device config: each worktree gets its own, non-colliding simulator. One checkout boots `myapp/feat-auth`, another boots `myapp/main` — they never step on each other, you can run both simultaneously.
 
 Read [`provision-spec.md`](./provision-spec.md) for the original design rationale.
 
@@ -35,38 +37,51 @@ brew install nielsmadan/tap/splashdown          # recommended (macOS)
 pipx install splashdown
 ```
 
-This puts `spd` on your `PATH`. The registry at `$XDG_STATE_HOME/splashdown/` (default `~/.local/state/splashdown/`) is shared across every repo on your machine.
+This puts `splash` on your `PATH`. The registry at `$XDG_STATE_HOME/splashdown/` (default `~/.local/state/splashdown/`) is shared across every repo on your machine.
+
+## The three-file model
+
+splashdown uses three files, each with a clear purpose:
+
+| File | Committed? | Purpose |
+|------|-----------|---------|
+| `splashdown.toml` | Yes | Recipe — `[resources.*]` + `[project]` schema only |
+| `splashdown.local.toml` | **No** (gitignored) | Per-checkout `[devices.*]` config |
+| `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file; splashdown owns it |
+| `mise.toml` | Yes | Your existing mise config; gains `_.file = "splashdown.env"` |
+
+Devices live only in `splashdown.local.toml`, never committed. This means each checkout (worktree or clone) can declare its own simulator or emulator without affecting others — different checkouts get different, non-colliding simulators automatically.
+
+`splashdown.env` is overwritten wholesale on every `splash` run. Don't edit it by hand.
 
 ## Quick start: React Native worktrees
 
 In your existing RN repo:
 
 ```sh
-spd init --preset=rn
-# writes .worktree.toml:
+splash init --preset=rn
+# writes splashdown.toml:
 #   [resources.RCT_METRO_PORT] type="port" range=[8081,8200]
 #   [resources.SIM_NAME]       template="{{ basename(parent) }}/{{ cwd }}"
-#   [devices.iphone]           type="ios-sim"
 #   [project]                  framework="react-native"
+# writes splashdown.local.toml skeleton (gitignored, per-checkout devices)
+# adds splashdown.env + splashdown.local.toml to .gitignore
+# adds _.file = "splashdown.env" to mise.toml
+# installs .githooks/post-checkout
 
-# wire the post-checkout hook so future worktrees provision automatically:
-git config core.hooksPath .githooks
-mkdir -p .githooks
-cp $(pipx environment --value PIPX_LOCAL_VENVS)/splashdown/share/post-checkout .githooks/   # or copy from this repo's examples/
-
-# add to .gitignore:
-echo "mise.local.toml" >> .gitignore
+# declare a device for this checkout:
+splash device add iphone --type=ios-sim
 
 # first run:
-spd
-spd device run        # boots the named sim if needed, builds, installs, launches
+splash
+splash device run        # boots the named sim if needed, builds, installs, launches
 ```
 
 After that, every `git worktree add` gets its own sim, port, and resolved env, with zero manual steps. See [`examples/`](./examples/) for the hook + `mise.toml` task definitions.
 
-## Recipe — `.worktree.toml`
+## File model: `splashdown.toml`
 
-The committed file that says *what* the repo needs per-checkout. Lives once at the repo root.
+The committed file that says *what* the repo needs per-checkout. Lives once at the repo root. Contains only `[resources.*]` and `[project]` — no device declarations.
 
 ```toml
 [resources.RCT_METRO_PORT]
@@ -84,8 +99,22 @@ template = "{{ basename(parent) }}/{{ cwd }}"
 type     = "template"
 template = "http://localhost:{{ RCT_METRO_PORT }}"
 
+[project]
+framework = "react-native"      # auto | react-native | flutter | expo
+```
+
+Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
+Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
+
+## File model: `splashdown.local.toml`
+
+A **gitignored**, per-checkout file. Each worktree or clone has its own copy with its own device declarations. Never committed — this is what gives each checkout a non-colliding simulator.
+
+```toml
+# splashdown.local.toml — per-checkout device config. NOT committed.
+
 [devices.iphone]
-type  = "ios-sim"
+type = "ios-sim"
 # model = "iPhone 16 Pro"       # optional; default = latest iPhone Pro
 # ios   = "18.5"                # optional; default = latest installed runtime
 
@@ -93,29 +122,25 @@ type  = "ios-sim"
 type   = "android-emulator"
 # device = "pixel_7"
 # image  = "system-images;android-34;google_apis;arm64-v8a"
-
-[project]
-framework = "react-native"      # auto | react-native | flutter | expo
 ```
 
-Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Device types: `ios-sim`, `android-emulator`.
-Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
-Writers: `mise` (default → `mise.local.toml`), `envfile=PATH`, `envrc`, `stdout`, `none`.
+
+Add a device with `splash device add <name> --type=<type>`, or edit `splashdown.local.toml` directly.
 
 ## Device commands
 
 ```
-spd device list                 # show declared devices + state (booted/shutdown/absent)
-spd device boot [NAME]          # create-if-missing + boot
-spd device run  [NAME]          # boot + build + launch the app
-spd device shutdown [NAME]
-spd device destroy [NAME]
+splash device list                 # show declared devices + state (booted/shutdown/absent)
+splash device boot [NAME]          # create-if-missing + boot
+splash device run  [NAME]          # boot + build + launch the app
+splash device shutdown [NAME]
+splash device destroy [NAME]
 ```
 
 If exactly one device is declared, `NAME` is optional. With multiple, omit it to list; supply it to act on one.
 
-`spd device run` auto-detects the framework:
+`splash device run` auto-detects the framework:
 
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`
@@ -124,15 +149,15 @@ If exactly one device is declared, `NAME` is optional. With multiple, omit it to
 
 ### iOS sim management
 
-Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtime: latest installed. Sim name defaults to `<parent-dir>/<checkout-name>` so two worktrees never collide. Override per-recipe with `model = "..."` and `ios = "18.5"`.
+Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtime: latest installed. Sim name defaults to `<parent-dir>/<checkout-name>` so two worktrees never collide. Override per-checkout with `model = "..."` and `ios = "18.5"` in `splashdown.local.toml`.
 
 ### Android emulator management
 
-Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_7`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached; `spd` polls `adb` for the serial to appear.
+Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_7`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached; `splash` polls `adb` for the serial to appear.
 
 ## Non-mobile use cases
 
-The same machinery works for any per-checkout resource. Web/backend repos can declare just `[resources.*]` (and skip `[devices.*]`) for things like:
+The same machinery works for any per-checkout resource. Web/backend repos can declare just `[resources.*]` in `splashdown.toml` (and have no `splashdown.local.toml`) for things like:
 
 - `PORT = [3000, 3100]` for Next.js / Vite dev servers
 - `DATABASE_URL` templates with checkout-unique DB names
@@ -143,15 +168,16 @@ Presets ship for `nextjs`, `rn`, `flutter`, `minimal`. Linux is supported for th
 ## CLI summary
 
 ```
-spd                             # provision (what the post-checkout hook calls)
-spd provision --reprovision     # force re-allocate (regenerates uuids)
-spd init [--preset=rn|flutter|nextjs|minimal]
-spd list                        # this checkout's resolved vars
-spd get KEY [--checkout=PATH]
-spd set KEY=VALUE
-spd unpin [KEY]
-spd gc
-spd device list|boot|run|shutdown|destroy [NAME]
+splash                             # provision (what the post-checkout hook calls)
+splash provision --reprovision     # force re-allocate (regenerates uuids)
+splash init [--preset=rn|flutter|nextjs|minimal]
+splash list                        # this checkout's resolved vars
+splash get KEY [--checkout=PATH]
+splash set KEY=VALUE
+splash unpin [KEY]
+splash gc
+splash device list|boot|run|shutdown|destroy [NAME]
+splash device add NAME --type=TYPE
 ```
 
 ## Global port coordination
@@ -170,7 +196,7 @@ Lazy GC: entries for checkouts whose directory no longer exists are dropped on n
 ```sh
 just test                       # run pytest
 just build                      # sdist + wheel
-just install-local              # build + put `spd` on PATH locally
+just install-local              # build + put `splash` on PATH locally
 just tag-release-patch          # bump patch, commit, tag, push (triggers release.yml)
 ```
 

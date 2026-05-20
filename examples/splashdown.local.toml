@@ -1,0 +1,12 @@
+# splashdown.local.toml — per-checkout device config. Gitignored, NOT committed.
+# Each checkout (worktree or clone) has its own copy.
+
+[devices.iphone]
+type = "ios-sim"
+# model = "iPhone 16 Pro"   # optional; default = latest iPhone Pro
+# ios   = "18.5"            # optional; default = latest installed runtime
+
+[devices.android]
+type = "android-emulator"
+# device = "pixel_7"
+# image  = "system-images;android-34;google_apis;arm64-v8a"

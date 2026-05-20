@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""splashdown — per-checkout resource provisioner.
+"""splashdown — per-checkout resource and device provisioner.
 
-Reads `splashdown.toml`, allocates ports / generates uuids / expands templates,
-writes results to `mise.local.toml` (or other writers), maintains a
-machine-local registry so concurrent checkouts don't collide.
+Reads `splashdown.toml` (committed schema), allocates ports / generates uuids /
+expands templates, and writes resolved values to `splashdown.env`. Per-checkout
+device config lives in `splashdown.local.toml`. Maintains a machine-local
+registry so concurrent checkouts don't collide.
 
 Stdlib-only. Python 3.11+ (uses tomllib).
 """
@@ -922,7 +923,7 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
         if "react-native" in deps:
             return "react-native"
     raise DeviceError(
-        "could not detect project framework; set `[project] framework = \"flutter\"|\"react-native\"|\"expo\"` in .worktree.toml"
+        "could not detect project framework; set `[project] framework = \"flutter\"|\"react-native\"|\"expo\"` in splashdown.toml"
     )
 
 
@@ -1156,11 +1157,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="splash", description="Per-checkout resource provisioner", parents=[common])
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
 
-    p = sub.add_parser("provision", parents=[common], help="provision per .worktree.toml (default if no command)")
+    p = sub.add_parser("provision", parents=[common], help="provision per splashdown.toml (default if no command)")
     p.add_argument("--reprovision", action="store_true", help="force re-allocate all resources")
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
-    p = sub.add_parser("init", parents=[common], help="scaffold a .worktree.toml")
+    p = sub.add_parser("init", parents=[common], help="scaffold a splashdown.toml")
     p.add_argument("--preset", default="minimal")
     p.add_argument("--force", action="store_true")
 
