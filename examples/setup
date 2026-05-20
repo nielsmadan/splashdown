@@ -1,0 +1,35 @@
+#!/bin/sh
+# First-time bootstrap. Run once after cloning the repo:
+#
+#   ./setup
+#
+# Wires up the git hook (so future `git worktree add` provisions automatically)
+# and runs the first provisioning pass.
+set -e
+
+cd "$(dirname "$0")"
+
+if ! command -v spd >/dev/null 2>&1; then
+    cat >&2 <<EOF
+\`spd\` is not on your PATH. Install it first:
+
+    pipx install splashdown      # recommended
+    # or: uv tool install splashdown
+    # or: brew install nielsmadan/tap/splashdown   # once tap exists
+
+Then re-run ./setup.
+EOF
+    exit 1
+fi
+
+git config core.hooksPath .githooks
+chmod +x .githooks/post-checkout 2>/dev/null || true
+
+if [ ! -f .worktree.toml ]; then
+    echo "No .worktree.toml found; scaffolding a minimal one."
+    spd --init
+fi
+
+spd
+echo
+echo "Done. Future 'git checkout' / 'git worktree add' will provision automatically."

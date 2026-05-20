@@ -1,0 +1,37 @@
+# Example .worktree.toml — declares per-checkout machine-local resources and devices.
+
+[resources.RCT_METRO_PORT]
+type  = "port"
+range = [8081, 8200]
+
+[resources.STORYBOOK_PORT]
+type  = "port"
+range = [6006, 6100]
+
+[resources.RUN_ID]
+type = "uuid"
+
+[resources.SIM_NAME]
+type     = "template"
+template = "{{ basename(parent) }}/{{ cwd }}"
+
+[resources.TEST_DB]
+type     = "template"
+template = "myapp_{{ slug(cwd) }}"
+
+[resources.METRO_URL]
+type     = "template"
+template = "http://localhost:{{ RCT_METRO_PORT }}"
+
+[project]
+framework = "react-native"   # auto | react-native | flutter | expo
+
+[devices.iphone]
+type = "ios-sim"
+# model = "iPhone 16 Pro"
+# ios   = "18.5"
+
+[devices.android]
+type = "android-emulator"
+# device = "pixel_7"
+# image  = "system-images;android-34;google_apis;arm64-v8a"

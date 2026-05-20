@@ -1,0 +1,18 @@
+#!/bin/sh
+# Per-checkout resource provisioning. Fires on `git checkout`, `git clone`,
+# and `git worktree add`. Args: <prev-head> <new-head> <branch-checkout-flag>.
+set -e
+
+TOP=$(git rev-parse --show-toplevel) || exit 0
+cd "$TOP"
+
+# Only run if this repo opts in.
+[ -f .worktree.toml ] || exit 0
+
+if command -v spd >/dev/null 2>&1; then
+    spd >&2 || true
+else
+    echo "post-checkout: \`spd\` not on PATH — install with \`pipx install splashdown\`" >&2
+fi
+
+exit 0

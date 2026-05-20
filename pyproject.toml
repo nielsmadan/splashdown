@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "splashdown"
+version = "0.1.0"
+description = "Per-checkout iOS sims, Android emulators, and dev ports for mobile development across git worktrees on macOS. Also provisions generic resources (UUIDs, DB names, container names) on macOS and Linux."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Niels Madan" }]
+keywords = ["git", "worktree", "ios", "simulator", "android", "emulator", "react-native", "flutter", "mobile", "ports", "mise"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+[project.scripts]
+spd = "splashdown:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = ["src/splashdown.py"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/splashdown.py",
+    "tests/",
+    "examples/",
+    "README.md",
+    "provision-spec.md",
+    "pyproject.toml",
+]

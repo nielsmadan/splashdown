@@ -1,0 +1,52 @@
+# Example consumer mise.toml. Copy these tasks into your project's mise.toml.
+# Assumes `spd` is installed globally (`pipx install splashdown`).
+
+[tasks.wt-provision]
+description = "Provision per-worktree resources from .worktree.toml"
+run = "spd"
+silent = true
+
+[tasks.setup]
+description = "First-time setup: wire git hooks + scaffold .worktree.toml"
+run = """
+git config core.hooksPath .githooks
+chmod +x .githooks/post-checkout
+[ -f .worktree.toml ] || spd --init
+spd
+"""
+
+[tasks."setup-rn"]
+description = "Scaffold React Native recipe"
+run = "spd --init --preset=rn --force"
+
+[tasks."setup-flutter"]
+description = "Scaffold Flutter recipe"
+run = "spd --init --preset=flutter --force"
+
+[tasks."setup-nextjs"]
+description = "Scaffold Next.js recipe"
+run = "spd --init --preset=nextjs --force"
+
+[tasks."wt-list"]
+description = "Show current checkout's provisioned resources"
+run = "spd list"
+
+[tasks."wt-unpin"]
+description = "Release this checkout's entries from the machine-local registry"
+run = "spd unpin"
+
+[tasks."wt-gc"]
+description = "Garbage-collect dead entries from the registry"
+run = "spd gc"
+
+[tasks."wt-reprovision"]
+description = "Force re-allocate all resources (regenerates uuids, may change ports)"
+run = "spd provision --reprovision"
+
+[tasks.sim]
+description = "Boot the iOS sim declared for this checkout"
+run = "spd device boot iphone"
+
+[tasks.run]
+description = "Boot device + build + run the app (framework auto-detected)"
+run = "spd device run"
