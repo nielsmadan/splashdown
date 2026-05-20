@@ -1078,7 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     argv = list(argv)
-    # Bare `spd ...` with no subcommand defaults to `provision`, unless the
+    # Bare `splash ...` with no subcommand defaults to `provision`, unless the
     # user is asking for top-level help.
     if not any(a in KNOWN_CMDS for a in argv) and not any(a in ("-h", "--help") for a in argv):
         argv = ["provision"] + argv
@@ -1121,7 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "set":
             if "=" not in args.assignment:
-                print("usage: spd set KEY=VALUE", file=sys.stderr)
+                print("usage: splash set KEY=VALUE", file=sys.stderr)
                 return 2
             key, value = args.assignment.split("=", 1)
             registry.set_kv(str(cwd), key, value)
