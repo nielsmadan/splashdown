@@ -309,33 +309,25 @@ def test_find_table_missing(tmp_path):
 
 # ---------- recipe: devices + project ----------
 
-def test_recipe_parses_devices_and_project(tmp_path):
+def test_recipe_rejects_devices_section(tmp_path):
     p = tmp_path / "splashdown.toml"
     p.write_text("""
+[resources.PORT]
+type  = "port"
+range = [3000, 3100]
+
 [devices.iphone]
-type  = "ios-sim"
-model = "iPhone 16 Pro"
-
-[devices.android]
-type = "android-emulator"
-
-[project]
-framework = "react-native"
-""")
-    r = sd.Recipe.load(p)
-    assert set(r.devices) == {"iphone", "android"}
-    assert r.devices["iphone"]["type"] == "ios-sim"
-    assert r.project["framework"] == "react-native"
-
-
-def test_recipe_rejects_bad_device_name(tmp_path):
-    p = tmp_path / "splashdown.toml"
-    p.write_text("""
-[devices."has spaces"]
 type = "ios-sim"
 """)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="devices"):
         sd.Recipe.load(p)
+
+
+def test_recipe_parses_project(tmp_path):
+    p = tmp_path / "splashdown.toml"
+    p.write_text('[project]\nframework = "flutter"\n')
+    r = sd.Recipe.load(p)
+    assert r.project["framework"] == "flutter"
 
 
 def test_default_sim_name(tmp_path):

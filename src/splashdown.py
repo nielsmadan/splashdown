@@ -318,16 +318,17 @@ def template_refs(tpl: str) -> set[str]:
 class Recipe:
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
+        if "devices" in data:
+            raise ValueError(
+                f"[devices.*] is not allowed in {RECIPE_NAME} — the committed "
+                f"recipe is schema only. Declare devices in {LOCAL_NAME} instead."
+            )
         self.resources: dict[str, dict[str, Any]] = dict(data.get("resources", {}) or {})
         self.setup: dict[str, dict[str, Any]] = dict(data.get("setup", {}) or {})
-        self.devices: dict[str, dict[str, Any]] = dict(data.get("devices", {}) or {})
         self.project: dict[str, Any] = dict(data.get("project", {}) or {})
         for name in self.resources:
             if not ENV_NAME_RE.match(name):
                 raise ValueError(f"resource name `{name}` is not a valid env var identifier")
-        for name in self.devices:
-            if not re.match(r"^[A-Za-z][A-Za-z0-9_-]*$", name):
-                raise ValueError(f"device name `{name}` must match [A-Za-z][A-Za-z0-9_-]*")
 
     @classmethod
     def load(cls, path: Path) -> "Recipe":
