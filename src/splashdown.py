@@ -38,7 +38,6 @@ DEVICE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
 ENV_FILE_NAME = "splashdown.env"
-DEFAULT_MISE_LOCAL = "mise.local.toml"
 
 
 # ---------- registry ----------
@@ -484,21 +483,19 @@ def _template_uses_volatile(tpl: str) -> bool:
 # ---------- writers ----------
 
 def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[str]:
-    """Dispatch resolved values to their writers. Returns list of human-readable messages."""
+    """Dispatch resolved values to their writers. Returns human-readable messages."""
     groups: dict[str, dict[str, str]] = {}
     for name, value in resolved.items():
-        writer = recipe.resources[name].get("writer", "mise")
+        writer = recipe.resources[name].get("writer", "splashdown-env")
         groups.setdefault(writer, {})[name] = value
 
     msgs: list[str] = []
     for writer, items in groups.items():
-        if writer == "mise":
-            target = cwd / DEFAULT_MISE_LOCAL
-            write_mise_local(target, items)
-            _mise_trust(cwd, target)
-            msgs.append(f"mise.local.toml: {len(items)} vars")
+        if writer == "splashdown-env":
+            target = cwd / ENV_FILE_NAME
+            write_splashdown_env(target, items)
+            msgs.append(f"{ENV_FILE_NAME}: {len(items)} vars")
         elif writer.startswith("envfile"):
-            # envfile or envfile=PATH
             path_arg = writer.split("=", 1)[1] if "=" in writer else ".env.local"
             target = cwd / path_arg
             write_envfile(target, items)
@@ -516,39 +513,6 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[s
         else:
             raise ValueError(f"unknown writer `{writer}`")
     return msgs
-
-
-def write_mise_local(path: Path, items: dict[str, str]) -> None:
-    """Surgically update the [env] table of mise.local.toml, preserving other content.
-
-    Strategy: read existing file, find `[env]` table (or any of its variants),
-    drop existing keys we manage, append/insert new ones.
-    """
-    existing = path.read_text() if path.exists() else ""
-    lines = existing.splitlines()
-    env_start, env_end = _find_table(lines, "env")
-    managed = set(items.keys())
-
-    if env_start is None:
-        # No [env] table — append one.
-        block = ["", "[env]"] + [f'{k} = {_toml_quote(v)}' for k, v in items.items()]
-        new_text = (existing.rstrip() + "\n" + "\n".join(block) + "\n") if existing.strip() else "\n".join(block[1:]) + "\n"
-        path.write_text(new_text)
-        return
-
-    body = lines[env_start + 1 : env_end]
-    kept: list[str] = []
-    for line in body:
-        m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-        if m and m.group(1) in managed:
-            continue
-        kept.append(line)
-    # Strip trailing blank lines inside the table.
-    while kept and not kept[-1].strip():
-        kept.pop()
-    new_body = kept + [f'{k} = {_toml_quote(v)}' for k, v in items.items()]
-    new_lines = lines[: env_start + 1] + new_body + lines[env_end:]
-    path.write_text("\n".join(new_lines) + ("\n" if existing.endswith("\n") or existing == "" else ""))
 
 
 def _find_table(lines: list[str], name: str) -> tuple[int | None, int]:
@@ -574,6 +538,28 @@ def _toml_quote(value: str) -> str:
     # Always emit basic strings; escape minimally.
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     return f'"{escaped}"'
+
+
+_ENV_SAFE_RE = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
+
+
+def _env_quote(value: str) -> str:
+    """Quote a dotenv value only when it contains characters a loader could mangle."""
+    if value and _ENV_SAFE_RE.fullmatch(value):
+        return value
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+    return f'"{escaped}"'
+
+
+def write_splashdown_env(path: Path, items: dict[str, str]) -> None:
+    """Write the generated env file wholesale. Splashdown owns this file."""
+    lines = [f"{k}={_env_quote(v)}" for k, v in items.items()]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
 
 
 def write_envfile(path: Path, items: dict[str, str]) -> None:
@@ -607,22 +593,6 @@ def write_envrc(path: Path, items: dict[str, str]) -> None:
         return "'" + v.replace("'", "'\\''") + "'"
     new = kept + [f"export {k}={quote(v)}" for k, v in items.items()]
     path.write_text("\n".join(new) + "\n")
-
-
-def _mise_trust(cwd: Path, mise_local: Path) -> None:
-    if not mise_local.exists():
-        return
-    try:
-        subprocess.run(
-            ["mise", "trust", str(mise_local)],
-            cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        pass
 
 
 # ---------- lifecycle (setup hooks) ----------

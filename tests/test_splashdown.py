@@ -167,7 +167,7 @@ def _write_recipe(cwd: Path, body: str) -> None:
     (cwd / "splashdown.toml").write_text(body)
 
 
-def test_provision_writes_mise_local(registry, checkout):
+def test_provision_writes_splashdown_env(registry, checkout):
     _write_recipe(checkout, """
 [resources.PORT]
 type  = "port"
@@ -187,10 +187,9 @@ template = "http://localhost:{{ PORT }}"
 
     recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
-    text = (checkout / "mise.local.toml").read_text()
-    assert "[env]" in text
-    assert f'PORT = "{resolved["PORT"]}"' in text
-    assert "URL = " in text
+    text = (checkout / "splashdown.env").read_text()
+    assert f'PORT={resolved["PORT"]}' in text
+    assert "URL=" in text
 
 
 def test_provision_idempotent(registry, checkout):
@@ -216,30 +215,30 @@ type = "uuid"
     assert r1["RUN_ID"] != r2["RUN_ID"]
 
 
-def test_mise_local_preserves_user_keys(registry, checkout):
-    (checkout / "mise.local.toml").write_text("""\
-[env]
-USER_KEY = "keep-me"
-PORT = "stale"
+def test_splashdown_env_writer_basic(tmp_path):
+    target = tmp_path / "splashdown.env"
+    sd.write_splashdown_env(target, {"PORT": "8082", "RUN_ID": "abc-def"})
+    text = target.read_text()
+    assert "PORT=8082" in text
+    assert "RUN_ID=abc-def" in text
 
-[tools]
-node = "20"
-""")
-    _write_recipe(checkout, """
-[resources.PORT]
-type  = "port"
-range = [18600, 18610]
-""")
-    resolved = sd.provision(checkout, registry=registry)
-    recipe = sd.Recipe.load(checkout / "splashdown.toml")
-    sd.write_outputs(checkout, recipe, resolved)
-    text = (checkout / "mise.local.toml").read_text()
-    assert 'USER_KEY = "keep-me"' in text
-    assert '[tools]' in text
-    assert 'node = "20"' in text
-    # PORT line should be updated, not duplicated
-    assert text.count("PORT =") == 1
-    assert f'PORT = "{resolved["PORT"]}"' in text
+
+def test_splashdown_env_writer_quotes_specials(tmp_path):
+    target = tmp_path / "splashdown.env"
+    sd.write_splashdown_env(target, {"URL": "http://localhost:8082", "MSG": "has spaces"})
+    text = target.read_text()
+    assert 'MSG="has spaces"' in text
+    # A plain URL has no spaces; ':' and '/' are allowed unquoted.
+    assert "URL=http://localhost:8082" in text
+
+
+def test_splashdown_env_writer_overwrites_wholesale(tmp_path):
+    target = tmp_path / "splashdown.env"
+    target.write_text("STALE=1\nOLD=2\n")
+    sd.write_splashdown_env(target, {"PORT": "8082"})
+    text = target.read_text()
+    assert "STALE" not in text
+    assert text.strip() == "PORT=8082"
 
 
 def test_envfile_writer(registry, checkout):
@@ -486,4 +485,4 @@ range = [18900, 18910]
 """)
     code = sd.main(["--cwd", str(cwd)])
     assert code == 0
-    assert (cwd / "mise.local.toml").exists()
+    assert (cwd / "splashdown.env").exists()
