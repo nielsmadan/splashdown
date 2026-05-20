@@ -512,3 +512,39 @@ range = [18920, 18930]
     (cwd / "splashdown.local.toml").write_text('[devices.mine]\ntype = "ios-sim"\n')
     sd.main(["--cwd", str(cwd)])
     assert "devices.mine" in (cwd / "splashdown.local.toml").read_text()
+
+
+def test_device_add_appends_block(tmp_path):
+    sd.device_add(tmp_path, "iphone", "ios-sim", {"model": "iPhone 16 Pro"})
+    lc = sd.LocalConfig.load(tmp_path / "splashdown.local.toml")
+    assert lc.devices["iphone"]["type"] == "ios-sim"
+    assert lc.devices["iphone"]["model"] == "iPhone 16 Pro"
+
+
+def test_device_add_rejects_duplicate(tmp_path):
+    sd.device_add(tmp_path, "iphone", "ios-sim", {})
+    with pytest.raises(sd.DeviceError, match="already"):
+        sd.device_add(tmp_path, "iphone", "ios-sim", {})
+
+
+def test_device_add_rejects_bad_type(tmp_path):
+    with pytest.raises(sd.DeviceError, match="type"):
+        sd.device_add(tmp_path, "iphone", "not-a-type", {})
+
+
+def test_device_add_rejects_bad_name(tmp_path):
+    with pytest.raises(sd.DeviceError):
+        sd.device_add(tmp_path, "has spaces", "ios-sim", {})
+
+
+def test_device_remove_deletes_block(tmp_path):
+    sd.device_add(tmp_path, "iphone", "ios-sim", {})
+    sd.device_add(tmp_path, "android", "android-emulator", {})
+    sd.device_remove(tmp_path, "iphone")
+    lc = sd.LocalConfig.load(tmp_path / "splashdown.local.toml")
+    assert set(lc.devices) == {"android"}
+
+
+def test_device_remove_unknown_errors(tmp_path):
+    with pytest.raises(sd.DeviceError, match="no device"):
+        sd.device_remove(tmp_path, "ghost")

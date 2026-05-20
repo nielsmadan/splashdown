@@ -961,6 +961,44 @@ def pick_device(local: "LocalConfig", requested: str | None) -> tuple[str, dict[
     )
 
 
+DEVICE_TYPES = ("ios-sim", "android-emulator")
+
+
+def device_add(cwd: Path, name: str, dtype: str, fields: dict[str, str | None]) -> None:
+    """Append a [devices.NAME] table to splashdown.local.toml."""
+    if not DEVICE_NAME_RE.match(name):
+        raise DeviceError(f"device name `{name}` must match [A-Za-z][A-Za-z0-9_-]*")
+    if dtype not in DEVICE_TYPES:
+        raise DeviceError(f"device type `{dtype}` must be one of: {', '.join(DEVICE_TYPES)}")
+
+    path = cwd / LOCAL_NAME
+    existing = path.read_text() if path.exists() else LOCAL_SKELETON
+    if LocalConfig.load(path).devices.get(name) is not None:
+        raise DeviceError(f"device `{name}` already exists in {LOCAL_NAME}; remove it first")
+
+    block = [f"\n[devices.{name}]", f'type = {_toml_quote(dtype)}']
+    for key, value in fields.items():
+        if value is not None:
+            block.append(f"{key} = {_toml_quote(value)}")
+    new_text = existing.rstrip() + "\n" + "\n".join(block) + "\n"
+    path.write_text(new_text)
+
+
+def device_remove(cwd: Path, name: str) -> None:
+    """Delete the [devices.NAME] table from splashdown.local.toml."""
+    path = cwd / LOCAL_NAME
+    if not path.exists() or LocalConfig.load(path).devices.get(name) is None:
+        raise DeviceError(f"no device `{name}` in {LOCAL_NAME}")
+    lines = path.read_text().splitlines()
+    start, end = _find_table(lines, f"devices.{name}")
+    if start is None:
+        raise DeviceError(f"no device `{name}` in {LOCAL_NAME}")
+    kept = lines[:start] + lines[end:]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
 # ---------- init / scaffolding ----------
 
 PRESETS: dict[str, str] = {
@@ -1077,6 +1115,18 @@ def _build_parser() -> argparse.ArgumentParser:
         if action != "list":
             sp.add_argument("name", nargs="?", help="device name (optional if only one declared)")
 
+    add = devsub.add_parser("add", parents=[common], help="declare a device in splashdown.local.toml")
+    add.add_argument("name")
+    add.add_argument("--type", required=True, choices=["ios-sim", "android-emulator"], dest="dtype")
+    add.add_argument("--model")
+    add.add_argument("--ios")
+    add.add_argument("--device")
+    add.add_argument("--image")
+    add.add_argument("--name", dest="sim_name", help="simulator/emulator name override")
+
+    rm = devsub.add_parser("remove", parents=[common], help="remove a device from splashdown.local.toml")
+    rm.add_argument("name")
+
     return parser
 
 
@@ -1187,6 +1237,23 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
 
 def _device_dispatch(args, cwd: Path) -> int:
     local = LocalConfig.load(cwd / LOCAL_NAME)
+
+    if args.device_cmd == "add":
+        fields = {
+            "model": args.model,
+            "ios": args.ios,
+            "device": args.device,
+            "image": args.image,
+            "name": args.sim_name,
+        }
+        device_add(cwd, args.name, args.dtype, fields)
+        print(f"added device `{args.name}` ({args.dtype}) to {LOCAL_NAME}", file=sys.stderr)
+        return 0
+
+    if args.device_cmd == "remove":
+        device_remove(cwd, args.name)
+        print(f"removed device `{args.name}` from {LOCAL_NAME}", file=sys.stderr)
+        return 0
 
     if args.device_cmd == "list":
         if not local.devices:
