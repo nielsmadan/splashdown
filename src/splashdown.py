@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """splashdown — per-checkout resource provisioner.
 
-Reads `.worktree.toml`, allocates ports / generates uuids / expands templates,
+Reads `splashdown.toml`, allocates ports / generates uuids / expands templates,
 writes results to `mise.local.toml` (or other writers), maintains a
 machine-local registry so concurrent checkouts don't collide.
 
