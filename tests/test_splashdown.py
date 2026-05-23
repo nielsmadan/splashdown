@@ -793,7 +793,67 @@ def test_rn_hook_husky_autofix_then_ok(tmp_path):
 def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
     _git_init(tmp_path)
     (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    # Place an empty metro.config.js to satisfy the rn-metro-config "applies" check;
+    # detect will still report problem. We're only checking the hook here.
+    (tmp_path / "metro.config.js").write_text(
+        "module.exports = { server: { port: Number(process.env.RCT_METRO_PORT) || 8081 } };\n"
+    )
     assert sd.cmd_doctor(tmp_path) == 1  # not wired
     assert sd.cmd_doctor(tmp_path, fix=True) == 0  # now wired
     assert sd.cmd_doctor(tmp_path) == 0  # idempotent re-check
     assert (tmp_path / ".githooks" / "post-checkout").exists()
+
+
+# ---------- rn-metro-config check ----------
+
+def test_rn_metro_not_applicable_without_config(tmp_path):
+    assert sd._rn_metro_applies(tmp_path) is False
+
+
+def test_rn_metro_detect_ok_when_env_present(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "module.exports = { server: { port: Number(process.env.RCT_METRO_PORT) || 8081 } };\n"
+    )
+    assert sd._rn_metro_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_metro_detect_problem_for_literal(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "module.exports = { server: { port: 8083 } };\n"
+    )
+    status, detail = sd._rn_metro_detect(tmp_path)
+    assert status == "problem"
+    assert "autofixable" in detail
+
+
+def test_rn_metro_autofix_replaces_literal(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "const config = {\n  server: {\n    port: 8083,\n  },\n};\n"
+    )
+    sd._rn_metro_autofix(tmp_path)
+    text = (tmp_path / "metro.config.js").read_text()
+    assert "process.env.RCT_METRO_PORT" in text
+    assert "|| 8083" in text
+    # Re-detect now ok.
+    assert sd._rn_metro_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_metro_autofix_idempotent(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "const config = { server: { port: 8083 } };\n"
+    )
+    sd._rn_metro_autofix(tmp_path)
+    once = (tmp_path / "metro.config.js").read_text()
+    sd._rn_metro_autofix(tmp_path)
+    twice = (tmp_path / "metro.config.js").read_text()
+    assert once == twice
+    assert twice.count("process.env.RCT_METRO_PORT") == 1
+
+
+def test_rn_metro_autofix_noop_when_no_port(tmp_path):
+    text = "module.exports = { server: { someOtherThing: 1 } };\n"
+    (tmp_path / "metro.config.js").write_text(text)
+    sd._rn_metro_autofix(tmp_path)
+    assert (tmp_path / "metro.config.js").read_text() == text
+    # Detect still reports problem; manual instructions will be printed by doctor.
+    assert sd._rn_metro_detect(tmp_path)[0] == "problem"

@@ -1345,6 +1345,9 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
                 print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
                 continue
             print(f"  ✗  {check.id}: still problem after autofix: {detail_after}", file=sys.stderr)
+            if check.manual_instructions is not None:
+                for line in check.manual_instructions(cwd).splitlines():
+                    print(f"        {line}", file=sys.stderr)
             bad += 1
             continue
         # Not fixed (or no autofix available).
@@ -1435,6 +1438,62 @@ WIRING["react-native"] = [
         manual_instructions=_rn_hook_manual,
     ),
 ]
+
+
+# Recognized metro.config.js shape: `port: <number>` (literal). We rewrite that to
+# read `process.env.RCT_METRO_PORT` while keeping the literal as the fallback.
+_METRO_LITERAL_PORT_RE = re.compile(r"\bport\s*:\s*(\d+)\b")
+
+
+def _rn_metro_applies(cwd: Path) -> bool:
+    return (cwd / "metro.config.js").exists()
+
+
+def _rn_metro_detect(cwd: Path) -> tuple[str, str]:
+    text = (cwd / "metro.config.js").read_text()
+    if "process.env.RCT_METRO_PORT" in text:
+        return ("ok", "metro.config.js reads process.env.RCT_METRO_PORT")
+    if _METRO_LITERAL_PORT_RE.search(text):
+        return ("problem", "metro.config.js hardcodes a literal port; autofixable")
+    return ("problem", "metro.config.js doesn't reference RCT_METRO_PORT")
+
+
+def _rn_metro_autofix(cwd: Path) -> None:
+    path = cwd / "metro.config.js"
+    text = path.read_text()
+    if "process.env.RCT_METRO_PORT" in text:
+        return  # already wired
+    m = _METRO_LITERAL_PORT_RE.search(text)
+    if not m:
+        return  # unrecognized shape — doctor will surface manual_instructions
+    new_text = (
+        text[: m.start()]
+        + f"port: Number(process.env.RCT_METRO_PORT) || {m.group(1)}"
+        + text[m.end() :]
+    )
+    path.write_text(new_text)
+    print(f"patched metro.config.js (RCT_METRO_PORT, fallback {m.group(1)})", file=sys.stderr)
+
+
+def _rn_metro_manual(cwd: Path) -> str:
+    return (
+        "Edit metro.config.js so server.port reads RCT_METRO_PORT, keeping a fallback:\n"
+        "    server: {\n"
+        "      port: Number(process.env.RCT_METRO_PORT) || 8081,\n"
+        "    },"
+    )
+
+
+WIRING["react-native"].append(
+    WiringCheck(
+        id="rn-metro-config",
+        description="metro.config.js consumes RCT_METRO_PORT",
+        applies=_rn_metro_applies,
+        detect=_rn_metro_detect,
+        autofix=_rn_metro_autofix,
+        manual_instructions=_rn_metro_manual,
+    ),
+)
 
 
 # ---------- CLI ----------
