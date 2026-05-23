@@ -1655,8 +1655,10 @@ KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device"
 
 def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
-    common.add_argument("--format", choices=["text", "json"], default="text")
+    # SUPPRESS defaults so a top-level value isn't clobbered when the subparser
+    # (which also inherits `common` via `parents=`) parses without these flags.
+    common.add_argument("--cwd", default=argparse.SUPPRESS, help="working directory (default: $PWD)")
+    common.add_argument("--format", choices=["text", "json"], default=argparse.SUPPRESS)
 
     parser = argparse.ArgumentParser(prog="splash", description="Per-checkout resource provisioner", parents=[common])
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
@@ -1711,7 +1713,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_cwd(args) -> Path:
-    return Path(args.cwd).resolve() if args.cwd else Path(os.getcwd()).resolve()
+    cwd = getattr(args, "cwd", None)
+    return Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
+
+
+def _resolve_format(args) -> str:
+    return getattr(args, "format", "text")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1745,7 +1752,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "list":
             target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
             data = registry.all_for(target)
-            if args.format == "json":
+            if _resolve_format(args) == "json":
                 print(json.dumps(data, indent=2))
             else:
                 if not data:
@@ -1808,7 +1815,7 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
     msgs = write_outputs(cwd, recipe, resolved)
     setup_msgs = run_setup(cwd, recipe, args.setup, resolved)
 
-    if args.format == "json":
+    if _resolve_format(args) == "json":
         print(json.dumps({"resolved": resolved, "writers": msgs, "setup": setup_msgs}, indent=2))
     else:
         for k, v in resolved.items():
@@ -1850,7 +1857,7 @@ def _device_dispatch(args, cwd: Path) -> int:
             except DeviceError as e:
                 status = f"error: {e}"
             rows.append((name, spec.get("type", "?"), resolved, status))
-        if args.format == "json":
+        if _resolve_format(args) == "json":
             print(json.dumps(
                 [dict(zip(("name", "type", "device_name", "status"), r)) for r in rows],
                 indent=2,
