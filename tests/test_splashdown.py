@@ -929,3 +929,115 @@ def test_rn_pkg_targets_react_native_scripts_by_command(tmp_path):
     assert sd._rn_pkg_detect(tmp_path)[0] == "problem"
     sd._rn_pkg_autofix(tmp_path)
     assert json.loads((tmp_path / "package.json").read_text())["scripts"]["dev"] == "react-native start"
+
+
+# ---------- rn-xcode-env check ----------
+
+def _make_ios(tmp_path: Path, xcode_env_content: str) -> None:
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / ".xcode.env").write_text(xcode_env_content)
+
+
+def test_rn_xcode_not_applicable_without_file(tmp_path):
+    assert sd._rn_xcode_applies(tmp_path) is False
+
+
+def test_rn_xcode_detect_problem_for_static_export(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n")
+    status, detail = sd._rn_xcode_detect(tmp_path)
+    assert status == "problem"
+    assert "statically" in detail.lower()
+
+
+def test_rn_xcode_detect_problem_when_missing(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\n")
+    assert sd._rn_xcode_detect(tmp_path)[0] == "problem"
+
+
+def test_rn_xcode_detect_ok_with_block(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\n" + sd._XCODE_BLOCK)
+    assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_xcode_autofix_replaces_static(tmp_path):
+    _make_ios(
+        tmp_path,
+        "# header\n"
+        "export NODE_BINARY=node\n"
+        "\n"
+        "# Pin Metro port\n"
+        "export RCT_METRO_PORT=8083\n",
+    )
+    sd._rn_xcode_autofix(tmp_path)
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    # Old static export gone.
+    assert "export RCT_METRO_PORT=8083" not in text
+    # NODE_BINARY preserved.
+    assert "export NODE_BINARY=node" in text
+    # Splashdown block present.
+    assert sd._XCODE_BEGIN in text
+    assert sd._XCODE_END in text
+    assert "splashdown.env" in text
+    # Now wired.
+    assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_xcode_autofix_appends_when_missing(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\n")
+    sd._rn_xcode_autofix(tmp_path)
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert "export NODE_BINARY=node" in text
+    assert sd._XCODE_BEGIN in text
+
+
+def test_rn_xcode_autofix_idempotent(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n")
+    sd._rn_xcode_autofix(tmp_path)
+    once = (tmp_path / "ios" / ".xcode.env").read_text()
+    sd._rn_xcode_autofix(tmp_path)
+    twice = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert once == twice
+    # Sentinels should appear exactly once.
+    assert twice.count(sd._XCODE_BEGIN) == 1
+    assert twice.count(sd._XCODE_END) == 1
+
+
+def test_doctor_fix_full_rn_project(tmp_path):
+    _git_init(tmp_path)
+    # An RN-shaped tmp dir mirroring FlowLab's pre-wiring state.
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {
+            "start": "react-native start --port 8083",
+            "ios": "react-native run-ios --port 8083",
+            "android": "react-native run-android --port 8083",
+        },
+        "dependencies": {"react-native": "0.83"},
+        "devDependencies": {"lefthook": "^1.0"},
+    }, indent=2))
+    (tmp_path / "metro.config.js").write_text(
+        "const config = {\n  server: {\n    port: 8083,\n  },\n};\n"
+        "module.exports = config;\n"
+    )
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / ".xcode.env").write_text(
+        "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n"
+    )
+    (tmp_path / "lefthook.yml").write_text(
+        "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
+    )
+    # Initial state: all four checks problem.
+    assert sd.cmd_doctor(tmp_path) == 1
+    # Fix.
+    assert sd.cmd_doctor(tmp_path, fix=True) == 0
+    # All green now.
+    assert sd.cmd_doctor(tmp_path) == 0
+    # Verify the concrete file states.
+    pkg = json.loads((tmp_path / "package.json").read_text())
+    for name in ("start", "ios", "android"):
+        assert "--port" not in pkg["scripts"][name]
+    assert "process.env.RCT_METRO_PORT" in (tmp_path / "metro.config.js").read_text()
+    assert sd._XCODE_BEGIN in (tmp_path / "ios" / ".xcode.env").read_text()
+    lh = (tmp_path / "lefthook.yml").read_text()
+    assert "post-checkout:" in lh
+    assert "splashdown:" in lh
+    assert "lint:" in lh  # original entry preserved

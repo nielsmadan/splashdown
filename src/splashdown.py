@@ -1567,6 +1567,77 @@ WIRING["react-native"].append(
 )
 
 
+# Sentinel-wrapped block written into ios/.xcode.env. Sentinels make autofix
+# idempotent (find by sentinel pair, replace contents) and let the user identify
+# what's tool-managed vs hand-edited.
+_XCODE_BEGIN = "# >>> splashdown-managed RCT_METRO_PORT >>>"
+_XCODE_END = "# <<< splashdown-managed RCT_METRO_PORT <<<"
+_XCODE_BLOCK = f"""{_XCODE_BEGIN}
+# splashdown ships this block. RCT_METRO_PORT is baked into the iOS binary via
+# GCC_PREPROCESSOR_DEFINITIONS (RCTBundleURLProvider's defaultPort), so the app
+# must be rebuilt after a port change. Honour a value set by `react-native
+# run-ios`; else read this checkout's splashdown.env; else fall back to 8083.
+if [ -z "${{RCT_METRO_PORT:-}}" ] && [ -f "${{SRCROOT}}/../splashdown.env" ]; then
+  export RCT_METRO_PORT="$(grep '^RCT_METRO_PORT=' "${{SRCROOT}}/../splashdown.env" | cut -d= -f2)"
+fi
+export RCT_METRO_PORT="${{RCT_METRO_PORT:-8083}}"
+{_XCODE_END}
+"""
+
+_XCODE_BLOCK_RE = re.compile(
+    re.escape(_XCODE_BEGIN) + r".*?" + re.escape(_XCODE_END) + r"\n?",
+    re.DOTALL,
+)
+_XCODE_STATIC_EXPORT_RE = re.compile(r"^\s*export\s+RCT_METRO_PORT\s*=.*\n?", re.MULTILINE)
+
+
+def _rn_xcode_applies(cwd: Path) -> bool:
+    return (cwd / "ios" / ".xcode.env").exists()
+
+
+def _rn_xcode_detect(cwd: Path) -> tuple[str, str]:
+    text = (cwd / "ios" / ".xcode.env").read_text()
+    if _XCODE_BEGIN in text and _XCODE_END in text:
+        return ("ok", "ios/.xcode.env has the splashdown-managed RCT_METRO_PORT block")
+    if _XCODE_STATIC_EXPORT_RE.search(text):
+        return ("problem", "ios/.xcode.env statically exports RCT_METRO_PORT")
+    return ("problem", "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown")
+
+
+def _rn_xcode_autofix(cwd: Path) -> None:
+    path = cwd / "ios" / ".xcode.env"
+    text = path.read_text()
+    # Strip any prior splashdown block (in case sentinels exist but contents drifted).
+    text = _XCODE_BLOCK_RE.sub("", text)
+    # Strip any non-managed static `export RCT_METRO_PORT=...` lines so the file has
+    # one source of truth.
+    text = _XCODE_STATIC_EXPORT_RE.sub("", text)
+    # Append our block at the end. Ensure exactly one separating newline.
+    text = text.rstrip() + ("\n\n" if text.strip() else "")
+    text += _XCODE_BLOCK
+    path.write_text(text)
+    print("rewrote ios/.xcode.env (splashdown-managed RCT_METRO_PORT block)", file=sys.stderr)
+
+
+def _rn_xcode_manual(cwd: Path) -> str:
+    return (
+        "Edit ios/.xcode.env so RCT_METRO_PORT is honoured-if-set, else read from\n"
+        "splashdown.env, else fall back to 8083. See README ('Framework wiring')."
+    )
+
+
+WIRING["react-native"].append(
+    WiringCheck(
+        id="rn-xcode-env",
+        description="ios/.xcode.env wires RCT_METRO_PORT to splashdown.env",
+        applies=_rn_xcode_applies,
+        detect=_rn_xcode_detect,
+        autofix=_rn_xcode_autofix,
+        manual_instructions=_rn_xcode_manual,
+    ),
+)
+
+
 # ---------- CLI ----------
 
 KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor"}
