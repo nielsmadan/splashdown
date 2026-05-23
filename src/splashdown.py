@@ -1496,6 +1496,77 @@ WIRING["react-native"].append(
 )
 
 
+# `--port 8083` or `--port=8083` in a script string — exactly the override that
+# stops RCT_METRO_PORT from taking effect.
+_PKG_PORT_RE = re.compile(r"\s+--port[=\s]\d+")
+_PKG_RN_SCRIPTS = ("start", "ios", "android")  # default RN script names
+
+
+def _rn_pkg_applies(cwd: Path) -> bool:
+    return (cwd / "package.json").exists()
+
+
+def _pkg_scripts_with_port(data: dict[str, Any]) -> list[str]:
+    """Return names of scripts that override RCT_METRO_PORT with --port."""
+    scripts = data.get("scripts") or {}
+    hits: list[str] = []
+    for name, value in scripts.items():
+        if not isinstance(value, str):
+            continue
+        # Target the common RN scripts, plus any script invoking react-native.
+        if name in _PKG_RN_SCRIPTS or "react-native" in value:
+            if _PKG_PORT_RE.search(value):
+                hits.append(name)
+    return hits
+
+
+def _rn_pkg_detect(cwd: Path) -> tuple[str, str]:
+    try:
+        data = json.loads((cwd / "package.json").read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        return ("problem", f"could not read package.json: {e}")
+    hits = _pkg_scripts_with_port(data)
+    if hits:
+        return ("problem", f"--port hardcoded in scripts: {', '.join(hits)}")
+    return ("ok", "package.json scripts don't hardcode --port")
+
+
+def _rn_pkg_autofix(cwd: Path) -> None:
+    path = cwd / "package.json"
+    data = json.loads(path.read_text())
+    scripts = data.get("scripts") or {}
+    changed = False
+    for name in _pkg_scripts_with_port(data):
+        new_val = _PKG_PORT_RE.sub("", scripts[name])
+        if new_val != scripts[name]:
+            scripts[name] = new_val
+            changed = True
+    if not changed:
+        return
+    data["scripts"] = scripts
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    print("rewrote package.json (stripped --port from scripts)", file=sys.stderr)
+
+
+def _rn_pkg_manual(cwd: Path) -> str:
+    return (
+        "Remove `--port <N>` from any react-native script in package.json so the\n"
+        "RN CLI reads RCT_METRO_PORT from the environment instead."
+    )
+
+
+WIRING["react-native"].append(
+    WiringCheck(
+        id="rn-pkg-port",
+        description="package.json scripts don't override --port",
+        applies=_rn_pkg_applies,
+        detect=_rn_pkg_detect,
+        autofix=_rn_pkg_autofix,
+        manual_instructions=_rn_pkg_manual,
+    ),
+)
+
+
 # ---------- CLI ----------
 
 KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor"}

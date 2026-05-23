@@ -4,6 +4,7 @@ Run with: python -m pytest tests/ -q
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -857,3 +858,74 @@ def test_rn_metro_autofix_noop_when_no_port(tmp_path):
     assert (tmp_path / "metro.config.js").read_text() == text
     # Detect still reports problem; manual instructions will be printed by doctor.
     assert sd._rn_metro_detect(tmp_path)[0] == "problem"
+
+
+# ---------- rn-pkg-port check ----------
+
+def test_rn_pkg_not_applicable_without_pkg(tmp_path):
+    assert sd._rn_pkg_applies(tmp_path) is False
+
+
+def test_rn_pkg_detect_ok_when_clean(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"start": "react-native start", "ios": "react-native run-ios"}
+    }))
+    assert sd._rn_pkg_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_pkg_detect_problem_with_space_form(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"start": "react-native start --port 8083"}
+    }))
+    status, detail = sd._rn_pkg_detect(tmp_path)
+    assert status == "problem"
+    assert "start" in detail
+
+
+def test_rn_pkg_detect_problem_with_equals_form(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"ios": "react-native run-ios --port=8083"}
+    }))
+    assert sd._rn_pkg_detect(tmp_path)[0] == "problem"
+
+
+def test_rn_pkg_autofix_strips_port_flag(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "x",
+        "scripts": {
+            "android": "react-native run-android --port 8083",
+            "ios": "react-native run-ios --port 8083",
+            "start": "react-native start --port 8083",
+            "test": "jest",
+        },
+        "dependencies": {"react-native": "0.83"},
+    }, indent=2))
+    sd._rn_pkg_autofix(tmp_path)
+    data = json.loads((tmp_path / "package.json").read_text())
+    assert data["scripts"]["start"] == "react-native start"
+    assert data["scripts"]["ios"] == "react-native run-ios"
+    assert data["scripts"]["android"] == "react-native run-android"
+    assert data["scripts"]["test"] == "jest"  # unrelated script preserved
+    assert data["dependencies"]["react-native"] == "0.83"  # rest of file preserved
+    assert sd._rn_pkg_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_pkg_autofix_idempotent(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"start": "react-native start --port 8083"}
+    }))
+    sd._rn_pkg_autofix(tmp_path)
+    once = (tmp_path / "package.json").read_text()
+    sd._rn_pkg_autofix(tmp_path)
+    twice = (tmp_path / "package.json").read_text()
+    assert once == twice
+
+
+def test_rn_pkg_targets_react_native_scripts_by_command(tmp_path):
+    # An unconventional script name that still invokes react-native should be caught.
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"dev": "react-native start --port 8083"}
+    }))
+    assert sd._rn_pkg_detect(tmp_path)[0] == "problem"
+    sd._rn_pkg_autofix(tmp_path)
+    assert json.loads((tmp_path / "package.json").read_text())["scripts"]["dev"] == "react-native start"
