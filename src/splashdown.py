@@ -1588,7 +1588,13 @@ _XCODE_BLOCK_RE = re.compile(
     re.escape(_XCODE_BEGIN) + r".*?" + re.escape(_XCODE_END) + r"\n?",
     re.DOTALL,
 )
-_XCODE_STATIC_EXPORT_RE = re.compile(r"^\s*export\s+RCT_METRO_PORT\s*=.*\n?", re.MULTILINE)
+# A *static literal* export — `export RCT_METRO_PORT=8083`, no variable
+# references. The intentionally narrow match keeps autofix from mangling
+# user-written conditional / shell-substitution-based wirings.
+_XCODE_LITERAL_EXPORT_RE = re.compile(
+    r"^[ \t]*export[ \t]+RCT_METRO_PORT[ \t]*=[ \t]*\d+[ \t]*\n?",
+    re.MULTILINE,
+)
 
 
 def _rn_xcode_applies(cwd: Path) -> bool:
@@ -1597,21 +1603,25 @@ def _rn_xcode_applies(cwd: Path) -> bool:
 
 def _rn_xcode_detect(cwd: Path) -> tuple[str, str]:
     text = (cwd / "ios" / ".xcode.env").read_text()
-    if _XCODE_BEGIN in text and _XCODE_END in text:
-        return ("ok", "ios/.xcode.env has the splashdown-managed RCT_METRO_PORT block")
-    if _XCODE_STATIC_EXPORT_RE.search(text):
-        return ("problem", "ios/.xcode.env statically exports RCT_METRO_PORT")
+    # A reference to splashdown.env means *somebody* wired it to the per-checkout
+    # env file — sentinel block, hand-written conditional, etc. All fine.
+    if "splashdown.env" in text:
+        return ("ok", "ios/.xcode.env reads RCT_METRO_PORT from splashdown.env")
+    if _XCODE_LITERAL_EXPORT_RE.search(text):
+        return ("problem", "ios/.xcode.env statically exports a literal RCT_METRO_PORT")
     return ("problem", "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown")
 
 
 def _rn_xcode_autofix(cwd: Path) -> None:
     path = cwd / "ios" / ".xcode.env"
     text = path.read_text()
-    # Strip any prior splashdown block (in case sentinels exist but contents drifted).
+    if "splashdown.env" in text:
+        return  # already wired (sentinel block or hand-written equivalent)
+    # Strip any literal-digit export so the file has one source of truth.
+    text = _XCODE_LITERAL_EXPORT_RE.sub("", text)
+    # Strip any prior sentinel block (only reachable if sentinels existed but no
+    # splashdown.env reference — defensive).
     text = _XCODE_BLOCK_RE.sub("", text)
-    # Strip any non-managed static `export RCT_METRO_PORT=...` lines so the file has
-    # one source of truth.
-    text = _XCODE_STATIC_EXPORT_RE.sub("", text)
     # Append our block at the end. Ensure exactly one separating newline.
     text = text.rstrip() + ("\n\n" if text.strip() else "")
     text += _XCODE_BLOCK

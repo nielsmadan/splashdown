@@ -1002,6 +1002,30 @@ def test_rn_xcode_autofix_idempotent(tmp_path):
     assert twice.count(sd._XCODE_END) == 1
 
 
+def test_rn_xcode_detect_ok_for_handwritten_splashdown_wiring(tmp_path):
+    """A user-written, non-sentinel block that reads splashdown.env counts as ok."""
+    _make_ios(tmp_path, (
+        "export NODE_BINARY=node\n"
+        "if [ -z \"${RCT_METRO_PORT:-}\" ] && [ -f \"${SRCROOT}/../splashdown.env\" ]; then\n"
+        "  export RCT_METRO_PORT=\"$(grep '^RCT_METRO_PORT=' \"${SRCROOT}/../splashdown.env\" | cut -d= -f2)\"\n"
+        "fi\n"
+        "export RCT_METRO_PORT=\"${RCT_METRO_PORT:-8083}\"\n"
+    ))
+    assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_xcode_autofix_noop_when_already_referencing_splashdown(tmp_path):
+    content = (
+        "export NODE_BINARY=node\n"
+        "if [ -f \"${SRCROOT}/../splashdown.env\" ]; then\n"
+        "  . \"${SRCROOT}/../splashdown.env\"\n"
+        "fi\n"
+    )
+    _make_ios(tmp_path, content)
+    sd._rn_xcode_autofix(tmp_path)
+    assert (tmp_path / "ios" / ".xcode.env").read_text() == content
+
+
 def test_cmd_init_rn_preset_wires_everything(tmp_path):
     """`splash init --preset=rn` in an RN-shaped repo scaffolds AND wires."""
     _git_init(tmp_path)
