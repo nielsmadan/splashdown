@@ -24,7 +24,7 @@ import tomllib
 import uuid as uuid_mod
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, NamedTuple
 
 
 # ---------- paths & constants ----------
@@ -1271,6 +1271,91 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
         _wire_post_checkout_corehookspath(cwd)
 
 
+# ---------- framework wiring (doctor) ----------
+#
+# WIRING is the per-framework spec shipped with the tool. Each WiringCheck names
+# a small fact about the project (e.g. "metro.config.js consumes RCT_METRO_PORT")
+# that splashdown can inspect and, where safely mechanical, repair.
+
+class WiringCheck(NamedTuple):
+    id: str
+    description: str
+    applies: Callable[[Path], bool]
+    # Returns ("ok", detail) when wired, ("problem", detail) when not.
+    detect: Callable[[Path], tuple[str, str]]
+    # None = manual-only check (no safe auto-fix).
+    autofix: Callable[[Path], None] | None
+    # Used when autofix is None or when --fix isn't requested. Returns the
+    # exact change the user should apply themselves.
+    manual_instructions: Callable[[Path], str] | None
+
+
+WIRING: dict[str, list[WiringCheck]] = {
+    # Framework -> ordered list of checks. Populated below by the rn-* / etc.
+    # entries. Frameworks without an entry here simply have no doctor checks.
+}
+
+
+def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
+    """Pick the framework for doctor to check. Returns None if undetectable."""
+    if override:
+        return override
+    recipe_path = cwd / RECIPE_NAME
+    recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
+    try:
+        return detect_framework(cwd, recipe)
+    except DeviceError:
+        return None
+
+
+def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None = None) -> int:
+    """Run framework-aware wiring checks. With fix=True, apply safe autofixes."""
+    framework = _resolve_doctor_framework(cwd, framework_override)
+    if framework is None:
+        print(
+            "doctor: could not detect framework. Pass --framework=NAME or "
+            f"set `[project] framework = ...` in {RECIPE_NAME}.",
+            file=sys.stderr,
+        )
+        return 1
+    checks = WIRING.get(framework, [])
+    if not checks:
+        print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
+        return 0
+
+    bad = 0
+    for check in checks:
+        if not check.applies(cwd):
+            print(f"  -  {check.id}: not applicable", file=sys.stderr)
+            continue
+        status, detail = check.detect(cwd)
+        if status == "ok":
+            print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
+            continue
+        # Problem.
+        if fix and check.autofix is not None:
+            try:
+                check.autofix(cwd)
+            except Exception as e:  # noqa: BLE001 - report rather than crash whole run
+                print(f"  ✗  {check.id}: autofix failed: {e}", file=sys.stderr)
+                bad += 1
+                continue
+            status_after, detail_after = check.detect(cwd)
+            if status_after == "ok":
+                print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
+                continue
+            print(f"  ✗  {check.id}: still problem after autofix: {detail_after}", file=sys.stderr)
+            bad += 1
+            continue
+        # Not fixed (or no autofix available).
+        print(f"  ✗  {check.id}: {detail}", file=sys.stderr)
+        if check.manual_instructions is not None:
+            for line in check.manual_instructions(cwd).splitlines():
+                print(f"        {line}", file=sys.stderr)
+        bad += 1
+    return 0 if bad == 0 else 1
+
+
 def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
@@ -1292,10 +1377,16 @@ def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     _ensure_mise_file_directive(cwd)
     _ensure_post_checkout_hook(cwd)
 
+    # After the generic scaffolding, run framework-specific wiring (if any).
+    framework = _resolve_doctor_framework(cwd, None)
+    if framework and WIRING.get(framework):
+        print(f"running framework wiring for `{framework}`...", file=sys.stderr)
+        cmd_doctor(cwd, fix=True)
+
 
 # ---------- CLI ----------
 
-KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device"}
+KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1328,6 +1419,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("key", nargs="?")
 
     sub.add_parser("gc", parents=[common], help="garbage-collect dead registry entries")
+
+    p = sub.add_parser("doctor", parents=[common], help="check framework-aware wiring of this project")
+    p.add_argument("--fix", action="store_true", help="apply safe autofixes; print manual instructions for the rest")
+    p.add_argument("--framework", default=None, help="override framework detection (react-native|flutter|expo)")
 
     dev = sub.add_parser("device", parents=[common], help="manage iOS sims / Android emulators")
     devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION", required=True)
@@ -1379,6 +1474,9 @@ def main(argv: list[str] | None = None) -> int:
             n = registry.gc()
             print(f"gc: removed {n} dead entries", file=sys.stderr)
             return 0
+
+        if args.cmd == "doctor":
+            return cmd_doctor(cwd, fix=args.fix, framework_override=args.framework)
 
         if args.cmd == "list":
             target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)

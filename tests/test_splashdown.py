@@ -697,3 +697,42 @@ def test_ensure_hook_clean_falls_back_to_corehookspath(tmp_path):
     hook = tmp_path / ".githooks" / "post-checkout"
     assert hook.exists()
     assert os.access(hook, os.X_OK)
+
+
+# ---------- doctor (no framework wiring entries yet) ----------
+
+def test_doctor_help_in_cli(capsys):
+    with pytest.raises(SystemExit):
+        sd.main(["doctor", "--help"])
+    out = capsys.readouterr().out
+    assert "--fix" in out
+    assert "--framework" in out
+
+
+def test_doctor_no_framework_returns_1(tmp_path, capsys):
+    # No recipe, no package.json, no pubspec — detect_framework fails.
+    rc = sd.cmd_doctor(tmp_path)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "framework" in err.lower()
+
+
+def test_doctor_unknown_framework_no_checks_returns_0(tmp_path, capsys):
+    # Override to a framework that has no WIRING entries.
+    rc = sd.cmd_doctor(tmp_path, framework_override="nonesuch")
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no wiring checks" in err.lower()
+
+
+def test_doctor_detects_framework_from_recipe(tmp_path):
+    (tmp_path / "splashdown.toml").write_text('[project]\nframework = "nonesuch"\n')
+    # nonesuch has no WIRING entries → returns 0 without erroring.
+    assert sd.cmd_doctor(tmp_path) == 0
+
+
+def test_doctor_uses_filesystem_when_no_recipe(tmp_path):
+    # package.json with react-native → detect_framework returns "react-native"
+    # even with no recipe. (WIRING["react-native"] is empty for now, so rc=0.)
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    assert sd.cmd_doctor(tmp_path) == 0
