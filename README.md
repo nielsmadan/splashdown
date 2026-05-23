@@ -27,7 +27,7 @@ Read [`provision-spec.md`](./provision-spec.md) for the original design rational
 
 ## Status
 
-Working v1. Stdlib-only Python 3.11+. 64 tests passing.
+Working v1. Stdlib-only Python 3.11+. 113 tests passing.
 
 ## Install
 
@@ -60,14 +60,17 @@ In your existing RN repo:
 
 ```sh
 splash init --preset=rn
-# writes splashdown.toml:
-#   [resources.RCT_METRO_PORT] type="port" range=[8081,8200]
-#   [resources.SIM_NAME]       template="{{ basename(parent) }}/{{ cwd }}"
-#   [project]                  framework="react-native"
-# writes splashdown.local.toml skeleton (gitignored, per-checkout devices)
-# adds splashdown.env + splashdown.local.toml to .gitignore
-# adds _.file = "splashdown.env" to mise.toml
-# installs .githooks/post-checkout
+# Scaffolding:
+#   - splashdown.toml (resources + [project] framework="react-native")
+#   - splashdown.local.toml skeleton (gitignored, per-checkout devices)
+#   - .gitignore (adds splashdown.env, splashdown.local.toml)
+#   - mise.toml (adds [env] _.file = "splashdown.env")
+#   - post-checkout hook (via your hook manager: lefthook / husky / .githooks)
+# Framework wiring (auto-applied; safe + idempotent):
+#   - metro.config.js: server.port → Number(process.env.RCT_METRO_PORT) || 8081
+#   - package.json: strips --port from start/ios/android scripts
+#   - ios/.xcode.env: splashdown-managed RCT_METRO_PORT block (so the iOS build
+#     bakes the per-checkout port instead of the default 8081)
 
 # declare a device for this checkout:
 splash device add iphone --type=ios-sim
@@ -78,6 +81,8 @@ splash device run        # boots the named sim if needed, builds, installs, laun
 ```
 
 After that, every `git worktree add` gets its own sim, port, and resolved env, with zero manual steps. See [`examples/`](./examples/) for the hook + `mise.toml` task definitions.
+
+Want to verify or re-apply the wiring later? `splash doctor` (and `splash doctor --fix`). See "Framework wiring" below.
 
 ## File model: `splashdown.toml`
 
@@ -165,12 +170,37 @@ The same machinery works for any per-checkout resource. Web/backend repos can de
 
 Presets ship for `nextjs`, `rn`, `flutter`, `minimal`. Linux is supported for these non-mobile cases; the `device` subcommands obviously need macOS.
 
+## Framework wiring (`splash doctor`)
+
+Just provisioning `RCT_METRO_PORT` isn't enough — an RN project typically hardcodes Metro's port in two or three places that override the env var. Splashdown ships a per-framework spec of those wiring points and applies them for you. `splash init --preset=rn` invokes the wiring after scaffolding; `splash doctor` re-runs it anytime to verify and `splash doctor --fix` to re-apply.
+
+**React Native checks (four):**
+
+| id | what it ensures |
+|---|---|
+| `rn-hook` | post-checkout fires `splash`, wired through your existing hook manager (lefthook / husky) instead of clobbering it via `core.hooksPath` |
+| `rn-metro-config` | `metro.config.js` consumes `RCT_METRO_PORT`. **Auto-patches only the recognized literal `port: <N>` shape** — if your config is unusual, the doctor prints the exact snippet to paste |
+| `rn-pkg-port` | `package.json` `start`/`ios`/`android` scripts (and anything calling `react-native`) don't carry `--port <N>` (which would override the env var); auto-stripped |
+| `rn-xcode-env` | `ios/.xcode.env` exports a splashdown-managed `RCT_METRO_PORT` block. iOS bakes the port into the binary at compile time (`RCTBundleURLProvider`'s `defaultPort` is a `#define` set via `GCC_PREPROCESSOR_DEFINITIONS`); this makes Xcode-GUI builds use the per-checkout port instead of the default |
+
+**Hook-manager coexistence.** `splash` detects lefthook (`lefthook.{yml,yaml}` or in `package.json` devDeps), husky (`.husky/`), or an existing `core.hooksPath`, and wires the post-checkout entry in whichever it finds. Only as a last resort does it own `.githooks/` + `core.hooksPath`.
+
+**Usage:**
+```sh
+splash doctor                    # read-only report (✓/✗ per check)
+splash doctor --fix              # apply autofixes; print manual instructions for the rest
+splash doctor --framework=react-native   # override detection if needed
+```
+
+**Known limitation — Android.** Android's Metro port is also baked into the build (via the RN Gradle plugin / `BuildConfig`), with a different mechanism than iOS. Splashdown doesn't currently wire the Android side; for now `yarn android` works (the RN CLI propagates `RCT_METRO_PORT` to Gradle), but bare `gradle assembleDebug` may default to 8081. Tracked as a future check.
+
 ## CLI summary
 
 ```
 splash                             # provision (what the post-checkout hook calls)
 splash provision --reprovision     # force re-allocate (regenerates uuids)
 splash init [--preset=rn|flutter|nextjs|minimal]
+splash doctor [--fix] [--framework=NAME]   # framework-aware wiring check
 splash list                        # this checkout's resolved vars
 splash get KEY [--checkout=PATH]
 splash set KEY=VALUE
