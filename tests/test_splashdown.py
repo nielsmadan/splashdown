@@ -597,3 +597,103 @@ def test_init_writes_post_checkout_hook(tmp_path):
     assert hook.exists()
     assert os.access(hook, os.X_OK)
     assert POST_CHECKOUT_SENTINEL in hook.read_text()
+
+
+# ---------- hook-manager detection and wiring ----------
+
+def test_detect_hook_manager_clean(tmp_path):
+    assert sd._detect_hook_manager(tmp_path) == "none"
+
+
+def test_detect_hook_manager_lefthook_yml(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands: {}\n")
+    assert sd._detect_hook_manager(tmp_path) == "lefthook"
+
+
+def test_detect_hook_manager_lefthook_yaml(tmp_path):
+    (tmp_path / "lefthook.yaml").write_text("")
+    assert sd._detect_hook_manager(tmp_path) == "lefthook"
+
+
+def test_detect_hook_manager_lefthook_dotted(tmp_path):
+    (tmp_path / ".lefthook.yml").write_text("")
+    assert sd._detect_hook_manager(tmp_path) == "lefthook"
+
+
+def test_detect_hook_manager_lefthook_via_pkg(tmp_path):
+    (tmp_path / "package.json").write_text('{"devDependencies": {"lefthook": "^1.0"}}')
+    assert sd._detect_hook_manager(tmp_path) == "lefthook"
+
+
+def test_detect_hook_manager_husky(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    assert sd._detect_hook_manager(tmp_path) == "husky"
+
+
+def test_wire_lefthook_appends_block_when_absent(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands:\n    lint:\n      run: echo lint\n")
+    sd._wire_post_checkout_lefthook(tmp_path)
+    text = (tmp_path / "lefthook.yml").read_text()
+    assert "pre-commit:" in text
+    assert "post-checkout:" in text
+    assert "splashdown:" in text
+    assert "run: splash" in text
+
+
+def test_wire_lefthook_inserts_under_existing_post_checkout(tmp_path):
+    (tmp_path / "lefthook.yml").write_text(
+        "post-checkout:\n  commands:\n    notify:\n      run: echo hi\n"
+    )
+    sd._wire_post_checkout_lefthook(tmp_path)
+    text = (tmp_path / "lefthook.yml").read_text()
+    assert "notify:" in text  # existing command preserved
+    assert "splashdown:" in text  # ours added
+    assert text.count("post-checkout:") == 1  # not duplicated
+
+
+def test_wire_lefthook_idempotent(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("")
+    sd._wire_post_checkout_lefthook(tmp_path)
+    once = (tmp_path / "lefthook.yml").read_text()
+    sd._wire_post_checkout_lefthook(tmp_path)
+    twice = (tmp_path / "lefthook.yml").read_text()
+    assert once == twice
+    assert twice.count("splashdown:") == 1
+
+
+def test_wire_lefthook_creates_config_if_only_pkg_dep(tmp_path):
+    # Detected via package.json but no lefthook.yml yet.
+    (tmp_path / "package.json").write_text('{"devDependencies": {"lefthook": "^1.0"}}')
+    sd._wire_post_checkout_lefthook(tmp_path)
+    assert (tmp_path / "lefthook.yml").exists()
+    assert "splashdown:" in (tmp_path / "lefthook.yml").read_text()
+
+
+def test_wire_husky_creates_executable_hook(tmp_path):
+    sd._wire_post_checkout_husky(tmp_path)
+    hook = tmp_path / ".husky" / "post-checkout"
+    assert hook.exists()
+    assert os.access(hook, os.X_OK)
+    assert "splash" in hook.read_text()
+
+
+def test_ensure_hook_chooses_lefthook(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("")
+    sd._ensure_post_checkout_hook(tmp_path)
+    # lefthook wiring happened; no .githooks dir created.
+    assert "splashdown:" in (tmp_path / "lefthook.yml").read_text()
+    assert not (tmp_path / ".githooks").exists()
+
+
+def test_ensure_hook_chooses_husky(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    sd._ensure_post_checkout_hook(tmp_path)
+    assert (tmp_path / ".husky" / "post-checkout").exists()
+    assert not (tmp_path / ".githooks").exists()
+
+
+def test_ensure_hook_clean_falls_back_to_corehookspath(tmp_path):
+    sd._ensure_post_checkout_hook(tmp_path)
+    hook = tmp_path / ".githooks" / "post-checkout"
+    assert hook.exists()
+    assert os.access(hook, os.X_OK)

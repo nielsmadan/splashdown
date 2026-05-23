@@ -1105,7 +1105,132 @@ def _ensure_mise_file_directive(cwd: Path) -> None:
     print(f"updated mise.toml (+{directive})", file=sys.stderr)
 
 
-def _ensure_post_checkout_hook(cwd: Path) -> None:
+def _detect_hook_manager(cwd: Path) -> str:
+    """Identify the project's existing hook manager so we coexist instead of clobber.
+
+    Returns one of: "lefthook", "husky", "core-hookspath-other", "none".
+    """
+    if any((cwd / n).exists() for n in ("lefthook.yml", "lefthook.yaml", ".lefthook.yml")):
+        return "lefthook"
+    pkg = cwd / "package.json"
+    if pkg.exists():
+        try:
+            data = json.loads(pkg.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = {}
+        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+        if "lefthook" in deps:
+            return "lefthook"
+    if (cwd / ".husky").is_dir():
+        return "husky"
+    try:
+        out = subprocess.check_output(
+            ["git", "config", "--get", "core.hooksPath"],
+            cwd=cwd, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if out and out != ".githooks":
+            return "core-hookspath-other"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return "none"
+
+
+def _lefthook_config_path(cwd: Path) -> Path:
+    for name in ("lefthook.yml", "lefthook.yaml", ".lefthook.yml"):
+        path = cwd / name
+        if path.exists():
+            return path
+    return cwd / "lefthook.yml"  # default if lefthook detected only via package.json
+
+
+def _wire_post_checkout_lefthook(cwd: Path) -> None:
+    """Idempotently add a `post-checkout` -> `splash` entry to the lefthook config."""
+    path = _lefthook_config_path(cwd)
+    text = path.read_text() if path.exists() else ""
+    if "splashdown" in text and "run: splash" in text:
+        # Already wired.
+        _run_lefthook_install(cwd)
+        return
+    lines = text.splitlines()
+    pc_idx = next(
+        (i for i, l in enumerate(lines) if re.match(r"^post-checkout:\s*$", l)),
+        None,
+    )
+    if pc_idx is None:
+        sep = "" if not text or text.endswith("\n") else "\n"
+        text = text + sep + (
+            "\npost-checkout:\n"
+            "  commands:\n"
+            "    splashdown:\n"
+            "      run: splash\n"
+        )
+        path.write_text(text)
+    else:
+        # Find end of post-checkout block (next top-level key or EOF).
+        end_idx = len(lines)
+        for j in range(pc_idx + 1, len(lines)):
+            l = lines[j]
+            if l and not l[0].isspace() and not l.startswith("#"):
+                end_idx = j
+                break
+        # If 'commands:' exists under post-checkout, insert splashdown under it;
+        # otherwise inject a fresh commands: block right after the header.
+        cmds_idx = next(
+            (j for j in range(pc_idx + 1, end_idx)
+             if re.match(r"^\s+commands:\s*$", lines[j])),
+            None,
+        )
+        if cmds_idx is not None:
+            indent = len(lines[cmds_idx]) - len(lines[cmds_idx].lstrip())
+            addition = [
+                " " * (indent + 2) + "splashdown:",
+                " " * (indent + 4) + "run: splash",
+            ]
+            lines = lines[: cmds_idx + 1] + addition + lines[cmds_idx + 1 :]
+        else:
+            addition = ["  commands:", "    splashdown:", "      run: splash"]
+            lines = lines[: pc_idx + 1] + addition + lines[pc_idx + 1 :]
+        path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") or text == "" else ""))
+    _run_lefthook_install(cwd)
+    print(f"wired post-checkout in {path.name} (lefthook)", file=sys.stderr)
+
+
+def _run_lefthook_install(cwd: Path) -> None:
+    """Best-effort: regenerate the lefthook-managed git hooks. Silent if unavailable."""
+    candidates: list[list[str]] = []
+    if (cwd / "yarn.lock").exists():
+        candidates.append(["yarn", "lefthook", "install"])
+    if (cwd / "package.json").exists():
+        candidates.append(["npx", "--no-install", "lefthook", "install"])
+    candidates.append(["lefthook", "install"])
+    for cmd in candidates:
+        try:
+            r = subprocess.run(
+                cmd, cwd=cwd, capture_output=True, timeout=30, text=True,
+            )
+            if r.returncode == 0:
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    print(
+        "note: could not run `lefthook install` automatically — run it yourself "
+        "to register the post-checkout hook",
+        file=sys.stderr,
+    )
+
+
+def _wire_post_checkout_husky(cwd: Path) -> None:
+    """Drop a husky post-checkout hook invoking `splash`."""
+    husky_dir = cwd / ".husky"
+    husky_dir.mkdir(exist_ok=True)
+    hook = husky_dir / "post-checkout"
+    hook.write_text(POST_CHECKOUT_HOOK)
+    hook.chmod(0o755)
+    print("wrote .husky/post-checkout (husky)", file=sys.stderr)
+
+
+def _wire_post_checkout_corehookspath(cwd: Path) -> None:
+    """Default path: own .githooks/ and set core.hooksPath."""
     hooks_dir = cwd / ".githooks"
     hooks_dir.mkdir(exist_ok=True)
     hook = hooks_dir / "post-checkout"
@@ -1120,6 +1245,30 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
     except FileNotFoundError:
         pass
     print("wrote .githooks/post-checkout, set core.hooksPath", file=sys.stderr)
+
+
+def _ensure_post_checkout_hook(cwd: Path) -> None:
+    """Wire `post-checkout -> splash`, coexisting with any existing hook manager."""
+    manager = _detect_hook_manager(cwd)
+    if manager == "lefthook":
+        _wire_post_checkout_lefthook(cwd)
+    elif manager == "husky":
+        _wire_post_checkout_husky(cwd)
+    elif manager == "core-hookspath-other":
+        try:
+            current = subprocess.check_output(
+                ["git", "config", "--get", "core.hooksPath"],
+                cwd=cwd, stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            current = "?"
+        print(
+            f"warning: core.hooksPath is `{current}` — not wiring automatically. "
+            f"Add a post-checkout hook there that runs `splash`.",
+            file=sys.stderr,
+        )
+    else:
+        _wire_post_checkout_corehookspath(cwd)
 
 
 def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
