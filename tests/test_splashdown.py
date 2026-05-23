@@ -1002,6 +1002,55 @@ def test_rn_xcode_autofix_idempotent(tmp_path):
     assert twice.count(sd._XCODE_END) == 1
 
 
+def test_cmd_init_rn_preset_wires_everything(tmp_path):
+    """`splash init --preset=rn` in an RN-shaped repo scaffolds AND wires."""
+    _git_init(tmp_path)
+    # RN-shaped repo before splashdown.
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {
+            "start": "react-native start --port 8083",
+            "ios": "react-native run-ios --port 8083",
+        },
+        "dependencies": {"react-native": "0.83"},
+        "devDependencies": {"lefthook": "^1.0"},
+    }, indent=2))
+    (tmp_path / "metro.config.js").write_text(
+        "const config = { server: { port: 8083 } };\nmodule.exports = config;\n"
+    )
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / ".xcode.env").write_text(
+        "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n"
+    )
+    (tmp_path / "lefthook.yml").write_text(
+        "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
+    )
+    # Run init — should scaffold + wire.
+    sd.cmd_init(tmp_path, preset="rn")
+    # Scaffolding present.
+    assert (tmp_path / "splashdown.toml").exists()
+    assert (tmp_path / "splashdown.local.toml").exists()
+    assert (tmp_path / "mise.toml").exists()
+    # All four wirings applied.
+    pkg = json.loads((tmp_path / "package.json").read_text())
+    assert "--port" not in pkg["scripts"]["start"]
+    assert "process.env.RCT_METRO_PORT" in (tmp_path / "metro.config.js").read_text()
+    assert sd._XCODE_BEGIN in (tmp_path / "ios" / ".xcode.env").read_text()
+    assert "post-checkout:" in (tmp_path / "lefthook.yml").read_text()
+    # core.hooksPath NOT set (lefthook owns hooks).
+    import subprocess as _sp
+    r = _sp.run(["git", "-C", str(tmp_path), "config", "--get", "core.hooksPath"], capture_output=True)
+    assert r.returncode != 0 or not r.stdout.strip()
+    # Doctor confirms green.
+    assert sd.cmd_doctor(tmp_path) == 0
+
+
+def test_cmd_init_minimal_preset_skips_doctor(tmp_path, capsys):
+    """No `[project] framework` → no framework wiring run."""
+    sd.cmd_init(tmp_path, preset="minimal")
+    err = capsys.readouterr().err
+    assert "running framework wiring" not in err
+
+
 def test_doctor_fix_full_rn_project(tmp_path):
     _git_init(tmp_path)
     # An RN-shaped tmp dir mirroring FlowLab's pre-wiring state.
