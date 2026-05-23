@@ -732,7 +732,68 @@ def test_doctor_detects_framework_from_recipe(tmp_path):
 
 
 def test_doctor_uses_filesystem_when_no_recipe(tmp_path):
-    # package.json with react-native → detect_framework returns "react-native"
-    # even with no recipe. (WIRING["react-native"] is empty for now, so rc=0.)
+    # package.json with react-native → detect_framework returns "react-native".
     (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
-    assert sd.cmd_doctor(tmp_path) == 0
+    # WIRING["react-native"] now exists (rn-hook). A clean RN dir is missing the
+    # hook → doctor reports a problem.
+    assert sd.cmd_doctor(tmp_path) == 1
+
+
+# ---------- rn-hook check ----------
+
+import subprocess as _subprocess
+
+
+def _git_init(path):
+    _subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+def test_rn_hook_clean_detect_problem(tmp_path):
+    status, _ = sd._rn_hook_detect(tmp_path)
+    assert status == "problem"
+
+
+def test_rn_hook_clean_autofix_then_ok(tmp_path):
+    _git_init(tmp_path)
+    sd._ensure_post_checkout_hook(tmp_path)
+    status, _ = sd._rn_hook_detect(tmp_path)
+    assert status == "ok"
+
+
+def test_rn_hook_lefthook_detect_problem(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands: {}\n")
+    status, detail = sd._rn_hook_detect(tmp_path)
+    assert status == "problem"
+    assert "lefthook" in detail
+
+
+def test_rn_hook_lefthook_autofix_then_ok(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands:\n    lint:\n      run: echo lint\n")
+    sd._ensure_post_checkout_hook(tmp_path)
+    status, _ = sd._rn_hook_detect(tmp_path)
+    assert status == "ok"
+    text = (tmp_path / "lefthook.yml").read_text()
+    assert "lint" in text  # existing preserved
+    assert "splashdown:" in text  # ours added
+
+
+def test_rn_hook_husky_detect_problem(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    status, _ = sd._rn_hook_detect(tmp_path)
+    assert status == "problem"
+
+
+def test_rn_hook_husky_autofix_then_ok(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    sd._ensure_post_checkout_hook(tmp_path)
+    status, _ = sd._rn_hook_detect(tmp_path)
+    assert status == "ok"
+
+
+def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    assert sd.cmd_doctor(tmp_path) == 1  # not wired
+    assert sd.cmd_doctor(tmp_path, fix=True) == 0  # now wired
+    assert sd.cmd_doctor(tmp_path) == 0  # idempotent re-check
+    assert (tmp_path / ".githooks" / "post-checkout").exists()

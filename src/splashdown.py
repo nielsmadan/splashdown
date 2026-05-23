@@ -1384,6 +1384,59 @@ def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
         cmd_doctor(cwd, fix=True)
 
 
+# ---------- React Native wiring checks ----------
+
+def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
+    manager = _detect_hook_manager(cwd)
+    if manager == "lefthook":
+        path = _lefthook_config_path(cwd)
+        if path.exists():
+            text = path.read_text()
+            if re.search(r"post-checkout\s*:", text) and re.search(r"\brun\s*:\s*splash\b", text):
+                return ("ok", "lefthook post-checkout invokes splash")
+        return ("problem", "lefthook detected; post-checkout doesn't invoke splash")
+    if manager == "husky":
+        hook = cwd / ".husky" / "post-checkout"
+        if hook.exists() and "splash" in hook.read_text():
+            return ("ok", "husky .husky/post-checkout invokes splash")
+        return ("problem", "husky detected; .husky/post-checkout missing or doesn't invoke splash")
+    if manager == "core-hookspath-other":
+        return ("problem", "core.hooksPath points to a custom dir; can't auto-wire there")
+    # Clean: expect .githooks + core.hooksPath = .githooks.
+    hook = cwd / ".githooks" / "post-checkout"
+    if hook.exists() and "splash" in hook.read_text():
+        try:
+            out = subprocess.check_output(
+                ["git", "config", "--get", "core.hooksPath"],
+                cwd=cwd, stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            if out == ".githooks":
+                return ("ok", ".githooks/post-checkout invokes splash, core.hooksPath set")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+        return ("problem", ".githooks/post-checkout exists but core.hooksPath isn't set to .githooks")
+    return ("problem", "no post-checkout hook invokes splash")
+
+
+def _rn_hook_manual(cwd: Path) -> str:
+    return (
+        "core.hooksPath is set to a non-splashdown directory. Add a post-checkout\n"
+        "hook there that runs `splash` (see examples/.githooks/post-checkout)."
+    )
+
+
+WIRING["react-native"] = [
+    WiringCheck(
+        id="rn-hook",
+        description="post-checkout fires `splash`",
+        applies=lambda cwd: True,
+        detect=_rn_hook_detect,
+        autofix=_ensure_post_checkout_hook,
+        manual_instructions=_rn_hook_manual,
+    ),
+]
+
+
 # ---------- CLI ----------
 
 KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor"}
