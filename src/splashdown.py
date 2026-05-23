@@ -1018,10 +1018,6 @@ range = [8081, 8200]
 type     = "template"
 template = "{{ basename(parent) }}/{{ cwd }}"
 
-[resources.TEST_DB]
-type     = "template"
-template = "myapp_{{ slug(cwd) }}"
-
 [project]
 framework = "react-native"
 """,
