@@ -18,9 +18,9 @@ description = "Garbage-collect dead registry entries"
 run = "splash gc"
 
 [tasks.sim]
-description = "Boot the iOS sim declared for this checkout"
-run = "splash device boot iphone"
+description = "Boot this checkout's iOS sim (auto-creates / auto-upgrades on latest)"
+run = "splash boot ios-sim"
 
 [tasks.run]
-description = "Boot device + build + run the app (framework auto-detected)"
-run = "splash device run"
+description = "Boot sim + build + launch the app (framework auto-detected)"
+run = "splash run ios-sim"

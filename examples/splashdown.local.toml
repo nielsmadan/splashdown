@@ -1,12 +1,11 @@
-# splashdown.local.toml — per-checkout device config. Gitignored, NOT committed.
-# Each checkout (worktree or clone) has its own copy.
+# splashdown.local.toml — per-checkout additional device variants.
+# Gitignored. Recipe variants are NOT repeated here — only additions go here.
+# Name collisions with recipe variants are an error; pick a distinct name.
 
-[devices.iphone]
-type = "ios-sim"
-# model = "iPhone 16 Pro"   # optional; default = latest iPhone Pro
-# ios   = "18.5"            # optional; default = latest installed runtime
-
-[devices.android]
-type = "android-emulator"
-# device = "pixel_7"
-# image  = "system-images;android-34;google_apis;arm64-v8a"
+# Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
+# [devices.ios-sim.repro-bug]
+# model = "iPhone 16"
+# ios   = "17.5"
+#
+# Or via CLI:
+#   splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5

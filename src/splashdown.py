@@ -23,6 +23,7 @@ import sys
 import tomllib
 import uuid as uuid_mod
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple
 
@@ -33,9 +34,11 @@ STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "
 REGISTRY_DIR = STATE_HOME / "splashdown"
 PORT_REGISTRY = REGISTRY_DIR / "ports.tsv"
 KV_REGISTRY = REGISTRY_DIR / "kv.tsv"
+DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-DEVICE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+DEVICE_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+DEVICE_TYPES = ("ios-sim", "android-emulator")
 RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
 ENV_FILE_NAME = "splashdown.env"
@@ -43,19 +46,41 @@ ENV_FILE_NAME = "splashdown.env"
 
 # ---------- registry ----------
 
+class DeviceRow(NamedTuple):
+    checkout: str
+    dtype: str
+    variant: str
+    udid: str
+    model: str
+    ios: str
+    created_at: str
+
+
 class Registry:
     """Machine-local registry. TSV files protected by flock.
 
-    ports.tsv:  port\tabspath\tkey
-    kv.tsv:     abspath\tkey\tvalue
+    ports.tsv:    port\tabspath\tkey
+    kv.tsv:       abspath\tkey\tvalue
+    devices.tsv:  abspath\tdtype\tvariant\tudid\tmodel\tios\tcreated_at
     """
 
-    def __init__(self, port_file: Path = PORT_REGISTRY, kv_file: Path = KV_REGISTRY):
-        self.port_file = port_file
-        self.kv_file = kv_file
-        port_file.parent.mkdir(parents=True, exist_ok=True)
-        port_file.touch(exist_ok=True)
-        kv_file.touch(exist_ok=True)
+    def __init__(
+        self,
+        port_file: Path | None = None,
+        kv_file: Path | None = None,
+        device_file: Path | None = None,
+    ):
+        # Resolve defaults at instantiation time (not import time) so tests can
+        # monkeypatch.setenv("XDG_STATE_HOME", ...) and have it take effect.
+        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        registry_dir = state_home / "splashdown"
+        self.port_file = port_file or (registry_dir / "ports.tsv")
+        self.kv_file = kv_file or (registry_dir / "kv.tsv")
+        self.device_file = device_file or (registry_dir / "devices.tsv")
+        self.port_file.parent.mkdir(parents=True, exist_ok=True)
+        self.port_file.touch(exist_ok=True)
+        self.kv_file.touch(exist_ok=True)
+        self.device_file.touch(exist_ok=True)
 
     @contextmanager
     def _lock(self, path: Path):
@@ -152,6 +177,11 @@ class Registry:
             kept_kv = [r for r in kv_rows if r[0] != abspath]
             removed += len(kv_rows) - len(kept_kv)
             self._write_kv(kept_kv)
+        with self._lock(self.device_file):
+            dev_rows = self._read_devices()
+            kept_dev = [r for r in dev_rows if r.checkout != abspath]
+            removed += len(dev_rows) - len(kept_dev)
+            self._write_devices(kept_dev)
         return removed
 
     # --- key/value (uuids, template results, set values) ---
@@ -198,6 +228,69 @@ class Registry:
                 out[key] = value
         return out
 
+    # --- devices (sim / AVD instances we created) ---
+
+    def _read_devices(self) -> list[DeviceRow]:
+        out: list[DeviceRow] = []
+        for line in self.device_file.read_text().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) != 7:
+                continue
+            out.append(DeviceRow(*parts))
+        return out
+
+    def _write_devices(self, rows: Iterable[DeviceRow]) -> None:
+        lines = ["\t".join(r) for r in rows]
+        self.device_file.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+    def get_device(self, abspath: str, dtype: str, variant: str) -> DeviceRow | None:
+        for r in self._read_devices():
+            if r.checkout == abspath and r.dtype == dtype and r.variant == variant:
+                return r
+        return None
+
+    def set_device(
+        self, abspath: str, dtype: str, variant: str,
+        udid: str, model: str, ios: str,
+    ) -> None:
+        with self._lock(self.device_file):
+            rows = [
+                r for r in self._read_devices()
+                if not (r.checkout == abspath and r.dtype == dtype and r.variant == variant)
+            ]
+            rows.append(DeviceRow(
+                abspath, dtype, variant, udid, model, ios,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ))
+            self._write_devices(rows)
+
+    def remove_device(self, abspath: str, dtype: str, variant: str) -> None:
+        with self._lock(self.device_file):
+            rows = [
+                r for r in self._read_devices()
+                if not (r.checkout == abspath and r.dtype == dtype and r.variant == variant)
+            ]
+            self._write_devices(rows)
+
+    def all_devices(self) -> list[DeviceRow]:
+        return self._read_devices()
+
+    def devices_for(self, abspath: str) -> list[DeviceRow]:
+        return [r for r in self._read_devices() if r.checkout == abspath]
+
+    def managed_udids(self) -> set[str]:
+        return {r.udid for r in self._read_devices()}
+
+    def gc_devices(self) -> int:
+        """Drop entries whose checkout dir no longer exists. Returns count removed."""
+        with self._lock(self.device_file):
+            rows = self._read_devices()
+            kept = [r for r in rows if Path(r.checkout).exists()]
+            self._write_devices(kept)
+            return len(rows) - len(kept)
+
     def gc(self) -> int:
         """Drop entries whose abspath no longer exists. Returns count removed."""
         removed = 0
@@ -211,6 +304,7 @@ class Registry:
             kept_kv = [r for r in rows_kv if Path(r[0]).exists()]
             removed += len(rows_kv) - len(kept_kv)
             self._write_kv(kept_kv)
+        removed += self.gc_devices()
         return removed
 
 
@@ -315,17 +409,53 @@ def template_refs(tpl: str) -> set[str]:
 
 # ---------- recipe ----------
 
+def _parse_devices_section(
+    data: dict[str, Any], *, source: str
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Parse [devices.<type>.<variant>] tables. Rejects the legacy flat shape
+    [devices.<name>] with a clear pointer to the new nested form."""
+    raw = data.get("devices", {}) or {}
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for type_key, type_val in raw.items():
+        if type_key not in DEVICE_TYPES:
+            # Detect the legacy flat shape so we can give a useful error.
+            if isinstance(type_val, dict) and isinstance(type_val.get("type"), str):
+                raise ValueError(
+                    f"{source}: flat device shape `[devices.{type_key}]` is no "
+                    f"longer supported; use `[devices.<type>.<variant>]` instead "
+                    f"(e.g. [devices.{type_val['type']}.{type_key}])"
+                )
+            raise ValueError(
+                f"{source}: unknown device type `{type_key}` "
+                f"(known: {', '.join(DEVICE_TYPES)})"
+            )
+        if not isinstance(type_val, dict):
+            raise ValueError(f"{source}: [devices.{type_key}] must be a table of variants")
+        variants: dict[str, dict[str, Any]] = {}
+        for variant_name, spec in type_val.items():
+            if not DEVICE_VARIANT_RE.match(variant_name):
+                raise ValueError(
+                    f"{source}: variant name `{variant_name}` must match "
+                    f"[A-Za-z][A-Za-z0-9_-]*"
+                )
+            if not isinstance(spec, dict):
+                raise ValueError(
+                    f"{source}: [devices.{type_key}.{variant_name}] must be a table"
+                )
+            variants[variant_name] = dict(spec)
+        out[type_key] = variants
+    return out
+
+
 class Recipe:
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
-        if "devices" in data:
-            raise ValueError(
-                f"[devices.*] is not allowed in {RECIPE_NAME} — the committed "
-                f"recipe is schema only. Declare devices in {LOCAL_NAME} instead."
-            )
         self.resources: dict[str, dict[str, Any]] = dict(data.get("resources", {}) or {})
         self.setup: dict[str, dict[str, Any]] = dict(data.get("setup", {}) or {})
         self.project: dict[str, Any] = dict(data.get("project", {}) or {})
+        self.devices: dict[str, dict[str, dict[str, Any]]] = _parse_devices_section(
+            data, source=path.name or RECIPE_NAME,
+        )
         for name in self.resources:
             if not ENV_NAME_RE.match(name):
                 raise ValueError(f"resource name `{name}` is not a valid env var identifier")
@@ -338,35 +468,33 @@ class Recipe:
 
 
 LOCAL_SKELETON = """\
-# splashdown.local.toml — per-checkout device config. Gitignored, not committed.
-# Declare the simulator(s) / emulator(s) you want for THIS checkout. Each
-# checkout (worktree or clone) has its own copy of this file.
+# splashdown.local.toml — additional, per-checkout device variants.
+# Gitignored. Each checkout has its own copy.
 #
-# [devices.iphone]
-# type = "ios-sim"
-# # model = "iPhone 16 Pro"   # optional; default = latest iPhone Pro
-# # ios   = "18.5"            # optional; default = latest installed runtime
+# Recipe-declared variants don't go here; use this only to ADD variants on top
+# of what the recipe exposes (no overrides — pick a distinct variant name).
 #
-# [devices.android]
-# type = "android-emulator"
-# # device = "pixel_7"
-# # image  = "system-images;android-34;google_apis;arm64-v8a"
+# Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
 #
-# Or run:  splash device add iphone --type=ios-sim
+# [devices.ios-sim.repro-bug]
+# model = "iPhone 16"
+# ios   = "17.5"
+#
+# Or, equivalently, via CLI:
+#
+#   splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
 """
 
 
 class LocalConfig:
-    """Per-checkout local config from splashdown.local.toml. Holds [devices.*]."""
+    """Per-checkout local config from splashdown.local.toml. Holds additional
+    [devices.<type>.<variant>] variants, alongside (not replacing) the recipe's."""
 
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
-        self.devices: dict[str, dict[str, Any]] = dict(data.get("devices", {}) or {})
-        for name in self.devices:
-            if not DEVICE_NAME_RE.match(name):
-                raise ValueError(
-                    f"device name `{name}` must match [A-Za-z][A-Za-z0-9_-]*"
-                )
+        self.devices: dict[str, dict[str, dict[str, Any]]] = _parse_devices_section(
+            data, source=path.name or LOCAL_NAME,
+        )
 
     @classmethod
     def load(cls, path: Path) -> "LocalConfig":
@@ -375,6 +503,54 @@ class LocalConfig:
         with path.open("rb") as f:
             data = tomllib.load(f)
         return cls(data, path)
+
+
+def merged_devices(
+    recipe: Recipe, local: LocalConfig
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Union recipe + local device catalogs. (type, variant) name collisions
+    between the two files are an error — pick a different name in local."""
+    merged: dict[str, dict[str, dict[str, Any]]] = {
+        type_key: dict(variants) for type_key, variants in recipe.devices.items()
+    }
+    for type_key, variants in local.devices.items():
+        bucket = merged.setdefault(type_key, {})
+        for variant_name, spec in variants.items():
+            if variant_name in bucket:
+                raise ValueError(
+                    f"device `{type_key}.{variant_name}` already exists in recipe; "
+                    f"pick a different name in {LOCAL_NAME}"
+                )
+            bucket[variant_name] = spec
+    return merged
+
+
+def resolve_variant(
+    catalog: dict[str, dict[str, Any]], requested: str | None
+) -> tuple[str, dict[str, Any]]:
+    """Pick a variant from a single type's catalog. Rules:
+    - explicit name wins
+    - else `default` if declared
+    - else the only variant if exactly one is declared
+    - else error
+    """
+    if not catalog:
+        raise DeviceError("no variants declared for this type")
+    if requested is not None:
+        if requested not in catalog:
+            raise DeviceError(
+                f"no variant `{requested}`; declared: {', '.join(sorted(catalog))}"
+            )
+        return requested, catalog[requested]
+    if "default" in catalog:
+        return "default", catalog["default"]
+    if len(catalog) == 1:
+        only = next(iter(catalog))
+        return only, catalog[only]
+    raise DeviceError(
+        f"no `default` variant; pass a variant explicitly "
+        f"(declared: {', '.join(sorted(catalog))})"
+    )
 
 
 def topo_sort(recipe: Recipe) -> list[str]:
@@ -624,16 +800,19 @@ class DeviceError(RuntimeError):
     pass
 
 
-def _default_sim_name(cwd: Path) -> str:
-    """Mirror the convention from .devrc: '<parent>/<basename>'."""
-    return f"{cwd.parent.name}/{cwd.name}"
+def _default_sim_name(cwd: Path, variant: str) -> str:
+    """Sim instance name: '<parent>/<basename>/<variant>'. The path component
+    keeps different worktrees / clones isolated; the variant suffix lets the
+    same checkout host multiple sim configs (default, lowest-supported, etc.)."""
+    return f"{cwd.parent.name}/{cwd.name}/{variant}"
 
 
-def _resolve_device_name(spec: dict[str, Any], cwd: Path) -> str:
-    """Device `name` field: explicit template or default to '<parent>/<basename>'."""
+def _resolve_device_name(spec: dict[str, Any], cwd: Path, variant: str) -> str:
+    """Sim/AVD name: explicit `name` field on the variant (string or template),
+    otherwise the path-derived default."""
     raw = spec.get("name")
     if not raw:
-        return _default_sim_name(cwd)
+        return _default_sim_name(cwd, variant)
     if isinstance(raw, str) and "{{" in raw:
         scope = _make_scope(cwd, _current_branch(cwd), {})
         return render_template(raw, scope)
@@ -668,8 +847,39 @@ def _ios_latest_runtime() -> str:
     runtimes = [r for r in (data.get("runtimes") or []) if r.get("isAvailable")]
     if not runtimes:
         raise DeviceError("no available iOS runtimes; install one in Xcode")
-    runtimes.sort(key=lambda r: r.get("version", ""))
+    runtimes.sort(key=lambda r: _version_tuple(r.get("version", "0")))
     return runtimes[-1].get("identifier", "")
+
+
+def _ios_latest_runtime_version() -> str:
+    """Latest available iOS runtime version string, e.g. '18.5'. Drives auto-upgrade."""
+    data = _xcrun_json(["simctl", "list", "runtimes", "-j"])
+    runtimes = [r for r in (data.get("runtimes") or []) if r.get("isAvailable")]
+    if not runtimes:
+        raise DeviceError("no available iOS runtimes; install one in Xcode")
+    runtimes.sort(key=lambda r: _version_tuple(r.get("version", "0")))
+    return runtimes[-1].get("version", "")
+
+
+def _version_tuple(s: str) -> tuple[int, ...]:
+    """Sort '18.5' / '19.0' / '17.0' as version numbers, not strings."""
+    try:
+        return tuple(int(p) for p in s.split("."))
+    except ValueError:
+        return (0,)
+
+
+def _ios_udid_exists(udid: str) -> bool:
+    """Is `udid` known to xcrun simctl right now?"""
+    try:
+        data = _xcrun_json(["simctl", "list", "devices", "-j"])
+    except DeviceError:
+        return False
+    for devs in (data.get("devices") or {}).values():
+        for d in devs:
+            if d.get("udid") == udid:
+                return True
+    return False
 
 
 def _ios_runtime_identifier(version: str) -> str:
@@ -851,10 +1061,65 @@ def android_destroy(avd_name: str) -> None:
     subprocess.run([_android_bin("avdmanager"), "delete", "avd", "-n", avd_name], check=False)
 
 
+# --- reconciliation (auto-upgrade on latest, pin on explicit) ---
+
+def ensure_fresh_sim(
+    registry: Registry,
+    cwd: Path,
+    dtype: str,
+    variant: str,
+    spec: dict[str, Any],
+) -> dict[str, str]:
+    """Reconcile a sim/AVD instance against the variant spec. Destroys + recreates
+    if the OS image (or model) has drifted from what's in the registry. Pinned
+    variants (`ios = "<explicit>"`) are kept on their declared version forever."""
+    checkout = str(cwd.resolve())
+    sim_name = _resolve_device_name(spec, cwd, variant)
+
+    if dtype == "ios-sim":
+        requested = spec.get("ios", "latest")
+        target_ios = _ios_latest_runtime_version() if requested == "latest" else requested
+        model_spec = spec.get("model", "")
+        row = registry.get_device(checkout, dtype, variant)
+        stale = (
+            row is None
+            or not _ios_udid_exists(row.udid)
+            or row.ios != target_ios
+            or row.model != model_spec
+        )
+        if not stale:
+            return {"kind": "ios", "udid": row.udid, "name": sim_name}
+        if row is not None and _ios_udid_exists(row.udid):
+            ios_destroy(row.udid)
+        udid, _state = ios_ensure(sim_name, model_spec or None, target_ios)
+        registry.set_device(checkout, dtype, variant, udid, model_spec, target_ios)
+        return {"kind": "ios", "udid": udid, "name": sim_name}
+
+    if dtype == "android-emulator":
+        requested = spec.get("image", "latest")
+        target_image = _android_latest_image() if requested == "latest" else requested
+        device_spec = spec.get("device", "")
+        row = registry.get_device(checkout, dtype, variant)
+        stale = (
+            row is None
+            or not _android_avd_exists(sim_name)
+            or row.ios != target_image
+            or row.model != device_spec
+        )
+        if not stale:
+            return {"kind": "android", "serial": None, "name": sim_name}
+        if row is not None and _android_avd_exists(sim_name):
+            android_destroy(sim_name)
+        android_ensure(sim_name, device_spec or None, target_image)
+        registry.set_device(checkout, dtype, variant, sim_name, device_spec, target_image)
+        return {"kind": "android", "serial": None, "name": sim_name}
+
+    raise DeviceError(f"unknown device type `{dtype}`")
+
+
 # --- generic device dispatch ---
 
-def device_status(spec: dict[str, Any], resolved_name: str) -> str:
-    dtype = spec.get("type")
+def device_status(dtype: str, resolved_name: str) -> str:
     if dtype == "ios-sim":
         found = _ios_find_device_by_name(resolved_name)
         if not found:
@@ -867,22 +1132,7 @@ def device_status(spec: dict[str, Any], resolved_name: str) -> str:
     raise DeviceError(f"unknown device type `{dtype}`")
 
 
-def device_boot(spec: dict[str, Any], resolved_name: str) -> dict[str, str]:
-    """Returns info dict (udid/serial, kind)."""
-    dtype = spec.get("type")
-    if dtype == "ios-sim":
-        udid, state = ios_ensure(resolved_name, spec.get("model"), spec.get("ios"))
-        ios_boot(udid, state)
-        return {"kind": "ios", "udid": udid, "name": resolved_name}
-    if dtype == "android-emulator":
-        avd = android_ensure(resolved_name, spec.get("device"), spec.get("image"))
-        serial = android_boot(avd)
-        return {"kind": "android", "serial": serial, "name": resolved_name}
-    raise DeviceError(f"unknown device type `{dtype}`")
-
-
-def device_shutdown(spec: dict[str, Any], resolved_name: str) -> None:
-    dtype = spec.get("type")
+def device_shutdown(dtype: str, resolved_name: str) -> None:
     if dtype == "ios-sim":
         found = _ios_find_device_by_name(resolved_name)
         if found:
@@ -891,8 +1141,7 @@ def device_shutdown(spec: dict[str, Any], resolved_name: str) -> None:
         android_shutdown(resolved_name)
 
 
-def device_destroy(spec: dict[str, Any], resolved_name: str) -> None:
-    dtype = spec.get("type")
+def device_destroy(dtype: str, resolved_name: str) -> None:
     if dtype == "ios-sim":
         found = _ios_find_device_by_name(resolved_name)
         if found:
@@ -901,6 +1150,19 @@ def device_destroy(spec: dict[str, Any], resolved_name: str) -> None:
     elif dtype == "android-emulator":
         android_shutdown(resolved_name)
         android_destroy(resolved_name)
+
+
+def _ios_current_state(udid: str) -> str:
+    """'Booted' / 'Shutdown' / 'Unknown' for the given UDID."""
+    try:
+        data = _xcrun_json(["simctl", "list", "devices", "-j"])
+    except DeviceError:
+        return "Unknown"
+    for devs in (data.get("devices") or {}).values():
+        for d in devs:
+            if d.get("udid") == udid:
+                return d.get("state", "Unknown")
+    return "Unknown"
 
 
 # ---------- framework detection + `device run` ----------
@@ -945,55 +1207,63 @@ def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     raise DeviceError(f"don't know how to run framework `{fw}`")
 
 
-def pick_device(local: "LocalConfig", requested: str | None) -> tuple[str, dict[str, Any]]:
-    if not local.devices:
-        raise DeviceError(f"no [devices.*] declared in {LOCAL_NAME}")
-    if requested:
-        if requested not in local.devices:
-            raise DeviceError(
-                f"no device `{requested}`; declared: {', '.join(local.devices)}"
-            )
-        return requested, local.devices[requested]
-    if len(local.devices) == 1:
-        only = next(iter(local.devices))
-        return only, local.devices[only]
-    raise DeviceError(
-        f"multiple devices declared ({', '.join(local.devices)}); pass NAME explicitly"
-    )
+def _load_recipe_or_empty(cwd: Path) -> Recipe:
+    path = cwd / RECIPE_NAME
+    return Recipe.load(path) if path.exists() else Recipe({}, path)
 
 
-DEVICE_TYPES = ("ios-sim", "android-emulator")
-
-
-def device_add(cwd: Path, name: str, dtype: str, fields: dict[str, str | None]) -> None:
-    """Append a [devices.NAME] table to splashdown.local.toml."""
-    if not DEVICE_NAME_RE.match(name):
-        raise DeviceError(f"device name `{name}` must match [A-Za-z][A-Za-z0-9_-]*")
+def device_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None]) -> None:
+    """Append a [devices.<type>.<variant>] table to splashdown.local.toml. Errors
+    if the (type, variant) pair already exists in either the recipe or the local
+    file — pick a different variant name."""
     if dtype not in DEVICE_TYPES:
-        raise DeviceError(f"device type `{dtype}` must be one of: {', '.join(DEVICE_TYPES)}")
+        raise DeviceError(
+            f"device type `{dtype}` must be one of: {', '.join(DEVICE_TYPES)}"
+        )
+    if not DEVICE_VARIANT_RE.match(variant):
+        raise DeviceError(
+            f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*"
+        )
 
     path = cwd / LOCAL_NAME
-    existing = path.read_text() if path.exists() else LOCAL_SKELETON
-    if LocalConfig.load(path).devices.get(name) is not None:
-        raise DeviceError(f"device `{name}` already exists in {LOCAL_NAME}; remove it first")
+    existing_text = path.read_text() if path.exists() else LOCAL_SKELETON
 
-    block = [f"\n[devices.{name}]", f'type = {_toml_quote(dtype)}']
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(path)
+    if variant in recipe.devices.get(dtype, {}):
+        raise DeviceError(
+            f"device `{dtype}.{variant}` is declared in the recipe; "
+            f"edit {RECIPE_NAME} or pick a different variant name"
+        )
+    if variant in local.devices.get(dtype, {}):
+        raise DeviceError(
+            f"device `{dtype}.{variant}` already exists in {LOCAL_NAME}; remove it first"
+        )
+
+    block = [f"\n[devices.{dtype}.{variant}]"]
     for key, value in fields.items():
         if value is not None:
             block.append(f"{key} = {_toml_quote(value)}")
-    new_text = existing.rstrip() + "\n" + "\n".join(block) + "\n"
+    new_text = existing_text.rstrip() + "\n" + "\n".join(block) + "\n"
     path.write_text(new_text)
 
 
-def device_remove(cwd: Path, name: str) -> None:
-    """Delete the [devices.NAME] table from splashdown.local.toml."""
+def device_remove(cwd: Path, dtype: str, variant: str) -> None:
+    """Delete the [devices.<type>.<variant>] table from splashdown.local.toml.
+    Refuses to touch recipe-declared variants (those you remove by editing the recipe)."""
+    recipe = _load_recipe_or_empty(cwd)
+    if variant in recipe.devices.get(dtype, {}):
+        raise DeviceError(
+            f"`{dtype}.{variant}` is declared in the recipe; "
+            f"edit {RECIPE_NAME} to remove it"
+        )
     path = cwd / LOCAL_NAME
-    if not path.exists() or LocalConfig.load(path).devices.get(name) is None:
-        raise DeviceError(f"no device `{name}` in {LOCAL_NAME}")
+    if not path.exists() or variant not in LocalConfig.load(path).devices.get(dtype, {}):
+        raise DeviceError(f"no device `{dtype}.{variant}` in {LOCAL_NAME}")
     lines = path.read_text().splitlines()
-    start, end = _find_table(lines, f"devices.{name}")
+    start, end = _find_table(lines, f"devices.{dtype}.{variant}")
     if start is None:
-        raise DeviceError(f"no device `{name}` in {LOCAL_NAME}")
+        raise DeviceError(f"no device `{dtype}.{variant}` in {LOCAL_NAME}")
     kept = lines[:start] + lines[end:]
     while kept and not kept[-1].strip():
         kept.pop()
@@ -1014,9 +1284,10 @@ type = "uuid"
 type  = "port"
 range = [8081, 8200]
 
-[resources.SIM_NAME]
-type     = "template"
-template = "{{ basename(parent) }}/{{ cwd }}"
+[devices.ios-sim.default]
+model = "iPhone 17"
+# ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
+                   # "18.5" if you want a fixed version that never upgrades.
 
 [project]
 framework = "react-native"
@@ -1027,9 +1298,11 @@ framework = "react-native"
 type  = "port"
 range = [9100, 9200]
 
-[resources.SIM_NAME]
-type     = "template"
-template = "{{ basename(parent) }}/{{ cwd }}"
+[devices.ios-sim.default]
+model = "iPhone 17"
+
+[devices.android-emulator.default]
+device = "pixel_7"
 
 [project]
 framework = "flutter"
@@ -1355,6 +1628,179 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
     return 0 if bad == 0 else 1
 
 
+def _resolve_variant_for_cli(
+    cwd: Path, dtype: str, variant_arg: str | None
+) -> tuple[str, dict[str, Any], Recipe]:
+    """Common prelude for `splash run`/`boot`: load recipe+local, merge, pick variant."""
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
+    catalog = merged_devices(recipe, local).get(dtype, {})
+    variant, spec = resolve_variant(catalog, variant_arg)
+    return variant, spec, recipe
+
+
+def cmd_boot(cwd: Path, registry: Registry, dtype: str, variant_arg: str | None) -> int:
+    """Reconcile the sim, then boot it. No build/launch."""
+    variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    info = ensure_fresh_sim(registry, cwd, dtype, variant, spec)
+    if info["kind"] == "ios":
+        ios_boot(info["udid"], _ios_current_state(info["udid"]))
+    elif info["kind"] == "android":
+        info["serial"] = android_boot(info["name"])
+    print(f"booted {dtype}.{variant} ({info['name']})", file=sys.stderr)
+    return 0
+
+
+def _load_variant_spec(cwd: Path, dtype: str, variant: str) -> dict[str, Any] | None:
+    """Look up a variant's current spec from a checkout's recipe + local config.
+    Returns None if the variant has been removed from both."""
+    recipe = _load_recipe_or_empty(cwd)
+    try:
+        local = LocalConfig.load(cwd / LOCAL_NAME)
+    except ValueError:
+        local = LocalConfig({}, cwd / LOCAL_NAME)
+    return merged_devices(recipe, local).get(dtype, {}).get(variant)
+
+
+def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
+    """Splashdown-managed sim cleanup.
+
+    Default: drop registry entries whose checkout dir is gone, destroy their sims.
+    --all: additionally destroy sims whose recipe variant uses `ios = "latest"`
+    and whose registered iOS is older than the current latest. Pinned variants
+    are always preserved."""
+    destroyed_count = 0
+    pruned_count = 0
+    latest_ios: str | None = None
+    for row in list(registry.all_devices()):
+        cwd = Path(row.checkout)
+        if not cwd.exists():
+            if row.dtype == "ios-sim" and _ios_udid_exists(row.udid):
+                ios_destroy(row.udid)
+            elif row.dtype == "android-emulator" and _android_avd_exists(row.udid):
+                android_destroy(row.udid)
+            registry.remove_device(row.checkout, row.dtype, row.variant)
+            destroyed_count += 1
+            continue
+        if not all_:
+            continue
+        # `--all`: prune stale "latest" variants.
+        spec = _load_variant_spec(cwd, row.dtype, row.variant)
+        if spec is None:
+            # Variant was removed from recipe + local — also destroy.
+            if row.dtype == "ios-sim" and _ios_udid_exists(row.udid):
+                ios_destroy(row.udid)
+            registry.remove_device(row.checkout, row.dtype, row.variant)
+            pruned_count += 1
+            continue
+        if row.dtype == "ios-sim":
+            if spec.get("ios", "latest") != "latest":
+                continue  # pinned — leave alone
+            if latest_ios is None:
+                latest_ios = _ios_latest_runtime_version()
+            if row.ios == latest_ios:
+                continue  # already fresh
+            if _ios_udid_exists(row.udid):
+                ios_destroy(row.udid)
+            registry.remove_device(row.checkout, row.dtype, row.variant)
+            pruned_count += 1
+    print(
+        f"device gc: removed {destroyed_count} defunct + {pruned_count} stale entries",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def cmd_device_prune(
+    registry: Registry,
+    *,
+    yes: bool = False,
+    dry_run: bool = False,
+    platforms: tuple[str, ...] = ("ios", "android"),
+) -> int:
+    """Destroy every sim/AVD on this machine that splashdown did NOT create.
+    Picks up the Xcode default-template pile, hand-made sims, etc.
+
+    Splashdown-managed entries (those in the registry) are always preserved.
+    Use --dry-run to preview, --yes to skip the prompt."""
+    managed = registry.managed_udids()
+    foreign_ios: list[tuple[str, str, str]] = []  # (udid, name, runtime)
+    foreign_avd: list[str] = []
+
+    if "ios" in platforms:
+        try:
+            data = _xcrun_json(["simctl", "list", "devices", "-j"])
+        except DeviceError as e:
+            print(f"warning: skipping iOS sims ({e})", file=sys.stderr)
+        else:
+            for runtime, devs in (data.get("devices") or {}).items():
+                for d in devs:
+                    udid = d.get("udid")
+                    if not udid or udid in managed:
+                        continue
+                    if not d.get("isAvailable", True):
+                        continue
+                    foreign_ios.append((udid, d.get("name", "?"), runtime))
+
+    if "android" in platforms:
+        try:
+            out = subprocess.check_output(
+                [_android_bin("avdmanager"), "list", "avd", "-c"],
+                stderr=subprocess.DEVNULL,
+            )
+        except (DeviceError, subprocess.CalledProcessError, FileNotFoundError):
+            pass
+        else:
+            for line in out.decode().splitlines():
+                name = line.strip()
+                if name and name not in managed:
+                    foreign_avd.append(name)
+
+    total = len(foreign_ios) + len(foreign_avd)
+    if total == 0:
+        print("device prune: nothing to remove (every sim/AVD is splashdown-managed)",
+              file=sys.stderr)
+        return 0
+
+    print(
+        f"About to remove {total} {'/'.join(platforms)} device(s) not managed by splashdown:",
+        file=sys.stderr,
+    )
+    for udid, name, runtime in foreign_ios:
+        print(f"  ios-sim     {name}  ({runtime})  {udid}", file=sys.stderr)
+    for name in foreign_avd:
+        print(f"  android     {name}", file=sys.stderr)
+
+    if dry_run:
+        print("device prune: --dry-run, nothing destroyed", file=sys.stderr)
+        return 0
+    if not yes:
+        print("Continue? [y/N] ", end="", file=sys.stderr, flush=True)
+        if input().strip().lower() not in ("y", "yes"):
+            print("device prune: aborted", file=sys.stderr)
+            return 1
+
+    for udid, _name, _runtime in foreign_ios:
+        ios_shutdown(udid)
+        ios_destroy(udid)
+    for name in foreign_avd:
+        android_shutdown(name)
+        android_destroy(name)
+    print(f"device prune: removed {total} device(s)", file=sys.stderr)
+    return 0
+
+
+def cmd_run(cwd: Path, registry: Registry, dtype: str, variant_arg: str | None) -> int:
+    """Reconcile the sim, boot it, then build + launch the app via the framework's CLI."""
+    variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    info = ensure_fresh_sim(registry, cwd, dtype, variant, spec)
+    if info["kind"] == "ios":
+        ios_boot(info["udid"], _ios_current_state(info["udid"]))
+    elif info["kind"] == "android":
+        info["serial"] = android_boot(info["name"])
+    return device_run(cwd, recipe, info)
+
+
 def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
@@ -1646,7 +2092,7 @@ WIRING["react-native"].append(
 
 # ---------- CLI ----------
 
-KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor"}
+KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor", "run", "boot"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1686,24 +2132,46 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fix", action="store_true", help="apply safe autofixes; print manual instructions for the rest")
     p.add_argument("--framework", default=None, help="override framework detection (react-native|flutter|expo)")
 
+    for verb, helptxt in (
+        ("run", "boot the device + build & launch the app on it"),
+        ("boot", "boot the device (create-if-missing); don't build/launch"),
+    ):
+        p = sub.add_parser(verb, parents=[common], help=helptxt)
+        p.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+        p.add_argument("variant", nargs="?", help="variant name (defaults to `default`)")
+
     dev = sub.add_parser("device", parents=[common], help="manage iOS sims / Android emulators")
     devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION", required=True)
-    for action in ("list", "boot", "run", "shutdown", "destroy"):
-        sp = devsub.add_parser(action, parents=[common])
-        if action != "list":
-            sp.add_argument("name", nargs="?", help="device name (optional if only one declared)")
 
-    add = devsub.add_parser("add", parents=[common], help="declare a device in splashdown.local.toml")
-    add.add_argument("name")
-    add.add_argument("--type", required=True, choices=DEVICE_TYPES, dest="dtype")
+    devsub.add_parser("list", parents=[common], help="show declared variants + instance state")
+    for action in ("shutdown", "destroy"):
+        sp = devsub.add_parser(action, parents=[common])
+        sp.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+        sp.add_argument("variant", nargs="?", help="variant name (defaults to `default`)")
+
+    gc = devsub.add_parser("gc", parents=[common], help="prune splashdown-managed sims (defunct checkouts; --all for stale-latest too)")
+    gc.add_argument("--all", action="store_true", dest="all_", help="also destroy stale 'latest' sims")
+
+    prune = devsub.add_parser("prune", parents=[common], help="destroy every sim/AVD splashdown did NOT create")
+    prune.add_argument("--yes", action="store_true", help="skip confirmation prompt")
+    prune.add_argument("--dry-run", action="store_true", dest="dry_run", help="list without deleting")
+    prune.add_argument(
+        "--platforms", default="ios,android",
+        help="comma-separated subset of: ios,android (default: both)",
+    )
+
+    add = devsub.add_parser("add", parents=[common], help="declare a variant in splashdown.local.toml")
+    add.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+    add.add_argument("variant", help="variant name (e.g. `default`, `small-screen`)")
     add.add_argument("--model")
     add.add_argument("--ios")
     add.add_argument("--device")
     add.add_argument("--image")
     add.add_argument("--name", dest="sim_name", help="simulator/emulator name override")
 
-    rm = devsub.add_parser("remove", parents=[common], help="remove a device from splashdown.local.toml")
-    rm.add_argument("name")
+    rm = devsub.add_parser("remove", parents=[common], help="remove a local variant from splashdown.local.toml")
+    rm.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+    rm.add_argument("variant")
 
     return parser
 
@@ -1744,6 +2212,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "doctor":
             return cmd_doctor(cwd, fix=args.fix, framework_override=args.framework)
+
+        if args.cmd == "run":
+            return cmd_run(cwd, registry, args.dtype, args.variant)
+
+        if args.cmd == "boot":
+            return cmd_boot(cwd, registry, args.dtype, args.variant)
 
         if args.cmd == "list":
             target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
@@ -1822,8 +2296,6 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
 
 
 def _device_dispatch(args, cwd: Path) -> int:
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-
     if args.device_cmd == "add":
         fields = {
             "model": args.model,
@@ -1832,57 +2304,69 @@ def _device_dispatch(args, cwd: Path) -> int:
             "image": args.image,
             "name": args.sim_name,
         }
-        device_add(cwd, args.name, args.dtype, fields)
-        print(f"added device `{args.name}` ({args.dtype}) to {LOCAL_NAME}", file=sys.stderr)
+        device_add(cwd, args.dtype, args.variant, fields)
+        print(f"added device `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
         return 0
 
     if args.device_cmd == "remove":
-        device_remove(cwd, args.name)
-        print(f"removed device `{args.name}` from {LOCAL_NAME}", file=sys.stderr)
+        device_remove(cwd, args.dtype, args.variant)
+        print(f"removed device `{args.dtype}.{args.variant}` from {LOCAL_NAME}", file=sys.stderr)
         return 0
 
     if args.device_cmd == "list":
-        if not local.devices:
-            print(f"(no devices declared in {LOCAL_NAME})", file=sys.stderr)
+        recipe = _load_recipe_or_empty(cwd)
+        local = LocalConfig.load(cwd / LOCAL_NAME)
+        catalog = merged_devices(recipe, local)
+        if not catalog:
+            print(f"(no devices declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
             return 0
-        rows = []
-        for name, spec in local.devices.items():
-            resolved = _resolve_device_name(spec, cwd)
-            try:
-                status = device_status(spec, resolved)
-            except DeviceError as e:
-                status = f"error: {e}"
-            rows.append((name, spec.get("type", "?"), resolved, status))
+        rows: list[tuple[str, str, str, str, str]] = []
+        for dtype, variants in catalog.items():
+            for variant, spec in variants.items():
+                source = (
+                    "recipe"
+                    if variant in recipe.devices.get(dtype, {})
+                    else "local"
+                )
+                resolved = _resolve_device_name(spec, cwd, variant)
+                try:
+                    status = device_status(dtype, resolved)
+                except DeviceError as e:
+                    status = f"error: {e}"
+                rows.append((dtype, variant, source, resolved, status))
         if _resolve_format(args) == "json":
             print(json.dumps(
-                [dict(zip(("name", "type", "device_name", "status"), r)) for r in rows],
+                [dict(zip(("type", "variant", "source", "device_name", "status"), r)) for r in rows],
                 indent=2,
             ))
         else:
-            for name, dtype, resolved, status in rows:
-                print(f"{name}\t{dtype}\t{resolved}\t{status}")
+            for dtype, variant, source, resolved, status in rows:
+                print(f"{dtype}\t{variant}\t{source}\t{resolved}\t{status}")
         return 0
 
-    name, spec = pick_device(local, args.name)
-    resolved = _resolve_device_name(spec, cwd)
+    if args.device_cmd in ("shutdown", "destroy"):
+        variant, spec, _recipe = _resolve_variant_for_cli(cwd, args.dtype, args.variant)
+        resolved = _resolve_device_name(spec, cwd, variant)
+        if args.device_cmd == "shutdown":
+            device_shutdown(args.dtype, resolved)
+            print(f"shutdown {args.dtype}.{variant} ({resolved})", file=sys.stderr)
+        else:
+            device_destroy(args.dtype, resolved)
+            checkout = str(cwd.resolve())
+            Registry().remove_device(checkout, args.dtype, variant)
+            print(f"destroyed {args.dtype}.{variant} ({resolved})", file=sys.stderr)
+        return 0
 
-    if args.device_cmd == "boot":
-        info = device_boot(spec, resolved)
-        print(f"booted {name} ({info})", file=sys.stderr)
-        return 0
-    if args.device_cmd == "run":
-        recipe_path = cwd / RECIPE_NAME
-        recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
-        info = device_boot(spec, resolved)
-        return device_run(cwd, recipe, info)
-    if args.device_cmd == "shutdown":
-        device_shutdown(spec, resolved)
-        print(f"shutdown {name} ({resolved})", file=sys.stderr)
-        return 0
-    if args.device_cmd == "destroy":
-        device_destroy(spec, resolved)
-        print(f"destroyed {name} ({resolved})", file=sys.stderr)
-        return 0
+    if args.device_cmd == "gc":
+        return cmd_device_gc(Registry(), all_=args.all_)
+
+    if args.device_cmd == "prune":
+        platforms = tuple(p.strip() for p in args.platforms.split(",") if p.strip())
+        return cmd_device_prune(
+            Registry(), yes=args.yes, dry_run=args.dry_run, platforms=platforms,
+        )
+
+    print(f"splash device {args.device_cmd}: unknown action", file=sys.stderr)
     return 2
 
 

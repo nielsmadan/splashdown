@@ -10,7 +10,7 @@ cd ../myapp.feat-auth
 # → already has its own sim "myapp/myapp.feat-auth"
 # → already has its own RCT_METRO_PORT (e.g. 8082, picked to not collide
 #   with any other checkout's pinned ports machine-wide)
-splash device run        # builds + installs + launches on that sim
+splash run ios-sim       # builds + installs + launches on the per-checkout sim
 ```
 
 No new commands in day-to-day work: a `post-checkout` hook fires `splash` on every `git checkout` / `git worktree add`, and `mise activate` (already in your shell) loads the resolved env vars from a gitignored `splashdown.env`.
@@ -27,7 +27,7 @@ Read [`provision-spec.md`](./provision-spec.md) for the original design rational
 
 ## Status
 
-Working v1. Stdlib-only Python 3.11+. 113 tests passing.
+Working v1. Stdlib-only Python 3.11+. 151 tests passing.
 
 ## Install
 
@@ -46,7 +46,7 @@ splashdown uses three files, each with a clear purpose:
 | File | Committed? | Purpose |
 |------|-----------|---------|
 | `splashdown.toml` | Yes | Recipe — `[resources.*]` + `[project]` schema only |
-| `splashdown.local.toml` | **No** (gitignored) | Per-checkout `[devices.*]` config |
+| `splashdown.local.toml` | **No** (gitignored) | Per-checkout *additional* `[devices.*]` variants (recipe's are not repeated) |
 | `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file; splashdown owns it |
 | `mise.toml` | Yes | Your existing mise config; gains `_.file = "splashdown.env"` |
 
@@ -72,12 +72,15 @@ splash init --preset=rn
 #   - ios/.xcode.env: splashdown-managed RCT_METRO_PORT block (so the iOS build
 #     bakes the per-checkout port instead of the default 8081)
 
-# declare a device for this checkout:
-splash device add iphone --type=ios-sim
-
 # first run:
 splash
-splash device run        # boots the named sim if needed, builds, installs, launches
+splash run ios-sim       # boots the per-checkout sim (creates if missing,
+                         # auto-recreates if newer iOS is available),
+                         # then builds + installs + launches the app
+
+# add a one-off variant just for this checkout:
+splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
+splash run ios-sim repro-bug
 ```
 
 After that, every `git worktree add` gets its own sim, port, and resolved env, with zero manual steps. See [`examples/`](./examples/) for the hook + `mise.toml` task definitions.
@@ -86,23 +89,27 @@ Want to verify or re-apply the wiring later? `splash doctor` (and `splash doctor
 
 ## File model: `splashdown.toml`
 
-The committed file that says *what* the repo needs per-checkout. Lives once at the repo root. Contains only `[resources.*]` and `[project]` — no device declarations.
+The committed file. Resource slots + the catalog of device variants the team agrees this project supports.
 
 ```toml
 [resources.RCT_METRO_PORT]
 type  = "port"
 range = [8081, 8200]            # globally-coordinated lowest-free
 
-[resources.RUN_ID]
-type = "uuid"
-
-[resources.SIM_NAME]
-type     = "template"
-template = "{{ basename(parent) }}/{{ cwd }}"
-
 [resources.METRO_URL]
 type     = "template"
 template = "http://localhost:{{ RCT_METRO_PORT }}"
+
+# Device variant catalog. Sim *instances* are created lazily per checkout,
+# named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim
+# is auto-recreated whenever a newer iOS lands. Pin an explicit version like
+# `ios = "18.5"` for fixed coverage that never auto-upgrades.
+[devices.ios-sim.default]
+model = "iPhone 17"
+
+[devices.ios-sim.lowest-supported]
+model = "iPhone 12"
+ios   = "17.0"
 
 [project]
 framework = "react-native"      # auto | react-native | flutter | expo
@@ -110,51 +117,65 @@ framework = "react-native"      # auto | react-native | flutter | expo
 
 Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
+Device types: `ios-sim`, `android-emulator`.
 
 ## File model: `splashdown.local.toml`
 
-A **gitignored**, per-checkout file. Each worktree or clone has its own copy with its own device declarations. Never committed — this is what gives each checkout a non-colliding simulator.
+A **gitignored**, per-checkout file. Use it to **add** extra device variants on top of what the recipe declares — never to override or repeat. Each checkout has its own copy; what you add here is local to this worktree/clone.
 
 ```toml
-# splashdown.local.toml — per-checkout device config. NOT committed.
-
-[devices.iphone]
-type = "ios-sim"
-# model = "iPhone 16 Pro"       # optional; default = latest iPhone Pro
-# ios   = "18.5"                # optional; default = latest installed runtime
-
-[devices.android]
-type   = "android-emulator"
-# device = "pixel_7"
-# image  = "system-images;android-34;google_apis;arm64-v8a"
+# Reproduce a bug only this checkout sees:
+[devices.ios-sim.repro-bug]
+model = "iPhone 16"
+ios   = "17.5"
 ```
 
-Device types: `ios-sim`, `android-emulator`.
+Name collisions with a recipe-declared variant are an error (pick a different variant name). Add programmatically with:
 
-Add a device with `splash device add <name> --type=<type>`, or edit `splashdown.local.toml` directly.
-
-## Device commands
-
-```
-splash device list                 # show declared devices + state (booted/shutdown/absent)
-splash device boot [NAME]          # create-if-missing + boot
-splash device run  [NAME]          # boot + build + launch the app
-splash device shutdown [NAME]
-splash device destroy [NAME]
+```sh
+splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
 ```
 
-If exactly one device is declared, `NAME` is optional. With multiple, omit it to list; supply it to act on one.
+## Running on a device
 
-`splash device run` auto-detects the framework:
+```sh
+splash run  <type> [variant]       # reconcile + boot + build + launch
+splash boot <type> [variant]       # reconcile + boot (no build/launch)
+```
+
+`variant` is optional: defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
+
+```sh
+splash run ios-sim                 # picks `default`
+splash run ios-sim lowest-supported
+
+splash device list                 # show every declared variant + its live sim state
+splash device shutdown ios-sim     # stop the running sim
+splash device destroy ios-sim small-screen   # delete that variant's sim
+splash device remove ios-sim repro-bug       # strip a *local* variant from splashdown.local.toml
+```
+
+Framework auto-detected for `run`:
 
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
 - Override via `[project] framework = "..."`
 
+### Auto-upgrade — no more manual `mksim`/`simctl delete` after Xcode updates
+
+Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever — they're explicit version coverage.
+
+```sh
+splash device gc                    # registry cleanup: defunct checkouts (+stale-latest with --all)
+splash device prune [--yes] [--dry-run] [--platforms=ios,android]
+                                    # destroys every sim/AVD splashdown did NOT create
+                                    # (the Xcode default-template pile, hand-made sims, etc.)
+```
+
 ### iOS sim management
 
-Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtime: latest installed. Sim name defaults to `<parent-dir>/<checkout-name>` so two worktrees never collide. Override per-checkout with `model = "..."` and `ios = "18.5"` in `splashdown.local.toml`.
+Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtime: latest installed. Sim name defaults to `<parent-dir>/<checkout-name>/<variant>` so different worktrees and variants never collide. Override per-variant with `model = "..."` and `ios = "18.5"` in the recipe (or in `splashdown.local.toml` for an add-only variant).
 
 ### Android emulator management
 
@@ -201,13 +222,24 @@ splash                             # provision (what the post-checkout hook call
 splash provision --reprovision     # force re-allocate (regenerates uuids)
 splash init [--preset=rn|flutter|nextjs|minimal]
 splash doctor [--fix] [--framework=NAME]   # framework-aware wiring check
-splash list                        # this checkout's resolved vars
+
+splash run  <type> [variant]       # reconcile + boot + build + launch
+splash boot <type> [variant]       # reconcile + boot (no build/launch)
+
+splash device list                 # all declared variants + live sim state
+splash device add <type> <variant> [--model] [--ios] [--device] [--image]
+splash device remove <type> <variant>
+splash device shutdown <type> [variant]
+splash device destroy <type> [variant]
+splash device gc [--all]           # splashdown-managed cleanup (defunct; --all = +stale latest)
+splash device prune [--yes] [--dry-run] [--platforms=ios,android]
+                                   # destroy every sim/AVD splashdown didn't create
+
+splash list                        # this checkout's resolved env vars
 splash get KEY [--checkout=PATH]
 splash set KEY=VALUE
 splash unpin [KEY]
-splash gc
-splash device list|boot|run|shutdown|destroy [NAME]
-splash device add NAME --type=TYPE
+splash gc                          # GC the resource registry (ports, uuids, devices)
 ```
 
 ## Global port coordination
