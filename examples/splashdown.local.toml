@@ -3,9 +3,9 @@
 # Name collisions with recipe variants are an error; pick a distinct name.
 
 # Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
-# [devices.ios-sim.repro-bug]
+# [devices.simulator.repro-bug]
 # model = "iPhone 16"
 # ios   = "17.5"
 #
 # Or via CLI:
-#   splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
+#   splash device add simulator repro-bug --model="iPhone 16" --ios=17.5

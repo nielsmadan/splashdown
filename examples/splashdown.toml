@@ -19,14 +19,14 @@ template = "http://localhost:{{ RCT_METRO_PORT }}"
 # created lazily per checkout, named `<parent>/<cwd>/<variant>`. `ios = "latest"`
 # (default) auto-recreates the sim when a newer iOS lands; pin with an explicit
 # version like `ios = "18.5"` for fixed version coverage.
-[devices.ios-sim.default]
+[devices.simulator.default]
 model = "iPhone 17"
 
 # Optional additional team-wide variants:
-# [devices.ios-sim.lowest-supported]
+# [devices.simulator.lowest-supported]
 # model = "iPhone 12"
 # ios   = "17.0"
-# [devices.ios-sim.small-screen]
+# [devices.simulator.small-screen]
 # model = "iPhone 13 Mini"
 
 [project]

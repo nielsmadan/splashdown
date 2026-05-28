@@ -38,7 +38,7 @@ DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEVICE_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-DEVICE_TYPES = ("ios-sim", "android-emulator")
+DEVICE_TYPES = ("simulator", "emulator")
 RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
 ENV_FILE_NAME = "splashdown.env"
@@ -476,13 +476,13 @@ LOCAL_SKELETON = """\
 #
 # Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
 #
-# [devices.ios-sim.repro-bug]
+# [devices.simulator.repro-bug]
 # model = "iPhone 16"
 # ios   = "17.5"
 #
 # Or, equivalently, via CLI:
 #
-#   splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
+#   splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
 """
 
 
@@ -666,6 +666,12 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[s
         writer = recipe.resources[name].get("writer", "splashdown-env")
         groups.setdefault(writer, {})[name] = value
 
+    # Truncate splashdown.env if it exists but no resources target it now (e.g. the
+    # user removed the last splashdown-env resource). Without this, the old values
+    # linger and silently disagree with the recipe.
+    if "splashdown-env" not in groups and (cwd / ENV_FILE_NAME).exists():
+        groups["splashdown-env"] = {}
+
     msgs: list[str] = []
     for writer, items in groups.items():
         if writer == "splashdown-env":
@@ -807,16 +813,31 @@ def _default_sim_name(cwd: Path, variant: str) -> str:
     return f"{cwd.parent.name}/{cwd.name}/{variant}"
 
 
-def _resolve_device_name(spec: dict[str, Any], cwd: Path, variant: str) -> str:
+_AVD_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_avd_name(name: str) -> str:
+    """avdmanager rejects names containing characters outside [A-Za-z0-9._-].
+    Replace anything else with `_` so the default `<parent>/<basename>/<variant>`
+    scheme works on Android too."""
+    return _AVD_INVALID_RE.sub("_", name)
+
+
+def _resolve_device_name(spec: dict[str, Any], cwd: Path, variant: str, dtype: str | None = None) -> str:
     """Sim/AVD name: explicit `name` field on the variant (string or template),
-    otherwise the path-derived default."""
+    otherwise the path-derived default. For emulator, sanitize the
+    result (avdmanager allows only [A-Za-z0-9._-])."""
     raw = spec.get("name")
     if not raw:
-        return _default_sim_name(cwd, variant)
-    if isinstance(raw, str) and "{{" in raw:
+        name = _default_sim_name(cwd, variant)
+    elif isinstance(raw, str) and "{{" in raw:
         scope = _make_scope(cwd, _current_branch(cwd), {})
-        return render_template(raw, scope)
-    return str(raw)
+        name = render_template(raw, scope)
+    else:
+        name = str(raw)
+    if dtype == "emulator":
+        return _sanitize_avd_name(name)
+    return name
 
 
 # --- iOS simulator ---
@@ -929,6 +950,10 @@ def ios_boot(udid: str, state: str) -> None:
 
 
 def ios_shutdown(udid: str) -> None:
+    # simctl errors with code 405 if the sim is already Shutdown — noisy and
+    # useless. Skip the call entirely when there's nothing to do.
+    if _ios_current_state(udid) == "Shutdown":
+        return
     subprocess.run(["xcrun", "simctl", "shutdown", udid], check=False)
 
 
@@ -942,10 +967,16 @@ def _android_home() -> Path:
     h = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
     if h and Path(h).exists():
         return Path(h)
-    default = Path.home() / "Library/Android/sdk"
-    if default.exists():
-        return default
-    raise DeviceError("ANDROID_HOME not set and ~/Library/Android/sdk not found")
+    candidates = [
+        Path.home() / "Library/Android/sdk",  # macOS default
+        Path.home() / "Android/Sdk",          # Linux default (Android Studio)
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    raise DeviceError(
+        f"ANDROID_HOME not set and no SDK found at {' or '.join(str(c) for c in candidates)}"
+    )
 
 
 def _android_bin(name: str) -> str:
@@ -989,7 +1020,7 @@ def android_ensure(name: str, device: str | None, image: str | None) -> str:
     if _android_avd_exists(name):
         return name
     image = image or _android_latest_image()
-    device = device or "pixel_7"
+    device = device or "pixel_9"
     print(f"creating Android AVD '{name}' (device={device}, image={image})", file=sys.stderr)
     avdmgr = _android_bin("avdmanager")
     proc = subprocess.run(
@@ -1074,9 +1105,9 @@ def ensure_fresh_sim(
     if the OS image (or model) has drifted from what's in the registry. Pinned
     variants (`ios = "<explicit>"`) are kept on their declared version forever."""
     checkout = str(cwd.resolve())
-    sim_name = _resolve_device_name(spec, cwd, variant)
+    sim_name = _resolve_device_name(spec, cwd, variant, dtype)
 
-    if dtype == "ios-sim":
+    if dtype == "simulator":
         requested = spec.get("ios", "latest")
         target_ios = _ios_latest_runtime_version() if requested == "latest" else requested
         model_spec = spec.get("model", "")
@@ -1095,7 +1126,7 @@ def ensure_fresh_sim(
         registry.set_device(checkout, dtype, variant, udid, model_spec, target_ios)
         return {"kind": "ios", "udid": udid, "name": sim_name}
 
-    if dtype == "android-emulator":
+    if dtype == "emulator":
         requested = spec.get("image", "latest")
         target_image = _android_latest_image() if requested == "latest" else requested
         device_spec = spec.get("device", "")
@@ -1120,12 +1151,12 @@ def ensure_fresh_sim(
 # --- generic device dispatch ---
 
 def device_status(dtype: str, resolved_name: str) -> str:
-    if dtype == "ios-sim":
+    if dtype == "simulator":
         found = _ios_find_device_by_name(resolved_name)
         if not found:
             return "absent"
         return found[1].lower()  # 'booted' / 'shutdown'
-    if dtype == "android-emulator":
+    if dtype == "emulator":
         if not _android_avd_exists(resolved_name):
             return "absent"
         return "running" if _android_running_serial(resolved_name) else "stopped"
@@ -1133,21 +1164,21 @@ def device_status(dtype: str, resolved_name: str) -> str:
 
 
 def device_shutdown(dtype: str, resolved_name: str) -> None:
-    if dtype == "ios-sim":
+    if dtype == "simulator":
         found = _ios_find_device_by_name(resolved_name)
         if found:
             ios_shutdown(found[0])
-    elif dtype == "android-emulator":
+    elif dtype == "emulator":
         android_shutdown(resolved_name)
 
 
 def device_destroy(dtype: str, resolved_name: str) -> None:
-    if dtype == "ios-sim":
+    if dtype == "simulator":
         found = _ios_find_device_by_name(resolved_name)
         if found:
             ios_shutdown(found[0])
             ios_destroy(found[0])
-    elif dtype == "android-emulator":
+    elif dtype == "emulator":
         android_shutdown(resolved_name)
         android_destroy(resolved_name)
 
@@ -1284,7 +1315,7 @@ type = "uuid"
 type  = "port"
 range = [8081, 8200]
 
-[devices.ios-sim.default]
+[devices.simulator.default]
 model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
                    # "18.5" if you want a fixed version that never upgrades.
@@ -1294,15 +1325,14 @@ framework = "react-native"
 """,
     "flutter": """\
 # splashdown.toml — Flutter preset.
-[resources.DART_PORT]
-type  = "port"
-range = [9100, 9200]
-
-[devices.ios-sim.default]
+# Flutter's `flutter run` auto-assigns the Dart VM / DevTools port on each
+# launch; there is no equivalent of RN's RCT_METRO_PORT to pin. Splashdown's
+# value for Flutter is per-checkout sim/emulator naming.
+[devices.simulator.default]
 model = "iPhone 17"
 
-[devices.android-emulator.default]
-device = "pixel_7"
+[devices.emulator.default]
+device = "pixel_9"
 
 [project]
 framework = "flutter"
@@ -1662,6 +1692,25 @@ def _load_variant_spec(cwd: Path, dtype: str, variant: str) -> dict[str, Any] | 
     return merged_devices(recipe, local).get(dtype, {}).get(variant)
 
 
+def _emit_progress(label: str, current: int, total: int) -> None:
+    """Single-line progress on a TTY ('label: 3/12'). On a non-TTY (CI, pipe)
+    print one line per call instead, so logs aren't a single mash of carriage
+    returns. Caller should _finish_progress() after the loop to drop a newline."""
+    width = len(str(total))
+    msg = f"{label}: {current:>{width}}/{total}"
+    if sys.stderr.isatty():
+        sys.stderr.write(f"\r{msg}")
+    else:
+        sys.stderr.write(f"{msg}\n")
+    sys.stderr.flush()
+
+
+def _finish_progress() -> None:
+    if sys.stderr.isatty():
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+
 def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
     """Splashdown-managed sim cleanup.
 
@@ -1672,12 +1721,15 @@ def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
     destroyed_count = 0
     pruned_count = 0
     latest_ios: str | None = None
-    for row in list(registry.all_devices()):
+    rows = list(registry.all_devices())
+    total = len(rows)
+    for i, row in enumerate(rows, 1):
+        _emit_progress("device gc", i, total)
         cwd = Path(row.checkout)
         if not cwd.exists():
-            if row.dtype == "ios-sim" and _ios_udid_exists(row.udid):
+            if row.dtype == "simulator" and _ios_udid_exists(row.udid):
                 ios_destroy(row.udid)
-            elif row.dtype == "android-emulator" and _android_avd_exists(row.udid):
+            elif row.dtype == "emulator" and _android_avd_exists(row.udid):
                 android_destroy(row.udid)
             registry.remove_device(row.checkout, row.dtype, row.variant)
             destroyed_count += 1
@@ -1688,12 +1740,12 @@ def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
         spec = _load_variant_spec(cwd, row.dtype, row.variant)
         if spec is None:
             # Variant was removed from recipe + local — also destroy.
-            if row.dtype == "ios-sim" and _ios_udid_exists(row.udid):
+            if row.dtype == "simulator" and _ios_udid_exists(row.udid):
                 ios_destroy(row.udid)
             registry.remove_device(row.checkout, row.dtype, row.variant)
             pruned_count += 1
             continue
-        if row.dtype == "ios-sim":
+        if row.dtype == "simulator":
             if spec.get("ios", "latest") != "latest":
                 continue  # pinned — leave alone
             if latest_ios is None:
@@ -1704,6 +1756,7 @@ def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
                 ios_destroy(row.udid)
             registry.remove_device(row.checkout, row.dtype, row.variant)
             pruned_count += 1
+    _finish_progress()
     print(
         f"device gc: removed {destroyed_count} defunct + {pruned_count} stale entries",
         file=sys.stderr,
@@ -1767,7 +1820,7 @@ def cmd_device_prune(
         file=sys.stderr,
     )
     for udid, name, runtime in foreign_ios:
-        print(f"  ios-sim     {name}  ({runtime})  {udid}", file=sys.stderr)
+        print(f"  simulator     {name}  ({runtime})  {udid}", file=sys.stderr)
     for name in foreign_avd:
         print(f"  android     {name}", file=sys.stderr)
 
@@ -1780,12 +1833,18 @@ def cmd_device_prune(
             print("device prune: aborted", file=sys.stderr)
             return 1
 
+    done = 0
     for udid, _name, _runtime in foreign_ios:
         ios_shutdown(udid)
         ios_destroy(udid)
+        done += 1
+        _emit_progress("device prune", done, total)
     for name in foreign_avd:
         android_shutdown(name)
         android_destroy(name)
+        done += 1
+        _emit_progress("device prune", done, total)
+    _finish_progress()
     print(f"device prune: removed {total} device(s)", file=sys.stderr)
     return 0
 
@@ -2328,7 +2387,7 @@ def _device_dispatch(args, cwd: Path) -> int:
                     if variant in recipe.devices.get(dtype, {})
                     else "local"
                 )
-                resolved = _resolve_device_name(spec, cwd, variant)
+                resolved = _resolve_device_name(spec, cwd, variant, dtype)
                 try:
                     status = device_status(dtype, resolved)
                 except DeviceError as e:
@@ -2346,7 +2405,7 @@ def _device_dispatch(args, cwd: Path) -> int:
 
     if args.device_cmd in ("shutdown", "destroy"):
         variant, spec, _recipe = _resolve_variant_for_cli(cwd, args.dtype, args.variant)
-        resolved = _resolve_device_name(spec, cwd, variant)
+        resolved = _resolve_device_name(spec, cwd, variant, args.dtype)
         if args.device_cmd == "shutdown":
             device_shutdown(args.dtype, resolved)
             print(f"shutdown {args.dtype}.{variant} ({resolved})", file=sys.stderr)

@@ -10,7 +10,7 @@ cd ../myapp.feat-auth
 # → already has its own sim "myapp/myapp.feat-auth"
 # → already has its own RCT_METRO_PORT (e.g. 8082, picked to not collide
 #   with any other checkout's pinned ports machine-wide)
-splash run ios-sim       # builds + installs + launches on the per-checkout sim
+splash run simulator       # builds + installs + launches on the per-checkout sim
 ```
 
 No new commands in day-to-day work: a `post-checkout` hook fires `splash` on every `git checkout` / `git worktree add`, and `mise activate` (already in your shell) loads the resolved env vars from a gitignored `splashdown.env`.
@@ -74,13 +74,13 @@ splash init --preset=rn
 
 # first run:
 splash
-splash run ios-sim       # boots the per-checkout sim (creates if missing,
+splash run simulator       # boots the per-checkout sim (creates if missing,
                          # auto-recreates if newer iOS is available),
                          # then builds + installs + launches the app
 
 # add a one-off variant just for this checkout:
-splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
-splash run ios-sim repro-bug
+splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
+splash run simulator repro-bug
 ```
 
 After that, every `git worktree add` gets its own sim, port, and resolved env, with zero manual steps. See [`examples/`](./examples/) for the hook + `mise.toml` task definitions.
@@ -104,10 +104,10 @@ template = "http://localhost:{{ RCT_METRO_PORT }}"
 # named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim
 # is auto-recreated whenever a newer iOS lands. Pin an explicit version like
 # `ios = "18.5"` for fixed coverage that never auto-upgrades.
-[devices.ios-sim.default]
+[devices.simulator.default]
 model = "iPhone 17"
 
-[devices.ios-sim.lowest-supported]
+[devices.simulator.lowest-supported]
 model = "iPhone 12"
 ios   = "17.0"
 
@@ -117,7 +117,7 @@ framework = "react-native"      # auto | react-native | flutter | expo
 
 Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
-Device types: `ios-sim`, `android-emulator`.
+Device types: `simulator`, `emulator`.
 
 ## File model: `splashdown.local.toml`
 
@@ -125,7 +125,7 @@ A **gitignored**, per-checkout file. Use it to **add** extra device variants on 
 
 ```toml
 # Reproduce a bug only this checkout sees:
-[devices.ios-sim.repro-bug]
+[devices.simulator.repro-bug]
 model = "iPhone 16"
 ios   = "17.5"
 ```
@@ -133,7 +133,7 @@ ios   = "17.5"
 Name collisions with a recipe-declared variant are an error (pick a different variant name). Add programmatically with:
 
 ```sh
-splash device add ios-sim repro-bug --model="iPhone 16" --ios=17.5
+splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
 ```
 
 ## Running on a device
@@ -146,13 +146,13 @@ splash boot <type> [variant]       # reconcile + boot (no build/launch)
 `variant` is optional: defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
 ```sh
-splash run ios-sim                 # picks `default`
-splash run ios-sim lowest-supported
+splash run simulator                 # picks `default`
+splash run simulator lowest-supported
 
 splash device list                 # show every declared variant + its live sim state
-splash device shutdown ios-sim     # stop the running sim
-splash device destroy ios-sim small-screen   # delete that variant's sim
-splash device remove ios-sim repro-bug       # strip a *local* variant from splashdown.local.toml
+splash device shutdown simulator     # stop the running sim
+splash device destroy simulator small-screen   # delete that variant's sim
+splash device remove simulator repro-bug       # strip a *local* variant from splashdown.local.toml
 ```
 
 Framework auto-detected for `run`:
@@ -179,7 +179,7 @@ Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtim
 
 ### Android emulator management
 
-Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_7`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached; `splash` polls `adb` for the serial to appear.
+Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_9`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached; `splash` polls `adb` for the serial to appear.
 
 ## Non-mobile use cases
 
@@ -258,7 +258,9 @@ Lazy GC: entries for checkouts whose directory no longer exists are dropped on n
 ```sh
 just test                       # run pytest
 just build                      # sdist + wheel
-just install-local              # build + put `splash` on PATH locally
+just install-local              # install local source as `splash` via uv
+just refresh-local              # reinstall after changes
+just reset-local                # uninstall the local `splash`
 just tag-release-patch          # bump patch, commit, tag, push (triggers release.yml)
 ```
 

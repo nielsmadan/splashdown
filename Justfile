@@ -18,10 +18,20 @@ build:
     @rm -rf dist build *.egg-info
     @python3 -m build
 
-# Install the wheel locally (for testing `spd` on PATH)
-install-local: build
-    @python3 -m pip install --force-reinstall --quiet dist/splashdown-*.whl
-    @echo "Installed: $(which spd)"
+# Install the current source as the global `splash` binary via uv.
+install-local:
+    @uv tool install .
+    @echo "Installed: $(which splash)"
+
+# Reinstall current source over the existing splash binary via uv. Use to test
+# local changes before tagging a release.
+refresh-local:
+    @uv tool install --reinstall --force .
+    @echo "Refreshed: $(which splash)"
+
+# Remove the locally-installed splash binary.
+reset-local:
+    @uv tool uninstall splashdown
 
 clean:
     @rm -rf dist build *.egg-info .pytest_cache

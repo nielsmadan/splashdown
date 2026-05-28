@@ -19,8 +19,8 @@ run = "splash gc"
 
 [tasks.sim]
 description = "Boot this checkout's iOS sim (auto-creates / auto-upgrades on latest)"
-run = "splash boot ios-sim"
+run = "splash boot simulator"
 
 [tasks.run]
 description = "Boot sim + build + launch the app (framework auto-detected)"
-run = "splash run ios-sim"
+run = "splash run simulator"
