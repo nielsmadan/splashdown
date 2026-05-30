@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -67,10 +68,10 @@ def test_kv_set_get(registry, checkout):
     assert registry.get_kv(str(checkout), "K") == "v2"
 
 
-def test_unpin_clears_entries(registry, checkout):
+def test_release_clears_entries(registry, checkout):
     registry.allocate_port(str(checkout), "P", 18200, 18210)
     registry.set_kv(str(checkout), "K", "v")
-    n = registry.unpin(str(checkout))
+    n = registry.release(str(checkout))
     assert n == 2
     assert registry.all_for(str(checkout)) == {}
 
@@ -133,10 +134,10 @@ def test_device_registry_gc_drops_defunct(registry, tmp_path):
     assert registry.all_devices() == []
 
 
-def test_device_registry_unpin_clears_devices_too(registry, checkout):
+def test_device_registry_release_clears_devices_too(registry, checkout):
     registry.allocate_port(str(checkout), "PORT", 18900, 18910)
     registry.set_device(str(checkout), "simulator", "default", "UDID-X", "iPhone 17", "18.5")
-    registry.unpin(str(checkout))
+    registry.release(str(checkout))
     assert registry.get_device(str(checkout), "simulator", "default") is None
 
 
@@ -379,12 +380,12 @@ framework = "react-native"
         return 0
 
     monkeypatch.setattr(sd, "device_run", fake_run)
-    rc = sd.main(["--cwd", str(tmp_path), "boot", "simulator"])
+    rc = sd.main(["--cwd", str(tmp_path), "start", "simulator"])
     assert rc == 0
     assert called["device_run"] is False
 
 
-def test_cli_device_list_shows_recipe_and_local(tmp_path, monkeypatch):
+def test_cli_devices_shows_recipe_and_local(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text(
         '[devices.simulator.default]\nmodel = "A"\n[project]\nframework = "react-native"\n'
     )
@@ -394,11 +395,11 @@ def test_cli_device_list_shows_recipe_and_local(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Stub status checks to avoid hitting xcrun.
     monkeypatch.setattr(sd, "device_status", lambda dtype, name: "absent")
-    rc = sd.main(["--cwd", str(tmp_path), "device", "list"])
+    rc = sd.main(["--cwd", str(tmp_path), "devices"])
     assert rc == 0
 
 
-def test_cli_device_shutdown_resolves_by_type_and_variant(tmp_path, monkeypatch):
+def test_cli_stop_resolves_by_type_and_variant(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
 [devices.simulator.default]
 model = "iPhone 17"
@@ -411,10 +412,147 @@ framework = "react-native"
     def _shutdown(dt, name):
         captured["call"] = (dt, name)
     monkeypatch.setattr(sd, "device_shutdown", _shutdown)
-    rc = sd.main(["--cwd", str(tmp_path), "device", "shutdown", "simulator"])
+    rc = sd.main(["--cwd", str(tmp_path), "stop", "simulator"])
     assert rc == 0
     assert captured["call"][0] == "simulator"
     assert captured["call"][1].endswith("/default")
+
+
+def test_cli_run_infers_dtype_when_only_one_declared(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text("""
+[devices.simulator.default]
+model = "iPhone 17"
+
+[project]
+framework = "react-native"
+""")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _stub_ios_boot_chain(monkeypatch)
+    captured = {}
+    def _fake_run(cwd, recipe, info):
+        captured["info"] = info
+        return 0
+    monkeypatch.setattr(sd, "device_run", _fake_run)
+    # No TYPE given — should resolve to the only declared type (simulator).
+    rc = sd.main(["--cwd", str(tmp_path), "run"])
+    assert rc == 0
+    assert captured["info"]["kind"] == "ios"
+
+
+def test_cli_status_reports_resources_and_port_state(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.MY_PORT]
+type  = "port"
+range = [19000, 19010]
+""")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Provision first so the registry has an entry to report on.
+    rc = sd.main(["--cwd", str(tmp_path)])
+    assert rc == 0
+    capsys.readouterr()  # discard provision output
+    rc = sd.main(["--cwd", str(tmp_path), "status"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "MY_PORT=" in err
+    # The state tag must be one of `[in use]` or `[free]` (port-typed resource).
+    assert "[free]" in err or "[in use]" in err
+
+
+def test_cli_refresh_reallocates_on_squatter(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.HOT_PORT]
+type  = "port"
+range = [19500, 19510]
+""")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    rc = sd.main(["--cwd", str(tmp_path)])
+    assert rc == 0
+    first = (tmp_path / "splashdown.env").read_text().strip()
+    capsys.readouterr()
+    # Squat the assigned port from a different socket.
+    port_str = first.split("=", 1)[1]
+    import socket as _sock
+    squatter = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    squatter.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+    squatter.bind(("127.0.0.1", int(port_str)))
+    squatter.listen(1)
+    try:
+        rc = sd.main(["--cwd", str(tmp_path), "refresh"])
+        assert rc == 0
+    finally:
+        squatter.close()
+    second = (tmp_path / "splashdown.env").read_text().strip()
+    assert second != first  # reallocated to a new port
+
+
+def test_cli_release_clears_one_key(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.GONE]
+type  = "port"
+range = [19600, 19610]
+""")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    sd.main(["--cwd", str(tmp_path)])
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(tmp_path), "release", "GONE"])
+    assert rc == 0
+    rc = sd.main(["--cwd", str(tmp_path), "get", "GONE"])
+    assert rc == 1  # key gone
+
+
+def test_cli_version_flag(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "splashdown" in out
+    assert re.search(r"\d+\.\d+\.\d+", out)
+
+
+def test_cli_bare_device_lists(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text(
+        '[devices.simulator.default]\nmodel = "X"\n[project]\nframework = "react-native"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd, "device_status", lambda dtype, name: "absent")
+    rc = sd.main(["--cwd", str(tmp_path), "device"])
+    assert rc == 0
+
+
+def test_cli_device_remove_destroys_instance_by_default(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "react-native"\n'
+    )
+    (tmp_path / "splashdown.local.toml").write_text(
+        '[devices.simulator.repro]\nmodel = "iPhone 17"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    destroyed: list[tuple[str, str]] = []
+    monkeypatch.setattr(sd, "device_destroy", lambda dt, name: destroyed.append((dt, name)))
+    rc = sd.main(["--cwd", str(tmp_path), "device", "remove", "simulator", "repro"])
+    assert rc == 0
+    assert destroyed and destroyed[0][0] == "simulator"
+    assert "[devices.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
+
+
+def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "react-native"\n'
+    )
+    (tmp_path / "splashdown.local.toml").write_text(
+        '[devices.simulator.repro]\nmodel = "iPhone 17"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    destroyed: list[tuple[str, str]] = []
+    monkeypatch.setattr(sd, "device_destroy", lambda dt, name: destroyed.append((dt, name)))
+    rc = sd.main([
+        "--cwd", str(tmp_path), "device", "remove",
+        "simulator", "repro", "--keep-instance",
+    ])
+    assert rc == 0
+    assert destroyed == []  # sim left alone
+    assert "[devices.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
 
 
 # ---------- device gc / prune ----------
@@ -823,6 +961,60 @@ def test_detect_framework_errors_when_unknown(tmp_path):
         sd.detect_framework(tmp_path, r)
 
 
+def test_detect_framework_ios_native_xcodeproj(tmp_path):
+    (tmp_path / "MyApp.xcodeproj").mkdir()
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
+def test_detect_framework_ios_native_xcworkspace(tmp_path):
+    (tmp_path / "MyApp.xcworkspace").mkdir()
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
+def test_detect_framework_ios_native_skipped_when_rn_present(tmp_path):
+    # RN's iOS subproject lives under cwd/ios/*.xcodeproj so won't match the
+    # root glob, but defend against unusual layouts where a stray .xcodeproj
+    # at root could mis-trigger ios-native.
+    (tmp_path / "MyApp.xcodeproj").mkdir()
+    (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.74"}}')
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "react-native"
+
+
+def test_detect_framework_android_native(tmp_path):
+    (tmp_path / "build.gradle.kts").write_text("")
+    (tmp_path / "settings.gradle.kts").write_text("")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "android-native"
+
+
+def test_detect_framework_android_native_needs_settings(tmp_path):
+    # build.gradle alone (no settings.gradle) is too weak a signal — many
+    # non-Android Gradle projects ship just a build.gradle.
+    (tmp_path / "build.gradle").write_text("")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    with pytest.raises(sd.DeviceError):
+        sd.detect_framework(tmp_path, r)
+
+
+def test_detect_framework_android_native_skipped_when_flutter_present(tmp_path):
+    # Flutter projects have an android/ subdir with gradle files but should
+    # still detect as flutter via pubspec.yaml at root.
+    (tmp_path / "pubspec.yaml").write_text("name: x\n")
+    (tmp_path / "build.gradle").write_text("")
+    (tmp_path / "settings.gradle").write_text("")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "flutter"
+
+
+def test_detect_framework_native_override_wins(tmp_path):
+    # No filesystem signals at all — explicit override carries it.
+    r = sd.Recipe({"project": {"framework": "ios-native"}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
 # ---------- variant resolution ----------
 
 def test_default_sim_name_includes_variant(tmp_path):
@@ -976,6 +1168,32 @@ def test_init_does_not_clobber_existing_local(tmp_path):
     (tmp_path / "splashdown.local.toml").write_text("[devices.mine]\ntype = \"simulator\"\n")
     sd.cmd_init(tmp_path, preset="rn")
     assert "devices.mine" in (tmp_path / "splashdown.local.toml").read_text()
+
+
+def test_init_server_preset_writes_generic_scaffold(tmp_path):
+    sd.cmd_init(tmp_path, preset="server")
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    assert "[resources.PORT]" in recipe
+    assert "[resources.DATABASE_URL]" in recipe
+    # Generic — should not name a specific framework.
+    assert "Next.js preset" not in recipe
+
+
+def test_init_nextjs_alias_still_works(tmp_path):
+    # `nextjs` is kept as a backward-compat alias for `server`.
+    sd.cmd_init(tmp_path, preset="nextjs")
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    assert "[resources.PORT]" in recipe
+    assert "[resources.DATABASE_URL]" in recipe
+
+
+def test_init_electron_preset_includes_user_data_dir(tmp_path):
+    sd.cmd_init(tmp_path, preset="electron")
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    assert "[resources.PORT]" in recipe
+    assert "[resources.ELECTRON_USER_DATA_DIR]" in recipe
+    # Per-checkout — must reference cwd_abs so each worktree gets its own dir.
+    assert "cwd_abs" in recipe
 
 
 def test_cli_provision_is_default(tmp_path, monkeypatch):

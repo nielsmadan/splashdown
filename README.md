@@ -139,20 +139,24 @@ splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
 ## Running on a device
 
 ```sh
-splash run  <type> [variant]       # reconcile + boot + build + launch
-splash boot <type> [variant]       # reconcile + boot (no build/launch)
+splash run     [type] [variant]    # reconcile + start + build + launch
+splash start   [type] [variant]    # reconcile + start (no build/launch)
+splash stop    [type] [variant]    # shut down the device (preserves it)
+splash destroy [type] [variant]    # delete the device + its registry entry
 ```
 
-`variant` is optional: defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
+Both `type` and `variant` are optional. `type` is inferred when exactly one device type is declared; otherwise pass `simulator` or `emulator`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
 ```sh
-splash run simulator                 # picks `default`
+splash run                            # one type, one variant — just run
+splash run simulator                  # picks `default`
 splash run simulator lowest-supported
 
-splash device list                 # show every declared variant + its live sim state
-splash device shutdown simulator     # stop the running sim
-splash device destroy simulator small-screen   # delete that variant's sim
-splash device remove simulator repro-bug       # strip a *local* variant from splashdown.local.toml
+splash devices                        # show every declared variant + its live sim state
+splash stop    simulator              # shut down the running sim
+splash destroy simulator small-screen # delete that variant's sim
+splash device remove simulator repro-bug      # strip a local variant (and destroy its sim)
+splash device remove simulator repro-bug --keep-instance   # toml-only edit
 ```
 
 Framework auto-detected for `run`:
@@ -160,6 +164,8 @@ Framework auto-detected for `run`:
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
+- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch`. Needs `[project.ios] scheme = "..."`.
+- `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
 - Override via `[project] framework = "..."`
 
 ### Auto-upgrade — no more manual `mksim`/`simctl delete` after Xcode updates
@@ -167,7 +173,8 @@ Framework auto-detected for `run`:
 Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever — they're explicit version coverage.
 
 ```sh
-splash device gc                    # registry cleanup: defunct checkouts (+stale-latest with --all)
+splash device gc                    # registry cleanup: defunct checkouts only
+splash device refresh               # destroy + recreate stale 'latest' sims (newer iOS landed)
 splash device prune [--yes] [--dry-run] [--platforms=ios,android]
                                     # destroys every sim/AVD splashdown did NOT create
                                     # (the Xcode default-template pile, hand-made sims, etc.)
@@ -189,7 +196,7 @@ The same machinery works for any per-checkout resource. Web/backend repos can de
 - `DATABASE_URL` templates with checkout-unique DB names
 - `STORYBOOK_PORT`, `STAGING_API_URL`, etc.
 
-Presets ship for `nextjs`, `rn`, `flutter`, `minimal`. Linux is supported for these non-mobile cases; the `device` subcommands obviously need macOS.
+Presets ship for `server` (alias: `nextjs`), `electron`, `rn`, `flutter`, `ios-native`, `android-native`, and `minimal`. `server` covers any web/backend (Next.js, Django, Rails, FastAPI, Spring Boot, …) with a PORT + DATABASE_URL. `electron` adds `ELECTRON_USER_DATA_DIR` so parallel checkouts don't clobber each other's userData / IndexedDB / SingleInstanceLock. The two `*-native` presets cover plain Swift/Obj-C (`xcodebuild` + `xcrun simctl`) and plain Kotlin/Java (`gradlew` + `adb`) apps — splashdown handles per-checkout sim/emulator provisioning and shells out to the native toolchain for build + install + launch. Linux is supported for the non-mobile cases; the `device` subcommands obviously need macOS (iOS) or a working `adb`/AVD setup (Android).
 
 ## Framework wiring (`splash doctor`)
 
@@ -219,28 +226,34 @@ splash doctor --framework=react-native   # override detection if needed
 
 ```
 splash                             # provision (what the post-checkout hook calls)
+splash --version
 splash provision --reprovision     # force re-allocate (regenerates uuids)
-splash init [--preset=rn|flutter|nextjs|minimal]
+splash refresh                     # re-provision and reallocate any port a process squatted on
+splash status                      # resources + devices + which ports are bound right now
+splash init [--preset=rn|flutter|server|electron|ios-native|android-native|minimal]
 splash doctor [--fix] [--framework=NAME]   # framework-aware wiring check
 
-splash run  <type> [variant]       # reconcile + boot + build + launch
-splash boot <type> [variant]       # reconcile + boot (no build/launch)
+splash run     [type] [variant]    # reconcile + start + build + launch
+splash start   [type] [variant]    # reconcile + start (no build/launch)
+splash stop    [type] [variant]    # shut down the device (preserves it)
+splash destroy [type] [variant]    # delete the device + its registry entry
 
-splash device list                 # all declared variants + live sim state
+splash devices                     # all declared variants + live sim state
 splash device add <type> <variant> [--model] [--ios] [--device] [--image]
-splash device remove <type> <variant>
-splash device shutdown <type> [variant]
-splash device destroy <type> [variant]
-splash device gc [--all]           # splashdown-managed cleanup (defunct; --all = +stale latest)
+splash device remove <type> <variant> [--keep-instance]   # also destroys the sim
+splash device gc                   # registry cleanup: defunct checkouts only
+splash device refresh              # destroy + recreate stale 'latest' sims
 splash device prune [--yes] [--dry-run] [--platforms=ios,android]
                                    # destroy every sim/AVD splashdown didn't create
 
 splash list                        # this checkout's resolved env vars
 splash get KEY [--checkout=PATH]
 splash set KEY=VALUE
-splash unpin [KEY]
+splash release [KEY]               # release this checkout's registry entries (all, or just KEY)
 splash gc                          # GC the resource registry (ports, uuids, devices)
 ```
+
+`splash status` answers "what's the state of this checkout?" — the resolved env vars (with `[in use]` / `[free]` for port-typed resources), the declared device variants and whether each is booted, and a count of stale registry rows. `splash refresh` re-runs provision and is the named verb for "fix any port collision" — the underlying detection lives in `Registry.allocate_port`, so plain `splash` does the same thing; `refresh` just makes the intent legible.
 
 ## Global port coordination
 

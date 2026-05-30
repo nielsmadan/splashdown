@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import json
 import os
+import plistlib
 import re
 import socket
 import subprocess
@@ -23,12 +24,15 @@ import sys
 import tomllib
 import uuid as uuid_mod
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple
 
 
 # ---------- paths & constants ----------
+
+__version__ = "0.8.0"  # keep in sync with pyproject.toml
 
 STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
 REGISTRY_DIR = STATE_HOME / "splashdown"
@@ -164,8 +168,8 @@ class Registry:
         rows = [r for r in self._read_ports() if not (r[1] == abspath and r[2] == key)]
         self._write_ports(rows)
 
-    def unpin(self, abspath: str) -> int:
-        """Remove all entries for abspath. Returns count removed."""
+    def release(self, abspath: str) -> int:
+        """Remove all registry entries for abspath. Returns count removed."""
         removed = 0
         with self._lock(self.port_file):
             rows = self._read_ports()
@@ -1202,40 +1206,34 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
     override = recipe.project.get("framework")
     if override and override != "auto":
         return override
-    if (cwd / "pubspec.yaml").exists():
-        return "flutter"
-    pkg = cwd / "package.json"
-    if pkg.exists():
-        try:
-            data = json.loads(pkg.read_text())
-        except json.JSONDecodeError:
-            data = {}
-        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
-        if "expo" in deps and (cwd / "app.json").exists():
-            return "expo"
-        if "react-native" in deps:
-            return "react-native"
+    for preset in PRESETS.values():
+        if preset.framework is None or preset.detect is None:
+            continue
+        if preset.detect(cwd):
+            return preset.framework
+    frameworks = sorted({p.framework for p in PRESETS.values() if p.framework})
     raise DeviceError(
-        "could not detect project framework; set `[project] framework = \"flutter\"|\"react-native\"|\"expo\"` in splashdown.toml"
+        "could not detect project framework; set `[project] framework = "
+        + "|".join(f'"{f}"' for f in frameworks)
+        + "` in splashdown.toml"
     )
+
+
+def _preset_for_framework(framework: str) -> Preset | None:
+    """Look up the registered Preset whose framework identifier matches."""
+    for preset in PRESETS.values():
+        if preset.framework == framework:
+            return preset
+    return None
 
 
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
     fw = detect_framework(cwd, recipe)
-    kind = info["kind"]
-    if fw == "flutter":
-        device_id = info.get("udid") if kind == "ios" else info.get("serial")
-        return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
-    if fw == "react-native":
-        if kind == "ios":
-            return subprocess.call(["npx", "react-native", "run-ios", "--udid", info["udid"]], cwd=cwd)
-        return subprocess.call(["npx", "react-native", "run-android", "--deviceId", info["serial"]], cwd=cwd)
-    if fw == "expo":
-        if kind == "ios":
-            return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
-        return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
-    raise DeviceError(f"don't know how to run framework `{fw}`")
+    preset = _preset_for_framework(fw)
+    if preset is None or preset.run is None:
+        raise DeviceError(f"don't know how to run framework `{fw}`")
+    return preset.run(cwd, recipe, info)
 
 
 def _load_recipe_or_empty(cwd: Path) -> Recipe:
@@ -1303,13 +1301,15 @@ def device_remove(cwd: Path, dtype: str, variant: str) -> None:
 
 # ---------- init / scaffolding ----------
 
-PRESETS: dict[str, str] = {
-    "minimal": """\
+# Scaffold TOML templates per preset. The `PRESETS` registry at the bottom of
+# this file bundles each scaffold with detection logic, run(), and wiring checks.
+_MINIMAL_SCAFFOLD = """\
 # splashdown.toml — committed recipe. Declares per-checkout resource slots.
 [resources.RUN_ID]
 type = "uuid"
-""",
-    "rn": """\
+"""
+
+_RN_SCAFFOLD = """\
 # splashdown.toml — React Native preset.
 [resources.RCT_METRO_PORT]
 type  = "port"
@@ -1322,8 +1322,9 @@ model = "iPhone 17"
 
 [project]
 framework = "react-native"
-""",
-    "flutter": """\
+"""
+
+_FLUTTER_SCAFFOLD = """\
 # splashdown.toml — Flutter preset.
 # Flutter's `flutter run` auto-assigns the Dart VM / DevTools port on each
 # launch; there is no equivalent of RN's RCT_METRO_PORT to pin. Splashdown's
@@ -1336,22 +1337,79 @@ device = "pixel_9"
 
 [project]
 framework = "flutter"
-""",
-    "nextjs": """\
-# splashdown.toml — Next.js preset.
+"""
+
+_SERVER_SCAFFOLD = """\
+# splashdown.toml — generic web/server preset (Next.js, Django, Rails, FastAPI,
+# Spring Boot, etc.). Allocates a free PORT per checkout and a unique DATABASE_URL
+# so worktrees don't clobber each other's databases.
 [resources.PORT]
 type  = "port"
 range = [3000, 3100]
 
-[resources.STORYBOOK_PORT]
-type  = "port"
-range = [6006, 6100]
-
 [resources.DATABASE_URL]
 type     = "template"
 template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
-""",
-}
+
+# Add extra ports as needed, e.g.:
+# [resources.STORYBOOK_PORT]
+# type  = "port"
+# range = [6006, 6100]
+"""
+
+_ELECTRON_SCAFFOLD = """\
+# splashdown.toml — Electron preset.
+# Two per-checkout collisions to solve for parallel Electron dev:
+#   1. PORT — the renderer dev server (Vite / Webpack / Parcel / etc.).
+#   2. ELECTRON_USER_DATA_DIR — Electron's userData path. By default every
+#      instance reads/writes ~/Library/Application Support/<productName>; when
+#      two checkouts run side by side they clobber each other's settings,
+#      IndexedDB, and SingleInstanceLock. Wire your main process to honour the
+#      env var (early, before app.whenReady()):
+#         if (process.env.ELECTRON_USER_DATA_DIR) {
+#           app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR)
+#         }
+[resources.PORT]
+type  = "port"
+range = [3000, 3100]
+
+[resources.ELECTRON_USER_DATA_DIR]
+type     = "template"
+template = "{{ cwd_abs }}/.electron-userdata"
+"""
+
+_IOS_NATIVE_SCAFFOLD = """\
+# splashdown.toml — Native iOS preset (Swift/Obj-C + xcodebuild).
+[devices.simulator.default]
+model = "iPhone 17"
+
+[project]
+framework = "ios-native"
+
+[project.ios]
+# Required: the Xcode scheme to build.
+scheme = "MyApp"
+# Optional, defaults shown:
+# configuration = "Debug"
+# workspace     = "MyApp.xcworkspace"  # auto-detected from root if absent
+# project       = "MyApp.xcodeproj"    # auto-detected from root if absent
+"""
+
+_ANDROID_NATIVE_SCAFFOLD = """\
+# splashdown.toml — Native Android preset (Kotlin/Java + Gradle).
+[devices.emulator.default]
+device = "pixel_9"
+
+[project]
+framework = "android-native"
+
+[project.android]
+# Optional, defaults shown:
+# module          = "app"
+# variant         = "debug"
+# application_id  = "com.example.myapp"  # asked from Gradle if not set
+# launch_activity = ".MainActivity"      # uses LAUNCHER intent if not set
+"""
 
 
 POST_CHECKOUT_HOOK = """\
@@ -1589,10 +1647,28 @@ class WiringCheck(NamedTuple):
     manual_instructions: Callable[[Path], str] | None
 
 
-WIRING: dict[str, list[WiringCheck]] = {
-    # Framework -> ordered list of checks. Populated below by the rn-* / etc.
-    # entries. Frameworks without an entry here simply have no doctor checks.
-}
+@dataclass
+class Preset:
+    """An app-type plugin: scaffold + framework identity + detect/run + wiring.
+
+    `name` is the user-facing key. `framework` is the internal identifier used
+    in detect / device_run / [project] framework overrides — may differ from
+    name (e.g. preset "rn", framework "react-native"), or be None for
+    scaffold-only presets (minimal, server, electron) that don't drive devices.
+    `scaffold_toml` is None for entries that exist only to register a
+    framework's detect/run (e.g. expo, which has no `splash init` scaffold).
+    """
+    name: str
+    scaffold_toml: str | None = None
+    framework: str | None = None
+    detect: Callable[[Path], bool] | None = None
+    run: Callable[[Path, "Recipe", dict[str, str]], int] | None = None
+    wiring_checks: list[WiringCheck] = field(default_factory=list)
+
+
+# RN wiring checks accumulate here as the rn-* helper functions are defined
+# below; the ReactNativePreset instance picks them up at registry-build time.
+_RN_WIRING_CHECKS: list[WiringCheck] = []
 
 
 def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
@@ -1617,7 +1693,8 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
             file=sys.stderr,
         )
         return 1
-    checks = WIRING.get(framework, [])
+    preset = _preset_for_framework(framework)
+    checks = preset.wiring_checks if preset else []
     if not checks:
         print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
         return 0
@@ -1658,10 +1735,31 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
     return 0 if bad == 0 else 1
 
 
+def _infer_dtype(cwd: Path, dtype: str | None) -> str:
+    """Resolve an unspecified TYPE arg to the only declared device type for
+    this checkout, or error if there's not exactly one."""
+    if dtype:
+        return dtype
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
+    declared = [t for t, variants in merged_devices(recipe, local).items() if variants]
+    if len(declared) == 1:
+        return declared[0]
+    if not declared:
+        raise DeviceError(
+            f"no devices declared in {RECIPE_NAME} or {LOCAL_NAME}"
+        )
+    raise DeviceError(
+        f"multiple device types declared ({', '.join(sorted(declared))}); "
+        "specify one: simulator | emulator"
+    )
+
+
 def _resolve_variant_for_cli(
     cwd: Path, dtype: str, variant_arg: str | None
 ) -> tuple[str, dict[str, Any], Recipe]:
-    """Common prelude for `splash run`/`boot`: load recipe+local, merge, pick variant."""
+    """Common prelude for `splash run`/`start`/`stop`/`destroy`: load recipe+local,
+    merge, pick variant."""
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
     catalog = merged_devices(recipe, local).get(dtype, {})
@@ -1669,15 +1767,149 @@ def _resolve_variant_for_cli(
     return variant, spec, recipe
 
 
-def cmd_boot(cwd: Path, registry: Registry, dtype: str, variant_arg: str | None) -> int:
+def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     """Reconcile the sim, then boot it. No build/launch."""
+    dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     info = ensure_fresh_sim(registry, cwd, dtype, variant, spec)
     if info["kind"] == "ios":
         ios_boot(info["udid"], _ios_current_state(info["udid"]))
     elif info["kind"] == "android":
         info["serial"] = android_boot(info["name"])
-    print(f"booted {dtype}.{variant} ({info['name']})", file=sys.stderr)
+    print(f"started {dtype}.{variant} ({info['name']})", file=sys.stderr)
+    return 0
+
+
+def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
+    """Shut down the sim/emulator (preserves it for next start)."""
+    dtype = _infer_dtype(cwd, dtype)
+    variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    resolved = _resolve_device_name(spec, cwd, variant, dtype)
+    device_shutdown(dtype, resolved)
+    print(f"stopped {dtype}.{variant} ({resolved})", file=sys.stderr)
+    return 0
+
+
+def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
+    """Delete the sim/emulator and its registry entry."""
+    dtype = _infer_dtype(cwd, dtype)
+    variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    resolved = _resolve_device_name(spec, cwd, variant, dtype)
+    device_destroy(dtype, resolved)
+    Registry().remove_device(str(cwd.resolve()), dtype, variant)
+    print(f"destroyed {dtype}.{variant} ({resolved})", file=sys.stderr)
+    return 0
+
+
+def cmd_status(cwd: Path, registry: Registry, fmt: str) -> int:
+    """Show this checkout's resolved vars, declared devices, and which ports
+    are currently bound by some OS process."""
+    target = str(cwd.resolve())
+    resources = registry.all_for(target)
+
+    # Identify port-typed resources from the recipe so we can flag bind state.
+    port_keys: set[str] = set()
+    recipe_path = cwd / RECIPE_NAME
+    if recipe_path.exists():
+        recipe = Recipe.load(recipe_path)
+        for name, spec in recipe.resources.items():
+            if spec.get("type") == "port":
+                port_keys.add(name)
+
+    res_rows: list[tuple[str, str, str]] = []
+    for key, value in sorted(resources.items()):
+        state = ""
+        if key in port_keys:
+            try:
+                state = "in use" if _port_in_use(int(value)) else "free"
+            except ValueError:
+                state = ""
+        res_rows.append((key, value, state))
+
+    # Device variants + state (mirrors cmd_devices_list output shape).
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
+    catalog = merged_devices(recipe, local)
+    dev_rows: list[tuple[str, str, str, str, str]] = []
+    for dtype, variants in catalog.items():
+        for variant, spec in variants.items():
+            source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
+            resolved = _resolve_device_name(spec, cwd, variant, dtype)
+            try:
+                status = device_status(dtype, resolved)
+            except DeviceError as e:
+                status = f"error: {e}"
+            dev_rows.append((dtype, variant, source, resolved, status))
+
+    # Stale-row count (rows whose checkout path no longer exists).
+    stale = sum(
+        1 for r in registry._read_ports() if not Path(r[1]).exists()  # noqa: SLF001
+    ) + sum(
+        1 for r in registry._read_kv() if not Path(r[0]).exists()  # noqa: SLF001
+    )
+
+    if fmt == "json":
+        print(json.dumps({
+            "checkout": target,
+            "resources": [{"key": k, "value": v, "port_state": s} for k, v, s in res_rows],
+            "devices": [
+                dict(zip(("type", "variant", "source", "device_name", "status"), r))
+                for r in dev_rows
+            ],
+            "stale_registry_rows": stale,
+        }, indent=2))
+        return 0
+
+    print(f"checkout: {target}", file=sys.stderr)
+    print("resources:", file=sys.stderr)
+    if not res_rows:
+        print("  (none)", file=sys.stderr)
+    for key, value, state in res_rows:
+        suffix = f"  [{state}]" if state else ""
+        print(f"  {key}={value}{suffix}", file=sys.stderr)
+    print("devices:", file=sys.stderr)
+    if not dev_rows:
+        print("  (none)", file=sys.stderr)
+    for dtype, variant, source, resolved, status in dev_rows:
+        print(f"  {dtype}.{variant}\t{source}\t{resolved}\t{status}", file=sys.stderr)
+    if stale:
+        print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
+    return 0
+
+
+def _cmd_refresh(cwd: Path, registry: Registry) -> int:
+    """Re-provision. Identical to bare `splash` — exists as a named verb because
+    the OS-squatter auto-reallocation in Registry.allocate_port is the thing
+    users reach for under that label."""
+    return _cmd_provision_inner(cwd, registry, reprovision=False)
+
+
+def cmd_devices_list(cwd: Path, fmt: str) -> int:
+    """List declared device variants and their live instance state."""
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
+    catalog = merged_devices(recipe, local)
+    if not catalog:
+        print(f"(no devices declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
+        return 0
+    rows: list[tuple[str, str, str, str, str]] = []
+    for dtype, variants in catalog.items():
+        for variant, spec in variants.items():
+            source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
+            resolved = _resolve_device_name(spec, cwd, variant, dtype)
+            try:
+                status = device_status(dtype, resolved)
+            except DeviceError as e:
+                status = f"error: {e}"
+            rows.append((dtype, variant, source, resolved, status))
+    if fmt == "json":
+        print(json.dumps(
+            [dict(zip(("type", "variant", "source", "device_name", "status"), r)) for r in rows],
+            indent=2,
+        ))
+    else:
+        for dtype, variant, source, resolved, status in rows:
+            print(f"{dtype}\t{variant}\t{source}\t{resolved}\t{status}")
     return 0
 
 
@@ -1849,8 +2081,9 @@ def cmd_device_prune(
     return 0
 
 
-def cmd_run(cwd: Path, registry: Registry, dtype: str, variant_arg: str | None) -> int:
+def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     """Reconcile the sim, boot it, then build + launch the app via the framework's CLI."""
+    dtype = _infer_dtype(cwd, dtype)
     variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     info = ensure_fresh_sim(registry, cwd, dtype, variant, spec)
     if info["kind"] == "ios":
@@ -1865,11 +2098,12 @@ def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     if recipe_path.exists() and not force:
         print(f"refusing to overwrite existing {RECIPE_NAME} (use --force)", file=sys.stderr)
         sys.exit(2)
-    body = PRESETS.get(preset)
-    if body is None:
-        print(f"unknown preset `{preset}`; available: {', '.join(PRESETS)}", file=sys.stderr)
+    entry = PRESETS.get(preset)
+    available = [n for n, p in PRESETS.items() if p.scaffold_toml is not None]
+    if entry is None or entry.scaffold_toml is None:
+        print(f"unknown preset `{preset}`; available: {', '.join(available)}", file=sys.stderr)
         sys.exit(2)
-    recipe_path.write_text(body)
+    recipe_path.write_text(entry.scaffold_toml)
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME
@@ -1883,7 +2117,8 @@ def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
 
     # After the generic scaffolding, run framework-specific wiring (if any).
     framework = _resolve_doctor_framework(cwd, None)
-    if framework and WIRING.get(framework):
+    fw_preset = _preset_for_framework(framework) if framework else None
+    if fw_preset and fw_preset.wiring_checks:
         print(f"running framework wiring for `{framework}`...", file=sys.stderr)
         cmd_doctor(cwd, fix=True)
 
@@ -1929,7 +2164,7 @@ def _rn_hook_manual(cwd: Path) -> str:
     )
 
 
-WIRING["react-native"] = [
+_RN_WIRING_CHECKS.append(
     WiringCheck(
         id="rn-hook",
         description="post-checkout fires `splash`",
@@ -1938,7 +2173,7 @@ WIRING["react-native"] = [
         autofix=_ensure_post_checkout_hook,
         manual_instructions=_rn_hook_manual,
     ),
-]
+)
 
 
 # Recognized metro.config.js shape: `port: <number>` (literal). We rewrite that to
@@ -1985,7 +2220,7 @@ def _rn_metro_manual(cwd: Path) -> str:
     )
 
 
-WIRING["react-native"].append(
+_RN_WIRING_CHECKS.append(
     WiringCheck(
         id="rn-metro-config",
         description="metro.config.js consumes RCT_METRO_PORT",
@@ -2056,7 +2291,7 @@ def _rn_pkg_manual(cwd: Path) -> str:
     )
 
 
-WIRING["react-native"].append(
+_RN_WIRING_CHECKS.append(
     WiringCheck(
         id="rn-pkg-port",
         description="package.json scripts don't override --port",
@@ -2137,7 +2372,7 @@ def _rn_xcode_manual(cwd: Path) -> str:
     )
 
 
-WIRING["react-native"].append(
+_RN_WIRING_CHECKS.append(
     WiringCheck(
         id="rn-xcode-env",
         description="ios/.xcode.env wires RCT_METRO_PORT to splashdown.env",
@@ -2149,69 +2384,314 @@ WIRING["react-native"].append(
 )
 
 
+# ---------- preset registry ----------
+# Each Preset bundles: scaffold TOML (for `splash init`), filesystem detection
+# (for auto-detecting framework), build/install/launch (for `splash run`), and
+# wiring checks (for `splash doctor`). Native presets are scaffold + detect +
+# run only; their wiring is intentionally minimal.
+
+
+def _detect_flutter(cwd: Path) -> bool:
+    return (cwd / "pubspec.yaml").exists()
+
+
+def _read_pkg_deps(cwd: Path) -> dict[str, Any]:
+    pkg = cwd / "package.json"
+    if not pkg.exists():
+        return {}
+    try:
+        data = json.loads(pkg.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+
+
+def _detect_expo(cwd: Path) -> bool:
+    deps = _read_pkg_deps(cwd)
+    return "expo" in deps and (cwd / "app.json").exists()
+
+
+def _detect_rn(cwd: Path) -> bool:
+    return "react-native" in _read_pkg_deps(cwd)
+
+
+def _flutter_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    device_id = info.get("udid") if info["kind"] == "ios" else info.get("serial")
+    return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
+
+
+def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    if info["kind"] == "ios":
+        return subprocess.call(["npx", "react-native", "run-ios", "--udid", info["udid"]], cwd=cwd)
+    return subprocess.call(["npx", "react-native", "run-android", "--deviceId", info["serial"]], cwd=cwd)
+
+
+def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    if info["kind"] == "ios":
+        return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
+    return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
+
+
+def _has_js_or_flutter(cwd: Path) -> bool:
+    return _detect_flutter(cwd) or _detect_expo(cwd) or _detect_rn(cwd)
+
+
+def _detect_ios_native(cwd: Path) -> bool:
+    if _has_js_or_flutter(cwd):
+        return False
+    return any(cwd.glob("*.xcworkspace")) or any(cwd.glob("*.xcodeproj"))
+
+
+def _detect_android_native(cwd: Path) -> bool:
+    if _has_js_or_flutter(cwd):
+        return False
+    has_build = (cwd / "build.gradle").exists() or (cwd / "build.gradle.kts").exists()
+    has_settings = (cwd / "settings.gradle").exists() or (cwd / "settings.gradle.kts").exists()
+    return has_build and has_settings
+
+
+def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
+    """Build the workspace/project flag for xcodebuild — explicit setting wins,
+    else first match at repo root."""
+    if w := cfg.get("workspace"):
+        return ["-workspace", str(w)]
+    if p := cfg.get("project"):
+        return ["-project", str(p)]
+    workspaces = sorted(cwd.glob("*.xcworkspace"))
+    if workspaces:
+        return ["-workspace", workspaces[0].name]
+    projects = sorted(cwd.glob("*.xcodeproj"))
+    if projects:
+        return ["-project", projects[0].name]
+    raise DeviceError(
+        "ios-native: no .xcworkspace or .xcodeproj at repo root; "
+        "set `[project.ios] workspace = \"...\"` or `project = \"...\"`"
+    )
+
+
+def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    cfg = recipe.project.get("ios") or {}
+    scheme = cfg.get("scheme")
+    if not scheme:
+        raise DeviceError(
+            "ios-native: set `[project.ios] scheme = \"<your-scheme>\"` in splashdown.toml"
+        )
+    configuration = cfg.get("configuration", "Debug")
+    udid = info["udid"]
+    derived = cwd / "build" / "splash-derived"
+    project_flag = _ios_xcodebuild_args(cwd, cfg)
+
+    common = [
+        "xcodebuild", *project_flag,
+        "-scheme", scheme,
+        "-configuration", configuration,
+        "-destination", f"id={udid}",
+        "-derivedDataPath", str(derived),
+    ]
+    rc = subprocess.call(common + ["build"], cwd=cwd)
+    if rc != 0:
+        return rc
+
+    settings = subprocess.run(
+        common + ["-showBuildSettings", "-json"],
+        cwd=cwd, capture_output=True, text=True, check=False,
+    )
+    try:
+        entries = json.loads(settings.stdout)
+        bs = entries[0]["buildSettings"]
+        app_path = Path(bs["BUILT_PRODUCTS_DIR"]) / bs["WRAPPER_NAME"]
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        raise DeviceError(f"ios-native: couldn't read xcodebuild settings: {e}")
+    if not app_path.exists():
+        raise DeviceError(f"ios-native: built .app missing at {app_path}")
+
+    try:
+        with (app_path / "Info.plist").open("rb") as f:
+            plist = plistlib.load(f)
+        bundle_id = plist["CFBundleIdentifier"]
+    except (FileNotFoundError, KeyError) as e:
+        raise DeviceError(f"ios-native: couldn't read bundle id from {app_path}: {e}")
+
+    rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
+    if rc != 0:
+        return rc
+    return subprocess.call(["xcrun", "simctl", "launch", udid, bundle_id])
+
+
+def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    cfg = recipe.project.get("android") or {}
+    module = cfg.get("module", "app")
+    variant = cfg.get("variant", "debug")
+    serial = info["serial"]
+    gradlew = cwd / "gradlew"
+    gradle_cmd = [f"./{gradlew.name}"] if gradlew.exists() else ["gradle"]
+
+    install_task = f":{module}:install{variant[:1].upper()}{variant[1:]}"
+    env = {**os.environ, "ANDROID_SERIAL": serial}
+    rc = subprocess.call(gradle_cmd + [install_task], cwd=cwd, env=env)
+    if rc != 0:
+        return rc
+
+    app_id = cfg.get("application_id")
+    if not app_id:
+        try:
+            out = subprocess.check_output(
+                gradle_cmd + [f":{module}:properties", "-q"],
+                cwd=cwd, text=True, env=env,
+            )
+            for line in out.splitlines():
+                if line.startswith("applicationId:"):
+                    app_id = line.split(":", 1)[1].strip()
+                    break
+        except subprocess.CalledProcessError:
+            pass
+    if not app_id:
+        raise DeviceError(
+            "android-native: couldn't resolve applicationId; set "
+            "`[project.android] application_id = \"...\"` in splashdown.toml"
+        )
+
+    if activity := cfg.get("launch_activity"):
+        return subprocess.call(
+            ["adb", "-s", serial, "shell", "am", "start", "-n", f"{app_id}/{activity}"],
+        )
+    return subprocess.call(
+        ["adb", "-s", serial, "shell", "monkey", "-p", app_id,
+         "-c", "android.intent.category.LAUNCHER", "1"],
+    )
+
+
+# Shared "post-checkout hook fires `splash`" wiring check — also used by native
+# presets, which otherwise have no per-checkout wiring.
+_HOOK_WIRING_CHECK = WiringCheck(
+    id="hook",
+    description="post-checkout fires `splash`",
+    applies=lambda cwd: True,
+    detect=_rn_hook_detect,
+    autofix=_ensure_post_checkout_hook,
+    manual_instructions=_rn_hook_manual,
+)
+
+
+# Detection order matters: Flutter and Expo are checked before plain RN because
+# an Expo project's package.json also lists react-native as a dependency.
+PRESETS: dict[str, Preset] = {
+    "minimal": Preset(name="minimal", scaffold_toml=_MINIMAL_SCAFFOLD),
+    "flutter": Preset(
+        name="flutter",
+        scaffold_toml=_FLUTTER_SCAFFOLD,
+        framework="flutter",
+        detect=_detect_flutter,
+        run=_flutter_run,
+    ),
+    "expo": Preset(
+        name="expo",
+        # no `splash init expo` scaffold; framework detect/run still works
+        framework="expo",
+        detect=_detect_expo,
+        run=_expo_run,
+    ),
+    "rn": Preset(
+        name="rn",
+        scaffold_toml=_RN_SCAFFOLD,
+        framework="react-native",
+        detect=_detect_rn,
+        run=_rn_run,
+        wiring_checks=_RN_WIRING_CHECKS,
+    ),
+    "ios-native": Preset(
+        name="ios-native",
+        scaffold_toml=_IOS_NATIVE_SCAFFOLD,
+        framework="ios-native",
+        detect=_detect_ios_native,
+        run=_ios_native_run,
+        wiring_checks=[_HOOK_WIRING_CHECK],
+    ),
+    "android-native": Preset(
+        name="android-native",
+        scaffold_toml=_ANDROID_NATIVE_SCAFFOLD,
+        framework="android-native",
+        detect=_detect_android_native,
+        run=_android_native_run,
+        wiring_checks=[_HOOK_WIRING_CHECK],
+    ),
+    "electron": Preset(name="electron", scaffold_toml=_ELECTRON_SCAFFOLD),
+    "server": Preset(name="server", scaffold_toml=_SERVER_SCAFFOLD),
+}
+
+# `nextjs` is the historical name for the generic server scaffold — keep it as
+# an alias so `splash init nextjs` still works.
+PRESETS["nextjs"] = PRESETS["server"]
+
+
 # ---------- CLI ----------
 
-KNOWN_CMDS = {"provision", "init", "list", "get", "set", "unpin", "gc", "device", "doctor", "run", "boot"}
+KNOWN_CMDS = {
+    "provision", "init", "list", "get", "set", "release", "gc", "doctor",
+    "status", "refresh",
+    "run", "start", "stop", "destroy",
+    "devices", "device",
+}
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
-    # SUPPRESS defaults so a top-level value isn't clobbered when the subparser
-    # (which also inherits `common` via `parents=`) parses without these flags.
-    common.add_argument("--cwd", default=argparse.SUPPRESS, help="working directory (default: $PWD)")
-    common.add_argument("--format", choices=["text", "json"], default=argparse.SUPPRESS)
-
-    parser = argparse.ArgumentParser(prog="splash", description="Per-checkout resource provisioner", parents=[common])
+    parser = argparse.ArgumentParser(prog="splash", description="Per-checkout resource provisioner")
+    parser.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
+    parser.add_argument("--format", choices=["text", "json"], default=None)
+    parser.add_argument("--version", action="version", version=f"splashdown {__version__}")
     sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
 
-    p = sub.add_parser("provision", parents=[common], help="provision per splashdown.toml (default if no command)")
+    p = sub.add_parser("provision", help="provision per splashdown.toml (default if no command)")
     p.add_argument("--reprovision", action="store_true", help="force re-allocate all resources")
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
-    p = sub.add_parser("init", parents=[common], help="scaffold a splashdown.toml")
+    sub.add_parser("status", help="show resolved vars, declared devices, and OS-level port collisions")
+    sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
+
+    p = sub.add_parser("init", help="scaffold a splashdown.toml")
     p.add_argument("--preset", default="minimal")
     p.add_argument("--force", action="store_true")
 
-    p = sub.add_parser("list", parents=[common], help="show this checkout's resolved vars")
+    p = sub.add_parser("list", help="show this checkout's resolved vars")
     p.add_argument("--checkout", default=None)
 
-    p = sub.add_parser("get", parents=[common], help="echo a single resolved value")
+    p = sub.add_parser("get", help="echo a single resolved value")
     p.add_argument("key")
     p.add_argument("--checkout", default=None)
 
-    p = sub.add_parser("set", parents=[common], help="manually set a value (for type=\"set\" resources)")
+    p = sub.add_parser("set", help="manually set a value (for type=\"set\" resources)")
     p.add_argument("assignment", metavar="KEY=VALUE")
 
-    p = sub.add_parser("unpin", parents=[common], help="release this checkout's entries (or just KEY)")
+    p = sub.add_parser("release", help="release this checkout's registry entries (or just KEY)")
     p.add_argument("key", nargs="?")
 
-    sub.add_parser("gc", parents=[common], help="garbage-collect dead registry entries")
+    sub.add_parser("gc", help="garbage-collect dead registry entries")
 
-    p = sub.add_parser("doctor", parents=[common], help="check framework-aware wiring of this project")
+    p = sub.add_parser("doctor", help="check framework-aware wiring of this project")
     p.add_argument("--fix", action="store_true", help="apply safe autofixes; print manual instructions for the rest")
     p.add_argument("--framework", default=None, help="override framework detection (react-native|flutter|expo)")
 
     for verb, helptxt in (
-        ("run", "boot the device + build & launch the app on it"),
-        ("boot", "boot the device (create-if-missing); don't build/launch"),
+        ("run", "start the device + build & launch the app on it"),
+        ("start", "start the device (create-if-missing); don't build/launch"),
+        ("stop", "shut down the device (preserves it for next start)"),
+        ("destroy", "delete the device and its registry entry"),
     ):
-        p = sub.add_parser(verb, parents=[common], help=helptxt)
-        p.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+        p = sub.add_parser(verb, help=helptxt)
+        # dtype optional: if there's exactly one declared device type for this
+        # checkout, that's what's used.
+        p.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE", nargs="?")
         p.add_argument("variant", nargs="?", help="variant name (defaults to `default`)")
 
-    dev = sub.add_parser("device", parents=[common], help="manage iOS sims / Android emulators")
-    devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION", required=True)
+    sub.add_parser("devices", help="show declared variants + instance state")
 
-    devsub.add_parser("list", parents=[common], help="show declared variants + instance state")
-    for action in ("shutdown", "destroy"):
-        sp = devsub.add_parser(action, parents=[common])
-        sp.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
-        sp.add_argument("variant", nargs="?", help="variant name (defaults to `default`)")
+    dev = sub.add_parser("device", help="manage device variants (add/remove/gc/refresh/prune)")
+    devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION")
 
-    gc = devsub.add_parser("gc", parents=[common], help="prune splashdown-managed sims (defunct checkouts; --all for stale-latest too)")
-    gc.add_argument("--all", action="store_true", dest="all_", help="also destroy stale 'latest' sims")
+    devsub.add_parser("gc", help="prune splashdown-managed sims for defunct checkouts")
+    devsub.add_parser("refresh", help="destroy + recreate stale 'latest' sims (newer iOS available)")
 
-    prune = devsub.add_parser("prune", parents=[common], help="destroy every sim/AVD splashdown did NOT create")
+    prune = devsub.add_parser("prune", help="destroy every sim/AVD splashdown did NOT create")
     prune.add_argument("--yes", action="store_true", help="skip confirmation prompt")
     prune.add_argument("--dry-run", action="store_true", dest="dry_run", help="list without deleting")
     prune.add_argument(
@@ -2219,7 +2699,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="comma-separated subset of: ios,android (default: both)",
     )
 
-    add = devsub.add_parser("add", parents=[common], help="declare a variant in splashdown.local.toml")
+    add = devsub.add_parser("add", help="declare a variant in splashdown.local.toml")
     add.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
     add.add_argument("variant", help="variant name (e.g. `default`, `small-screen`)")
     add.add_argument("--model")
@@ -2228,9 +2708,13 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("--image")
     add.add_argument("--name", dest="sim_name", help="simulator/emulator name override")
 
-    rm = devsub.add_parser("remove", parents=[common], help="remove a local variant from splashdown.local.toml")
+    rm = devsub.add_parser("remove", help="remove a variant from splashdown.local.toml (and destroy its sim)")
     rm.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
     rm.add_argument("variant")
+    rm.add_argument(
+        "--keep-instance", action="store_true", dest="keep_instance",
+        help="leave the simulator/emulator alive; only edit the local toml",
+    )
 
     return parser
 
@@ -2240,18 +2724,41 @@ def _resolve_cwd(args) -> Path:
     return Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
 
 
+# Top-level flags whose value lives in the next argv slot (`--flag value`). Used
+# by _ensure_subcommand to skip past them when deciding where to inject the
+# default `provision` subcommand.
+_TOP_LEVEL_VALUE_FLAGS = {"--cwd", "--format"}
+
+
+def _ensure_subcommand(argv: list[str]) -> list[str]:
+    """Bare `splash …` (no subcommand) defaults to `provision`. Inserts the
+    `provision` token at the right slot — after any leading top-level flags
+    (`--cwd PATH`, `--format json`, …) so they parse at the root level."""
+    if any(a in ("-h", "--help", "--version") for a in argv):
+        return argv
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in KNOWN_CMDS:
+            return argv  # explicit subcommand already present
+        if a in _TOP_LEVEL_VALUE_FLAGS:
+            i += 2  # flag + value
+            continue
+        if a.startswith("--") and "=" in a:
+            i += 1  # --flag=value
+            continue
+        break  # first non-flag, non-subcommand token: insert provision here
+    return argv[:i] + ["provision"] + argv[i:]
+
+
 def _resolve_format(args) -> str:
-    return getattr(args, "format", "text")
+    return getattr(args, "format", None) or "text"
 
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    argv = list(argv)
-    # Bare `splash ...` with no subcommand defaults to `provision`, unless the
-    # user is asking for top-level help.
-    if not any(a in KNOWN_CMDS for a in argv) and not any(a in ("-h", "--help") for a in argv):
-        argv = ["provision"] + argv
+    argv = _ensure_subcommand(list(argv))
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -2275,8 +2782,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "run":
             return cmd_run(cwd, registry, args.dtype, args.variant)
 
-        if args.cmd == "boot":
-            return cmd_boot(cwd, registry, args.dtype, args.variant)
+        if args.cmd == "start":
+            return cmd_start(cwd, registry, args.dtype, args.variant)
+
+        if args.cmd == "stop":
+            return cmd_stop(cwd, args.dtype, args.variant)
+
+        if args.cmd == "destroy":
+            return cmd_destroy(cwd, args.dtype, args.variant)
+
+        if args.cmd == "devices":
+            return cmd_devices_list(cwd, _resolve_format(args))
+
+        if args.cmd == "status":
+            return cmd_status(cwd, registry, _resolve_format(args))
+
+        if args.cmd == "refresh":
+            return _cmd_refresh(cwd, registry)
 
         if args.cmd == "list":
             target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
@@ -2307,14 +2829,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"set {key}={value}", file=sys.stderr)
             return 0
 
-        if args.cmd == "unpin":
+        if args.cmd == "release":
             if args.key:
                 registry.remove_kv(str(cwd), args.key)
                 registry._remove_port(str(cwd), args.key)  # noqa: SLF001
-                print(f"unpinned {args.key}", file=sys.stderr)
+                print(f"released {args.key}", file=sys.stderr)
             else:
-                n = registry.unpin(str(cwd))
-                print(f"unpinned {n} entries for {cwd}", file=sys.stderr)
+                n = registry.release(str(cwd))
+                print(f"released {n} entries for {cwd}", file=sys.stderr)
             return 0
 
         if args.cmd == "device":
@@ -2328,8 +2850,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
+    return _cmd_provision_inner(
+        cwd, registry,
+        reprovision=args.reprovision,
+        setup=args.setup,
+        fmt=_resolve_format(args),
+    )
+
+
+def _cmd_provision_inner(
+    cwd: Path, registry: Registry, *,
+    reprovision: bool = False, setup: str | None = None, fmt: str = "text",
+) -> int:
     try:
-        resolved = provision(cwd, registry=registry, reprovision=args.reprovision)
+        resolved = provision(cwd, registry=registry, reprovision=reprovision)
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 0
@@ -2342,9 +2876,9 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
     if not local_path.exists():
         local_path.write_text(LOCAL_SKELETON)
     msgs = write_outputs(cwd, recipe, resolved)
-    setup_msgs = run_setup(cwd, recipe, args.setup, resolved)
+    setup_msgs = run_setup(cwd, recipe, setup, resolved)
 
-    if _resolve_format(args) == "json":
+    if fmt == "json":
         print(json.dumps({"resolved": resolved, "writers": msgs, "setup": setup_msgs}, indent=2))
     else:
         for k, v in resolved.items():
@@ -2355,6 +2889,10 @@ def _cmd_provision(args, cwd: Path, registry: Registry) -> int:
 
 
 def _device_dispatch(args, cwd: Path) -> int:
+    # Bare `splash device` → list devices (mirrors bare `splash` → provision).
+    if args.device_cmd is None:
+        return cmd_devices_list(cwd, _resolve_format(args))
+
     if args.device_cmd == "add":
         fields = {
             "model": args.model,
@@ -2368,56 +2906,28 @@ def _device_dispatch(args, cwd: Path) -> int:
         return 0
 
     if args.device_cmd == "remove":
-        device_remove(cwd, args.dtype, args.variant)
-        print(f"removed device `{args.dtype}.{args.variant}` from {LOCAL_NAME}", file=sys.stderr)
-        return 0
-
-    if args.device_cmd == "list":
-        recipe = _load_recipe_or_empty(cwd)
-        local = LocalConfig.load(cwd / LOCAL_NAME)
-        catalog = merged_devices(recipe, local)
-        if not catalog:
-            print(f"(no devices declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
-            return 0
-        rows: list[tuple[str, str, str, str, str]] = []
-        for dtype, variants in catalog.items():
-            for variant, spec in variants.items():
-                source = (
-                    "recipe"
-                    if variant in recipe.devices.get(dtype, {})
-                    else "local"
-                )
-                resolved = _resolve_device_name(spec, cwd, variant, dtype)
+        # Default: also destroy the instance — most users want both. Opt out
+        # of state destruction with --keep-instance.
+        variant_arg = args.variant
+        if not args.keep_instance:
+            spec = _load_variant_spec(cwd, args.dtype, variant_arg)
+            if spec is not None:
+                resolved = _resolve_device_name(spec, cwd, variant_arg, args.dtype)
                 try:
-                    status = device_status(dtype, resolved)
-                except DeviceError as e:
-                    status = f"error: {e}"
-                rows.append((dtype, variant, source, resolved, status))
-        if _resolve_format(args) == "json":
-            print(json.dumps(
-                [dict(zip(("type", "variant", "source", "device_name", "status"), r)) for r in rows],
-                indent=2,
-            ))
-        else:
-            for dtype, variant, source, resolved, status in rows:
-                print(f"{dtype}\t{variant}\t{source}\t{resolved}\t{status}")
-        return 0
-
-    if args.device_cmd in ("shutdown", "destroy"):
-        variant, spec, _recipe = _resolve_variant_for_cli(cwd, args.dtype, args.variant)
-        resolved = _resolve_device_name(spec, cwd, variant, args.dtype)
-        if args.device_cmd == "shutdown":
-            device_shutdown(args.dtype, resolved)
-            print(f"shutdown {args.dtype}.{variant} ({resolved})", file=sys.stderr)
-        else:
-            device_destroy(args.dtype, resolved)
-            checkout = str(cwd.resolve())
-            Registry().remove_device(checkout, args.dtype, variant)
-            print(f"destroyed {args.dtype}.{variant} ({resolved})", file=sys.stderr)
+                    device_destroy(args.dtype, resolved)
+                except DeviceError:
+                    pass  # sim may not exist yet; the toml edit still proceeds
+                Registry().remove_device(str(cwd.resolve()), args.dtype, variant_arg)
+        device_remove(cwd, args.dtype, variant_arg)
+        suffix = "" if args.keep_instance else " (and destroyed the instance)"
+        print(f"removed device `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}", file=sys.stderr)
         return 0
 
     if args.device_cmd == "gc":
-        return cmd_device_gc(Registry(), all_=args.all_)
+        return cmd_device_gc(Registry(), all_=False)
+
+    if args.device_cmd == "refresh":
+        return cmd_device_gc(Registry(), all_=True)
 
     if args.device_cmd == "prune":
         platforms = tuple(p.strip() for p in args.platforms.split(",") if p.strip())
