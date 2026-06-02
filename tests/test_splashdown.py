@@ -1998,3 +1998,32 @@ def test_vite_wiring_check_idempotent(tmp_path):
     check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env")
     status, _ = check.detect(tmp_path)
     assert status == "ok"
+
+
+def test_loader_registry_exists_with_mise():
+    assert isinstance(sd.LOADERS, dict)
+    assert "mise" in sd.LOADERS
+    assert isinstance(sd.LOADERS["mise"], sd.Loader)
+
+
+def test_mise_loader_wire_creates_mise_toml(tmp_path):
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert (tmp_path / "mise.toml").exists()
+    assert 'splashdown.env' in (tmp_path / "mise.toml").read_text()
+
+
+def test_mise_loader_wire_is_idempotent(tmp_path):
+    sd.LOADERS["mise"].wire(tmp_path)
+    first = (tmp_path / "mise.toml").read_text()
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert (tmp_path / "mise.toml").read_text() == first
+
+
+def test_mise_loader_unwire_removes_directive_only(tmp_path):
+    (tmp_path / "mise.toml").write_text(
+        '[tools]\nnode = "22"\n\n[env]\n_.file = "splashdown.env"\n'
+    )
+    sd.LOADERS["mise"].unwire(tmp_path)
+    text = (tmp_path / "mise.toml").read_text()
+    assert 'splashdown.env' not in text
+    assert 'node = "22"' in text  # other config preserved

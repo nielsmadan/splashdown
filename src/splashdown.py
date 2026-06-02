@@ -2891,6 +2891,62 @@ def _vite_process_env_manual(cwd: Path) -> str:
 PROFILES["vite"] = ViteProfile()
 
 
+# ---------- loaders ----------
+# A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
+# splashdown.env when the user enters the project directory. Each loader uses
+# sentinel-wrapped blocks so wire/unwire is idempotent and visually obvious.
+
+
+class Loader:
+    """Abstract base. Subclasses set `name` and override `detect`, `wire`, `unwire`."""
+    name: str = ""
+
+    def detect(self, cwd: Path) -> bool:
+        raise NotImplementedError
+
+    def wire(self, cwd: Path) -> None:
+        """Idempotently configure the loader to source splashdown.env."""
+        raise NotImplementedError
+
+    def unwire(self, cwd: Path) -> None:
+        """Remove splashdown's wiring, leaving the user's other config alone."""
+        raise NotImplementedError
+
+
+class MiseLoader(Loader):
+    name = "mise"
+
+    def detect(self, cwd: Path) -> bool:
+        return (cwd / "mise.toml").exists() or (cwd / ".mise.toml").exists()
+
+    def wire(self, cwd: Path) -> None:
+        # Reuses the existing helper that already handles new-file creation,
+        # existing [env] table append, and idempotent re-runs.
+        _ensure_mise_file_directive(cwd)
+
+    def unwire(self, cwd: Path) -> None:
+        path = cwd / "mise.toml"
+        if not path.exists():
+            return
+        lines = path.read_text().splitlines()
+        kept: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            # Strip exactly the splashdown-managed directive — preserves
+            # everything else the user has in mise.toml (tools, tasks, etc.).
+            if re.fullmatch(r'_\.file\s*=\s*"splashdown\.env"', stripped):
+                continue
+            kept.append(line)
+        while kept and not kept[-1].strip():
+            kept.pop()
+        path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+LOADERS: dict[str, Loader] = {
+    "mise": MiseLoader(),
+}
+
+
 # ---------- CLI ----------
 
 KNOWN_CMDS = {
