@@ -3333,9 +3333,58 @@ class DirenvLoader(Loader):
         path.write_text(text + ("\n" if text else ""))
 
 
+# Marker baked into the init_hook string so we can find-and-replace idempotently
+# without parsing JSON ASTs.
+_DEVBOX_HOOK_MARKER = "# splashdown-managed"
+_DEVBOX_HOOK_CMD = f"{_DEVBOX_HOOK_MARKER}\nset -a; source splashdown.env; set +a"
+
+
+class DevboxLoader(Loader):
+    name = "devbox"
+
+    def detect(self, cwd: Path) -> bool:
+        return (cwd / "devbox.json").exists()
+
+    def wire(self, cwd: Path) -> None:
+        path = cwd / "devbox.json"
+        if not path.exists():
+            path.write_text("{}")
+        data = json.loads(path.read_text())
+        shell = data.setdefault("shell", {})
+        hooks = shell.setdefault("init_hook", [])
+        if isinstance(hooks, str):
+            hooks = [hooks]
+        # Replace any existing splashdown-managed entry; else append.
+        new_hooks = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
+        new_hooks.append(_DEVBOX_HOOK_CMD)
+        if new_hooks == hooks:
+            return  # nothing changed
+        shell["init_hook"] = new_hooks
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+    def unwire(self, cwd: Path) -> None:
+        path = cwd / "devbox.json"
+        if not path.exists():
+            return
+        data = json.loads(path.read_text())
+        hooks = data.get("shell", {}).get("init_hook", [])
+        if isinstance(hooks, str):
+            hooks = [hooks]
+        kept = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
+        if "shell" in data:
+            if kept:
+                data["shell"]["init_hook"] = kept
+            else:
+                data["shell"].pop("init_hook", None)
+                if not data["shell"]:
+                    data.pop("shell", None)
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 LOADERS: dict[str, Loader] = {
     "mise": MiseLoader(),
     "direnv": DirenvLoader(),
+    "devbox": DevboxLoader(),
 }
 
 

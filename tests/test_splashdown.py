@@ -2315,3 +2315,37 @@ def test_direnv_loader_unwire_strips_only_sentinel_block(tmp_path):
     text = (tmp_path / ".envrc").read_text()
     assert "use nix" in text
     assert "splashdown" not in text
+
+
+# ---------- DevboxLoader ----------
+
+def test_devbox_loader_wire_adds_init_hook(tmp_path):
+    (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22"]}')
+    sd.LOADERS["devbox"].wire(tmp_path)
+    data = json.loads((tmp_path / "devbox.json").read_text())
+    hooks = data.get("shell", {}).get("init_hook", [])
+    assert any("splashdown.env" in h for h in hooks)
+
+
+def test_devbox_loader_wire_preserves_existing_packages(tmp_path):
+    (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22", "pnpm@9"]}')
+    sd.LOADERS["devbox"].wire(tmp_path)
+    data = json.loads((tmp_path / "devbox.json").read_text())
+    assert data["packages"] == ["nodejs@22", "pnpm@9"]
+
+
+def test_devbox_loader_wire_idempotent(tmp_path):
+    (tmp_path / "devbox.json").write_text("{}")
+    sd.LOADERS["devbox"].wire(tmp_path)
+    first = (tmp_path / "devbox.json").read_text()
+    sd.LOADERS["devbox"].wire(tmp_path)
+    assert (tmp_path / "devbox.json").read_text() == first
+
+
+def test_devbox_loader_unwire_strips_hook_only(tmp_path):
+    (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22"]}')
+    sd.LOADERS["devbox"].wire(tmp_path)
+    sd.LOADERS["devbox"].unwire(tmp_path)
+    data = json.loads((tmp_path / "devbox.json").read_text())
+    assert "splashdown" not in json.dumps(data)
+    assert data["packages"] == ["nodejs@22"]
