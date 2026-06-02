@@ -1900,3 +1900,101 @@ def test_scanner_loader_precedence_mise_over_direnv(tmp_path):
     (tmp_path / ".envrc").write_text("")
     inv = sd.Scanner().scan(tmp_path)
     assert inv.loader == "mise"
+
+
+def test_profile_registry_exists_and_is_dict_of_str_to_profile():
+    assert isinstance(sd.PROFILES, dict)
+    for name, p in sd.PROFILES.items():
+        assert isinstance(name, str)
+        assert isinstance(p, sd.Profile)
+
+
+def test_scanner_falls_back_to_unknown_when_no_profile_matches(tmp_path):
+    # A directory with nothing recognizable.
+    inv = sd.Scanner().scan(tmp_path)
+    assert all(app.profile == "unknown" for app in inv.apps)
+
+
+def test_vite_profile_detects_vite_config_ts(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    p = sd.PROFILES["vite"]
+    assert p.detect(tmp_path) is True
+
+
+def test_vite_profile_detects_vite_config_js(tmp_path):
+    (tmp_path / "vite.config.js").write_text("module.exports = {}")
+    assert sd.PROFILES["vite"].detect(tmp_path) is True
+
+
+def test_vite_profile_does_not_detect_without_config(tmp_path):
+    assert sd.PROFILES["vite"].detect(tmp_path) is False
+
+
+def test_vite_profile_emits_web_dev_port_resource(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    res = sd.PROFILES["vite"].resources(app)
+    assert "WEB_DEV_PORT" in res
+    assert res["WEB_DEV_PORT"]["type"] == "port"
+    assert res["WEB_DEV_PORT"]["range"] == [5174, 5200]
+
+
+def test_vite_profile_emits_api_dev_port_when_proxy_present(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(
+        'export default { server: { proxy: { "/api": "http://localhost:9081" } } }'
+    )
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    res = sd.PROFILES["vite"].resources(app)
+    assert "API_DEV_PORT" in res
+    assert res["API_DEV_PORT"]["type"] == "template"
+    assert res["API_DEV_PORT"]["template"] == "{{ PORT }}"
+
+
+def test_vite_profile_skips_api_dev_port_when_no_proxy(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    res = sd.PROFILES["vite"].resources(app)
+    assert "API_DEV_PORT" not in res
+
+
+def test_vite_wiring_check_detects_loadenv_pattern(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("""
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  return { server: { port: Number(env.WEB_DEV_PORT ?? 5173) } };
+});
+""")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    checks = sd.PROFILES["vite"].wiring_checks(app)
+    check = next(c for c in checks if c.id == "vite-config-process-env")
+    status, _ = check.detect(tmp_path)
+    assert status == "problem"
+
+
+def test_vite_wiring_check_autofix_swaps_loadenv_for_process_env(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("""\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  const webPort = Number(env.WEB_DEV_PORT ?? 5173);
+  return { server: { port: webPort } };
+});
+""")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env")
+    check.autofix(tmp_path)
+    text = (tmp_path / "vite.config.ts").read_text()
+    assert "process.env.WEB_DEV_PORT" in text
+    status, _ = check.detect(tmp_path)
+    assert status == "ok"
+
+
+def test_vite_wiring_check_idempotent(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(
+        'export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n'
+    )
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env")
+    status, _ = check.detect(tmp_path)
+    assert status == "ok"

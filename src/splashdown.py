@@ -1779,8 +1779,7 @@ class Scanner:
         return ProjectInventory(workspace=workspace, apps=apps, loader=loader)
 
     def _match_profile(self, app_path: Path) -> str:
-        # Iterates the PROFILES registry once it exists (Task 4). Stub until then.
-        for name, profile in PROFILES.items() if "PROFILES" in globals() else []:
+        for name, profile in PROFILES.items():
             if profile.detect(app_path):
                 return name
         return "unknown"
@@ -2780,6 +2779,116 @@ PRESETS: dict[str, Preset] = {
 # `nextjs` is the historical name for the generic server scaffold — keep it as
 # an alias so `splash init nextjs` still works.
 PRESETS["nextjs"] = PRESETS["server"]
+
+
+# ---------- profiles ----------
+# A Profile encodes how splashdown integrates with one framework. The Scanner
+# matches each app to a Profile by filesystem detection; Profiles contribute
+# resources (which end up in [resources.*]) and wiring checks (which the doctor
+# runs to patch consumer configs). Built-in only — to add a Profile, ship it
+# upstream as a new subclass + entry in PROFILES.
+
+
+class Profile:
+    """Abstract base. Subclasses set `name` and override `detect`, `resources`,
+    optionally `wiring_checks`."""
+    name: str = ""
+
+    def detect(self, app_path: Path) -> bool:
+        raise NotImplementedError
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        """Return a {resource_name: {type, range, ...}} dict to merge into the
+        recipe's [resources.*] tables. Resource names should be canonical; the
+        Scanner mangles them with the app name when more than one app of the
+        same profile is present."""
+        return {}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        """Return WiringCheck instances for consumer-side config patches. The
+        existing doctor flow runs these."""
+        return []
+
+
+PROFILES: dict[str, Profile] = {}
+
+_VITE_CONFIG_NAMES = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
+# Matches `env.VAR_NAME` access (the loadEnv idiom). The wiring autofix rewrites
+# these to `process.env.VAR_NAME` so splashdown.env + mise loading works.
+# Negative lookbehind on `process.` ensures already-fixed `process.env.VAR` is
+# not re-matched.
+_VITE_ENV_ACCESS_RE = re.compile(r"(?<!process\.)(?<!\.)env\.([A-Z][A-Z0-9_]*)\b")
+
+
+def _vite_config_path(app_path: Path) -> Path | None:
+    for name in _VITE_CONFIG_NAMES:
+        candidate = app_path / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+class ViteProfile(Profile):
+    name = "vite"
+
+    def detect(self, app_path: Path) -> bool:
+        return _vite_config_path(app_path) is not None
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {
+            "WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]},
+        }
+        # Only emit API_DEV_PORT if the config has a server.proxy block —
+        # otherwise this app doesn't need to know the api's port at all.
+        cfg = _vite_config_path(app.path)
+        if cfg and "proxy" in cfg.read_text():
+            out["API_DEV_PORT"] = {"type": "template", "template": "{{ PORT }}"}
+        return out
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_vite_process_env_check()]
+
+
+def _vite_process_env_check() -> WiringCheck:
+    return WiringCheck(
+        id="vite-config-process-env",
+        description="vite.config reads env vars from process.env, not loadEnv",
+        applies=lambda cwd: _vite_config_path(cwd) is not None,
+        detect=_vite_process_env_detect,
+        autofix=_vite_process_env_autofix,
+        manual_instructions=_vite_process_env_manual,
+    )
+
+
+def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
+    cfg = _vite_config_path(cwd)
+    text = cfg.read_text()
+    if "loadEnv" in text and _VITE_ENV_ACCESS_RE.search(text):
+        return ("problem", "vite.config uses loadEnv; should read process.env")
+    return ("ok", "vite.config reads process.env")
+
+
+def _vite_process_env_autofix(cwd: Path) -> None:
+    cfg = _vite_config_path(cwd)
+    text = cfg.read_text()
+    # Rewrite every `env.VAR` access to `process.env.VAR`. Keep loadEnv lines
+    # untouched (the user may want them for other purposes) — the new access
+    # path just bypasses them.
+    new_text = _VITE_ENV_ACCESS_RE.sub(r"process.env.\1", text)
+    if new_text != text:
+        cfg.write_text(new_text)
+        print(f"patched {cfg.name} (env.X → process.env.X)", file=sys.stderr)
+
+
+def _vite_process_env_manual(cwd: Path) -> str:
+    return (
+        "Edit vite.config so any `env.VAR_NAME` access reads `process.env.VAR_NAME`\n"
+        "instead. Splashdown.env is loaded into the parent shell via your shell-env\n"
+        "loader (mise/direnv/devbox), so process.env carries the values."
+    )
+
+
+PROFILES["vite"] = ViteProfile()
 
 
 # ---------- CLI ----------
