@@ -1,109 +1,112 @@
 # splashdown
 
-**Per-checkout simulators, emulators, and dev ports for mobile development on macOS.**
+**Per-checkout or per-worktree simulators, emulators, and dev ports for development.**
 
-You're working on the same iOS or Android app across three git worktrees. Each worktree should have its own iPhone sim, its own Metro port, its own DB name, its own everything — automatically, with no manual coordination. That's what `splashdown` does.
+Do you have any of these problems?
 
-```sh
-git worktree add ../myapp.feat-auth feat-auth
-cd ../myapp.feat-auth
-# → already has its own sim "myapp/myapp.feat-auth"
-# → already has its own RCT_METRO_PORT (e.g. 8082, picked to not collide
-#   with any other checkout's pinned ports machine-wide)
-splash run simulator       # builds + installs + launches on the per-checkout sim
-```
+* You installed an app on a simulator / emulator but you forgot which one.
+* You created two worktrees from the same project, and now the ports are clashing during dev or e2e testing.
+* You want to select a free port for a new project, so it doesn't conflict, but you don't know which one is free.
 
-No new commands in day-to-day work: a `post-checkout` hook fires `splash` on every `git checkout` / `git worktree add`, and `mise activate` (already in your shell) loads the resolved env vars from a gitignored `splashdown.env`.
-
-The mobile bits work on macOS only (iOS via `xcrun simctl`, Android via the SDK's `avdmanager`/`emulator`). The generic resource provisioner (ports, UUIDs, templates) works on Linux too.
-
-## Why it exists
-
-Mobile dev across parallel checkouts is a coordination nightmare. Two worktrees both want Metro `8081`. Two simulators both want to be named `myapp`. Two CocoaPods caches collide. You end up shutting down half your work to switch branches, or hand-rolling per-worktree sed scripts. `splashdown` makes the "you have N checkouts" case as smooth as the "you have one checkout" case.
-
-A key benefit of per-checkout device config: each worktree gets its own, non-colliding simulator. One checkout boots `myapp/feat-auth`, another boots `myapp/main` — they never step on each other, you can run both simultaneously.
-
-Read [`provision-spec.md`](./provision-spec.md) for the original design rationale.
-
-## Status
-
-Working v1. Stdlib-only Python 3.11+. 151 tests passing.
+Splashdown is here to solve these problems. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
 
 ## Install
 
 ```sh
-brew install nielsmadan/tap/splashdown          # recommended (macOS)
+brew install nielsmadan/tap/splashdown          
 # or
 pipx install splashdown
 ```
 
 This puts `splash` on your `PATH`. The registry at `$XDG_STATE_HOME/splashdown/` (default `~/.local/state/splashdown/`) is shared across every repo on your machine.
 
-## The three-file model
+## How it works
 
-splashdown uses three files, each with a clear purpose:
+Run `splash init` once in your project. Splashdown walks the filesystem, identifies your apps and their frameworks, and writes a recipe (`splashdown.toml`) declaring per-checkout resources (ports, db urls, UUIDs, sim/emulator variants). On every `git checkout` or `git worktree add`, a post-checkout hook fires `splash`, which allocates concrete values into a gitignored `splashdown.env`. Your shell-env loader (mise / direnv / devbox) sources that file automatically, so every process in the checkout sees the right `PORT`, `DATABASE_URL`, etc.
+
+Four files end up in the project:
 
 | File | Committed? | Purpose |
 |------|-----------|---------|
-| `splashdown.toml` | Yes | Recipe — `[resources.*]` + `[project]` schema only |
-| `splashdown.local.toml` | **No** (gitignored) | Per-checkout *additional* `[devices.*]` variants (recipe's are not repeated) |
-| `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file; splashdown owns it |
-| `mise.toml` | Yes | Your existing mise config; gains `_.file = "splashdown.env"` |
+| `splashdown.toml` | Yes | Recipe: `[project]`, `[apps.*]`, `[resources.*]`, and any team-shared `[devices.*]` variants |
+| `splashdown.local.toml` | **No** (gitignored) | Per-checkout *additional* `[devices.*]` variants on top of the recipe's |
+| `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file. Splashdown owns it (overwritten wholesale on every run; don't hand-edit) |
+| `mise.toml` (or `.envrc` / `devbox.json`) | Yes | Your shell-env loader's config; gains a line that sources `splashdown.env` |
 
-Devices live only in `splashdown.local.toml`, never committed. This means each checkout (worktree or clone) can declare its own simulator or emulator without affecting others — different checkouts get different, non-colliding simulators automatically.
+The registry at `~/.local/state/splashdown/` is machine-wide, so when two checkouts both want port 8081 splashdown gives one of them 8082, even across unrelated repos.
 
-`splashdown.env` is overwritten wholesale on every `splash` run. Don't edit it by hand.
+## Quick start
 
-## Quick start: React Native worktrees
+In any project (single app or monorepo, web or backend or mobile):
 
-In your existing RN repo:
+```sh
+splash init
+# scanning project…
+#   detected: pnpm (apps/api/apps/web-admin)
+#   apps/api          → node-backend
+#   apps/web-admin    → vite
+#   shell loader      → mise
+# wrote splashdown.toml + splashdown.local.toml + mise.toml + post-checkout hook
+```
+
+The recipe is on disk, the loader is wired, the hook fires on every checkout. Add a worktree and the second checkout picks free ports automatically:
+
+```sh
+git worktree add ../myapp.feat-x feat-x
+cd ../myapp.feat-x
+# post-checkout hook fired `splash`. splashdown.env now has the per-checkout ports.
+pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
+```
+
+For React Native, the legacy preset path also still works and applies the four `rn-*` wiring fixes (Metro port, package.json scripts, `ios/.xcode.env`) in one go:
 
 ```sh
 splash init --preset=rn
-# Scaffolding:
-#   - splashdown.toml (resources + [project] framework="react-native")
-#   - splashdown.local.toml skeleton (gitignored, per-checkout devices)
-#   - .gitignore (adds splashdown.env, splashdown.local.toml)
-#   - mise.toml (adds [env] _.file = "splashdown.env")
-#   - post-checkout hook (via your hook manager: lefthook / husky / .githooks)
-# Framework wiring (auto-applied; safe + idempotent):
-#   - metro.config.js: server.port → Number(process.env.RCT_METRO_PORT) || 8081
-#   - package.json: strips --port from start/ios/android scripts
-#   - ios/.xcode.env: splashdown-managed RCT_METRO_PORT block (so the iOS build
-#     bakes the per-checkout port instead of the default 8081)
-
-# first run:
-splash
-splash run simulator       # boots the per-checkout sim (creates if missing,
-                         # auto-recreates if newer iOS is available),
-                         # then builds + installs + launches the app
-
-# add a one-off variant just for this checkout:
-splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
-splash run simulator repro-bug
+splash run simulator       # boots a per-checkout sim, builds, installs, launches
 ```
 
-After that, every `git worktree add` gets its own sim, port, and resolved env, with zero manual steps. See [`examples/`](./examples/) for the hook + `mise.toml` task definitions.
+See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring later with `splash doctor` (and `splash doctor --fix` to re-apply).
 
-Want to verify or re-apply the wiring later? `splash doctor` (and `splash doctor --fix`). See "Framework wiring" below.
+## The recipe: `splashdown.toml`
 
-## File model: `splashdown.toml`
-
-The committed file. Resource slots + the catalog of device variants the team agrees this project supports.
+The committed file. Four kinds of top-level tables: `[project]`, `[apps.*]`, `[resources.*]`, and (for mobile) `[devices.*]`. The scanner produces a working version; edit freely.
 
 ```toml
-[resources.RCT_METRO_PORT]
+[project]
+workspace = "pnpm"             # single | pnpm | yarn | npm | cargo | gradle
+loader    = "mise"             # mise | direnv | devbox
+
+[apps.api]
+path      = "apps/api"
+profile   = "node-backend"     # vite | nextjs | node-backend | django | fastapi |
+                               # springboot | react-native | expo | flutter |
+                               # ios-native | android-native | unknown
+resources = ["PORT"]
+
+[apps.web-admin]
+path      = "apps/web-admin"
+profile   = "vite"
+resources = ["WEB_DEV_PORT", "API_DEV_PORT"]
+
+[resources.PORT]
 type  = "port"
-range = [8081, 8200]            # globally-coordinated lowest-free
+range = [9081, 9100]           # globally-coordinated lowest-free
 
-[resources.METRO_URL]
+[resources.WEB_DEV_PORT]
+type  = "port"
+range = [5174, 5200]
+
+[resources.API_DEV_PORT]
 type     = "template"
-template = "http://localhost:{{ RCT_METRO_PORT }}"
+template = "{{ PORT }}"        # Vite's /api proxy must hit the api's actual port
+```
 
-# Device variant catalog. Sim *instances* are created lazily per checkout,
-# named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim
-# is auto-recreated whenever a newer iOS lands. Pin an explicit version like
-# `ios = "18.5"` for fixed coverage that never auto-upgrades.
+Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
+Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
+
+**For mobile**, the recipe also declares a `[devices.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands; pin an explicit version like `ios = "18.5"` for fixed coverage.
+
+```toml
 [devices.simulator.default]
 model = "iPhone 17"
 
@@ -111,17 +114,15 @@ model = "iPhone 17"
 model = "iPhone 12"
 ios   = "17.0"
 
-[project]
-framework = "react-native"      # auto | react-native | flutter | expo
+[devices.emulator.default]
+device = "pixel_9"
 ```
 
-Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
-Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
 Device types: `simulator`, `emulator`.
 
-## File model: `splashdown.local.toml`
+## Per-checkout overrides: `splashdown.local.toml`
 
-A **gitignored**, per-checkout file. Use it to **add** extra device variants on top of what the recipe declares — never to override or repeat. Each checkout has its own copy; what you add here is local to this worktree/clone.
+A **gitignored**, per-checkout file. Use it to **add** extra device variants on top of what the recipe declares (never to override or repeat). Each checkout has its own copy; what you add here is local to this worktree/clone.
 
 ```toml
 # Reproduce a bug only this checkout sees:
@@ -136,7 +137,7 @@ Name collisions with a recipe-declared variant are an error (pick a different va
 splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
 ```
 
-## Running on a device
+## Running and managing devices
 
 ```sh
 splash run     [type] [variant]    # reconcile + start + build + launch
@@ -148,7 +149,7 @@ splash destroy [type] [variant]    # delete the device + its registry entry
 Both `type` and `variant` are optional. `type` is inferred when exactly one device type is declared; otherwise pass `simulator` or `emulator`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
 ```sh
-splash run                            # one type, one variant — just run
+splash run                            # one type, one variant, no args needed
 splash run simulator                  # picks `default`
 splash run simulator lowest-supported
 
@@ -168,9 +169,9 @@ Framework auto-detected for `run`:
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
 - Override via `[project] framework = "..."`
 
-### Auto-upgrade — no more manual `mksim`/`simctl delete` after Xcode updates
+### Auto-upgrade: no more manual `mksim`/`simctl delete` after Xcode updates
 
-Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever — they're explicit version coverage.
+Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever; they're explicit version coverage.
 
 ```sh
 splash device gc                    # registry cleanup: defunct checkouts only
@@ -188,85 +189,46 @@ Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtim
 
 Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_9`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached; `splash` polls `adb` for the serial to appear.
 
-## Non-mobile use cases
-
-The same machinery works for any per-checkout resource. Web/backend repos can declare just `[resources.*]` in `splashdown.toml` (and have no `splashdown.local.toml`) for things like:
-
-- `PORT = [3000, 3100]` for Next.js / Vite dev servers
-- `DATABASE_URL` templates with checkout-unique DB names
-- `STORYBOOK_PORT`, `STAGING_API_URL`, etc.
-
-Presets ship for `server` (alias: `nextjs`), `electron`, `rn`, `flutter`, `ios-native`, `android-native`, and `minimal`. `server` covers any web/backend (Next.js, Django, Rails, FastAPI, Spring Boot, …) with a PORT + DATABASE_URL. `electron` adds `ELECTRON_USER_DATA_DIR` so parallel checkouts don't clobber each other's userData / IndexedDB / SingleInstanceLock. The two `*-native` presets cover plain Swift/Obj-C (`xcodebuild` + `xcrun simctl`) and plain Kotlin/Java (`gradlew` + `adb`) apps — splashdown handles per-checkout sim/emulator provisioning and shells out to the native toolchain for build + install + launch. Linux is supported for the non-mobile cases; the `device` subcommands obviously need macOS (iOS) or a working `adb`/AVD setup (Android).
-
 ## Framework wiring (`splash doctor`)
 
-Just provisioning `RCT_METRO_PORT` isn't enough — an RN project typically hardcodes Metro's port in two or three places that override the env var. Splashdown ships a per-framework spec of those wiring points and applies them for you. `splash init --preset=rn` invokes the wiring after scaffolding; `splash doctor` re-runs it anytime to verify and `splash doctor --fix` to re-apply.
+Allocating a port doesn't always reach the running process. Most frameworks hardcode the port in one or two config files that override the env var, so splashdown carries per-framework wiring checks that detect those hardcoded points and (where safe) auto-patch them. `splash init` runs the wiring after scaffolding; `splash doctor` re-runs it anytime to verify, and `splash doctor --fix` re-applies the autofixes.
 
-**React Native checks (four):**
-
-| id | what it ensures |
-|---|---|
-| `rn-hook` | post-checkout fires `splash`, wired through your existing hook manager (lefthook / husky) instead of clobbering it via `core.hooksPath` |
-| `rn-metro-config` | `metro.config.js` consumes `RCT_METRO_PORT`. **Auto-patches only the recognized literal `port: <N>` shape** — if your config is unusual, the doctor prints the exact snippet to paste |
-| `rn-pkg-port` | `package.json` `start`/`ios`/`android` scripts (and anything calling `react-native`) don't carry `--port <N>` (which would override the env var); auto-stripped |
-| `rn-xcode-env` | `ios/.xcode.env` exports a splashdown-managed `RCT_METRO_PORT` block. iOS bakes the port into the binary at compile time (`RCTBundleURLProvider`'s `defaultPort` is a `#define` set via `GCC_PREPROCESSOR_DEFINITIONS`); this makes Xcode-GUI builds use the per-checkout port instead of the default |
+| Profile | Check | What it ensures |
+|---|---|---|
+| react-native | `rn-hook` | post-checkout fires `splash`, wired through your existing hook manager (lefthook / husky) instead of clobbering `core.hooksPath` |
+| react-native | `rn-metro-config` | `metro.config.js` consumes `RCT_METRO_PORT`. Auto-patches the recognized `port: <N>` literal shape; otherwise prints the exact snippet to paste |
+| react-native | `rn-pkg-port` | `package.json` `start`/`ios`/`android` scripts don't carry `--port <N>` (which would override the env var); auto-stripped |
+| react-native | `rn-xcode-env` | `ios/.xcode.env` exports a splashdown-managed `RCT_METRO_PORT` block. iOS bakes the port into the binary at compile time, so Xcode-GUI builds need this to pick up the per-checkout port |
+| vite | `vite-config-process-env` | `vite.config.{ts,js}` reads env vars from `process.env` rather than `loadEnv()`. Auto-rewrites `env.X` → `process.env.X` so splashdown.env loaded by mise/direnv/devbox reaches Vite |
+| springboot | `springboot-application-properties` | `application.properties` / `application.yml` uses the `server.port=${PORT:8080}` placeholder. Manual-only (Java config rewrites are too risky to automate) |
 
 **Hook-manager coexistence.** `splash` detects lefthook (`lefthook.{yml,yaml}` or in `package.json` devDeps), husky (`.husky/`), or an existing `core.hooksPath`, and wires the post-checkout entry in whichever it finds. Only as a last resort does it own `.githooks/` + `core.hooksPath`.
 
-**Usage:**
 ```sh
 splash doctor                    # read-only report (✓/✗ per check)
 splash doctor --fix              # apply autofixes; print manual instructions for the rest
 splash doctor --framework=react-native   # override detection if needed
 ```
 
-**Known limitation — Android.** Android's Metro port is also baked into the build (via the RN Gradle plugin / `BuildConfig`), with a different mechanism than iOS. Splashdown doesn't currently wire the Android side; for now `yarn android` works (the RN CLI propagates `RCT_METRO_PORT` to Gradle), but bare `gradle assembleDebug` may default to 8081. Tracked as a future check.
+**Known limitation: RN Android.** Android's Metro port is also baked into the build (via the RN Gradle plugin / `BuildConfig`), with a different mechanism than iOS. Splashdown doesn't currently wire the Android side; for now `yarn android` works (the RN CLI propagates `RCT_METRO_PORT` to Gradle), but bare `gradle assembleDebug` may default to 8081. Tracked as a future check.
 
-## How splashdown integrates with your project
+## Profiles and loaders
 
-`splash init` walks the repo and figures out:
+Two extension points decide what `splash init` produces.
 
-1. **The workspace shape** — single-app, pnpm/yarn/npm workspaces, cargo workspace, or gradle multi-project.
-2. **Each app's framework** — Vite, Next.js, node-backend (Hono/Express/Fastify/Koa/Hapi/Nest), Django, FastAPI, Spring Boot, React Native, Expo, Flutter, native iOS, native Android.
-3. **The shell-env loader** — mise (default), direnv, or devbox, depending on which config files it finds.
+A **Profile** is the per-framework integration rules: what resources this kind of app wants, and what config files (if any) need patching so the values reach the running process. The Vite Profile, for example, emits `WEB_DEV_PORT` (and `API_DEV_PORT` if it sees a `server.proxy` block) and rewrites `vite.config.{ts,js}` to read `process.env.X` instead of `loadEnv()`. The Spring Boot Profile emits `PORT` and checks that `application.properties` uses the `server.port=${PORT:8080}` placeholder. The mobile Profiles (`react-native`, `expo`, `flutter`, `ios-native`, `android-native`) bring in the existing per-framework wiring checks.
 
-It writes a recipe with three top-level tables:
+A **Loader** is the per-shell-env-tool wiring: how `splashdown.env` gets sourced into your shell when you `cd` into the project. Splashdown supports three: `mise` (sets `_.file = "splashdown.env"` in `mise.toml`), `direnv` (appends `dotenv splashdown.env` between sentinel markers in `.envrc`), `devbox` (adds an `init_hook` entry in `devbox.json`). All three are idempotent and reversible.
 
-```toml
-[project]
-workspace = "pnpm"        # single | pnpm | yarn | npm | cargo | gradle
-loader    = "mise"        # mise | direnv | devbox
-
-[apps.api]
-path      = "apps/api"
-profile   = "node-backend"
-resources = ["PORT"]
-
-[apps.web-admin]
-path      = "apps/web-admin"
-profile   = "vite"
-resources = ["WEB_DEV_PORT", "API_DEV_PORT"]
-
-[resources.PORT]
-type  = "port"
-range = [9081, 9100]
-
-# … more [resources.*] tables
-```
-
-**Profile**: per-framework wiring rules. Each Profile contributes resource declarations and (where needed) wiring checks that the doctor can autofix. The Vite Profile, for example, rewrites `vite.config.{ts,js}` to read `process.env` instead of `loadEnv` — that's what lets `splashdown.env` + mise reach the dev server.
-
-**Loader**: per-shell-env-tool wiring. The mise Loader sets `_.file = "splashdown.env"`. The direnv Loader appends `dotenv splashdown.env` between sentinel markers in `.envrc`. The devbox Loader adds an `init_hook` entry. All three are idempotent and reversible.
-
-**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table — splashdown picks up the change on the next provision and never re-scans unless you ask. `splash refresh-inventory` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
+**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table; splashdown picks up the change on the next provision and never re-scans unless you ask. `splash refresh-inventory` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
 
 **Multi-instance collisions** are mangled at scan time. Two Vite apps both want `WEB_DEV_PORT`; the scanner renames them `WEB_DEV_PORT_ADMIN` / `WEB_DEV_PORT_CUSTOMER` based on the app names, so the recipe stays unambiguous.
 
-**Unknown framework**: an app whose framework splashdown doesn't recognize gets `profile = "unknown"` — no resources allocated for it, no wiring attempted. The rest of the project still works. To add support, contribute a Profile upstream.
+**Unknown framework.** An app whose framework splashdown doesn't recognize gets `profile = "unknown"`: no resources allocated for it, no wiring attempted. The rest of the project still works. To add support, contribute a Profile upstream.
 
 ### The `writer` field (power-user escape hatch)
 
-Resources route to `splashdown.env` by default — that's what mise/direnv/devbox load. For consumers that can't read `process.env` (legacy build systems, vendor tooling, frameworks splashdown doesn't have a Profile for yet), set `writer` on the resource:
+Resources route to `splashdown.env` by default; that's what mise/direnv/devbox load. For consumers that can't read `process.env` (legacy build systems, vendor tooling, frameworks splashdown doesn't have a Profile for yet), set `writer` on the resource:
 
 ```toml
 [resources.LEGACY_PORT]
@@ -277,17 +239,19 @@ writer = "envfile=path/to/legacy/.env"
 
 Available writers: `splashdown-env` (default), `envfile=PATH` (any .env-format file, preserves non-managed lines), `envrc` (writes `.envrc.local`), `stdout` (echoes), `none` (registry-only, no file output).
 
-In practice you shouldn't need this — the framework Profile should handle the routing implicitly. Reach for `writer` only when the Profile coverage isn't enough yet.
+Most of the time the framework Profile handles routing implicitly and `writer` stays unset. Use it when no Profile covers your consumer yet.
 
 ## CLI summary
 
 ```
 splash                             # provision (what the post-checkout hook calls)
 splash --version
-splash provision --reprovision     # force re-allocate (regenerates uuids)
+splash provision --reprovision     # force re-allocate (regenerates uuids etc.)
 splash refresh                     # re-provision and reallocate any port a process squatted on
 splash status                      # resources + devices + which ports are bound right now
-splash init [--preset=rn|flutter|server|electron|ios-native|android-native|minimal]
+splash init [--preset=NAME] [--loader=mise|direnv|devbox]
+                                   # scan project → write recipe + wire loader + hook
+splash refresh-inventory           # re-scan and rewrite [project] / [apps.*] in place
 splash doctor [--fix] [--framework=NAME]   # framework-aware wiring check
 
 splash run     [type] [variant]    # reconcile + start + build + launch
@@ -310,7 +274,7 @@ splash release [KEY]               # release this checkout's registry entries (a
 splash gc                          # GC the resource registry (ports, uuids, devices)
 ```
 
-`splash status` answers "what's the state of this checkout?" — the resolved env vars (with `[in use]` / `[free]` for port-typed resources), the declared device variants and whether each is booted, and a count of stale registry rows. `splash refresh` re-runs provision and is the named verb for "fix any port collision" — the underlying detection lives in `Registry.allocate_port`, so plain `splash` does the same thing; `refresh` just makes the intent legible.
+`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash refresh` fixes port collisions; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash refresh-inventory` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init --preset=NAME`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
 
 ## Global port coordination
 
@@ -319,9 +283,9 @@ The registry at `~/.local/state/splashdown/{ports.tsv,kv.tsv}` is **machine-wide
 1. Every other checkout's pinned ports (any repo, any worktree)
 2. Live `bind()` probes (catches ports held by non-splashdown processes)
 
-So three unrelated mobile apps can each declare `range = [8081, 8200]` and never collide.
+So three unrelated projects can each declare `range = [3000, 3100]` and never collide. Splashdown hands them 3000, 3001, 3002 (or whatever's free at allocation time).
 
-Lazy GC: entries for checkouts whose directory no longer exists are dropped on next allocation — this is how `git worktree remove` cleanup works without a hook.
+Lazy GC: entries for checkouts whose directory no longer exists are dropped on next allocation. That's how `git worktree remove` cleanup works without a hook.
 
 ## Development
 
