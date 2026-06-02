@@ -1798,3 +1798,105 @@ def test_doctor_fix_full_rn_project(tmp_path):
     assert "post-checkout:" in lh
     assert "splashdown:" in lh
     assert "lint:" in lh  # original entry preserved
+
+
+def test_app_inventory_is_dataclass_with_name_path_profile(tmp_path):
+    app = sd.AppInventory(name="api", path=tmp_path / "apps" / "api", profile="node-backend")
+    assert app.name == "api"
+    assert app.profile == "node-backend"
+    assert app.path == tmp_path / "apps" / "api"
+
+
+def test_project_inventory_collects_apps_and_loader(tmp_path):
+    inv = sd.ProjectInventory(
+        workspace="pnpm",
+        apps=[sd.AppInventory(name="api", path=tmp_path / "apps/api", profile="node-backend")],
+        loader="mise",
+    )
+    assert inv.workspace == "pnpm"
+    assert inv.loader == "mise"
+    assert len(inv.apps) == 1
+
+
+def test_detect_workspace_pnpm(tmp_path):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    assert sd._detect_workspace(tmp_path) == "pnpm"
+
+
+def test_detect_workspace_yarn(tmp_path):
+    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}')
+    (tmp_path / "yarn.lock").write_text("")
+    assert sd._detect_workspace(tmp_path) == "yarn"
+
+
+def test_detect_workspace_npm(tmp_path):
+    (tmp_path / "package.json").write_text('{"workspaces": ["apps/*"]}')
+    (tmp_path / "package-lock.json").write_text("")
+    assert sd._detect_workspace(tmp_path) == "npm"
+
+
+def test_detect_workspace_cargo(tmp_path):
+    (tmp_path / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n')
+    assert sd._detect_workspace(tmp_path) == "cargo"
+
+
+def test_detect_workspace_gradle(tmp_path):
+    (tmp_path / "settings.gradle.kts").write_text('include("api", "web")\n')
+    assert sd._detect_workspace(tmp_path) == "gradle"
+
+
+def test_detect_workspace_single(tmp_path):
+    assert sd._detect_workspace(tmp_path) == "single"
+
+
+def test_scanner_single_app_no_workspace(tmp_path):
+    (tmp_path / "package.json").write_text('{"name": "single"}')
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.workspace == "single"
+    assert len(inv.apps) == 1
+    assert inv.apps[0].name == "main"
+    assert inv.apps[0].path == tmp_path
+    assert inv.apps[0].profile == "unknown"  # no profiles registered yet
+
+
+def test_scanner_pnpm_monorepo_enumerates_apps(tmp_path):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "apps" / "api").mkdir()
+    (tmp_path / "apps" / "api" / "package.json").write_text('{"name": "api"}')
+    (tmp_path / "apps" / "web").mkdir()
+    (tmp_path / "apps" / "web" / "package.json").write_text('{"name": "web"}')
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.workspace == "pnpm"
+    names = sorted(a.name for a in inv.apps)
+    assert names == ["api", "web"]
+
+
+def test_scanner_loader_defaults_to_mise(tmp_path):
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "mise"
+
+
+def test_scanner_detects_mise_loader(tmp_path):
+    (tmp_path / "mise.toml").write_text("")
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "mise"
+
+
+def test_scanner_detects_direnv_loader(tmp_path):
+    (tmp_path / ".envrc").write_text("")
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "direnv"
+
+
+def test_scanner_detects_devbox_loader(tmp_path):
+    (tmp_path / "devbox.json").write_text("{}")
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "devbox"
+
+
+def test_scanner_loader_precedence_mise_over_direnv(tmp_path):
+    (tmp_path / "mise.toml").write_text("")
+    (tmp_path / ".envrc").write_text("")
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "mise"
