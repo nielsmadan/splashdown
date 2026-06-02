@@ -3295,8 +3295,47 @@ class MiseLoader(Loader):
         path.write_text("\n".join(kept) + ("\n" if kept else ""))
 
 
+_DIRENV_BEGIN = "# >>> splashdown-managed dotenv >>>"
+_DIRENV_END = "# <<< splashdown-managed dotenv <<<"
+_DIRENV_BLOCK = f"""{_DIRENV_BEGIN}
+dotenv splashdown.env
+{_DIRENV_END}
+"""
+_DIRENV_BLOCK_RE = re.compile(
+    re.escape(_DIRENV_BEGIN) + r".*?" + re.escape(_DIRENV_END) + r"\n?",
+    re.DOTALL,
+)
+
+
+class DirenvLoader(Loader):
+    name = "direnv"
+
+    def detect(self, cwd: Path) -> bool:
+        return (cwd / ".envrc").exists() or (cwd / ".envrc.local").exists()
+
+    def wire(self, cwd: Path) -> None:
+        path = cwd / ".envrc"
+        existing = path.read_text() if path.exists() else ""
+        if _DIRENV_BLOCK_RE.search(existing):
+            return  # already wired
+        text = existing.rstrip()
+        if text:
+            text += "\n\n"
+        text += _DIRENV_BLOCK
+        path.write_text(text)
+
+    def unwire(self, cwd: Path) -> None:
+        path = cwd / ".envrc"
+        if not path.exists():
+            return
+        text = _DIRENV_BLOCK_RE.sub("", path.read_text())
+        text = text.rstrip()
+        path.write_text(text + ("\n" if text else ""))
+
+
 LOADERS: dict[str, Loader] = {
     "mise": MiseLoader(),
+    "direnv": DirenvLoader(),
 }
 
 

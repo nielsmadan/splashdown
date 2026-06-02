@@ -2280,3 +2280,38 @@ def test_springboot_wiring_check_accepts_env_placeholder(tmp_path):
     check = next(c for c in sd.PROFILES["springboot"].wiring_checks(app) if c.id == "springboot-application-properties")
     status, _ = check.detect(tmp_path)
     assert status == "ok"
+
+
+# ---------- DirenvLoader ----------
+
+def test_direnv_loader_wire_appends_sentinel_block(tmp_path):
+    sd.LOADERS["direnv"].wire(tmp_path)
+    text = (tmp_path / ".envrc").read_text()
+    assert "# >>> splashdown-managed dotenv >>>" in text
+    assert "dotenv splashdown.env" in text
+    assert "# <<< splashdown-managed dotenv <<<" in text
+
+
+def test_direnv_loader_wire_idempotent(tmp_path):
+    sd.LOADERS["direnv"].wire(tmp_path)
+    first = (tmp_path / ".envrc").read_text()
+    sd.LOADERS["direnv"].wire(tmp_path)
+    assert (tmp_path / ".envrc").read_text() == first
+
+
+def test_direnv_loader_wire_preserves_existing_envrc(tmp_path):
+    (tmp_path / ".envrc").write_text("use nix\nlayout python\n")
+    sd.LOADERS["direnv"].wire(tmp_path)
+    text = (tmp_path / ".envrc").read_text()
+    assert "use nix" in text
+    assert "layout python" in text
+    assert "dotenv splashdown.env" in text
+
+
+def test_direnv_loader_unwire_strips_only_sentinel_block(tmp_path):
+    (tmp_path / ".envrc").write_text("use nix\n")
+    sd.LOADERS["direnv"].wire(tmp_path)
+    sd.LOADERS["direnv"].unwire(tmp_path)
+    text = (tmp_path / ".envrc").read_text()
+    assert "use nix" in text
+    assert "splashdown" not in text
