@@ -2235,3 +2235,48 @@ def test_fastapi_profile_emits_port_resource(tmp_path):
     (tmp_path / "requirements.txt").write_text("fastapi\n")
     app = sd.AppInventory(name="api", path=tmp_path, profile="fastapi")
     assert sd.PROFILES["fastapi"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}
+
+
+def test_springboot_profile_detects_pom_xml(tmp_path):
+    (tmp_path / "pom.xml").write_text('<project><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>')
+    assert sd.PROFILES["springboot"].detect(tmp_path) is True
+
+
+def test_springboot_profile_detects_build_gradle(tmp_path):
+    (tmp_path / "build.gradle.kts").write_text('plugins { id("org.springframework.boot") }')
+    assert sd.PROFILES["springboot"].detect(tmp_path) is True
+
+
+def test_springboot_profile_does_not_detect_plain_gradle(tmp_path):
+    (tmp_path / "build.gradle").write_text('plugins { id("java") }')
+    assert sd.PROFILES["springboot"].detect(tmp_path) is False
+
+
+def test_springboot_profile_emits_port_resource(tmp_path):
+    (tmp_path / "pom.xml").write_text("spring-boot-starter")
+    app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
+    assert sd.PROFILES["springboot"].resources(app) == {"PORT": {"type": "port", "range": [8080, 8180]}}
+
+
+def test_springboot_wiring_check_flags_missing_port_placeholder(tmp_path):
+    (tmp_path / "pom.xml").write_text("spring-boot-starter")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main").mkdir()
+    (tmp_path / "src" / "main" / "resources").mkdir()
+    (tmp_path / "src" / "main" / "resources" / "application.properties").write_text("server.port=8080\n")
+    app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
+    check = next(c for c in sd.PROFILES["springboot"].wiring_checks(app) if c.id == "springboot-application-properties")
+    status, _ = check.detect(tmp_path)
+    assert status == "problem"
+
+
+def test_springboot_wiring_check_accepts_env_placeholder(tmp_path):
+    (tmp_path / "pom.xml").write_text("spring-boot-starter")
+    (tmp_path / "src" / "main" / "resources").mkdir(parents=True)
+    (tmp_path / "src" / "main" / "resources" / "application.properties").write_text(
+        "server.port=${PORT:8080}\n"
+    )
+    app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
+    check = next(c for c in sd.PROFILES["springboot"].wiring_checks(app) if c.id == "springboot-application-properties")
+    status, _ = check.detect(tmp_path)
+    assert status == "ok"

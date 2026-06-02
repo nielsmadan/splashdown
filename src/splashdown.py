@@ -3193,6 +3193,57 @@ class FastApiProfile(Profile):
 PROFILES["fastapi"] = FastApiProfile()
 
 
+class SpringBootProfile(Profile):
+    name = "springboot"
+
+    def detect(self, app_path: Path) -> bool:
+        pom = app_path / "pom.xml"
+        if pom.exists() and "spring-boot-starter" in pom.read_text():
+            return True
+        for grade in ("build.gradle", "build.gradle.kts"):
+            g = app_path / grade
+            if g.exists() and "org.springframework.boot" in g.read_text():
+                return True
+        return False
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"PORT": {"type": "port", "range": [8080, 8180]}}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_springboot_application_properties_check()]
+
+
+def _springboot_application_properties_check() -> WiringCheck:
+    return WiringCheck(
+        id="springboot-application-properties",
+        description="application.properties reads server.port from PORT env",
+        applies=lambda cwd: (cwd / "src" / "main" / "resources" / "application.properties").exists()
+            or (cwd / "src" / "main" / "resources" / "application.yml").exists(),
+        detect=_springboot_app_props_detect,
+        autofix=None,  # manual-only — patching Java configs is too risky to auto-rewrite
+        manual_instructions=_springboot_app_props_manual,
+    )
+
+
+def _springboot_app_props_detect(cwd: Path) -> tuple[str, str]:
+    props = cwd / "src" / "main" / "resources" / "application.properties"
+    yml = cwd / "src" / "main" / "resources" / "application.yml"
+    text = (props.read_text() if props.exists() else "") + (yml.read_text() if yml.exists() else "")
+    if re.search(r"server\.port\s*[:=]\s*\$\{PORT", text):
+        return ("ok", "server.port uses PORT env placeholder")
+    return ("problem", "server.port should read ${PORT:8080} from env")
+
+
+def _springboot_app_props_manual(cwd: Path) -> str:
+    return (
+        "In application.properties: server.port=${PORT:8080}\n"
+        "In application.yml:      server:\n                              port: ${PORT:8080}"
+    )
+
+
+PROFILES["springboot"] = SpringBootProfile()
+
+
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
