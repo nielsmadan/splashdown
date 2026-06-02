@@ -2180,3 +2180,20 @@ def test_node_backend_profile_emits_port_resource(tmp_path):
     app = sd.AppInventory(name="api", path=tmp_path, profile="node-backend")
     res = sd.PROFILES["node-backend"].resources(app)
     assert res == {"PORT": {"type": "port", "range": [9081, 9100]}}
+
+
+def test_nextjs_profile_detects_next_config_js(tmp_path):
+    (tmp_path / "next.config.js").write_text("module.exports = {}")
+    assert sd.PROFILES["nextjs"].detect(tmp_path) is True
+
+
+def test_nextjs_profile_detects_next_dep(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"next": "^15.0.0"}}')
+    assert sd.PROFILES["nextjs"].detect(tmp_path) is True
+
+
+def test_nextjs_profile_emits_port_resource(tmp_path):
+    (tmp_path / "next.config.js").write_text("")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="nextjs")
+    res = sd.PROFILES["nextjs"].resources(app)
+    assert res == {"PORT": {"type": "port", "range": [3000, 3100]}}

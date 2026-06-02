@@ -3127,6 +3127,32 @@ class NodeBackendProfile(Profile):
 
 PROFILES["node-backend"] = NodeBackendProfile()
 
+_NEXTJS_CONFIG_NAMES = ("next.config.js", "next.config.ts", "next.config.mjs")
+
+
+class NextJsProfile(Profile):
+    name = "nextjs"
+
+    def detect(self, app_path: Path) -> bool:
+        for name in _NEXTJS_CONFIG_NAMES:
+            if (app_path / name).exists():
+                return True
+        pkg = app_path / "package.json"
+        if pkg.exists():
+            try:
+                data = json.loads(pkg.read_text())
+            except json.JSONDecodeError:
+                return False
+            deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+            return "next" in deps
+        return False
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"PORT": {"type": "port", "range": [3000, 3100]}}
+
+
+PROFILES["nextjs"] = NextJsProfile()
+
 
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
