@@ -2027,3 +2027,134 @@ def test_mise_loader_unwire_removes_directive_only(tmp_path):
     text = (tmp_path / "mise.toml").read_text()
     assert 'splashdown.env' not in text
     assert 'node = "22"' in text  # other config preserved
+
+
+# ---------- resource-name app-scoping ----------
+
+def test_resource_name_scoping_single_instance_keeps_canonical_name():
+    apps = [sd.AppInventory(name="api", path=Path("."), profile="node-backend")]
+    res_by_app = {"api": {"PORT": {"type": "port", "range": [9081, 9100]}}}
+    merged = sd._merge_app_resources(apps, res_by_app)
+    assert "PORT" in merged
+    assert "api" not in merged.get("PORT", {}).get("__owners", [])  # canonical, single owner
+
+
+def test_resource_name_scoping_multi_instance_mangles_with_app_name():
+    apps = [
+        sd.AppInventory(name="admin", path=Path("/a"), profile="vite"),
+        sd.AppInventory(name="customer", path=Path("/b"), profile="vite"),
+    ]
+    res_by_app = {
+        "admin":    {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+        "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+    }
+    merged = sd._merge_app_resources(apps, res_by_app)
+    assert "WEB_DEV_PORT" not in merged  # original collided, both mangled
+    assert "WEB_DEV_PORT_ADMIN" in merged
+    assert "WEB_DEV_PORT_CUSTOMER" in merged
+
+
+def test_resource_name_scoping_preserves_per_app_resources_list():
+    apps = [
+        sd.AppInventory(name="admin", path=Path("/a"), profile="vite"),
+        sd.AppInventory(name="customer", path=Path("/b"), profile="vite"),
+    ]
+    res_by_app = {
+        "admin":    {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+        "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+    }
+    merged = sd._merge_app_resources(apps, res_by_app)
+    # The helper also reports which names each app should consume:
+    consumed = sd._app_resource_names(apps, res_by_app)
+    assert consumed["admin"] == ["WEB_DEV_PORT_ADMIN"]
+    assert consumed["customer"] == ["WEB_DEV_PORT_CUSTOMER"]
+
+
+def test_cmd_init_scans_single_vite_app(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(
+        'export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n'
+    )
+    (tmp_path / "package.json").write_text('{"name": "web"}')
+    sd.cmd_init(tmp_path)
+    recipe_text = (tmp_path / "splashdown.toml").read_text()
+    assert "[project]" in recipe_text
+    assert 'workspace = "single"' in recipe_text
+    assert 'loader = "mise"' in recipe_text
+    assert "[apps.main]" in recipe_text
+    assert 'profile = "vite"' in recipe_text
+    assert "[resources.WEB_DEV_PORT]" in recipe_text
+
+
+def test_cmd_init_emits_mise_loader_wiring(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path)
+    # mise.toml created and points at splashdown.env
+    assert (tmp_path / "mise.toml").exists()
+    assert 'splashdown.env' in (tmp_path / "mise.toml").read_text()
+
+
+def test_cmd_init_legacy_preset_path_still_works(tmp_path):
+    sd.cmd_init(tmp_path, preset="minimal")
+    recipe_text = (tmp_path / "splashdown.toml").read_text()
+    # Legacy: writes the minimal scaffold verbatim, no [apps.*] / [project] tables.
+    assert "[resources.RUN_ID]" in recipe_text
+    assert "[apps.main]" not in recipe_text
+
+
+def test_cmd_init_unknown_framework_app_gets_unknown_profile(tmp_path):
+    # No detectable framework signals — single-app with bare directory.
+    sd.cmd_init(tmp_path)
+    recipe_text = (tmp_path / "splashdown.toml").read_text()
+    assert 'profile = "unknown"' in recipe_text
+    # No resources for unknown profiles → [resources.*] section should be absent.
+    assert "[resources." not in recipe_text
+
+
+def test_cmd_init_writes_post_checkout_hook(tmp_path):
+    # The hook wiring is independent of the Scanner-driven flow and must persist.
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path)
+    # Either .githooks/post-checkout exists or one of the hook-manager configs
+    # was wired — same contract as today.
+    hook_exists = (tmp_path / ".githooks" / "post-checkout").exists()
+    assert hook_exists
+
+
+def test_refresh_inventory_updates_project_and_apps(tmp_path):
+    # Start with a recipe that knows about the api app only.
+    (tmp_path / "splashdown.toml").write_text("""\
+[project]
+workspace = "single"
+loader = "mise"
+
+[apps.api]
+path = "."
+profile = "node-backend"
+resources = ["PORT"]
+
+[resources.PORT]
+type  = "port"
+range = [9081, 9100]
+""")
+    # User adds vite alongside.
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    rc = sd.cmd_refresh_inventory(tmp_path)
+    assert rc == 0
+    text = (tmp_path / "splashdown.toml").read_text()
+    assert 'profile = "vite"' in text
+    # Original resource block preserved verbatim.
+    assert "[resources.PORT]" in text
+    assert "range = [9081, 9100]" in text
+
+
+def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
+    # A legacy single-resource recipe (no [project] / [apps.*]).
+    (tmp_path / "splashdown.toml").write_text("[resources.RUN_ID]\ntype = \"uuid\"\n")
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    rc = sd.cmd_refresh_inventory(tmp_path)
+    assert rc == 0
+    text = (tmp_path / "splashdown.toml").read_text()
+    assert "[project]" in text
+    assert "[apps." in text
+    # Existing resources are kept verbatim.
+    assert "[resources.RUN_ID]" in text

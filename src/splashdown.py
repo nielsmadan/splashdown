@@ -1785,6 +1785,52 @@ class Scanner:
         return "unknown"
 
 
+def _merge_app_resources(
+    apps: list[AppInventory],
+    res_by_app: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    """Merge per-app resource dicts into one [resources.*] table. When the same
+    canonical name appears in more than one app, all instances are mangled with
+    the app name (e.g. WEB_DEV_PORT → WEB_DEV_PORT_ADMIN / WEB_DEV_PORT_CUSTOMER).
+    Single-owner names are kept canonical."""
+    owners: dict[str, list[str]] = {}
+    for app_name, res in res_by_app.items():
+        for res_name in res:
+            owners.setdefault(res_name, []).append(app_name)
+
+    merged: dict[str, dict[str, Any]] = {}
+    for app_name, res in res_by_app.items():
+        for res_name, spec in res.items():
+            if len(owners[res_name]) > 1:
+                key = f"{res_name}_{app_name.upper().replace('-', '_')}"
+            else:
+                key = res_name
+            merged[key] = spec
+    return merged
+
+
+def _app_resource_names(
+    apps: list[AppInventory],
+    res_by_app: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, list[str]]:
+    """Return {app_name: [resource_names]} after mangling. Mirrors what
+    [apps.<name>] `resources` should list."""
+    owners: dict[str, list[str]] = {}
+    for app_name, res in res_by_app.items():
+        for res_name in res:
+            owners.setdefault(res_name, []).append(app_name)
+    out: dict[str, list[str]] = {}
+    for app_name, res in res_by_app.items():
+        names = []
+        for res_name in res:
+            if len(owners[res_name]) > 1:
+                names.append(f"{res_name}_{app_name.upper().replace('-', '_')}")
+            else:
+                names.append(res_name)
+        out[app_name] = names
+    return out
+
+
 # ---------- framework wiring (doctor) ----------
 #
 # WIRING is the per-framework spec shipped with the tool. Each WiringCheck names
@@ -2250,16 +2296,78 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
     return device_run(cwd, recipe, info)
 
 
-def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
+def cmd_init(cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None) -> None:
+    """Scaffold splashdown.toml from a project scan (default) or from a named
+    preset (legacy path: `splash init --preset NAME`)."""
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
         print(f"refusing to overwrite existing {RECIPE_NAME} (use --force)", file=sys.stderr)
         sys.exit(2)
+
+    # Legacy path: an explicit preset bypasses the Scanner entirely.
+    if preset is not None:
+        return _cmd_init_legacy_preset(cwd, preset)
+
+    # Scanner-driven path.
+    inv = Scanner().scan(cwd)
+    if loader_override:
+        inv = ProjectInventory(workspace=inv.workspace, apps=inv.apps, loader=loader_override)
+
+    print(f"scanning project…", file=sys.stderr)
+    print(f"  detected: {inv.workspace} ({'/'.join(a.name for a in inv.apps) or 'no apps'})", file=sys.stderr)
+    for app in inv.apps:
+        rel = app.path.relative_to(cwd) if app.path != cwd else Path(".")
+        print(f"  {rel}\t→ {app.profile}", file=sys.stderr)
+    print(f"  shell loader\t→ {inv.loader}", file=sys.stderr)
+
+    # Collect per-app resources, then merge with collision-mangling.
+    res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
+    for app in inv.apps:
+        if app.profile == "unknown":
+            res_by_app[app.name] = {}
+            continue
+        profile = PROFILES[app.profile]
+        res_by_app[app.name] = profile.resources(app)
+    merged_resources = _merge_app_resources(inv.apps, res_by_app)
+    app_resource_names = _app_resource_names(inv.apps, res_by_app)
+
+    recipe_path.write_text(_render_scanned_recipe(inv, merged_resources, app_resource_names, cwd))
+    print(f"wrote {RECIPE_NAME}", file=sys.stderr)
+
+    local_path = cwd / LOCAL_NAME
+    if not local_path.exists():
+        local_path.write_text(LOCAL_SKELETON)
+        print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
+
+    _ensure_gitignore(cwd)
+    LOADERS[inv.loader].wire(cwd)
+    _ensure_post_checkout_hook(cwd)
+
+    # Run consumer-side wiring (the Profiles' wiring checks).
+    if any(app.profile != "unknown" for app in inv.apps):
+        for app in inv.apps:
+            if app.profile == "unknown":
+                continue
+            checks = PROFILES[app.profile].wiring_checks(app)
+            for check in checks:
+                if not check.applies(app.path):
+                    continue
+                status, _ = check.detect(app.path)
+                if status != "ok" and check.autofix is not None:
+                    try:
+                        check.autofix(app.path)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
+
+
+def _cmd_init_legacy_preset(cwd: Path, preset: str) -> None:
+    """Legacy `splash init --preset NAME` path — preserves today's behavior."""
     entry = PRESETS.get(preset)
     available = [n for n, p in PRESETS.items() if p.scaffold_toml is not None]
     if entry is None or entry.scaffold_toml is None:
         print(f"unknown preset `{preset}`; available: {', '.join(available)}", file=sys.stderr)
         sys.exit(2)
+    recipe_path = cwd / RECIPE_NAME
     recipe_path.write_text(entry.scaffold_toml)
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
@@ -2272,12 +2380,118 @@ def cmd_init(cwd: Path, preset: str = "minimal", force: bool = False) -> None:
     _ensure_mise_file_directive(cwd)
     _ensure_post_checkout_hook(cwd)
 
-    # After the generic scaffolding, run framework-specific wiring (if any).
     framework = _resolve_doctor_framework(cwd, None)
     fw_preset = _preset_for_framework(framework) if framework else None
     if fw_preset and fw_preset.wiring_checks:
         print(f"running framework wiring for `{framework}`...", file=sys.stderr)
         cmd_doctor(cwd, fix=True)
+
+
+def cmd_refresh_inventory(cwd: Path) -> int:
+    """Re-scan and rewrite [project] / [apps.*] in splashdown.toml; preserve
+    [resources.*] sections verbatim. Used both for picking up new apps and for
+    upgrading legacy recipes to the new shape."""
+    recipe_path = cwd / RECIPE_NAME
+    if not recipe_path.exists():
+        print(f"no {RECIPE_NAME} in {cwd}; run `splash init` instead", file=sys.stderr)
+        return 1
+    inv = Scanner().scan(cwd)
+
+    res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
+    for app in inv.apps:
+        if app.profile == "unknown":
+            res_by_app[app.name] = {}
+            continue
+        res_by_app[app.name] = PROFILES[app.profile].resources(app)
+    app_resource_names = _app_resource_names(inv.apps, res_by_app)
+
+    # Preserve existing resource definitions verbatim.
+    existing = recipe_path.read_text()
+    preserved_resources = _extract_resource_blocks(existing)
+
+    # Rebuild the recipe head ([project], [apps.*]) from the inventory; append
+    # the existing [resources.*] blocks at the end. Any resource the Profile
+    # newly emits is added only if it's not already in the preserved set.
+    new_resources: dict[str, dict[str, Any]] = {}
+    profile_emitted = _merge_app_resources(inv.apps, res_by_app)
+    for name, spec in profile_emitted.items():
+        if name not in preserved_resources:
+            new_resources[name] = spec
+
+    rebuilt = _render_scanned_recipe(inv, new_resources, app_resource_names, cwd)
+    if preserved_resources:
+        rebuilt = rebuilt.rstrip() + "\n\n" + "\n\n".join(preserved_resources.values()) + "\n"
+    recipe_path.write_text(rebuilt)
+    print(f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {len(preserved_resources) + len(new_resources)} resource(s)", file=sys.stderr)
+    return 0
+
+
+def _extract_resource_blocks(recipe_text: str) -> dict[str, str]:
+    """Parse [resources.NAME] blocks out of a recipe, preserving their text.
+    Returns {name: full_block_text}. Used to keep existing definitions intact
+    when refresh-inventory rebuilds the head of the file."""
+    out: dict[str, str] = {}
+    lines = recipe_text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"\[resources\.([A-Za-z_][A-Za-z0-9_]*)\]", lines[i].strip())
+        if not m:
+            i += 1
+            continue
+        name = m.group(1)
+        block = [lines[i]]
+        i += 1
+        while i < len(lines) and not (lines[i].strip().startswith("[") and lines[i].strip().endswith("]")):
+            block.append(lines[i])
+            i += 1
+        # Drop trailing empty lines from the captured block.
+        while block and not block[-1].strip():
+            block.pop()
+        out[name] = "\n".join(block)
+    return out
+
+
+def _render_scanned_recipe(
+    inv: ProjectInventory,
+    merged_resources: dict[str, dict[str, Any]],
+    app_resource_names: dict[str, list[str]],
+    cwd: Path,
+) -> str:
+    """Render the new recipe shape: [project], [apps.*], [resources.*]."""
+    parts: list[str] = [
+        "# splashdown.toml — auto-generated by `splash init`. Edit freely;",
+        "# splashdown preserves comments and unknown keys on subsequent runs.",
+        "",
+        "[project]",
+        f'workspace = "{inv.workspace}"',
+        f'loader = "{inv.loader}"',
+        "",
+    ]
+    for app in inv.apps:
+        rel = "." if app.path == cwd else str(app.path.relative_to(cwd))
+        parts.append(f"[apps.{app.name}]")
+        parts.append(f'path = "{rel}"')
+        parts.append(f'profile = "{app.profile}"')
+        names = app_resource_names.get(app.name, [])
+        parts.append("resources = [" + ", ".join(f'"{n}"' for n in names) + "]")
+        parts.append("")
+    if merged_resources:
+        for res_name, spec in merged_resources.items():
+            parts.append(f"[resources.{res_name}]")
+            for k, v in spec.items():
+                parts.append(f"{k} = {_toml_value(v)}")
+            parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _toml_value(v: Any) -> str:
+    if isinstance(v, str):
+        return _toml_quote(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
 
 
 # ---------- React Native wiring checks ----------
@@ -2951,7 +3165,7 @@ LOADERS: dict[str, Loader] = {
 
 KNOWN_CMDS = {
     "provision", "init", "list", "get", "set", "release", "gc", "doctor",
-    "status", "refresh",
+    "status", "refresh", "refresh-inventory",
     "run", "start", "stop", "destroy",
     "devices", "device",
 }
@@ -2972,8 +3186,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
 
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
-    p.add_argument("--preset", default="minimal")
+    p.add_argument("--preset", default=None, help="legacy: use a named preset instead of scanning")
+    p.add_argument("--loader", default=None, choices=("mise", "direnv", "devbox"), help="override loader auto-detection")
     p.add_argument("--force", action="store_true")
+
+    sub.add_parser("refresh-inventory", help="re-scan and update [project]/[apps.*] in splashdown.toml")
 
     p = sub.add_parser("list", help="show this checkout's resolved vars")
     p.add_argument("--checkout", default=None)
@@ -3091,8 +3308,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.cmd == "init":
-            cmd_init(cwd, preset=args.preset, force=args.force)
+            cmd_init(cwd, preset=args.preset, force=args.force, loader_override=args.loader)
             return 0
+
+        if args.cmd == "refresh-inventory":
+            return cmd_refresh_inventory(cwd)
 
         if args.cmd == "gc":
             n = registry.gc()
