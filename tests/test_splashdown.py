@@ -2349,3 +2349,41 @@ def test_devbox_loader_unwire_strips_hook_only(tmp_path):
     data = json.loads((tmp_path / "devbox.json").read_text())
     assert "splashdown" not in json.dumps(data)
     assert data["packages"] == ["nodejs@22"]
+
+
+def test_react_native_profile_detects_via_package_json(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.83"}}')
+    assert sd.PROFILES["react-native"].detect(tmp_path) is True
+
+
+def test_expo_profile_detects_via_expo_dep_and_app_json(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"expo": "50"}}')
+    (tmp_path / "app.json").write_text("{}")
+    assert sd.PROFILES["expo"].detect(tmp_path) is True
+
+
+def test_flutter_profile_detects_via_pubspec(tmp_path):
+    (tmp_path / "pubspec.yaml").write_text("name: x\n")
+    assert sd.PROFILES["flutter"].detect(tmp_path) is True
+
+
+def test_ios_native_profile_detects_via_xcworkspace(tmp_path):
+    (tmp_path / "MyApp.xcworkspace").mkdir()
+    assert sd.PROFILES["ios-native"].detect(tmp_path) is True
+
+
+def test_android_native_profile_detects_via_gradle(tmp_path):
+    (tmp_path / "build.gradle.kts").write_text("")
+    (tmp_path / "settings.gradle.kts").write_text("")
+    assert sd.PROFILES["android-native"].detect(tmp_path) is True
+
+
+def test_react_native_profile_inherits_existing_wiring_checks(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.83"}}')
+    app = sd.AppInventory(name="main", path=tmp_path, profile="react-native")
+    checks = sd.PROFILES["react-native"].wiring_checks(app)
+    ids = {c.id for c in checks}
+    assert "rn-hook" in ids
+    assert "rn-metro-config" in ids
+    assert "rn-pkg-port" in ids
+    assert "rn-xcode-env" in ids

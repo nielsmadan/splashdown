@@ -3244,6 +3244,39 @@ def _springboot_app_props_manual(cwd: Path) -> str:
 PROFILES["springboot"] = SpringBootProfile()
 
 
+class _MobilePresetBridgeProfile(Profile):
+    """Thin Profile that delegates detection + wiring_checks to an existing
+    mobile Preset. Used to bring RN/Expo/Flutter/iOS-native/Android-native
+    into the Scanner-driven flow without rewriting their logic."""
+
+    def __init__(self, name: str, preset: Preset):
+        self.name = name
+        self._preset = preset
+
+    def detect(self, app_path: Path) -> bool:
+        if self._preset.detect is None:
+            return False
+        return self._preset.detect(app_path)
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # Mobile workflows allocate resources via the device flow, not the
+        # recipe — Profiles for mobile contribute zero static resources.
+        return {}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return list(self._preset.wiring_checks)
+
+
+# Bridge each existing mobile Preset into the new PROFILES registry. The Preset
+# objects keep their other responsibilities (scaffold_toml for `splash init
+# --preset NAME`, run() for `splash run`).
+PROFILES["flutter"] = _MobilePresetBridgeProfile("flutter", PRESETS["flutter"])
+PROFILES["expo"] = _MobilePresetBridgeProfile("expo", PRESETS["expo"])
+PROFILES["react-native"] = _MobilePresetBridgeProfile("react-native", PRESETS["rn"])
+PROFILES["ios-native"] = _MobilePresetBridgeProfile("ios-native", PRESETS["ios-native"])
+PROFILES["android-native"] = _MobilePresetBridgeProfile("android-native", PRESETS["android-native"])
+
+
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
