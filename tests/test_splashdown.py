@@ -2197,3 +2197,18 @@ def test_nextjs_profile_emits_port_resource(tmp_path):
     app = sd.AppInventory(name="web", path=tmp_path, profile="nextjs")
     res = sd.PROFILES["nextjs"].resources(app)
     assert res == {"PORT": {"type": "port", "range": [3000, 3100]}}
+
+
+def test_django_profile_detects_manage_py(tmp_path):
+    (tmp_path / "manage.py").write_text('import django\n')
+    assert sd.PROFILES["django"].detect(tmp_path) is True
+
+
+def test_django_profile_does_not_detect_without_manage_py(tmp_path):
+    assert sd.PROFILES["django"].detect(tmp_path) is False
+
+
+def test_django_profile_emits_port_resource(tmp_path):
+    (tmp_path / "manage.py").write_text('import django\n')
+    app = sd.AppInventory(name="api", path=tmp_path, profile="django")
+    assert sd.PROFILES["django"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}

@@ -3154,6 +3154,25 @@ class NextJsProfile(Profile):
 PROFILES["nextjs"] = NextJsProfile()
 
 
+class DjangoProfile(Profile):
+    name = "django"
+
+    def detect(self, app_path: Path) -> bool:
+        mp = app_path / "manage.py"
+        if not mp.exists():
+            return False
+        try:
+            return "django" in mp.read_text()
+        except OSError:
+            return False
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"PORT": {"type": "port", "range": [8000, 8100]}}
+
+
+PROFILES["django"] = DjangoProfile()
+
+
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
