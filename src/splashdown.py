@@ -3104,6 +3104,29 @@ def _vite_process_env_manual(cwd: Path) -> str:
 
 PROFILES["vite"] = ViteProfile()
 
+_NODE_BACKEND_DEPS = {"hono", "express", "fastify", "koa", "@hapi/hapi", "@nestjs/core"}
+
+
+class NodeBackendProfile(Profile):
+    name = "node-backend"
+
+    def detect(self, app_path: Path) -> bool:
+        pkg = app_path / "package.json"
+        if not pkg.exists():
+            return False
+        try:
+            data = json.loads(pkg.read_text())
+        except json.JSONDecodeError:
+            return False
+        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+        return any(d in deps for d in _NODE_BACKEND_DEPS)
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"PORT": {"type": "port", "range": [9081, 9100]}}
+
+
+PROFILES["node-backend"] = NodeBackendProfile()
+
 
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources

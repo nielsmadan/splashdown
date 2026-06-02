@@ -2158,3 +2158,25 @@ def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
     assert "[apps." in text
     # Existing resources are kept verbatim.
     assert "[resources.RUN_ID]" in text
+
+
+def test_node_backend_profile_detects_hono(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"hono": "^4.0.0"}}')
+    assert sd.PROFILES["node-backend"].detect(tmp_path) is True
+
+
+def test_node_backend_profile_detects_express(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"express": "^4.0.0"}}')
+    assert sd.PROFILES["node-backend"].detect(tmp_path) is True
+
+
+def test_node_backend_profile_does_not_detect_without_framework(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"react": "^18.0.0"}}')
+    assert sd.PROFILES["node-backend"].detect(tmp_path) is False
+
+
+def test_node_backend_profile_emits_port_resource(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"hono": "^4.0.0"}}')
+    app = sd.AppInventory(name="api", path=tmp_path, profile="node-backend")
+    res = sd.PROFILES["node-backend"].resources(app)
+    assert res == {"PORT": {"type": "port", "range": [9081, 9100]}}
