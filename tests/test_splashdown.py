@@ -2212,3 +2212,26 @@ def test_django_profile_emits_port_resource(tmp_path):
     (tmp_path / "manage.py").write_text('import django\n')
     app = sd.AppInventory(name="api", path=tmp_path, profile="django")
     assert sd.PROFILES["django"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}
+
+
+def test_fastapi_profile_detects_via_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\ndependencies = ["fastapi==0.115.0", "uvicorn"]\n'
+    )
+    assert sd.PROFILES["fastapi"].detect(tmp_path) is True
+
+
+def test_fastapi_profile_detects_via_requirements(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi==0.115.0\nuvicorn==0.30.0\n")
+    assert sd.PROFILES["fastapi"].detect(tmp_path) is True
+
+
+def test_fastapi_profile_does_not_detect_without_fastapi(tmp_path):
+    (tmp_path / "requirements.txt").write_text("flask==3.0.0\n")
+    assert sd.PROFILES["fastapi"].detect(tmp_path) is False
+
+
+def test_fastapi_profile_emits_port_resource(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\n")
+    app = sd.AppInventory(name="api", path=tmp_path, profile="fastapi")
+    assert sd.PROFILES["fastapi"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}

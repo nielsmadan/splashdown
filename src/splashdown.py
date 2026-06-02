@@ -3173,6 +3173,26 @@ class DjangoProfile(Profile):
 PROFILES["django"] = DjangoProfile()
 
 
+class FastApiProfile(Profile):
+    name = "fastapi"
+
+    def detect(self, app_path: Path) -> bool:
+        for f in ("requirements.txt", "requirements-dev.txt"):
+            req = app_path / f
+            if req.exists() and "fastapi" in req.read_text().lower():
+                return True
+        pyproject = app_path / "pyproject.toml"
+        if pyproject.exists() and "fastapi" in pyproject.read_text().lower():
+            return True
+        return False
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"PORT": {"type": "port", "range": [8000, 8100]}}
+
+
+PROFILES["fastapi"] = FastApiProfile()
+
+
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
