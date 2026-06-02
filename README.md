@@ -222,6 +222,63 @@ splash doctor --framework=react-native   # override detection if needed
 
 **Known limitation — Android.** Android's Metro port is also baked into the build (via the RN Gradle plugin / `BuildConfig`), with a different mechanism than iOS. Splashdown doesn't currently wire the Android side; for now `yarn android` works (the RN CLI propagates `RCT_METRO_PORT` to Gradle), but bare `gradle assembleDebug` may default to 8081. Tracked as a future check.
 
+## How splashdown integrates with your project
+
+`splash init` walks the repo and figures out:
+
+1. **The workspace shape** — single-app, pnpm/yarn/npm workspaces, cargo workspace, or gradle multi-project.
+2. **Each app's framework** — Vite, Next.js, node-backend (Hono/Express/Fastify/Koa/Hapi/Nest), Django, FastAPI, Spring Boot, React Native, Expo, Flutter, native iOS, native Android.
+3. **The shell-env loader** — mise (default), direnv, or devbox, depending on which config files it finds.
+
+It writes a recipe with three top-level tables:
+
+```toml
+[project]
+workspace = "pnpm"        # single | pnpm | yarn | npm | cargo | gradle
+loader    = "mise"        # mise | direnv | devbox
+
+[apps.api]
+path      = "apps/api"
+profile   = "node-backend"
+resources = ["PORT"]
+
+[apps.web-admin]
+path      = "apps/web-admin"
+profile   = "vite"
+resources = ["WEB_DEV_PORT", "API_DEV_PORT"]
+
+[resources.PORT]
+type  = "port"
+range = [9081, 9100]
+
+# … more [resources.*] tables
+```
+
+**Profile**: per-framework wiring rules. Each Profile contributes resource declarations and (where needed) wiring checks that the doctor can autofix. The Vite Profile, for example, rewrites `vite.config.{ts,js}` to read `process.env` instead of `loadEnv` — that's what lets `splashdown.env` + mise reach the dev server.
+
+**Loader**: per-shell-env-tool wiring. The mise Loader sets `_.file = "splashdown.env"`. The direnv Loader appends `dotenv splashdown.env` between sentinel markers in `.envrc`. The devbox Loader adds an `init_hook` entry. All three are idempotent and reversible.
+
+**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table — splashdown picks up the change on the next provision and never re-scans unless you ask. `splash refresh-inventory` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
+
+**Multi-instance collisions** are mangled at scan time. Two Vite apps both want `WEB_DEV_PORT`; the scanner renames them `WEB_DEV_PORT_ADMIN` / `WEB_DEV_PORT_CUSTOMER` based on the app names, so the recipe stays unambiguous.
+
+**Unknown framework**: an app whose framework splashdown doesn't recognize gets `profile = "unknown"` — no resources allocated for it, no wiring attempted. The rest of the project still works. To add support, contribute a Profile upstream.
+
+### The `writer` field (power-user escape hatch)
+
+Resources route to `splashdown.env` by default — that's what mise/direnv/devbox load. For consumers that can't read `process.env` (legacy build systems, vendor tooling, frameworks splashdown doesn't have a Profile for yet), set `writer` on the resource:
+
+```toml
+[resources.LEGACY_PORT]
+type   = "port"
+range  = [9999, 10100]
+writer = "envfile=path/to/legacy/.env"
+```
+
+Available writers: `splashdown-env` (default), `envfile=PATH` (any .env-format file, preserves non-managed lines), `envrc` (writes `.envrc.local`), `stdout` (echoes), `none` (registry-only, no file output).
+
+In practice you shouldn't need this — the framework Profile should handle the routing implicitly. Reach for `writer` only when the Profile coverage isn't enough yet.
+
 ## CLI summary
 
 ```
