@@ -1297,36 +1297,20 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
     override = recipe.project.get("framework")
     if override and override != "auto":
         return override
-    for preset in PRESETS.values():
-        if preset.framework is None or preset.detect is None:
-            continue
-        if preset.detect(cwd):
-            return preset.framework
-    frameworks = sorted({p.framework for p in PRESETS.values() if p.framework})
+    for name, profile in PROFILES.items():
+        if profile.detect(cwd):
+            return name
     raise DeviceError(
         "could not detect project framework; set `[project] framework = "
-        + "|".join(f'"{f}"' for f in frameworks)
+        + "|".join(f'"{n}"' for n in PROFILES)
         + "` in splashdown.toml"
     )
 
 
-def _preset_for_framework(framework: str) -> Preset | None:
-    """Look up the registered Preset whose framework identifier matches."""
-    for preset in PRESETS.values():
-        if preset.framework == framework:
-            return preset
-    return None
-
-
 def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]:
-    """Resolve the doctor's check list for a framework name. Prefers a Preset
-    (legacy path: mobile frameworks) and falls back to a Profile (web/backend
-    frameworks like vite, springboot)."""
-    preset = _preset_for_framework(framework)
-    if preset and preset.wiring_checks:
-        return preset.wiring_checks
+    """Resolve the doctor's check list for a framework name. Profiles take an
+    AppInventory; synthesize one rooted at cwd."""
     if framework in PROFILES:
-        # Profiles take an AppInventory; synthesize one rooted at cwd.
         app = AppInventory(name="main", path=cwd, profile=framework)
         return PROFILES[framework].wiring_checks(app)
     return []
@@ -1335,10 +1319,9 @@ def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
     fw = detect_framework(cwd, recipe)
-    preset = _preset_for_framework(fw)
-    if preset is None or preset.run is None:
+    if fw not in PROFILES:
         raise DeviceError(f"don't know how to run framework `{fw}`")
-    return preset.run(cwd, recipe, info)
+    return PROFILES[fw].run(cwd, recipe, info)
 
 
 def _load_recipe_or_empty(cwd: Path) -> Recipe:
@@ -1406,8 +1389,9 @@ def device_remove(cwd: Path, dtype: str, variant: str) -> None:
 
 # ---------- init / scaffolding ----------
 
-# Scaffold TOML templates per preset. The `PRESETS` registry at the bottom of
-# this file bundles each scaffold with detection logic, run(), and wiring checks.
+# Scaffold TOML templates per preset name. The `SCAFFOLDS` registry near the
+# bottom of this file maps each preset name (`rn`, `flutter`, `electron`, ...)
+# to one of these strings; `splash init NAME` writes the corresponding scaffold.
 _MINIMAL_SCAFFOLD = """\
 # splashdown.toml — committed recipe. Declares per-checkout resource slots.
 [resources.RUN_ID]
@@ -1955,27 +1939,8 @@ class WiringCheck(NamedTuple):
     manual_instructions: Callable[[Path], str] | None
 
 
-@dataclass
-class Preset:
-    """An app-type plugin: scaffold + framework identity + detect/run + wiring.
-
-    `name` is the user-facing key. `framework` is the internal identifier used
-    in detect / device_run / [project] framework overrides — may differ from
-    name (e.g. preset "rn", framework "react-native"), or be None for
-    scaffold-only presets (minimal, server, electron) that don't drive devices.
-    `scaffold_toml` is None for entries that exist only to register a
-    framework's detect/run (e.g. expo, which has no `splash init` scaffold).
-    """
-    name: str
-    scaffold_toml: str | None = None
-    framework: str | None = None
-    detect: Callable[[Path], bool] | None = None
-    run: Callable[[Path, "Recipe", dict[str, str]], int] | None = None
-    wiring_checks: list[WiringCheck] = field(default_factory=list)
-
-
 # RN wiring checks accumulate here as the rn-* helper functions are defined
-# below; the ReactNativePreset instance picks them up at registry-build time.
+# below; ReactNativeProfile picks them up at registry-build time.
 _RN_WIRING_CHECKS: list[WiringCheck] = []
 
 
@@ -2626,15 +2591,15 @@ def cmd_init(cwd: Path, preset: str | None = None, force: bool = False, loader_o
 
 
 def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
-    """Legacy `splash init NAME` path: write the named scaffold, then wire the
+    """`splash init NAME` path: write the named scaffold, then wire the
     detected (or overridden) shell-env loader and the post-checkout hook."""
-    entry = PRESETS.get(preset)
-    available = [n for n, p in PRESETS.items() if p.scaffold_toml is not None]
-    if entry is None or entry.scaffold_toml is None:
+    scaffold = SCAFFOLDS.get(preset)
+    if scaffold is None:
+        available = sorted(SCAFFOLDS)
         print(f"unknown preset `{preset}`; available: {', '.join(available)}", file=sys.stderr)
         sys.exit(2)
     recipe_path = cwd / RECIPE_NAME
-    recipe_path.write_text(entry.scaffold_toml)
+    recipe_path.write_text(scaffold)
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME
@@ -2648,8 +2613,7 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
     _ensure_post_checkout_hook(cwd)
 
     framework = _resolve_doctor_framework(cwd, None)
-    fw_preset = _preset_for_framework(framework) if framework else None
-    if fw_preset and fw_preset.wiring_checks:
+    if framework and _wiring_checks_for_framework(framework, cwd):
         print(f"running framework wiring for `{framework}`...", file=sys.stderr)
         cmd_doctor(cwd, fix=True)
 
@@ -3022,11 +2986,9 @@ _RN_WIRING_CHECKS.append(
 )
 
 
-# ---------- preset registry ----------
-# Each Preset bundles: scaffold TOML (for `splash init`), filesystem detection
-# (for auto-detecting framework), build/install/launch (for `splash run`), and
-# wiring checks (for `splash doctor`). Native presets are scaffold + detect +
-# run only; their wiring is intentionally minimal.
+# ---------- scaffold registry ----------
+# Named scaffolds for `splash init NAME`. Framework detection, wiring checks,
+# and `splash run` logic live on `Profile` subclasses (below).
 
 
 def _detect_flutter(cwd: Path) -> bool:
@@ -3213,53 +3175,20 @@ _HOOK_WIRING_CHECK = WiringCheck(
 
 # Detection order matters: Flutter and Expo are checked before plain RN because
 # an Expo project's package.json also lists react-native as a dependency.
-PRESETS: dict[str, Preset] = {
-    "minimal": Preset(name="minimal", scaffold_toml=_MINIMAL_SCAFFOLD),
-    "flutter": Preset(
-        name="flutter",
-        scaffold_toml=_FLUTTER_SCAFFOLD,
-        framework="flutter",
-        detect=_detect_flutter,
-        run=_flutter_run,
-    ),
-    "expo": Preset(
-        name="expo",
-        # no `splash init expo` scaffold; framework detect/run still works
-        framework="expo",
-        detect=_detect_expo,
-        run=_expo_run,
-    ),
-    "rn": Preset(
-        name="rn",
-        scaffold_toml=_RN_SCAFFOLD,
-        framework="react-native",
-        detect=_detect_rn,
-        run=_rn_run,
-        wiring_checks=_RN_WIRING_CHECKS,
-    ),
-    "ios-native": Preset(
-        name="ios-native",
-        scaffold_toml=_IOS_NATIVE_SCAFFOLD,
-        framework="ios-native",
-        detect=_detect_ios_native,
-        run=_ios_native_run,
-        wiring_checks=[_HOOK_WIRING_CHECK],
-    ),
-    "android-native": Preset(
-        name="android-native",
-        scaffold_toml=_ANDROID_NATIVE_SCAFFOLD,
-        framework="android-native",
-        detect=_detect_android_native,
-        run=_android_native_run,
-        wiring_checks=[_HOOK_WIRING_CHECK],
-    ),
-    "electron": Preset(name="electron", scaffold_toml=_ELECTRON_SCAFFOLD),
-    "server": Preset(name="server", scaffold_toml=_SERVER_SCAFFOLD),
+# Named scaffolds for `splash init NAME`. Decoupled from PROFILES because some
+# entries (minimal, electron, server) don't have a detectable framework, and
+# some Profiles (vite, springboot, etc.) don't have a stock scaffold.
+SCAFFOLDS: dict[str, str] = {
+    "minimal": _MINIMAL_SCAFFOLD,
+    "react-native": _RN_SCAFFOLD,
+    "rn": _RN_SCAFFOLD,                # short alias
+    "flutter": _FLUTTER_SCAFFOLD,
+    "ios-native": _IOS_NATIVE_SCAFFOLD,
+    "android-native": _ANDROID_NATIVE_SCAFFOLD,
+    "electron": _ELECTRON_SCAFFOLD,
+    "server": _SERVER_SCAFFOLD,
+    "nextjs": _SERVER_SCAFFOLD,        # historical alias for server
 }
-
-# `nextjs` is the historical name for the generic server scaffold — keep it as
-# an alias so `splash init nextjs` still works.
-PRESETS["nextjs"] = PRESETS["server"]
 
 
 # ---------- profiles ----------
@@ -3272,7 +3201,7 @@ PRESETS["nextjs"] = PRESETS["server"]
 
 class Profile:
     """Abstract base. Subclasses set `name` and override `detect`, `resources`,
-    optionally `wiring_checks`."""
+    and (where relevant) `wiring_checks` / `run`."""
     name: str = ""
 
     def detect(self, app_path: Path) -> bool:
@@ -3289,6 +3218,12 @@ class Profile:
         """Return WiringCheck instances for consumer-side config patches. The
         existing doctor flow runs these."""
         return []
+
+    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+        """Build + install + launch the app on the given device. Mobile
+        Profiles override; web/backend Profiles raise (no `splash run` semantics
+        for them — those use `pnpm dev` / `gradle bootRun` / etc. directly)."""
+        raise DeviceError(f"don't know how to run framework `{self.name}`")
 
 
 PROFILES: dict[str, Profile] = {}
@@ -3511,37 +3446,74 @@ def _springboot_app_props_manual(cwd: Path) -> str:
 PROFILES["springboot"] = SpringBootProfile()
 
 
-class _MobilePresetBridgeProfile(Profile):
-    """Thin Profile that delegates detection + wiring_checks to an existing
-    mobile Preset. Used to bring RN/Expo/Flutter/iOS-native/Android-native
-    into the Scanner-driven flow without rewriting their logic."""
-
-    def __init__(self, name: str, preset: Preset):
-        self.name = name
-        self._preset = preset
+class ReactNativeProfile(Profile):
+    name = "react-native"
 
     def detect(self, app_path: Path) -> bool:
-        if self._preset.detect is None:
-            return False
-        return self._preset.detect(app_path)
-
-    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        # Mobile workflows allocate resources via the device flow, not the
-        # recipe — Profiles for mobile contribute zero static resources.
-        return {}
+        return _detect_rn(app_path)
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
-        return list(self._preset.wiring_checks)
+        return list(_RN_WIRING_CHECKS)
+
+    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+        return _rn_run(cwd, recipe, info)
 
 
-# Bridge each existing mobile Preset into the new PROFILES registry. The Preset
-# objects keep their other responsibilities (scaffold_toml for `splash init
-# --preset NAME`, run() for `splash run`).
-PROFILES["flutter"] = _MobilePresetBridgeProfile("flutter", PRESETS["flutter"])
-PROFILES["expo"] = _MobilePresetBridgeProfile("expo", PRESETS["expo"])
-PROFILES["react-native"] = _MobilePresetBridgeProfile("react-native", PRESETS["rn"])
-PROFILES["ios-native"] = _MobilePresetBridgeProfile("ios-native", PRESETS["ios-native"])
-PROFILES["android-native"] = _MobilePresetBridgeProfile("android-native", PRESETS["android-native"])
+class ExpoProfile(Profile):
+    name = "expo"
+
+    def detect(self, app_path: Path) -> bool:
+        return _detect_expo(app_path)
+
+    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+        return _expo_run(cwd, recipe, info)
+
+
+class FlutterProfile(Profile):
+    name = "flutter"
+
+    def detect(self, app_path: Path) -> bool:
+        return _detect_flutter(app_path)
+
+    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+        return _flutter_run(cwd, recipe, info)
+
+
+class IosNativeProfile(Profile):
+    name = "ios-native"
+
+    def detect(self, app_path: Path) -> bool:
+        return _detect_ios_native(app_path)
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_HOOK_WIRING_CHECK]
+
+    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+        return _ios_native_run(cwd, recipe, info)
+
+
+class AndroidNativeProfile(Profile):
+    name = "android-native"
+
+    def detect(self, app_path: Path) -> bool:
+        return _detect_android_native(app_path)
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_HOOK_WIRING_CHECK]
+
+    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+        return _android_native_run(cwd, recipe, info)
+
+
+# Mobile precedence: pubspec.yaml (flutter) wins over an `expo` or `react-native`
+# dep in package.json — a flutter project might transitively pull in JS tooling
+# but rarely the other way around. Then expo (requires both `expo` dep and
+# app.json) before plain react-native.
+PROFILES["flutter"] = FlutterProfile()
+PROFILES["expo"] = ExpoProfile()
+PROFILES["react-native"] = ReactNativeProfile()
+PROFILES["ios-native"] = IosNativeProfile()
+PROFILES["android-native"] = AndroidNativeProfile()
 
 
 # ---------- loaders ----------
@@ -3672,7 +3644,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
     p.add_argument(
         "preset", nargs="?", default=None,
-        choices=tuple(name for name, pre in PRESETS.items() if pre.scaffold_toml is not None),
+        choices=tuple(SCAFFOLDS),
         help="named scaffold (default: scan the project)",
     )
     p.add_argument("--loader", default=None, choices=("mise", "direnv", "devbox"), help="override loader auto-detection")
