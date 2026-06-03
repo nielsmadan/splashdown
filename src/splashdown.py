@@ -2131,122 +2131,22 @@ def cmd_status(
         return _cmd_status_table(checkouts, registry, check)
 
     summary = {"defunct_checkouts": 0, "defunct_rows": 0, "orphan_devices": 0}
-    json_blocks: list[dict[str, Any]] = []
-
-    for co in checkouts:
-        co_path = Path(co)
-        co_exists = co_path.exists()
-        if check and not co_exists:
-            summary["defunct_checkouts"] += 1
-
-        resources = registry.all_for(co)
-        if check and not co_exists:
-            summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
-
-        # Port-state needs port-typed-resource knowledge. Read the recipe when
-        # the checkout's path is still around; otherwise we just can't tag.
-        port_keys: set[str] = set()
-        if co_exists:
-            recipe_path = co_path / RECIPE_NAME
-            if recipe_path.exists():
-                try:
-                    rec = Recipe.load(recipe_path)
-                    port_keys = {n for n, s in rec.resources.items() if s.get("type") == "port"}
-                except Exception:  # noqa: BLE001 — malformed recipe shouldn't kill status
-                    pass
-
-        res_entries: list[tuple[str, str, str]] = []
-        for key, value in sorted(resources.items()):
-            state = ""
-            if key in port_keys:
-                try:
-                    state = "in use" if _port_in_use(int(value)) else "free"
-                except ValueError:
-                    state = ""
-            res_entries.append((key, value, state))
-
-        # Device entries. In --all mode, source = registry only. In default
-        # mode, source = recipe + local catalog (today's behavior).
-        dev_entries: list[tuple[str, str, str, str, str, bool]] = []
-        if show_all:
-            for row in registry.devices_for(co):
-                try:
-                    status = _device_status_for_row(row)
-                except DeviceError as e:
-                    status = f"error: {e}"
-                orphan = check and co_exists and _is_orphan_device(row)
-                if orphan:
-                    summary["orphan_devices"] += 1
-                dev_entries.append((row.dtype, row.variant, "", row.udid, status, orphan))
-        elif co_exists:
-            recipe = _load_recipe_or_empty(co_path)
-            local = LocalConfig.load(co_path / LOCAL_NAME)
-            catalog = merged_devices(recipe, local)
-            for dtype, variants in catalog.items():
-                for variant, spec in variants.items():
-                    source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
-                    resolved = _resolve_device_name(spec, co_path, variant, dtype)
-                    try:
-                        status = device_status(dtype, resolved)
-                    except DeviceError as e:
-                        status = f"error: {e}"
-                    orphan = False
-                    if check:
-                        row = registry.get_device(co, dtype, variant)
-                        if row is not None and _is_orphan_device(row):
-                            orphan = True
-                            summary["orphan_devices"] += 1
-                    dev_entries.append((dtype, variant, source, resolved, status, orphan))
-
-        json_blocks.append({
-            "checkout": co,
-            "exists": co_exists,
-            "resources": [{"key": k, "value": v, "port_state": s} for k, v, s in res_entries],
-            "devices": [
-                {"type": dt, "variant": var, "source": src, "device_name": nm, "status": st, "orphan": orph}
-                for dt, var, src, nm, st, orph in dev_entries
-            ],
-        })
-
-        if fmt != "json":
-            header_tag = "  [defunct]" if check and not co_exists else ""
-            if show_all:
-                print(f"=== {co}{header_tag} ===", file=sys.stderr)
-            else:
-                print(f"checkout: {co}{header_tag}", file=sys.stderr)
-            print("resources:", file=sys.stderr)
-            if not res_entries:
-                print("  (none)", file=sys.stderr)
-            for key, value, state in res_entries:
-                suffix = f"  [{state}]" if state else ""
-                print(f"  {key}={value}{suffix}", file=sys.stderr)
-            print("devices:", file=sys.stderr)
-            if not dev_entries:
-                print("  (none)", file=sys.stderr)
-            for dtype, variant, source, name, status, orphan in dev_entries:
-                cols = [f"{dtype}.{variant}"]
-                if source:
-                    cols.append(source)
-                cols.append(name)
-                cols.append(status)
-                if orphan:
-                    cols.append("[orphan]")
-                print("  " + "\t".join(cols), file=sys.stderr)
-            if show_all:
-                print("", file=sys.stderr)
+    blocks = [
+        _gather_status_for_checkout(co, registry, show_all=show_all, check=check, summary=summary)
+        for co in checkouts
+    ]
 
     if fmt == "json":
-        payload: dict[str, Any]
-        if show_all:
-            payload = {"checkouts": json_blocks}
-            if check:
-                payload["summary"] = summary
-        else:
-            payload = json_blocks[0]
-            if check:
-                payload["summary"] = summary
+        payload: dict[str, Any] = (
+            {"checkouts": blocks} if show_all else blocks[0]
+        )
+        if check:
+            payload["summary"] = summary
         print(json.dumps(payload, indent=2))
         return 0
+
+    for block in blocks:
+        _emit_status_block_text(block, show_all=show_all)
 
     if check:
         _print_check_summary(summary)
@@ -2261,6 +2161,116 @@ def cmd_status(
             print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
 
     return 0
+
+
+def _gather_status_for_checkout(
+    co: str, registry: Registry, *,
+    show_all: bool, check: bool, summary: dict[str, int],
+) -> dict[str, Any]:
+    """Build the per-checkout block consumed by both JSON serialization and
+    text emission. Mutates `summary` with defunct/orphan counts when `check`."""
+    co_path = Path(co)
+    co_exists = co_path.exists()
+    resources = registry.all_for(co)
+    if check and not co_exists:
+        summary["defunct_checkouts"] += 1
+        summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
+
+    # Port-state needs port-typed-resource knowledge. Read the recipe when
+    # the checkout's path is still around; otherwise we can't tag.
+    port_keys: set[str] = set()
+    if co_exists:
+        recipe_path = co_path / RECIPE_NAME
+        if recipe_path.exists():
+            try:
+                rec = Recipe.load(recipe_path)
+                port_keys = {n for n, s in rec.resources.items() if s.get("type") == "port"}
+            except Exception:  # noqa: BLE001 — malformed recipe shouldn't kill status
+                pass
+
+    res_entries: list[dict[str, str]] = []
+    for key, value in sorted(resources.items()):
+        state = ""
+        if key in port_keys:
+            try:
+                state = "in use" if _port_in_use(int(value)) else "free"
+            except ValueError:
+                state = ""
+        res_entries.append({"key": key, "value": value, "port_state": state})
+
+    # Device entries. In --all mode, source = registry only. In default
+    # mode, source = recipe + local catalog (today's behavior).
+    dev_entries: list[dict[str, Any]] = []
+    if show_all:
+        for row in registry.devices_for(co):
+            try:
+                status = _device_status_for_row(row)
+            except DeviceError as e:
+                status = f"error: {e}"
+            orphan = check and co_exists and _is_orphan_device(row)
+            if orphan:
+                summary["orphan_devices"] += 1
+            dev_entries.append({
+                "type": row.dtype, "variant": row.variant, "source": "",
+                "device_name": row.udid, "status": status, "orphan": orphan,
+            })
+    elif co_exists:
+        recipe = _load_recipe_or_empty(co_path)
+        local = LocalConfig.load(co_path / LOCAL_NAME)
+        for dtype, variants in merged_devices(recipe, local).items():
+            for variant, spec in variants.items():
+                source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
+                resolved = _resolve_device_name(spec, co_path, variant, dtype)
+                try:
+                    status = device_status(dtype, resolved)
+                except DeviceError as e:
+                    status = f"error: {e}"
+                orphan = False
+                if check:
+                    row = registry.get_device(co, dtype, variant)
+                    if row is not None and _is_orphan_device(row):
+                        orphan = True
+                        summary["orphan_devices"] += 1
+                dev_entries.append({
+                    "type": dtype, "variant": variant, "source": source,
+                    "device_name": resolved, "status": status, "orphan": orphan,
+                })
+
+    return {
+        "checkout": co,
+        "exists": co_exists,
+        "resources": res_entries,
+        "devices": dev_entries,
+    }
+
+
+def _emit_status_block_text(block: dict[str, Any], *, show_all: bool) -> None:
+    """Emit one per-checkout text block to stderr."""
+    header_tag = "  [defunct]" if not block["exists"] else ""
+    if show_all:
+        print(f"=== {block['checkout']}{header_tag} ===", file=sys.stderr)
+    else:
+        print(f"checkout: {block['checkout']}{header_tag}", file=sys.stderr)
+    print("resources:", file=sys.stderr)
+    if not block["resources"]:
+        print("  (none)", file=sys.stderr)
+    for r in block["resources"]:
+        suffix = f"  [{r['port_state']}]" if r["port_state"] else ""
+        print(f"  {r['key']}={r['value']}{suffix}", file=sys.stderr)
+    print("devices:", file=sys.stderr)
+    if not block["devices"]:
+        print("  (none)", file=sys.stderr)
+    for d in block["devices"]:
+        cols = [f"{d['type']}.{d['variant']}"]
+        if d["source"]:
+            cols.append(d["source"])
+        cols.append(d["device_name"])
+        cols.append(d["status"])
+        if d["orphan"]:
+            cols.append("[orphan]")
+        print("  " + "\t".join(cols), file=sys.stderr)
+    if show_all:
+        print("", file=sys.stderr)
 
 
 def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> int:
