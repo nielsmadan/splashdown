@@ -61,7 +61,7 @@ pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
 For React Native, the legacy preset path also still works and applies the four `rn-*` wiring fixes (Metro port, package.json scripts, `ios/.xcode.env`) in one go:
 
 ```sh
-splash init --preset=rn
+splash init rn
 splash run simulator       # boots a per-checkout sim, builds, installs, launches
 ```
 
@@ -176,7 +176,7 @@ Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If
 ```sh
 splash device gc                    # registry cleanup: defunct checkouts only
 splash device refresh               # destroy + recreate stale 'latest' sims (newer iOS landed)
-splash device prune [--yes] [--dry-run] [--platforms=ios,android]
+splash device prune [ios|android|all] [--yes] [--dry-run]
                                     # destroys every sim/AVD splashdown did NOT create
                                     # (the Xcode default-template pile, hand-made sims, etc.)
 ```
@@ -249,8 +249,9 @@ splash --version
 splash provision --reprovision     # force re-allocate (regenerates uuids etc.)
 splash refresh                     # re-provision and reallocate any port a process squatted on
 splash status                      # resources + devices + which ports are bound right now
-splash init [--preset=NAME] [--loader=mise|direnv|devbox]
+splash init [NAME] [--loader=mise|direnv|devbox] [--force]
                                    # scan project → write recipe + wire loader + hook
+                                   # NAME picks a named scaffold (rn / flutter / server / etc.)
 splash refresh-inventory           # re-scan and rewrite [project] / [apps.*] in place
 splash doctor [--fix] [--framework=NAME]   # framework-aware wiring check
 
@@ -264,7 +265,7 @@ splash device add <type> <variant> [--model] [--ios] [--device] [--image]
 splash device remove <type> <variant> [--keep-instance]   # also destroys the sim
 splash device gc                   # registry cleanup: defunct checkouts only
 splash device refresh              # destroy + recreate stale 'latest' sims
-splash device prune [--yes] [--dry-run] [--platforms=ios,android]
+splash device prune [ios|android|all] [--yes] [--dry-run]
                                    # destroy every sim/AVD splashdown didn't create
 
 splash list                        # this checkout's resolved env vars
@@ -274,7 +275,7 @@ splash release [KEY]               # release this checkout's registry entries (a
 splash gc                          # GC the resource registry (ports, uuids, devices)
 ```
 
-`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash refresh` fixes port collisions; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash refresh-inventory` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init --preset=NAME`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
+`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash refresh` fixes port collisions; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash refresh-inventory` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init NAME`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
 
 ## Global port coordination
 

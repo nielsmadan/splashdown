@@ -3708,7 +3708,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
 
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
-    p.add_argument("--preset", default=None, help="legacy: use a named preset instead of scanning")
+    p.add_argument(
+        "preset", nargs="?", default=None,
+        choices=tuple(name for name, pre in PRESETS.items() if pre.scaffold_toml is not None),
+        help="named scaffold (default: scan the project)",
+    )
     p.add_argument("--loader", default=None, choices=("mise", "direnv", "devbox"), help="override loader auto-detection")
     p.add_argument("--force", action="store_true")
 
@@ -3754,12 +3758,12 @@ def _build_parser() -> argparse.ArgumentParser:
     devsub.add_parser("refresh", help="destroy + recreate stale 'latest' sims (newer iOS available)")
 
     prune = devsub.add_parser("prune", help="destroy every sim/AVD splashdown did NOT create")
+    prune.add_argument(
+        "platform", nargs="?", default="all", choices=("ios", "android", "all"),
+        help="scope (default: all = both)",
+    )
     prune.add_argument("--yes", action="store_true", help="skip confirmation prompt")
     prune.add_argument("--dry-run", action="store_true", dest="dry_run", help="list without deleting")
-    prune.add_argument(
-        "--platforms", default="ios,android",
-        help="comma-separated subset of: ios,android (default: both)",
-    )
 
     add = devsub.add_parser("add", help="declare a variant in splashdown.local.toml")
     add.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
@@ -3998,7 +4002,7 @@ def _device_dispatch(args, cwd: Path) -> int:
         return cmd_device_gc(Registry(), all_=True)
 
     if args.device_cmd == "prune":
-        platforms = tuple(p.strip() for p in args.platforms.split(",") if p.strip())
+        platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
         return cmd_device_prune(
             Registry(), yes=args.yes, dry_run=args.dry_run, platforms=platforms,
         )

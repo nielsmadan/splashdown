@@ -897,6 +897,45 @@ def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys)
     assert "nothing" in capsys.readouterr().err.lower()
 
 
+def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
+    """`splash device prune ios` should pass platforms=("ios",) only."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    captured = {}
+    def _fake_prune(reg, *, yes, dry_run, platforms):
+        captured["platforms"] = platforms
+        return 0
+    monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
+    rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "ios", "--yes", "--dry-run"])
+    assert rc == 0
+    assert captured["platforms"] == ("ios",)
+
+
+def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
+    """No positional → both platforms."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    captured = {}
+    def _fake_prune(reg, *, yes, dry_run, platforms):
+        captured["platforms"] = platforms
+        return 0
+    monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
+    rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "--yes", "--dry-run"])
+    assert rc == 0
+    assert captured["platforms"] == ("ios", "android")
+
+
+def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
+    """Explicit `all` matches the no-arg default."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    captured = {}
+    def _fake_prune(reg, *, yes, dry_run, platforms):
+        captured["platforms"] = platforms
+        return 0
+    monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
+    rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "all", "--yes", "--dry-run"])
+    assert rc == 0
+    assert captured["platforms"] == ("ios", "android")
+
+
 # ---------- presets ----------
 
 def test_rn_preset_declares_default_ios_variant(tmp_path):
@@ -1430,6 +1469,29 @@ def test_init_does_not_clobber_existing_local(tmp_path):
     (tmp_path / "splashdown.local.toml").write_text("[devices.mine]\ntype = \"simulator\"\n")
     sd.cmd_init(tmp_path, preset="rn")
     assert "devices.mine" in (tmp_path / "splashdown.local.toml").read_text()
+
+
+def test_cli_init_preset_is_positional(tmp_path, monkeypatch):
+    """`splash init rn` (no --preset flag) writes the rn scaffold."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    rc = sd.main(["--cwd", str(tmp_path), "init", "rn"])
+    assert rc == 0
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    # rn preset declares the React Native framework + Metro port resource.
+    assert 'framework = "react-native"' in recipe
+    assert "RCT_METRO_PORT" in recipe
+
+
+def test_cli_init_no_arg_runs_scanner(tmp_path, monkeypatch):
+    """`splash init` with no positional kicks off the Scanner-driven flow."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    rc = sd.main(["--cwd", str(tmp_path), "init"])
+    assert rc == 0
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    # Scanner emits the new shape with [apps.*] + a detected profile.
+    assert "[apps." in recipe
+    assert 'profile = "vite"' in recipe
 
 
 def test_init_server_preset_writes_generic_scaffold(tmp_path):
