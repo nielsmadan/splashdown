@@ -2236,25 +2236,7 @@ def cmd_status(
         return 0
 
     if check:
-        if summary["defunct_checkouts"] or summary["orphan_devices"]:
-            print("Summary:", file=sys.stderr)
-            if summary["defunct_checkouts"]:
-                print(
-                    f"  {summary['defunct_checkouts']} defunct checkout"
-                    f"{'s' if summary['defunct_checkouts'] != 1 else ''} "
-                    f"({summary['defunct_rows']} registry row"
-                    f"{'s' if summary['defunct_rows'] != 1 else ''}).",
-                    file=sys.stderr,
-                )
-            if summary["orphan_devices"]:
-                print(
-                    f"  {summary['orphan_devices']} orphan device"
-                    f"{'s' if summary['orphan_devices'] != 1 else ''}.",
-                    file=sys.stderr,
-                )
-            print("  Run `splash gc` to clean.", file=sys.stderr)
-        else:
-            print("Summary: all entries verified.", file=sys.stderr)
+        _print_check_summary(summary)
     elif not show_all:
         # Default-mode footer: lightweight defunct-row count.
         stale = sum(
@@ -2313,29 +2295,31 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
             print(fmt_row.format(path_label, summary_str).rstrip(), file=sys.stderr)
 
     if check:
-        if summary["defunct_checkouts"] or summary["orphan_devices"]:
-            print("", file=sys.stderr)
-            print("Summary:", file=sys.stderr)
-            if summary["defunct_checkouts"]:
-                print(
-                    f"  {summary['defunct_checkouts']} defunct checkout"
-                    f"{'s' if summary['defunct_checkouts'] != 1 else ''} "
-                    f"({summary['defunct_rows']} registry row"
-                    f"{'s' if summary['defunct_rows'] != 1 else ''}).",
-                    file=sys.stderr,
-                )
-            if summary["orphan_devices"]:
-                print(
-                    f"  {summary['orphan_devices']} orphan device"
-                    f"{'s' if summary['orphan_devices'] != 1 else ''}.",
-                    file=sys.stderr,
-                )
-            print("  Run `splash gc` to clean.", file=sys.stderr)
-        else:
-            print("", file=sys.stderr)
-            print("Summary: all entries verified.", file=sys.stderr)
+        print("", file=sys.stderr)
+        _print_check_summary(summary)
 
     return 0
+
+
+def _print_check_summary(summary: dict[str, int]) -> None:
+    """Emit the `--check` footer used by both cmd_status branches: a counts
+    block plus the `splash gc` hint, or `all entries verified` when clean."""
+    if not (summary["defunct_checkouts"] or summary["orphan_devices"]):
+        print("Summary: all entries verified.", file=sys.stderr)
+        return
+    print("Summary:", file=sys.stderr)
+    if summary["defunct_checkouts"]:
+        n = summary["defunct_checkouts"]
+        rows = summary["defunct_rows"]
+        print(
+            f"  {n} defunct checkout{'s' if n != 1 else ''} "
+            f"({rows} registry row{'s' if rows != 1 else ''}).",
+            file=sys.stderr,
+        )
+    if summary["orphan_devices"]:
+        n = summary["orphan_devices"]
+        print(f"  {n} orphan device{'s' if n != 1 else ''}.", file=sys.stderr)
+    print("  Run `splash gc` to clean.", file=sys.stderr)
 
 
 def _cmd_refresh(cwd: Path, registry: Registry) -> int:
@@ -3538,11 +3522,11 @@ PROFILES["android-native"] = _MobilePresetBridgeProfile("android-native", PRESET
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
-# sentinel-wrapped blocks so wire/unwire is idempotent and visually obvious.
+# sentinel-wrapped blocks so wire is idempotent and visually obvious.
 
 
 class Loader:
-    """Abstract base. Subclasses set `name` and override `detect`, `wire`, `unwire`."""
+    """Abstract base. Subclasses set `name` and override `detect` and `wire`."""
     name: str = ""
 
     def detect(self, cwd: Path) -> bool:
@@ -3550,10 +3534,6 @@ class Loader:
 
     def wire(self, cwd: Path) -> None:
         """Idempotently configure the loader to source splashdown.env."""
-        raise NotImplementedError
-
-    def unwire(self, cwd: Path) -> None:
-        """Remove splashdown's wiring, leaving the user's other config alone."""
         raise NotImplementedError
 
 
@@ -3567,23 +3547,6 @@ class MiseLoader(Loader):
         # Reuses the existing helper that already handles new-file creation,
         # existing [env] table append, and idempotent re-runs.
         _ensure_mise_file_directive(cwd)
-
-    def unwire(self, cwd: Path) -> None:
-        path = cwd / "mise.toml"
-        if not path.exists():
-            return
-        lines = path.read_text().splitlines()
-        kept: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            # Strip exactly the splashdown-managed directive — preserves
-            # everything else the user has in mise.toml (tools, tasks, etc.).
-            if re.fullmatch(r'_\.file\s*=\s*"splashdown\.env"', stripped):
-                continue
-            kept.append(line)
-        while kept and not kept[-1].strip():
-            kept.pop()
-        path.write_text("\n".join(kept) + ("\n" if kept else ""))
 
 
 _DIRENV_BEGIN = "# >>> splashdown-managed dotenv >>>"
@@ -3615,14 +3578,6 @@ class DirenvLoader(Loader):
         text += _DIRENV_BLOCK
         path.write_text(text)
 
-    def unwire(self, cwd: Path) -> None:
-        path = cwd / ".envrc"
-        if not path.exists():
-            return
-        text = _DIRENV_BLOCK_RE.sub("", path.read_text())
-        text = text.rstrip()
-        path.write_text(text + ("\n" if text else ""))
-
 
 # Marker baked into the init_hook string so we can find-and-replace idempotently
 # without parsing JSON ASTs.
@@ -3651,24 +3606,6 @@ class DevboxLoader(Loader):
         if new_hooks == hooks:
             return  # nothing changed
         shell["init_hook"] = new_hooks
-        path.write_text(json.dumps(data, indent=2) + "\n")
-
-    def unwire(self, cwd: Path) -> None:
-        path = cwd / "devbox.json"
-        if not path.exists():
-            return
-        data = json.loads(path.read_text())
-        hooks = data.get("shell", {}).get("init_hook", [])
-        if isinstance(hooks, str):
-            hooks = [hooks]
-        kept = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
-        if "shell" in data:
-            if kept:
-                data["shell"]["init_hook"] = kept
-            else:
-                data["shell"].pop("init_hook", None)
-                if not data["shell"]:
-                    data.pop("shell", None)
         path.write_text(json.dumps(data, indent=2) + "\n")
 
 

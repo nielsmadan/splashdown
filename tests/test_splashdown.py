@@ -2343,16 +2343,6 @@ def test_mise_loader_wire_is_idempotent(tmp_path):
     assert (tmp_path / "mise.toml").read_text() == first
 
 
-def test_mise_loader_unwire_removes_directive_only(tmp_path):
-    (tmp_path / "mise.toml").write_text(
-        '[tools]\nnode = "22"\n\n[env]\n_.file = "splashdown.env"\n'
-    )
-    sd.LOADERS["mise"].unwire(tmp_path)
-    text = (tmp_path / "mise.toml").read_text()
-    assert 'splashdown.env' not in text
-    assert 'node = "22"' in text  # other config preserved
-
-
 # ---------- resource-name app-scoping ----------
 
 def test_resource_name_scoping_single_instance_keeps_canonical_name():
@@ -2632,15 +2622,6 @@ def test_direnv_loader_wire_preserves_existing_envrc(tmp_path):
     assert "dotenv splashdown.env" in text
 
 
-def test_direnv_loader_unwire_strips_only_sentinel_block(tmp_path):
-    (tmp_path / ".envrc").write_text("use nix\n")
-    sd.LOADERS["direnv"].wire(tmp_path)
-    sd.LOADERS["direnv"].unwire(tmp_path)
-    text = (tmp_path / ".envrc").read_text()
-    assert "use nix" in text
-    assert "splashdown" not in text
-
-
 # ---------- DevboxLoader ----------
 
 def test_devbox_loader_wire_adds_init_hook(tmp_path):
@@ -2664,15 +2645,6 @@ def test_devbox_loader_wire_idempotent(tmp_path):
     first = (tmp_path / "devbox.json").read_text()
     sd.LOADERS["devbox"].wire(tmp_path)
     assert (tmp_path / "devbox.json").read_text() == first
-
-
-def test_devbox_loader_unwire_strips_hook_only(tmp_path):
-    (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22"]}')
-    sd.LOADERS["devbox"].wire(tmp_path)
-    sd.LOADERS["devbox"].unwire(tmp_path)
-    data = json.loads((tmp_path / "devbox.json").read_text())
-    assert "splashdown" not in json.dumps(data)
-    assert data["packages"] == ["nodejs@22"]
 
 
 def test_react_native_profile_detects_via_package_json(tmp_path):
