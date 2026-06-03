@@ -557,10 +557,10 @@ def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     rc = sd.main(["--cwd", str(a), "status", "--all"])
     assert rc == 0
     err = capsys.readouterr().err
-    # Header columns present.
+    # Header columns present (ISSUE only appears when at least one row has one).
     assert "PATH" in err
     assert "SUMMARY" in err
-    assert "STATUS" in err
+    assert "ISSUE" not in err  # healthy registry: column dropped
     # Both paths appear; resource counts (not names) appear.
     assert str(a) in err
     assert str(b) in err
@@ -568,6 +568,28 @@ def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     # Resource names from the recipe must NOT appear in compact mode.
     assert "P_A=" not in err
     assert "P_B=" not in err
+
+
+def test_cli_status_all_shows_issue_column_when_a_row_has_one(tmp_path, monkeypatch, capsys):
+    """ISSUE column appears the moment any row needs to flag something.
+    Without --check we already detect defunct paths; that's enough."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    alive = tmp_path / "alive"; alive.mkdir()
+    dead = tmp_path / "dead"; dead.mkdir()
+    (alive / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19340, 19350]\n")
+    (dead / "splashdown.toml").write_text("[resources.Q]\ntype = \"port\"\nrange = [19440, 19450]\n")
+    assert sd.main(["--cwd", str(alive)]) == 0
+    assert sd.main(["--cwd", str(dead)]) == 0
+    capsys.readouterr()
+    (dead / "splashdown.toml").unlink()
+    (dead / "splashdown.env").unlink()
+    (dead / "splashdown.local.toml").unlink()
+    dead.rmdir()
+    rc = sd.main(["--cwd", str(alive), "status", "--all"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "ISSUE" in err
+    assert "defunct" in err
 
 
 def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys):

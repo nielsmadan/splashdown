@@ -2298,10 +2298,19 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
     summary_width = max((len(r[1]) for r in rows), default=7)
     summary_width = max(summary_width, len("SUMMARY"))
 
-    fmt_row = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
-    print(fmt_row.format("PATH", "SUMMARY", "STATUS").rstrip(), file=sys.stderr)
-    for path_label, summary_str, status_token in rows:
-        print(fmt_row.format(path_label, summary_str, status_token).rstrip(), file=sys.stderr)
+    # ISSUE column only appears when at least one row flags something. Empty
+    # cells across the board would just be dead width.
+    has_issue = any(r[2] for r in rows)
+    if has_issue:
+        fmt_row = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
+        print(fmt_row.format("PATH", "SUMMARY", "ISSUE").rstrip(), file=sys.stderr)
+        for path_label, summary_str, status_token in rows:
+            print(fmt_row.format(path_label, summary_str, status_token).rstrip(), file=sys.stderr)
+    else:
+        fmt_row = f"{{:<{path_width}}}  {{}}"
+        print(fmt_row.format("PATH", "SUMMARY").rstrip(), file=sys.stderr)
+        for path_label, summary_str, _ in rows:
+            print(fmt_row.format(path_label, summary_str).rstrip(), file=sys.stderr)
 
     if check:
         if summary["defunct_checkouts"] or summary["orphan_devices"]:
