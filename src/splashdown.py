@@ -1318,6 +1318,20 @@ def _preset_for_framework(framework: str) -> Preset | None:
     return None
 
 
+def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]:
+    """Resolve the doctor's check list for a framework name. Prefers a Preset
+    (legacy path: mobile frameworks) and falls back to a Profile (web/backend
+    frameworks like vite, springboot)."""
+    preset = _preset_for_framework(framework)
+    if preset and preset.wiring_checks:
+        return preset.wiring_checks
+    if framework in PROFILES:
+        # Profiles take an AppInventory; synthesize one rooted at cwd.
+        app = AppInventory(name="main", path=cwd, profile=framework)
+        return PROFILES[framework].wiring_checks(app)
+    return []
+
+
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
     fw = detect_framework(cwd, recipe)
@@ -1987,8 +2001,7 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
             file=sys.stderr,
         )
         return 1
-    preset = _preset_for_framework(framework)
-    checks = preset.wiring_checks if preset else []
+    checks = _wiring_checks_for_framework(framework, cwd)
     if not checks:
         print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
         return 0

@@ -1330,6 +1330,67 @@ def test_detect_framework_errors_when_unknown(tmp_path):
         sd.detect_framework(tmp_path, r)
 
 
+def test_detect_framework_flutter_wins_over_react_native(tmp_path):
+    """Conflicting signals: pubspec.yaml AND react-native dep both present.
+    Flutter is registered first in PROFILES, so it wins."""
+    (tmp_path / "pubspec.yaml").write_text("name: x\n")
+    (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.83"}}')
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "flutter"
+
+
+def test_cmd_doctor_runs_vite_wiring_check_in_legacy_recipe(tmp_path):
+    """`[project] framework = "vite"` + a vite.config that uses loadEnv → doctor
+    must surface the vite-config-process-env check (not "no wiring defined")."""
+    (tmp_path / "splashdown.toml").write_text('[project]\nframework = "vite"\n')
+    (tmp_path / "vite.config.ts").write_text("""\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  return { server: { port: Number(env.WEB_DEV_PORT ?? 5173) } };
+});
+""")
+    rc = sd.cmd_doctor(tmp_path)
+    assert rc != 0  # the check flags `problem` and we didn't pass --fix
+    # No assertion on exact stderr — the meaningful contract is "the check ran",
+    # which we infer from rc != 0 instead of rc == 0 with "no wiring defined".
+
+
+def test_extract_resource_blocks_handles_underscore_resource_names(tmp_path):
+    """Underscores in resource names must round-trip through refresh-inventory.
+    (Quoted/hyphenated TOML names are not currently supported; this test pins
+    what IS supported, so we don't accidentally regress.)"""
+    blocks = sd._extract_resource_blocks("""\
+[resources.MY_PORT_WITH_UNDERSCORES]
+type = "port"
+range = [9000, 9010]
+""")
+    assert "MY_PORT_WITH_UNDERSCORES" in blocks
+
+
+def test_enumerate_apps_handles_pnpm_workspace_with_comments(tmp_path):
+    """pnpm-workspace.yaml with comments + missing packages key shouldn't crash."""
+    (tmp_path / "pnpm-workspace.yaml").write_text("""\
+# top comment
+packages:
+  # only one block
+  - apps/*
+# trailing
+""")
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "apps" / "api").mkdir()
+    apps = sd._enumerate_apps(tmp_path, "pnpm")
+    assert [n for n, _ in apps] == ["api"]
+
+
+def test_enumerate_apps_handles_pnpm_workspace_with_no_packages_key(tmp_path):
+    """A pnpm-workspace.yaml that's missing `packages:` returns no apps,
+    doesn't raise."""
+    (tmp_path / "pnpm-workspace.yaml").write_text("catalogMode: manual\n")
+    apps = sd._enumerate_apps(tmp_path, "pnpm")
+    assert apps == []
+
+
 def test_detect_framework_ios_native_xcodeproj(tmp_path):
     (tmp_path / "MyApp.xcodeproj").mkdir()
     r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
