@@ -2548,7 +2548,7 @@ def cmd_init(cwd: Path, preset: str | None = None, force: bool = False, loader_o
 
     # Legacy path: an explicit preset bypasses the Scanner entirely.
     if preset is not None:
-        return _cmd_init_legacy_preset(cwd, preset)
+        return _cmd_init_legacy_preset(cwd, preset, loader_override=loader_override)
 
     # Scanner-driven path.
     inv = Scanner().scan(cwd)
@@ -2602,8 +2602,9 @@ def cmd_init(cwd: Path, preset: str | None = None, force: bool = False, loader_o
                         print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
 
 
-def _cmd_init_legacy_preset(cwd: Path, preset: str) -> None:
-    """Legacy `splash init --preset NAME` path — preserves today's behavior."""
+def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
+    """Legacy `splash init NAME` path: write the named scaffold, then wire the
+    detected (or overridden) shell-env loader and the post-checkout hook."""
     entry = PRESETS.get(preset)
     available = [n for n, p in PRESETS.items() if p.scaffold_toml is not None]
     if entry is None or entry.scaffold_toml is None:
@@ -2619,7 +2620,8 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str) -> None:
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
-    _ensure_mise_file_directive(cwd)
+    loader_name = loader_override or _detect_loader(cwd)
+    LOADERS[loader_name].wire(cwd)
     _ensure_post_checkout_hook(cwd)
 
     framework = _resolve_doctor_framework(cwd, None)

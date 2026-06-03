@@ -545,6 +545,74 @@ range = [19000, 19010]
     assert "[free]" in err or "[in use]" in err
 
 
+def test_cli_status_local_positional_matches_bare(tmp_path, monkeypatch, capsys):
+    """`splash status local` must produce the same output as bare `splash status`."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text(
+        "[resources.MY_PORT]\ntype = \"port\"\nrange = [19030, 19040]\n"
+    )
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()
+    assert sd.main(["--cwd", str(tmp_path), "status"]) == 0
+    bare = capsys.readouterr().err
+    assert sd.main(["--cwd", str(tmp_path), "status", "local"]) == 0
+    explicit = capsys.readouterr().err
+    assert bare == explicit
+
+
+def test_cli_status_local_json_shape(tmp_path, monkeypatch, capsys):
+    """Default-mode JSON must include checkout + resources + devices keys."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text(
+        "[resources.J_PORT]\ntype = \"port\"\nrange = [19050, 19060]\n"
+    )
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "local"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    # Local mode emits a flat per-checkout object (not the `checkouts` list).
+    assert data["checkout"] == str(tmp_path.resolve())
+    assert any(r["key"] == "J_PORT" for r in data["resources"])
+    assert "devices" in data
+
+
+def test_cli_status_all_on_empty_registry_renders_only_cwd(tmp_path, monkeypatch, capsys):
+    """`splash status all` against a fresh state still produces a usable header row."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    rc = sd.main(["--cwd", str(tmp_path), "status", "all"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "PATH" in err
+    assert "SUMMARY" in err
+
+
+def test_cli_init_loader_override_writes_devbox_wiring(tmp_path, monkeypatch):
+    """`splash init NAME --loader=devbox` wires devbox instead of mise."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    rc = sd.main(["--cwd", str(tmp_path), "init", "minimal", "--loader=devbox"])
+    assert rc == 0
+    assert (tmp_path / "devbox.json").exists()
+    # mise.toml must NOT be present when devbox was explicitly requested.
+    assert not (tmp_path / "mise.toml").exists()
+
+
+def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys):
+    """Unknown platform → argparse usage error, no destructive call."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    called = {"prune": False}
+    def _fail(*a, **kw):
+        called["prune"] = True
+        return 0
+    monkeypatch.setattr(sd, "cmd_device_prune", _fail)
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["--cwd", str(tmp_path), "device", "prune", "mac"])
+    assert exc.value.code == 2
+    assert called["prune"] is False
+    err = capsys.readouterr().err
+    assert "invalid choice" in err
+
+
 def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     a = tmp_path / "co-a"; a.mkdir()
