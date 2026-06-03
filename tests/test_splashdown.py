@@ -554,7 +554,7 @@ def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     assert sd.main(["--cwd", str(a)]) == 0
     assert sd.main(["--cwd", str(b)]) == 0
     capsys.readouterr()
-    rc = sd.main(["--cwd", str(a), "status", "--all"])
+    rc = sd.main(["--cwd", str(a), "status", "all"])
     assert rc == 0
     err = capsys.readouterr().err
     # Header columns present (ISSUE only appears when at least one row has one).
@@ -585,7 +585,7 @@ def test_cli_status_all_shows_issue_column_when_a_row_has_one(tmp_path, monkeypa
     (dead / "splashdown.env").unlink()
     (dead / "splashdown.local.toml").unlink()
     dead.rmdir()
-    rc = sd.main(["--cwd", str(alive), "status", "--all"])
+    rc = sd.main(["--cwd", str(alive), "status", "all"])
     assert rc == 0
     err = capsys.readouterr().err
     assert "ISSUE" in err
@@ -604,7 +604,7 @@ def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys
         )
         assert sd.main(["--cwd", str(d)]) == 0
     capsys.readouterr()
-    assert sd.main(["--cwd", str(a), "status", "--all"]) == 0
+    assert sd.main(["--cwd", str(a), "status", "all"]) == 0
     err = capsys.readouterr().err
     # Strip header line; verify the path-bearing rows appear in alpha order.
     body = err.split("\n", 1)[1]
@@ -621,7 +621,7 @@ def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
     )
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "status", "--all", "--verbose"])
+    rc = sd.main(["--cwd", str(tmp_path), "status", "all", "--verbose"])
     assert rc == 0
     err = capsys.readouterr().err
     # Verbose mode brings back resource names + the === path === block header.
@@ -642,7 +642,7 @@ def test_cli_status_check_table_status_column_flags_defunct(tmp_path, monkeypatc
     (dead / "splashdown.env").unlink()
     (dead / "splashdown.local.toml").unlink()
     dead.rmdir()
-    rc = sd.main(["--cwd", str(alive), "status", "--all", "--check"])
+    rc = sd.main(["--cwd", str(alive), "status", "all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
     # In the table, status column reads `defunct` (no brackets).
@@ -664,7 +664,7 @@ def test_cli_status_check_verbose_keeps_bracket_tag(tmp_path, monkeypatch, capsy
     (dead / "splashdown.env").unlink()
     (dead / "splashdown.local.toml").unlink()
     dead.rmdir()
-    rc = sd.main(["--cwd", str(alive), "status", "--all", "--check", "--verbose"])
+    rc = sd.main(["--cwd", str(alive), "status", "all", "--check", "--verbose"])
     assert rc == 0
     err = capsys.readouterr().err
     assert "[defunct]" in err
@@ -685,7 +685,7 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: False)
     monkeypatch.setattr(sd, "device_status", lambda dt, name: "absent")
     capsys.readouterr()
-    rc = sd.main(["--cwd", str(a), "status", "--all", "--check"])
+    rc = sd.main(["--cwd", str(a), "status", "all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
     # In the table, status column reads `orphan` (no brackets).
@@ -699,7 +699,7 @@ def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, c
     (tmp_path / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19500, 19510]\n")
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "status", "--all", "--check"])
+    rc = sd.main(["--cwd", str(tmp_path), "status", "all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
     assert "all entries verified" in err
@@ -710,7 +710,7 @@ def test_cli_status_all_json_shape(tmp_path, monkeypatch, capsys):
     (tmp_path / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19600, 19610]\n")
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "--all", "--check"])
+    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "all", "--check"])
     assert rc == 0
     out = capsys.readouterr().out
     data = json.loads(out)

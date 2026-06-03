@@ -3701,9 +3701,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
     p = sub.add_parser("status", help="show resolved vars, declared devices, and OS-level port collisions")
-    p.add_argument("--all", action="store_true", dest="all_", help="show every tracked checkout, not just this one")
+    p.add_argument("scope", nargs="?", choices=("local", "all"), default="local",
+                   help="local (default): this checkout only. all: every tracked checkout.")
     p.add_argument("--check", action="store_true", help="revalidate liveness and print a cleanup hint")
-    p.add_argument("--verbose", action="store_true", help="with --all, expand each checkout into the per-block view")
+    p.add_argument("--verbose", action="store_true", help="with `all`, expand each checkout into the per-block view")
     sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
 
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
@@ -3861,7 +3862,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "status":
             return cmd_status(
                 cwd, registry, _resolve_format(args),
-                show_all=args.all_, check=args.check, verbose=args.verbose,
+                show_all=(args.scope == "all"), check=args.check, verbose=args.verbose,
             )
 
         if args.cmd == "refresh":
