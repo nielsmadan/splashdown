@@ -205,6 +205,39 @@ def test_registry_gc_drops_orphan_android_avd_rows(registry, tmp_path, monkeypat
     assert registry.get_device(str(a), "emulator", "default") is None
 
 
+def test_registry_summary_for_counts_by_source(registry, tmp_path):
+    a = tmp_path / "co"; a.mkdir()
+    # 2 ports, 1 kv, 1 sim, 1 emu
+    registry.allocate_port(str(a), "P1", 19700, 19710)
+    registry.allocate_port(str(a), "P2", 19711, 19720)
+    registry.set_kv(str(a), "K", "v")
+    registry.set_device(str(a), "simulator", "default", "UDID-X", "iPhone 17", "18.5")
+    registry.set_device(str(a), "emulator", "default", "AVD-X", "pixel_9", "android-34")
+    s = registry.summary_for(str(a))
+    assert s == {"port": 2, "kv": 1, "simulator": 1, "emulator": 1}
+
+
+def test_registry_summary_for_unknown_checkout_returns_zeros(registry, tmp_path):
+    assert registry.summary_for(str(tmp_path / "never-tracked")) == {
+        "port": 0, "kv": 0, "simulator": 0, "emulator": 0,
+    }
+
+
+def test_short_path_uses_home_prefix(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
+    assert sd._short_path(str(tmp_path / "wrksp" / "x")) == "~/wrksp/x"
+    assert sd._short_path(str(tmp_path)) == "~"
+    assert sd._short_path("/etc/foo") == "/etc/foo"
+
+
+def test_summary_string_format():
+    assert sd._summary_string({"port": 2, "kv": 1, "simulator": 1, "emulator": 0}) == "2 ports, 1 var, 1 sim"
+    assert sd._summary_string({"port": 1, "kv": 0, "simulator": 0, "emulator": 0}) == "1 port"
+    assert sd._summary_string({"port": 0, "kv": 0, "simulator": 0, "emulator": 0}) == "—"
+    assert sd._summary_string({"port": 0, "kv": 0, "simulator": 2, "emulator": 2}) == "2 sims, 2 emus"
+
+
 # ---------- ensure_fresh_sim ----------
 
 def test_ensure_fresh_creates_when_missing(registry, checkout, monkeypatch):
@@ -512,7 +545,7 @@ range = [19000, 19010]
     assert "[free]" in err or "[in use]" in err
 
 
-def test_cli_status_all_lists_every_tracked_checkout(tmp_path, monkeypatch, capsys):
+def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     a = tmp_path / "co-a"; a.mkdir()
     b = tmp_path / "co-b"; b.mkdir()
@@ -524,13 +557,57 @@ def test_cli_status_all_lists_every_tracked_checkout(tmp_path, monkeypatch, caps
     rc = sd.main(["--cwd", str(a), "status", "--all"])
     assert rc == 0
     err = capsys.readouterr().err
+    # Header columns present.
+    assert "PATH" in err
+    assert "SUMMARY" in err
+    assert "STATUS" in err
+    # Both paths appear; resource counts (not names) appear.
     assert str(a) in err
     assert str(b) in err
-    assert "P_A=" in err
-    assert "P_B=" in err
+    assert "1 port" in err
+    # Resource names from the recipe must NOT appear in compact mode.
+    assert "P_A=" not in err
+    assert "P_B=" not in err
 
 
-def test_cli_status_check_flags_defunct_checkout_and_suggests_gc(tmp_path, monkeypatch, capsys):
+def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Provision in non-alphabetical order on purpose.
+    z = tmp_path / "zeta"; z.mkdir()
+    a = tmp_path / "alpha"; a.mkdir()
+    m = tmp_path / "mike"; m.mkdir()
+    for d in (z, a, m):
+        (d / "splashdown.toml").write_text(
+            "[resources.P]\ntype = \"port\"\nrange = [19800, 19810]\n"
+        )
+        assert sd.main(["--cwd", str(d)]) == 0
+    capsys.readouterr()
+    assert sd.main(["--cwd", str(a), "status", "--all"]) == 0
+    err = capsys.readouterr().err
+    # Strip header line; verify the path-bearing rows appear in alpha order.
+    body = err.split("\n", 1)[1]
+    pos_a = body.index(str(a))
+    pos_m = body.index(str(m))
+    pos_z = body.index(str(z))
+    assert pos_a < pos_m < pos_z
+
+
+def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text(
+        "[resources.P_VERBOSE]\ntype = \"port\"\nrange = [19900, 19910]\n"
+    )
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(tmp_path), "status", "--all", "--verbose"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    # Verbose mode brings back resource names + the === path === block header.
+    assert "P_VERBOSE=" in err
+    assert "===" in err
+
+
+def test_cli_status_check_table_status_column_flags_defunct(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     alive = tmp_path / "alive"; alive.mkdir()
     dead = tmp_path / "dead"; dead.mkdir()
@@ -539,7 +616,6 @@ def test_cli_status_check_flags_defunct_checkout_and_suggests_gc(tmp_path, monke
     assert sd.main(["--cwd", str(alive)]) == 0
     assert sd.main(["--cwd", str(dead)]) == 0
     capsys.readouterr()
-    # Remove the dead checkout's directory so its registry rows become defunct.
     (dead / "splashdown.toml").unlink()
     (dead / "splashdown.env").unlink()
     (dead / "splashdown.local.toml").unlink()
@@ -547,17 +623,36 @@ def test_cli_status_check_flags_defunct_checkout_and_suggests_gc(tmp_path, monke
     rc = sd.main(["--cwd", str(alive), "status", "--all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "[defunct]" in err
+    # In the table, status column reads `defunct` (no brackets).
+    assert "defunct" in err
     assert "defunct checkout" in err
     assert "`splash gc`" in err
 
 
-def test_cli_status_check_flags_orphan_device(tmp_path, monkeypatch, capsys):
+def test_cli_status_check_verbose_keeps_bracket_tag(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    alive = tmp_path / "alive"; alive.mkdir()
+    dead = tmp_path / "dead"; dead.mkdir()
+    (alive / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19320, 19330]\n")
+    (dead / "splashdown.toml").write_text("[resources.Q]\ntype = \"port\"\nrange = [19420, 19430]\n")
+    assert sd.main(["--cwd", str(alive)]) == 0
+    assert sd.main(["--cwd", str(dead)]) == 0
+    capsys.readouterr()
+    (dead / "splashdown.toml").unlink()
+    (dead / "splashdown.env").unlink()
+    (dead / "splashdown.local.toml").unlink()
+    dead.rmdir()
+    rc = sd.main(["--cwd", str(alive), "status", "--all", "--check", "--verbose"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "[defunct]" in err
+
+
+def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     a = tmp_path / "co"; a.mkdir()
-    (a / "splashdown.toml").write_text("")  # no resources needed; we'll register a device directly
+    (a / "splashdown.toml").write_text("")
     assert sd.main(["--cwd", str(a)]) == 0
-    # Register a sim whose UDID is "gone".
     state_home = tmp_path / "state"
     reg = sd.Registry(
         port_file=state_home / "splashdown" / "ports.tsv",
@@ -571,7 +666,8 @@ def test_cli_status_check_flags_orphan_device(tmp_path, monkeypatch, capsys):
     rc = sd.main(["--cwd", str(a), "status", "--all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "[orphan]" in err
+    # In the table, status column reads `orphan` (no brackets).
+    assert "orphan" in err
     assert "orphan device" in err
     assert "`splash gc`" in err
 

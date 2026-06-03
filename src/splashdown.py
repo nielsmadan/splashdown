@@ -311,6 +311,22 @@ class Registry:
             seen.add(row.checkout)
         return sorted(seen)
 
+    def summary_for(self, abspath: str) -> dict[str, int]:
+        """Per-checkout row counts grouped by source. Always returns all four
+        keys (`port`, `kv`, `simulator`, `emulator`) even when zero, so callers
+        can format without key-existence checks."""
+        counts = {"port": 0, "kv": 0, "simulator": 0, "emulator": 0}
+        for row in self._read_ports():
+            if row[1] == abspath:
+                counts["port"] += 1
+        for row in self._read_kv():
+            if row[0] == abspath:
+                counts["kv"] += 1
+        for row in self._read_devices():
+            if row.checkout == abspath and row.dtype in counts:
+                counts[row.dtype] += 1
+        return counts
+
     def gc(self) -> int:
         """Drop entries whose abspath no longer exists. Returns count removed."""
         removed = 0
@@ -1045,6 +1061,39 @@ def _device_status_for_row(row: DeviceRow) -> str:
             return "absent"
         return "running" if _android_running_serial(row.udid) else "stopped"
     return "unknown"
+
+
+def _short_path(abspath: str) -> str:
+    """`/Users/x/wrksp/y` → `~/wrksp/y` when under $HOME; else the full path
+    unchanged. Predictable rule, used by the `splash status --all` table."""
+    home = str(Path.home())
+    if abspath == home:
+        return "~"
+    if abspath.startswith(home + "/"):
+        return "~" + abspath[len(home):]
+    return abspath
+
+
+# Order + labels for the `splash status --all` summary column. Singular/plural
+# forms are spelled out so the formatter stays a pure mapping.
+_SUMMARY_PARTS = (
+    ("port", "port", "ports"),
+    ("kv", "var", "vars"),
+    ("simulator", "sim", "sims"),
+    ("emulator", "emu", "emus"),
+)
+
+
+def _summary_string(counts: dict[str, int]) -> str:
+    """Human-friendly count summary: `2 ports, 1 var, 1 sim`. Empty → `—`."""
+    parts: list[str] = []
+    for key, sing, plur in _SUMMARY_PARTS:
+        n = counts.get(key, 0)
+        if n == 1:
+            parts.append(f"1 {sing}")
+        elif n > 1:
+            parts.append(f"{n} {plur}")
+    return ", ".join(parts) if parts else "—"
 
 
 def _android_latest_image() -> str:
@@ -2048,19 +2097,25 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
 
 def cmd_status(
     cwd: Path, registry: Registry, fmt: str, *,
-    show_all: bool = False, check: bool = False,
+    show_all: bool = False, check: bool = False, verbose: bool = False,
 ) -> int:
     """Show resolved vars + declared devices.
 
     Default mode: just this checkout, recipe-aware device labels.
-    --all: every tracked checkout in the registry; devices come from the
-    registry (no foreign-recipe reads), so no `source` column.
-    --check: tag defunct checkouts and orphan device rows, and print a
-    cleanup hint footer naming `splash gc`."""
+    --all: compact one-row-per-checkout table.
+    --all --verbose: today's per-block view (resources + devices spelled out).
+    --check: tag defunct checkouts and orphan device rows, print a `splash gc`
+    cleanup hint footer. Composes with both --all variants."""
     target = str(cwd.resolve())
     checkouts = registry.all_checkouts() if show_all else [target]
     if not checkouts:
         checkouts = [target]
+
+    # JSON shape is fixed regardless of verbose — consumers want the data, not
+    # a table layout. Text branches: --all without --verbose emits a table;
+    # everything else falls through to the per-block emitter below.
+    if show_all and not verbose and fmt != "json":
+        return _cmd_status_table(checkouts, registry, check)
 
     summary = {"defunct_checkouts": 0, "defunct_rows": 0, "orphan_devices": 0}
     json_blocks: list[dict[str, Any]] = []
@@ -2209,6 +2264,67 @@ def cmd_status(
         )
         if stale:
             print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
+
+    return 0
+
+
+def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> int:
+    """Compact one-row-per-checkout view for `splash status --all`."""
+    rows: list[tuple[str, str, str]] = []  # (path, summary, status)
+    summary = {"defunct_checkouts": 0, "defunct_rows": 0, "orphan_devices": 0}
+
+    for co in checkouts:
+        counts = registry.summary_for(co)
+        path_label = _short_path(co)
+        summary_str = _summary_string(counts)
+        co_exists = Path(co).exists()
+
+        status_token = ""
+        if not co_exists:
+            status_token = "defunct"
+            if check:
+                summary["defunct_checkouts"] += 1
+                summary["defunct_rows"] += sum(counts.values())
+        elif check:
+            for row in registry.devices_for(co):
+                if _is_orphan_device(row):
+                    summary["orphan_devices"] += 1
+                    status_token = "orphan"
+
+        rows.append((path_label, summary_str, status_token))
+
+    path_width = max((len(r[0]) for r in rows), default=4)
+    path_width = max(path_width, len("PATH"))
+    summary_width = max((len(r[1]) for r in rows), default=7)
+    summary_width = max(summary_width, len("SUMMARY"))
+
+    fmt_row = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
+    print(fmt_row.format("PATH", "SUMMARY", "STATUS").rstrip(), file=sys.stderr)
+    for path_label, summary_str, status_token in rows:
+        print(fmt_row.format(path_label, summary_str, status_token).rstrip(), file=sys.stderr)
+
+    if check:
+        if summary["defunct_checkouts"] or summary["orphan_devices"]:
+            print("", file=sys.stderr)
+            print("Summary:", file=sys.stderr)
+            if summary["defunct_checkouts"]:
+                print(
+                    f"  {summary['defunct_checkouts']} defunct checkout"
+                    f"{'s' if summary['defunct_checkouts'] != 1 else ''} "
+                    f"({summary['defunct_rows']} registry row"
+                    f"{'s' if summary['defunct_rows'] != 1 else ''}).",
+                    file=sys.stderr,
+                )
+            if summary["orphan_devices"]:
+                print(
+                    f"  {summary['orphan_devices']} orphan device"
+                    f"{'s' if summary['orphan_devices'] != 1 else ''}.",
+                    file=sys.stderr,
+                )
+            print("  Run `splash gc` to clean.", file=sys.stderr)
+        else:
+            print("", file=sys.stderr)
+            print("Summary: all entries verified.", file=sys.stderr)
 
     return 0
 
@@ -3578,6 +3694,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="show resolved vars, declared devices, and OS-level port collisions")
     p.add_argument("--all", action="store_true", dest="all_", help="show every tracked checkout, not just this one")
     p.add_argument("--check", action="store_true", help="revalidate liveness and print a cleanup hint")
+    p.add_argument("--verbose", action="store_true", help="with --all, expand each checkout into the per-block view")
     sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
 
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
@@ -3733,7 +3850,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_devices_list(cwd, _resolve_format(args))
 
         if args.cmd == "status":
-            return cmd_status(cwd, registry, _resolve_format(args), show_all=args.all_, check=args.check)
+            return cmd_status(
+                cwd, registry, _resolve_format(args),
+                show_all=args.all_, check=args.check, verbose=args.verbose,
+            )
 
         if args.cmd == "refresh":
             return _cmd_refresh(cwd, registry)
