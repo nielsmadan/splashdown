@@ -288,12 +288,28 @@ class Registry:
         return {r.udid for r in self._read_devices()}
 
     def gc_devices(self) -> int:
-        """Drop entries whose checkout dir no longer exists. Returns count removed."""
+        """Drop device rows whose checkout dir no longer exists OR whose
+        sim/AVD has been deleted out from under us. Returns count removed."""
         with self._lock(self.device_file):
             rows = self._read_devices()
-            kept = [r for r in rows if Path(r.checkout).exists()]
+            kept = [
+                r for r in rows
+                if Path(r.checkout).exists() and not _is_orphan_device(r)
+            ]
             self._write_devices(kept)
             return len(rows) - len(kept)
+
+    def all_checkouts(self) -> list[str]:
+        """Every checkout path the registry knows about across ports.tsv,
+        kv.tsv, and devices.tsv. Deduped + sorted."""
+        seen: set[str] = set()
+        for row in self._read_ports():
+            seen.add(row[1])
+        for row in self._read_kv():
+            seen.add(row[0])
+        for row in self._read_devices():
+            seen.add(row.checkout)
+        return sorted(seen)
 
     def gc(self) -> int:
         """Drop entries whose abspath no longer exists. Returns count removed."""
@@ -1003,6 +1019,32 @@ def _android_avd_exists(name: str) -> bool:
     except subprocess.CalledProcessError:
         return False
     return name in [line.strip() for line in out.decode().splitlines()]
+
+
+def _is_orphan_device(row: DeviceRow) -> bool:
+    """A registered device whose underlying sim/AVD no longer exists. Happens
+    when the user runs `xcrun simctl delete` or `avdmanager delete avd` by
+    hand, leaving the registry pointing at a ghost."""
+    if row.dtype == "simulator":
+        return not _ios_udid_exists(row.udid)
+    if row.dtype == "emulator":
+        return not _android_avd_exists(row.udid)
+    return False
+
+
+def _device_status_for_row(row: DeviceRow) -> str:
+    """Liveness/state for a registry device row. Reuses udid for iOS lookup
+    and the AVD name for Android (the `udid` column doubles as the AVD name
+    for emulator rows)."""
+    if row.dtype == "simulator":
+        if not _ios_udid_exists(row.udid):
+            return "absent"
+        return _ios_current_state(row.udid).lower()
+    if row.dtype == "emulator":
+        if not _android_avd_exists(row.udid):
+            return "absent"
+        return "running" if _android_running_serial(row.udid) else "stopped"
+    return "unknown"
 
 
 def _android_latest_image() -> str:
@@ -2004,79 +2046,170 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     return 0
 
 
-def cmd_status(cwd: Path, registry: Registry, fmt: str) -> int:
-    """Show this checkout's resolved vars, declared devices, and which ports
-    are currently bound by some OS process."""
+def cmd_status(
+    cwd: Path, registry: Registry, fmt: str, *,
+    show_all: bool = False, check: bool = False,
+) -> int:
+    """Show resolved vars + declared devices.
+
+    Default mode: just this checkout, recipe-aware device labels.
+    --all: every tracked checkout in the registry; devices come from the
+    registry (no foreign-recipe reads), so no `source` column.
+    --check: tag defunct checkouts and orphan device rows, and print a
+    cleanup hint footer naming `splash gc`."""
     target = str(cwd.resolve())
-    resources = registry.all_for(target)
+    checkouts = registry.all_checkouts() if show_all else [target]
+    if not checkouts:
+        checkouts = [target]
 
-    # Identify port-typed resources from the recipe so we can flag bind state.
-    port_keys: set[str] = set()
-    recipe_path = cwd / RECIPE_NAME
-    if recipe_path.exists():
-        recipe = Recipe.load(recipe_path)
-        for name, spec in recipe.resources.items():
-            if spec.get("type") == "port":
-                port_keys.add(name)
+    summary = {"defunct_checkouts": 0, "defunct_rows": 0, "orphan_devices": 0}
+    json_blocks: list[dict[str, Any]] = []
 
-    res_rows: list[tuple[str, str, str]] = []
-    for key, value in sorted(resources.items()):
-        state = ""
-        if key in port_keys:
-            try:
-                state = "in use" if _port_in_use(int(value)) else "free"
-            except ValueError:
-                state = ""
-        res_rows.append((key, value, state))
+    for co in checkouts:
+        co_path = Path(co)
+        co_exists = co_path.exists()
+        if check and not co_exists:
+            summary["defunct_checkouts"] += 1
 
-    # Device variants + state (mirrors cmd_devices_list output shape).
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-    catalog = merged_devices(recipe, local)
-    dev_rows: list[tuple[str, str, str, str, str]] = []
-    for dtype, variants in catalog.items():
-        for variant, spec in variants.items():
-            source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
-            resolved = _resolve_device_name(spec, cwd, variant, dtype)
-            try:
-                status = device_status(dtype, resolved)
-            except DeviceError as e:
-                status = f"error: {e}"
-            dev_rows.append((dtype, variant, source, resolved, status))
+        resources = registry.all_for(co)
+        if check and not co_exists:
+            summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
 
-    # Stale-row count (rows whose checkout path no longer exists).
-    stale = sum(
-        1 for r in registry._read_ports() if not Path(r[1]).exists()  # noqa: SLF001
-    ) + sum(
-        1 for r in registry._read_kv() if not Path(r[0]).exists()  # noqa: SLF001
-    )
+        # Port-state needs port-typed-resource knowledge. Read the recipe when
+        # the checkout's path is still around; otherwise we just can't tag.
+        port_keys: set[str] = set()
+        if co_exists:
+            recipe_path = co_path / RECIPE_NAME
+            if recipe_path.exists():
+                try:
+                    rec = Recipe.load(recipe_path)
+                    port_keys = {n for n, s in rec.resources.items() if s.get("type") == "port"}
+                except Exception:  # noqa: BLE001 — malformed recipe shouldn't kill status
+                    pass
+
+        res_entries: list[tuple[str, str, str]] = []
+        for key, value in sorted(resources.items()):
+            state = ""
+            if key in port_keys:
+                try:
+                    state = "in use" if _port_in_use(int(value)) else "free"
+                except ValueError:
+                    state = ""
+            res_entries.append((key, value, state))
+
+        # Device entries. In --all mode, source = registry only. In default
+        # mode, source = recipe + local catalog (today's behavior).
+        dev_entries: list[tuple[str, str, str, str, str, bool]] = []
+        if show_all:
+            for row in registry.devices_for(co):
+                try:
+                    status = _device_status_for_row(row)
+                except DeviceError as e:
+                    status = f"error: {e}"
+                orphan = check and co_exists and _is_orphan_device(row)
+                if orphan:
+                    summary["orphan_devices"] += 1
+                dev_entries.append((row.dtype, row.variant, "", row.udid, status, orphan))
+        elif co_exists:
+            recipe = _load_recipe_or_empty(co_path)
+            local = LocalConfig.load(co_path / LOCAL_NAME)
+            catalog = merged_devices(recipe, local)
+            for dtype, variants in catalog.items():
+                for variant, spec in variants.items():
+                    source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
+                    resolved = _resolve_device_name(spec, co_path, variant, dtype)
+                    try:
+                        status = device_status(dtype, resolved)
+                    except DeviceError as e:
+                        status = f"error: {e}"
+                    orphan = False
+                    if check:
+                        row = registry.get_device(co, dtype, variant)
+                        if row is not None and _is_orphan_device(row):
+                            orphan = True
+                            summary["orphan_devices"] += 1
+                    dev_entries.append((dtype, variant, source, resolved, status, orphan))
+
+        json_blocks.append({
+            "checkout": co,
+            "exists": co_exists,
+            "resources": [{"key": k, "value": v, "port_state": s} for k, v, s in res_entries],
+            "devices": [
+                {"type": dt, "variant": var, "source": src, "device_name": nm, "status": st, "orphan": orph}
+                for dt, var, src, nm, st, orph in dev_entries
+            ],
+        })
+
+        if fmt != "json":
+            header_tag = "  [defunct]" if check and not co_exists else ""
+            if show_all:
+                print(f"=== {co}{header_tag} ===", file=sys.stderr)
+            else:
+                print(f"checkout: {co}{header_tag}", file=sys.stderr)
+            print("resources:", file=sys.stderr)
+            if not res_entries:
+                print("  (none)", file=sys.stderr)
+            for key, value, state in res_entries:
+                suffix = f"  [{state}]" if state else ""
+                print(f"  {key}={value}{suffix}", file=sys.stderr)
+            print("devices:", file=sys.stderr)
+            if not dev_entries:
+                print("  (none)", file=sys.stderr)
+            for dtype, variant, source, name, status, orphan in dev_entries:
+                cols = [f"{dtype}.{variant}"]
+                if source:
+                    cols.append(source)
+                cols.append(name)
+                cols.append(status)
+                if orphan:
+                    cols.append("[orphan]")
+                print("  " + "\t".join(cols), file=sys.stderr)
+            if show_all:
+                print("", file=sys.stderr)
 
     if fmt == "json":
-        print(json.dumps({
-            "checkout": target,
-            "resources": [{"key": k, "value": v, "port_state": s} for k, v, s in res_rows],
-            "devices": [
-                dict(zip(("type", "variant", "source", "device_name", "status"), r))
-                for r in dev_rows
-            ],
-            "stale_registry_rows": stale,
-        }, indent=2))
+        payload: dict[str, Any]
+        if show_all:
+            payload = {"checkouts": json_blocks}
+            if check:
+                payload["summary"] = summary
+        else:
+            payload = json_blocks[0]
+            if check:
+                payload["summary"] = summary
+        print(json.dumps(payload, indent=2))
         return 0
 
-    print(f"checkout: {target}", file=sys.stderr)
-    print("resources:", file=sys.stderr)
-    if not res_rows:
-        print("  (none)", file=sys.stderr)
-    for key, value, state in res_rows:
-        suffix = f"  [{state}]" if state else ""
-        print(f"  {key}={value}{suffix}", file=sys.stderr)
-    print("devices:", file=sys.stderr)
-    if not dev_rows:
-        print("  (none)", file=sys.stderr)
-    for dtype, variant, source, resolved, status in dev_rows:
-        print(f"  {dtype}.{variant}\t{source}\t{resolved}\t{status}", file=sys.stderr)
-    if stale:
-        print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
+    if check:
+        if summary["defunct_checkouts"] or summary["orphan_devices"]:
+            print("Summary:", file=sys.stderr)
+            if summary["defunct_checkouts"]:
+                print(
+                    f"  {summary['defunct_checkouts']} defunct checkout"
+                    f"{'s' if summary['defunct_checkouts'] != 1 else ''} "
+                    f"({summary['defunct_rows']} registry row"
+                    f"{'s' if summary['defunct_rows'] != 1 else ''}).",
+                    file=sys.stderr,
+                )
+            if summary["orphan_devices"]:
+                print(
+                    f"  {summary['orphan_devices']} orphan device"
+                    f"{'s' if summary['orphan_devices'] != 1 else ''}.",
+                    file=sys.stderr,
+                )
+            print("  Run `splash gc` to clean.", file=sys.stderr)
+        else:
+            print("Summary: all entries verified.", file=sys.stderr)
+    elif not show_all:
+        # Default-mode footer: lightweight defunct-row count.
+        stale = sum(
+            1 for r in registry._read_ports() if not Path(r[1]).exists()  # noqa: SLF001
+        ) + sum(
+            1 for r in registry._read_kv() if not Path(r[0]).exists()  # noqa: SLF001
+        )
+        if stale:
+            print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
+
     return 0
 
 
@@ -3442,7 +3575,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reprovision", action="store_true", help="force re-allocate all resources")
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
-    sub.add_parser("status", help="show resolved vars, declared devices, and OS-level port collisions")
+    p = sub.add_parser("status", help="show resolved vars, declared devices, and OS-level port collisions")
+    p.add_argument("--all", action="store_true", dest="all_", help="show every tracked checkout, not just this one")
+    p.add_argument("--check", action="store_true", help="revalidate liveness and print a cleanup hint")
     sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
 
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
@@ -3598,7 +3733,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_devices_list(cwd, _resolve_format(args))
 
         if args.cmd == "status":
-            return cmd_status(cwd, registry, _resolve_format(args))
+            return cmd_status(cwd, registry, _resolve_format(args), show_all=args.all_, check=args.check)
 
         if args.cmd == "refresh":
             return _cmd_refresh(cwd, registry)

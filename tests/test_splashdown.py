@@ -141,15 +141,68 @@ def test_device_registry_release_clears_devices_too(registry, checkout):
     assert registry.get_device(str(checkout), "simulator", "default") is None
 
 
-def test_registry_gc_includes_devices(registry, tmp_path):
+def test_registry_gc_includes_devices(registry, tmp_path, monkeypatch):
     a = tmp_path / "alive"; a.mkdir()
     b = tmp_path / "dead"; b.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
     b.rmdir()
+    # gc() now also drops orphan-UDID rows; pretend both UDIDs are live in xcrun
+    # so this test isolates the defunct-checkout sweep.
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: True)
     registry.gc()
     udids = {r.udid for r in registry.all_devices()}
     assert udids == {"UDID-A"}
+
+
+def test_registry_all_checkouts_aggregates_three_files(registry, tmp_path):
+    # Distinct paths across ports.tsv, kv.tsv, devices.tsv.
+    a = tmp_path / "a"; a.mkdir()
+    b = tmp_path / "b"; b.mkdir()
+    c = tmp_path / "c"; c.mkdir()
+    registry.allocate_port(str(a), "PORT", 18100, 18110)
+    registry.set_kv(str(b), "KEY", "v")
+    registry.set_device(str(c), "simulator", "default", "UDID-C", "iPhone 17", "18.5")
+    out = registry.all_checkouts()
+    assert out == sorted([str(a), str(b), str(c)])
+
+
+def test_registry_all_checkouts_dedupes_when_same_path_in_multiple_files(registry, checkout):
+    registry.allocate_port(str(checkout), "PORT", 18200, 18210)
+    registry.set_kv(str(checkout), "KEY", "v")
+    registry.set_device(str(checkout), "simulator", "default", "UDID-X", "iPhone 17", "18.5")
+    out = registry.all_checkouts()
+    assert out == [str(checkout)]
+
+
+def test_registry_all_checkouts_empty_returns_empty_list(registry):
+    assert registry.all_checkouts() == []
+
+
+def test_registry_gc_drops_orphan_device_rows(registry, tmp_path, monkeypatch):
+    # Checkout path EXISTS but the registered sim's UDID is gone from xcrun.
+    a = tmp_path / "alive"; a.mkdir()
+    registry.set_device(str(a), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: False)
+    removed = registry.gc()
+    assert removed >= 1
+    assert registry.get_device(str(a), "simulator", "default") is None
+
+
+def test_registry_gc_keeps_present_device_rows(registry, tmp_path, monkeypatch):
+    a = tmp_path / "alive"; a.mkdir()
+    registry.set_device(str(a), "simulator", "default", "UDID-OK", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: True)
+    registry.gc()
+    assert registry.get_device(str(a), "simulator", "default") is not None
+
+
+def test_registry_gc_drops_orphan_android_avd_rows(registry, tmp_path, monkeypatch):
+    a = tmp_path / "alive"; a.mkdir()
+    registry.set_device(str(a), "emulator", "default", "AVD-NAME", "pixel_9", "android-34")
+    monkeypatch.setattr(sd, "_android_avd_exists", lambda name: False)
+    registry.gc()
+    assert registry.get_device(str(a), "emulator", "default") is None
 
 
 # ---------- ensure_fresh_sim ----------
@@ -457,6 +510,97 @@ range = [19000, 19010]
     assert "MY_PORT=" in err
     # The state tag must be one of `[in use]` or `[free]` (port-typed resource).
     assert "[free]" in err or "[in use]" in err
+
+
+def test_cli_status_all_lists_every_tracked_checkout(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = tmp_path / "co-a"; a.mkdir()
+    b = tmp_path / "co-b"; b.mkdir()
+    (a / "splashdown.toml").write_text("[resources.P_A]\ntype = \"port\"\nrange = [19100, 19110]\n")
+    (b / "splashdown.toml").write_text("[resources.P_B]\ntype = \"port\"\nrange = [19200, 19210]\n")
+    assert sd.main(["--cwd", str(a)]) == 0
+    assert sd.main(["--cwd", str(b)]) == 0
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(a), "status", "--all"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert str(a) in err
+    assert str(b) in err
+    assert "P_A=" in err
+    assert "P_B=" in err
+
+
+def test_cli_status_check_flags_defunct_checkout_and_suggests_gc(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    alive = tmp_path / "alive"; alive.mkdir()
+    dead = tmp_path / "dead"; dead.mkdir()
+    (alive / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19300, 19310]\n")
+    (dead / "splashdown.toml").write_text("[resources.Q]\ntype = \"port\"\nrange = [19400, 19410]\n")
+    assert sd.main(["--cwd", str(alive)]) == 0
+    assert sd.main(["--cwd", str(dead)]) == 0
+    capsys.readouterr()
+    # Remove the dead checkout's directory so its registry rows become defunct.
+    (dead / "splashdown.toml").unlink()
+    (dead / "splashdown.env").unlink()
+    (dead / "splashdown.local.toml").unlink()
+    dead.rmdir()
+    rc = sd.main(["--cwd", str(alive), "status", "--all", "--check"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "[defunct]" in err
+    assert "defunct checkout" in err
+    assert "`splash gc`" in err
+
+
+def test_cli_status_check_flags_orphan_device(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    a = tmp_path / "co"; a.mkdir()
+    (a / "splashdown.toml").write_text("")  # no resources needed; we'll register a device directly
+    assert sd.main(["--cwd", str(a)]) == 0
+    # Register a sim whose UDID is "gone".
+    state_home = tmp_path / "state"
+    reg = sd.Registry(
+        port_file=state_home / "splashdown" / "ports.tsv",
+        kv_file=state_home / "splashdown" / "kv.tsv",
+        device_file=state_home / "splashdown" / "devices.tsv",
+    )
+    reg.set_device(str(a), "simulator", "default", "UDID-GHOST", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: False)
+    monkeypatch.setattr(sd, "device_status", lambda dt, name: "absent")
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(a), "status", "--all", "--check"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "[orphan]" in err
+    assert "orphan device" in err
+    assert "`splash gc`" in err
+
+
+def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19500, 19510]\n")
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(tmp_path), "status", "--all", "--check"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "all entries verified" in err
+
+
+def test_cli_status_all_json_shape(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19600, 19610]\n")
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "--all", "--check"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert "checkouts" in data
+    assert len(data["checkouts"]) == 1
+    assert data["checkouts"][0]["checkout"] == str(tmp_path.resolve())
+    assert "summary" in data
+    assert data["summary"]["defunct_checkouts"] == 0
 
 
 def test_cli_refresh_reallocates_on_squatter(tmp_path, monkeypatch, capsys):
