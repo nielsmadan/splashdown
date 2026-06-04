@@ -88,7 +88,9 @@ class Registry:
 
     @contextmanager
     def _lock(self, path: Path):
-        # Lock a separate file so we can read/write the registry under the same fd.
+        # Lock a sidecar `.lock` file rather than the TSV itself so the
+        # registry can be freely truncated and rewritten without releasing
+        # or invalidating the held flock fd.
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.touch(exist_ok=True)
         fd = os.open(str(lock_path), os.O_RDWR)
@@ -1166,7 +1168,6 @@ def android_boot(avd_name: str) -> str:
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
-    # Poll for the serial to appear.
     import time
     for _ in range(60):
         time.sleep(1)
@@ -1594,7 +1595,6 @@ def _wire_post_checkout_lefthook(cwd: Path) -> None:
     path = _lefthook_config_path(cwd)
     text = path.read_text() if path.exists() else ""
     if "splashdown" in text and "run: splash" in text:
-        # Already wired.
         _run_lefthook_install(cwd)
         return
     lines = text.splitlines()
@@ -1998,7 +1998,6 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
                     print(f"        {line}", file=sys.stderr)
             bad += 1
             continue
-        # Not fixed (or no autofix available).
         print(f"  ✗  {check.id}: {detail}", file=sys.stderr)
         if check.manual_instructions is not None:
             for line in check.manual_instructions(cwd).splitlines():
@@ -3173,8 +3172,6 @@ _HOOK_WIRING_CHECK = WiringCheck(
 )
 
 
-# Detection order matters: Flutter and Expo are checked before plain RN because
-# an Expo project's package.json also lists react-native as a dependency.
 # Named scaffolds for `splash init NAME`. Decoupled from PROFILES because some
 # entries (minimal, electron, server) don't have a detectable framework, and
 # some Profiles (vite, springboot, etc.) don't have a stock scaffold.
