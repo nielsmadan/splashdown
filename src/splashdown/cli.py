@@ -98,7 +98,11 @@ def _build_parser() -> argparse.ArgumentParser:
     devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION")
 
     devsub.add_parser("gc", help="prune splashdown-managed sims for defunct checkouts")
-    devsub.add_parser("refresh", help="destroy + recreate stale 'latest' sims (newer iOS available)")
+    ref = devsub.add_parser("refresh", help="destroy + recreate stale/missing sims & AVDs to latest (no boot)")
+    ref.add_argument(
+        "platform", nargs="?", default="all", choices=("ios", "android", "all"),
+        help="scope (default: all = both)",
+    )
 
     prune = devsub.add_parser("prune", help="destroy every sim/AVD splashdown did NOT create")
     prune.add_argument(

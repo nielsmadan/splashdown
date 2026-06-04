@@ -92,7 +92,7 @@ from .profiles import Profile, SCAFFOLDS
 from .commands import (
     cmd_init, _cmd_init_legacy_preset,
     cmd_status, cmd_refresh_inventory,
-    cmd_device_gc, cmd_device_prune,
+    cmd_device_gc, cmd_device_prune, cmd_device_refresh,
     cmd_devices_list,
     _detect_hook_manager, _ensure_post_checkout_hook,
     _wire_post_checkout_husky, _wire_post_checkout_lefthook,

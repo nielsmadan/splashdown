@@ -759,7 +759,9 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
     # In the table, status column reads `orphan` (no brackets).
     assert "orphan" in err
     assert "orphan device" in err
-    assert "`splash gc`" in err
+    # Orphans are recreated by `device refresh` (plain `gc` won't touch an orphan
+    # whose checkout still exists).
+    assert "`splash device refresh`" in err
 
 
 def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, capsys):
@@ -922,6 +924,128 @@ ios   = "17.0"
     sd.cmd_device_gc(registry, all_=True)
     assert destroyed == ["UDID-DEFAULT"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-LEGACY"}
+
+
+# ---------- device refresh ----------
+
+def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
+    checkout = tmp_path / "co"; checkout.mkdir()
+    (checkout / "splashdown.toml").write_text(
+        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    abspath = str(checkout.resolve())
+    registry.set_device(abspath, "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
+    destroyed = []
+    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
+    monkeypatch.setattr(sd, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot"))
+    rc = sd.cmd_device_refresh(registry)
+    assert rc == 0
+    assert destroyed == ["UDID-OLD"]
+    assert registry.get_device(abspath, "simulator", "default").udid == "UDID-NEW"
+
+
+def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, monkeypatch):
+    checkout = tmp_path / "co"; checkout.mkdir()
+    (checkout / "splashdown.toml").write_text(
+        '[devices.simulator.default]\nmodel = "iPhone 17"\n\n'
+        '[devices.simulator.legacy]\nmodel = "iPhone 12"\nios   = "17.0"\n'
+    )
+    abspath = str(checkout.resolve())
+    registry.set_device(abspath, "simulator", "default", "UDID-DEFAULT", "iPhone 17", "18.5")  # fresh latest
+    registry.set_device(abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0")     # pinned current
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
+    destroyed = []
+    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated"))
+    rc = sd.cmd_device_refresh(registry)
+    assert rc == 0
+    assert destroyed == []
+    assert {r.udid for r in registry.all_devices()} == {"UDID-DEFAULT", "UDID-LEGACY"}
+
+
+def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
+    checkout = tmp_path / "co"; checkout.mkdir()
+    (checkout / "splashdown.toml").write_text(
+        '[devices.emulator.default]\ndevice = "pixel_9"\n'
+    )
+    abspath = str(checkout.resolve())
+    registry.set_device(
+        abspath, "emulator", "default", "avd-name", "pixel_9",
+        "system-images;android-33;google_apis;arm64-v8a",  # stale vs latest below
+    )
+    touched = []
+    monkeypatch.setattr(sd, "_android_avd_exists", lambda n: True)
+    monkeypatch.setattr(sd, "_android_latest_image",
+                        lambda: "system-images;android-34;google_apis;arm64-v8a")
+    monkeypatch.setattr(sd, "android_destroy", lambda n: touched.append(n))
+    monkeypatch.setattr(sd, "android_ensure", lambda *a: touched.append("ensure"))
+    rc = sd.cmd_device_refresh(registry, platforms=("ios",))
+    assert rc == 0
+    assert touched == []  # emulator row skipped entirely
+    assert {r.udid for r in registry.all_devices()} == {"avd-name"}
+
+
+def test_device_refresh_drops_defunct_and_undeclared(registry, tmp_path, monkeypatch):
+    gone = tmp_path / "gone"; gone.mkdir()
+    live = tmp_path / "live"; live.mkdir()
+    (live / "splashdown.toml").write_text("")  # variant `old` is no longer declared
+    registry.set_device(str(gone), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
+    registry.set_device(str(live.resolve()), "simulator", "old", "UDID-UNDECLARED", "iPhone 17", "18.5")
+    gone.rmdir()
+    destroyed = []
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated"))
+    rc = sd.cmd_device_refresh(registry)
+    assert rc == 0
+    assert set(destroyed) == {"UDID-GONE", "UDID-UNDECLARED"}
+    assert list(registry.all_devices()) == []
+
+
+def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    co = tmp_path / "co"; co.mkdir()
+    (co / "splashdown.toml").write_text(
+        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    state_home = tmp_path / "state"
+    reg = sd.Registry(
+        port_file=state_home / "splashdown" / "ports.tsv",
+        kv_file=state_home / "splashdown" / "kv.tsv",
+        device_file=state_home / "splashdown" / "devices.tsv",
+    )
+    reg.set_device(str(co.resolve()), "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
+    monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "shutdown")
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(co), "status", "--check"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "[stale]" in err
+    assert "stale device" in err
+    assert "`splash device refresh`" in err
+
+
+def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    co = tmp_path / "co"; co.mkdir()
+    (co / "splashdown.toml").write_text(
+        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    # Declared but never provisioned: no registry row, sim absent.
+    monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "absent")
+    capsys.readouterr()
+    rc = sd.main(["--cwd", str(co), "status", "--check"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "[missing]" in err
+    assert "missing device" in err
+    assert "`splash run`" in err
 
 
 def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
