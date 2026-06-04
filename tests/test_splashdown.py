@@ -1333,6 +1333,53 @@ writer   = "envfile=.env.local"
     assert "MY_VAR=hello" in text
 
 
+def test_writer_reports_changed_then_unchanged(tmp_path):
+    target = tmp_path / "splashdown.env"
+    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is True  # created
+    mtime = target.stat().st_mtime_ns
+    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is False  # identical
+    assert target.stat().st_mtime_ns == mtime  # untouched
+    assert sd.write_splashdown_env(target, {"PORT": "9000"}) is True  # value changed
+
+
+def test_envfile_writer_reports_changed(tmp_path):
+    target = tmp_path / ".env.local"
+    assert sd.write_envfile(target, {"MY_VAR": "hello"}) is True
+    assert sd.write_envfile(target, {"MY_VAR": "hello"}) is False
+
+
+def test_provision_noop_prints_up_to_date(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.PORT]
+type  = "port"
+range = [19100, 19110]
+[resources.RUN_ID]
+type = "uuid"
+""")
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()  # discard first-run (changed) output
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    err = capsys.readouterr().err
+    assert err.strip() == "splashdown: up to date (2 vars, 1 files)"
+
+
+def test_provision_changed_prints_only_changes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.RUN_ID]
+type = "uuid"
+""")
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    capsys.readouterr()
+    # --reprovision regenerates RUN_ID, so exactly that var + its writer report.
+    assert sd.main(["--cwd", str(tmp_path), "provision", "--reprovision"]) == 0
+    err = capsys.readouterr().err
+    assert "RUN_ID=" in err
+    assert f"-> {sd.ENV_FILE_NAME}: 1 vars (changed)" in err
+    assert "up to date" not in err
+
+
 def test_cwd_resource_type(registry, tmp_path):
     cwd = tmp_path / "mybranch"; cwd.mkdir()
     _write_recipe(cwd, """

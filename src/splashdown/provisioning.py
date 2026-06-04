@@ -91,8 +91,10 @@ def _template_uses_volatile(tpl: str) -> bool:
 
 # ---------- writers ----------
 
-def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[str]:
-    """Dispatch resolved values to their writers. Returns human-readable messages."""
+def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[tuple[str, bool]]:
+    """Dispatch resolved values to their writers. Returns (message, changed) per
+    writer — `changed` is True when the writer actually touched disk (or, for the
+    stdout writer, produced output)."""
     groups: dict[str, dict[str, str]] = {}
     for name, value in resolved.items():
         writer = recipe.resources[name].get("writer", "splashdown-env")
@@ -104,39 +106,48 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[s
     if "splashdown-env" not in groups and (cwd / ENV_FILE_NAME).exists():
         groups["splashdown-env"] = {}
 
-    msgs: list[str] = []
+    msgs: list[tuple[str, bool]] = []
     for writer, items in groups.items():
         if writer == "splashdown-env":
             target = cwd / ENV_FILE_NAME
-            write_splashdown_env(target, items)
-            msgs.append(f"{ENV_FILE_NAME}: {len(items)} vars")
+            changed = write_splashdown_env(target, items)
+            msgs.append((f"{ENV_FILE_NAME}: {len(items)} vars", changed))
         elif writer.startswith("envfile"):
             path_arg = writer.split("=", 1)[1] if "=" in writer else ".env.local"
             target = cwd / path_arg
-            write_envfile(target, items)
-            msgs.append(f"{path_arg}: {len(items)} vars")
+            changed = write_envfile(target, items)
+            msgs.append((f"{path_arg}: {len(items)} vars", changed))
         elif writer == "envrc":
             target = cwd / ".envrc.local"
-            write_envrc(target, items)
-            msgs.append(f".envrc.local: {len(items)} vars")
+            changed = write_envrc(target, items)
+            msgs.append((f".envrc.local: {len(items)} vars", changed))
         elif writer == "stdout":
             for k, v in items.items():
                 print(f"{k}={v}")
-            msgs.append(f"stdout: {len(items)} vars")
+            msgs.append((f"stdout: {len(items)} vars", True))
         elif writer == "none":
-            msgs.append(f"registry-only: {len(items)} vars")
+            msgs.append((f"registry-only: {len(items)} vars", False))
         else:
             raise ValueError(f"unknown writer `{writer}`")
     return msgs
 
 
-def write_splashdown_env(path: Path, items: dict[str, str]) -> None:
+def _write_if_changed(path: Path, text: str) -> bool:
+    """Write `text` to `path` only if it differs from the current contents. Returns
+    True when the file was (re)written, False when it already matched."""
+    if path.exists() and path.read_text() == text:
+        return False
+    path.write_text(text)
+    return True
+
+
+def write_splashdown_env(path: Path, items: dict[str, str]) -> bool:
     """Write the generated env file wholesale. Splashdown owns this file."""
     lines = [f"{k}={_env_quote(v)}" for k, v in items.items()]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    return _write_if_changed(path, "\n".join(lines) + ("\n" if lines else ""))
 
 
-def write_envfile(path: Path, items: dict[str, str]) -> None:
+def write_envfile(path: Path, items: dict[str, str]) -> bool:
     existing = path.read_text().splitlines() if path.exists() else []
     managed = set(items.keys())
     kept = []
@@ -148,10 +159,10 @@ def write_envfile(path: Path, items: dict[str, str]) -> None:
     while kept and not kept[-1].strip():
         kept.pop()
     new = kept + [f"{k}={v}" for k, v in items.items()]
-    path.write_text("\n".join(new) + "\n")
+    return _write_if_changed(path, "\n".join(new) + "\n")
 
 
-def write_envrc(path: Path, items: dict[str, str]) -> None:
+def write_envrc(path: Path, items: dict[str, str]) -> bool:
     existing = path.read_text().splitlines() if path.exists() else []
     managed = set(items.keys())
     kept = []
@@ -166,7 +177,7 @@ def write_envrc(path: Path, items: dict[str, str]) -> None:
     def quote(v: str) -> str:
         return "'" + v.replace("'", "'\\''") + "'"
     new = kept + [f"export {k}={quote(v)}" for k, v in items.items()]
-    path.write_text("\n".join(new) + "\n")
+    return _write_if_changed(path, "\n".join(new) + "\n")
 
 
 # ---------- lifecycle (setup hooks) ----------

@@ -1185,6 +1185,8 @@ def _cmd_provision_inner(
     cwd: Path, registry: Registry, *,
     reprovision: bool = False, setup: str | None = None, fmt: str = "text",
 ) -> int:
+    abspath = str(cwd.resolve())
+    before = registry.all_for(abspath)
     try:
         resolved = provision(cwd, registry=registry, reprovision=reprovision)
     except FileNotFoundError as e:
@@ -1198,16 +1200,39 @@ def _cmd_provision_inner(
     local_path = cwd / LOCAL_NAME
     if not local_path.exists():
         local_path.write_text(LOCAL_SKELETON)
-    msgs = write_outputs(cwd, recipe, resolved)
+    writer_results = write_outputs(cwd, recipe, resolved)
     setup_msgs = run_setup(cwd, recipe, setup, resolved)
 
+    changed_vars = {k: v for k, v in resolved.items() if before.get(k) != v}
+    anything_changed = (
+        bool(changed_vars) or any(c for _, c in writer_results) or bool(setup_msgs)
+    )
+
     if fmt == "json":
-        print(json.dumps({"resolved": resolved, "writers": msgs, "setup": setup_msgs}, indent=2))
-    else:
-        for k, v in resolved.items():
-            print(f"  {k}={v}", file=sys.stderr)
-        for m in msgs + setup_msgs:
-            print(f"  -> {m}", file=sys.stderr)
+        print(json.dumps({
+            "resolved": resolved,
+            "writers": [m for m, _ in writer_results],
+            "setup": setup_msgs,
+            "changed": anything_changed,
+            "changed_keys": sorted(changed_vars),
+        }, indent=2))
+        return 0
+
+    if not anything_changed:
+        files = sum(1 for m, _ in writer_results if not m.startswith(("stdout:", "registry-only:")))
+        print(
+            f"splashdown: up to date ({len(resolved)} vars, {files} files)",
+            file=sys.stderr,
+        )
+        return 0
+
+    for k, v in changed_vars.items():
+        print(f"  {k}={v}", file=sys.stderr)
+    for m, changed in writer_results:
+        if changed:
+            print(f"  -> {m} (changed)", file=sys.stderr)
+    for m in setup_msgs:
+        print(f"  -> {m}", file=sys.stderr)
     return 0
 
 
