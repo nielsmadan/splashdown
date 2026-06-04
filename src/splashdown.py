@@ -21,6 +21,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import tomllib
 import uuid as uuid_mod
 from contextlib import contextmanager
@@ -1168,7 +1169,6 @@ def android_boot(avd_name: str) -> str:
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
-    import time
     for _ in range(60):
         time.sleep(1)
         serial = _android_running_serial(avd_name)
