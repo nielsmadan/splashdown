@@ -33,11 +33,11 @@ dev = ["pytest>=7"]
 
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
-only-include = ["src/splashdown.py"]
+only-include = ["src/splashdown"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/splashdown.py",
+    "src/splashdown",
     "tests/",
     "examples/",
     "README.md",
