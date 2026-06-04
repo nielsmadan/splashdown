@@ -1606,8 +1606,8 @@ def test_cli_init_preset_is_positional(tmp_path, monkeypatch):
     rc = sd.main(["--cwd", str(tmp_path), "init", "rn"])
     assert rc == 0
     recipe = (tmp_path / "splashdown.toml").read_text()
-    # rn preset declares the React Native framework + Metro port resource.
-    assert 'framework = "react-native"' in recipe
+    # rn preset declares the React Native profile + Metro port resource.
+    assert 'profile = "react-native"' in recipe
     assert "RCT_METRO_PORT" in recipe
 
 

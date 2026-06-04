@@ -518,13 +518,28 @@ PROFILES["android-native"] = AndroidNativeProfile()
 # some Profiles (vite, springboot, etc.) don't have a stock scaffold.
 
 _MINIMAL_SCAFFOLD = """\
-# splashdown.toml — committed recipe. Declares per-checkout resource slots.
+# splashdown.toml — minimal preset. One uuid slot; no apps, no devices.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
 [resources.RUN_ID]
 type = "uuid"
 """
 
 _RN_SCAFFOLD = """\
 # splashdown.toml — React Native preset.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[apps.main]
+path = "."
+profile = "react-native"
+resources = ["RCT_METRO_PORT"]
+
 [resources.RCT_METRO_PORT]
 type  = "port"
 range = [8081, 8200]
@@ -533,9 +548,6 @@ range = [8081, 8200]
 model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
                    # "18.5" if you want a fixed version that never upgrades.
-
-[project]
-framework = "react-native"
 """
 
 _FLUTTER_SCAFFOLD = """\
@@ -543,20 +555,32 @@ _FLUTTER_SCAFFOLD = """\
 # Flutter's `flutter run` auto-assigns the Dart VM / DevTools port on each
 # launch; there is no equivalent of RN's RCT_METRO_PORT to pin. Splashdown's
 # value for Flutter is per-checkout sim/emulator naming.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[apps.main]
+path = "."
+profile = "flutter"
+resources = []
+
 [devices.simulator.default]
 model = "iPhone 17"
 
 [devices.emulator.default]
 device = "pixel_9"
-
-[project]
-framework = "flutter"
 """
 
 _SERVER_SCAFFOLD = """\
 # splashdown.toml — generic web/server preset (Next.js, Django, Rails, FastAPI,
 # Spring Boot, etc.). Allocates a free PORT per checkout and a unique DATABASE_URL
 # so worktrees don't clobber each other's databases.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
 [resources.PORT]
 type  = "port"
 range = [3000, 3100]
@@ -583,6 +607,11 @@ _ELECTRON_SCAFFOLD = """\
 #         if (process.env.ELECTRON_USER_DATA_DIR) {
 #           app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR)
 #         }
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
 [resources.PORT]
 type  = "port"
 range = [3000, 3100]
@@ -594,11 +623,10 @@ template = "{{ cwd_abs }}/.electron-userdata"
 
 _IOS_NATIVE_SCAFFOLD = """\
 # splashdown.toml — Native iOS preset (Swift/Obj-C + xcodebuild).
-[devices.simulator.default]
-model = "iPhone 17"
 
 [project]
-framework = "ios-native"
+workspace = "single"
+loader = "__SPLASH_LOADER__"
 
 [project.ios]
 # Required: the Xcode scheme to build.
@@ -607,15 +635,22 @@ scheme = "MyApp"
 # configuration = "Debug"
 # workspace     = "MyApp.xcworkspace"  # auto-detected from root if absent
 # project       = "MyApp.xcodeproj"    # auto-detected from root if absent
+
+[apps.main]
+path = "."
+profile = "ios-native"
+resources = []
+
+[devices.simulator.default]
+model = "iPhone 17"
 """
 
 _ANDROID_NATIVE_SCAFFOLD = """\
 # splashdown.toml — Native Android preset (Kotlin/Java + Gradle).
-[devices.emulator.default]
-device = "pixel_9"
 
 [project]
-framework = "android-native"
+workspace = "single"
+loader = "__SPLASH_LOADER__"
 
 [project.android]
 # Optional, defaults shown:
@@ -623,6 +658,14 @@ framework = "android-native"
 # variant         = "debug"
 # application_id  = "com.example.myapp"  # asked from Gradle if not set
 # launch_activity = ".MainActivity"      # uses LAUNCHER intent if not set
+
+[apps.main]
+path = "."
+profile = "android-native"
+resources = []
+
+[devices.emulator.default]
+device = "pixel_9"
 """
 
 

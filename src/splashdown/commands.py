@@ -888,8 +888,9 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
         available = sorted(SCAFFOLDS)
         print(f"unknown preset `{preset}`; available: {', '.join(available)}", file=sys.stderr)
         sys.exit(2)
+    loader_name = loader_override or _detect_loader(cwd)
     recipe_path = cwd / RECIPE_NAME
-    recipe_path.write_text(scaffold)
+    recipe_path.write_text(scaffold.replace("__SPLASH_LOADER__", loader_name))
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME
@@ -898,7 +899,6 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
-    loader_name = loader_override or _detect_loader(cwd)
     LOADERS[loader_name].wire(cwd)
     _ensure_post_checkout_hook(cwd)
 
