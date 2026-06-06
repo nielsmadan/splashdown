@@ -167,9 +167,16 @@ _RN_WIRING_CHECKS.append(
 )
 
 
-# Recognized metro.config.js shape: `port: <number>` (literal). We rewrite that to
-# read `process.env.RCT_METRO_PORT` while keeping the literal as the fallback.
+# Recognized metro.config.js shapes:
+#   1. `port: <number>` (literal) — rewritten to read `process.env.RCT_METRO_PORT`
+#      while keeping the literal as the fallback.
+#   2. a `server: { ... }` block with no port — we add the port line to it.
+#   3. a `const config = {` / `module.exports = {` object literal with no server
+#      block — we inject a `server: { port: ... }` block at its top.
 _METRO_LITERAL_PORT_RE = re.compile(r"\bport\s*:\s*(\d+)\b")
+_METRO_SERVER_RE = re.compile(r"\bserver\s*:\s*\{")
+_METRO_CONFIG_OBJ_RE = re.compile(r"(?:const\s+config\s*=|module\.exports\s*=)\s*\{")
+_METRO_PORT_LINE = "port: Number(process.env.RCT_METRO_PORT) || 8081,"
 
 
 def _rn_metro_applies(cwd: Path) -> bool:
@@ -182,7 +189,27 @@ def _rn_metro_detect(cwd: Path) -> tuple[str, str]:
         return ("ok", "metro.config.js reads process.env.RCT_METRO_PORT")
     if _METRO_LITERAL_PORT_RE.search(text):
         return ("problem", "metro.config.js hardcodes a literal port; autofixable")
+    if _rn_metro_inject(text) is not None:
+        return ("problem", "metro.config.js has no server.port; autofixable")
     return ("problem", "metro.config.js doesn't reference RCT_METRO_PORT")
+
+
+def _rn_metro_inject(text: str) -> str | None:
+    """Wire server.port to RCT_METRO_PORT in a config that has no port literal.
+
+    Adds the port to an existing `server: {` block, or, failing that, injects a
+    `server` block at the top of the config object literal. Returns the rewritten
+    text, or None if no recognizable injection point exists.
+    """
+    server = _METRO_SERVER_RE.search(text)
+    if server:
+        at = server.end()
+        return text[:at] + f"\n    {_METRO_PORT_LINE}" + text[at:]
+    obj = _METRO_CONFIG_OBJ_RE.search(text)
+    if obj:
+        at = obj.end()
+        return text[:at] + f"\n  server: {{\n    {_METRO_PORT_LINE}\n  }}," + text[at:]
+    return None
 
 
 def _rn_metro_autofix(cwd: Path) -> None:
@@ -192,15 +219,20 @@ def _rn_metro_autofix(cwd: Path) -> None:
     if "process.env.RCT_METRO_PORT" in text:
         return  # already wired
     m = _METRO_LITERAL_PORT_RE.search(text)
-    if not m:
+    if m:
+        new_text = (
+            text[: m.start()]
+            + f"port: Number(process.env.RCT_METRO_PORT) || {m.group(1)}"
+            + text[m.end() :]
+        )
+        path.write_text(new_text)
+        print(f"patched metro.config.js (RCT_METRO_PORT, fallback {m.group(1)})", file=sys.stderr)
+        return
+    new_text = _rn_metro_inject(text)
+    if new_text is None:
         return  # unrecognized shape — doctor will surface manual_instructions
-    new_text = (
-        text[: m.start()]
-        + f"port: Number(process.env.RCT_METRO_PORT) || {m.group(1)}"
-        + text[m.end() :]
-    )
     path.write_text(new_text)
-    print(f"patched metro.config.js (RCT_METRO_PORT, fallback {m.group(1)})", file=sys.stderr)
+    print("patched metro.config.js (added server.port, fallback 8081)", file=sys.stderr)
 
 
 def _rn_metro_manual(cwd: Path) -> str:

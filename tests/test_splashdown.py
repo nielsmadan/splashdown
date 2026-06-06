@@ -2159,8 +2159,43 @@ def test_rn_metro_autofix_idempotent(tmp_path):
     assert twice.count("process.env.RCT_METRO_PORT") == 1
 
 
-def test_rn_metro_autofix_noop_when_no_port(tmp_path):
-    text = "module.exports = { server: { someOtherThing: 1 } };\n"
+def test_rn_metro_autofix_injects_server_block_when_absent(tmp_path):
+    # The common RN template shape: a config object with no server block at all.
+    (tmp_path / "metro.config.js").write_text(
+        "const config = {\n"
+        "  transformer: { babelTransformerPath: 'x' },\n"
+        "  resolver: { sourceExts: ['svg'] },\n"
+        "};\n"
+        "module.exports = mergeConfig(defaultConfig, config);\n"
+    )
+    status, detail = sd._rn_metro_detect(tmp_path)
+    assert status == "problem"
+    assert "autofixable" in detail
+    sd._rn_metro_autofix(tmp_path)
+    text = (tmp_path / "metro.config.js").read_text()
+    assert "server: {" in text
+    assert "process.env.RCT_METRO_PORT" in text
+    assert "|| 8081" in text
+    assert sd._rn_metro_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_metro_autofix_adds_port_to_existing_server_block(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "module.exports = { server: { someOtherThing: 1 } };\n"
+    )
+    status, detail = sd._rn_metro_detect(tmp_path)
+    assert status == "problem"
+    assert "autofixable" in detail
+    sd._rn_metro_autofix(tmp_path)
+    text = (tmp_path / "metro.config.js").read_text()
+    assert "process.env.RCT_METRO_PORT" in text
+    assert "someOtherThing" in text
+    assert sd._rn_metro_detect(tmp_path)[0] == "ok"
+
+
+def test_rn_metro_autofix_noop_for_unrecognized_shape(tmp_path):
+    # No port literal, no server block, no config object literal to inject into.
+    text = "module.exports = makeMetroConfig(__dirname);\n"
     (tmp_path / "metro.config.js").write_text(text)
     sd._rn_metro_autofix(tmp_path)
     assert (tmp_path / "metro.config.js").read_text() == text
