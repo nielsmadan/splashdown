@@ -205,6 +205,47 @@ def test_registry_gc_drops_orphan_android_avd_rows(registry, tmp_path, monkeypat
     assert registry.get_device(str(a), "emulator", "default") is None
 
 
+def _write_recipe(checkout: Path, body: str) -> None:
+    (checkout / sd.RECIPE_NAME).write_text(body)
+
+
+def test_registry_gc_drops_port_not_in_recipe(registry, tmp_path):
+    # Checkout exists; recipe declares PORT but not DART_PORT. The leftover
+    # DART_PORT row (from an older recipe) should be reconciled away.
+    a = tmp_path / "alive"; a.mkdir()
+    _write_recipe(a, "[resources.PORT]\ntype = \"port\"\nrange = [3000, 3100]\n")
+    registry.allocate_port(str(a), "PORT", 3000, 3100)
+    registry.allocate_port(str(a), "DART_PORT", 9100, 9200)
+    registry.gc()
+    keys = set(registry.all_for(str(a)))
+    assert keys == {"PORT"}
+
+
+def test_registry_gc_drops_kv_not_in_recipe(registry, tmp_path):
+    a = tmp_path / "alive"; a.mkdir()
+    _write_recipe(a, "[resources.NAME]\ntype = \"set\"\n")
+    registry.set_kv(str(a), "NAME", "kept")
+    registry.set_kv(str(a), "STALE", "gone")
+    registry.gc()
+    assert registry.all_for(str(a)) == {"NAME": "kept"}
+
+
+def test_registry_gc_keeps_entries_when_recipe_missing(registry, tmp_path):
+    # Dir exists but no recipe — don't read that as "zero declared resources".
+    a = tmp_path / "alive"; a.mkdir()
+    registry.allocate_port(str(a), "DART_PORT", 9100, 9200)
+    registry.gc()
+    assert set(registry.all_for(str(a))) == {"DART_PORT"}
+
+
+def test_registry_gc_keeps_entries_when_recipe_unparseable(registry, tmp_path):
+    a = tmp_path / "alive"; a.mkdir()
+    _write_recipe(a, "this is not = valid toml [[[")
+    registry.allocate_port(str(a), "DART_PORT", 9100, 9200)
+    registry.gc()
+    assert set(registry.all_for(str(a))) == {"DART_PORT"}
+
+
 def test_registry_summary_for_counts_by_source(registry, tmp_path):
     a = tmp_path / "co"; a.mkdir()
     # 2 ports, 1 kv, 1 sim, 1 emu

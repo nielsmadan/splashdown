@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "gc":
             n = registry.gc()
-            print(f"gc: removed {n} dead entries", file=sys.stderr)
+            print(f"gc: removed {n} stale entries", file=sys.stderr)
             return 0
 
         if args.cmd == "doctor":

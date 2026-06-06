@@ -294,8 +294,48 @@ class Registry:
                 counts[row.dtype] += 1
         return counts
 
+    def reconcile_with_recipes(self) -> int:
+        """Drop port/kv entries for live checkouts whose current recipe no
+        longer declares the key (e.g. a `DART_PORT` left over after the Flutter
+        profile stopped emitting one). Checkouts whose recipe is missing or
+        won't parse are left untouched — a recipe we can't load must never be
+        read as "declares nothing" and nuke live entries. Returns count
+        removed."""
+        # Lazy import to avoid circular: registry ← recipe ← registry.
+        from .recipe import RECIPE_NAME, Recipe  # noqa: PLC0415
+
+        cache: dict[str, set[str] | None] = {}
+
+        def declared(path: str) -> set[str] | None:
+            """Resource names the checkout's recipe declares, or None when the
+            recipe is absent/unloadable (signal: skip pruning this checkout)."""
+            if path not in cache:
+                result: set[str] | None = None
+                recipe_path = Path(path) / RECIPE_NAME
+                if recipe_path.exists():
+                    try:
+                        result = set(Recipe.load(recipe_path).resources)
+                    except Exception:  # noqa: BLE001 — bad recipe shouldn't prune
+                        result = None
+                cache[path] = result
+            return cache[path]
+
+        removed = 0
+        with self._lock(self.port_file):
+            rows = self._read_ports()
+            kept = [r for r in rows if (d := declared(r[1])) is None or r[2] in d]
+            removed += len(rows) - len(kept)
+            self._write_ports(kept)
+        with self._lock(self.kv_file):
+            kv_rows = self._read_kv()
+            kept_kv = [r for r in kv_rows if (d := declared(r[0])) is None or r[1] in d]
+            removed += len(kv_rows) - len(kept_kv)
+            self._write_kv(kept_kv)
+        return removed
+
     def gc(self) -> int:
-        """Drop entries whose abspath no longer exists. Returns count removed."""
+        """Drop entries whose abspath no longer exists, then reconcile live
+        checkouts against their current recipes. Returns count removed."""
         removed = 0
         with self._lock(self.port_file):
             rows = self._read_ports()
@@ -308,6 +348,7 @@ class Registry:
             removed += len(rows_kv) - len(kept_kv)
             self._write_kv(kept_kv)
         removed += self.gc_devices()
+        removed += self.reconcile_with_recipes()
         return removed
 
 
