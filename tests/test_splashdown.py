@@ -1794,6 +1794,19 @@ def test_cli_init_no_arg_runs_scanner(tmp_path, monkeypatch):
     assert 'profile = "vite"' in recipe
 
 
+def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
+    """Scanner-driven `splash init` on a react-native project emits the
+    RCT_METRO_PORT port resource, just like the `rn` preset does."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    rc = sd.main(["--cwd", str(tmp_path), "init"])
+    assert rc == 0
+    recipe = (tmp_path / "splashdown.toml").read_text()
+    assert 'profile = "react-native"' in recipe
+    assert "[resources.RCT_METRO_PORT]" in recipe
+    assert 'resources = ["RCT_METRO_PORT"]' in recipe
+
+
 def test_init_server_preset_writes_generic_scaffold(tmp_path):
     sd.cmd_init(tmp_path, preset="server")
     recipe = (tmp_path / "splashdown.toml").read_text()

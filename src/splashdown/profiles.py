@@ -449,6 +449,9 @@ class ReactNativeProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         return _detect_rn(app_path)
 
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"RCT_METRO_PORT": {"type": "port", "range": [8081, 8200]}}
+
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return list(_RN_WIRING_CHECKS)
 
