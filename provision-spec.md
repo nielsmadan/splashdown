@@ -209,7 +209,7 @@ run = "python3 .scripts/worktree-provision.py --list"
 run = "python3 .scripts/worktree-provision.py --unpin"
 ```
 
-Presets ship a curated `.worktree.toml` skeleton for that stack (RN: Metro + sim name + DB; Flutter: sim + emulator + Dart port; Next.js: dev port + Storybook + DB; etc.) plus any lifecycle hooks.
+Presets ship a curated `.worktree.toml` skeleton for that stack (RN: Metro + sim name + DB; Flutter: sim + emulator; Next.js: dev port + Storybook + DB; etc.) plus any lifecycle hooks.
 
 ## The Two Wrinkles
 
