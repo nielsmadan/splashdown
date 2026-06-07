@@ -38,6 +38,7 @@ from .devices import (
     ios_boot,
     ios_destroy,
     ios_shutdown,
+    physical_status,
 )
 from .loaders import LOADERS
 from .provisioning import (
@@ -699,12 +700,18 @@ def cmd_devices_list(cwd: Path, fmt: str) -> int:
         print(f"(no devices declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
         return 0
     rows: list[tuple[str, str, str, str, str]] = []
+    _phys_status = _resolve_fn("physical_status", physical_status)
     for dtype, variants in catalog.items():
         for variant, spec in variants.items():
             source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
-            resolved = _resolve_device_name(spec, cwd, variant, dtype)
+            if dtype == "physical":
+                # Hardware has no created instance name; show its selector
+                # (id/name/platform or "auto") and live connection state.
+                resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
+            else:
+                resolved = _resolve_device_name(spec, cwd, variant, dtype)
             try:
-                status = _dev_status(dtype, resolved)
+                status = _phys_status(spec) if dtype == "physical" else _dev_status(dtype, resolved)
             except DeviceError as e:
                 status = f"error: {e}"
             rows.append((dtype, variant, source, resolved, status))
@@ -1028,10 +1035,13 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     info = _fresh_sim(registry, cwd, dtype, variant, spec)
-    if info["kind"] == "ios":
-        _boot_ios(info["udid"], _ios_state(info["udid"]))
-    elif info["kind"] == "android":
-        info["serial"] = _boot_android(info["name"])
+    # Physical devices are already live (discovery returns the running id); only
+    # splashdown-owned sims/emulators need booting.
+    if not info.get("physical"):
+        if info["kind"] == "ios":
+            _boot_ios(info["udid"], _ios_state(info["udid"]))
+        elif info["kind"] == "android":
+            info["serial"] = _boot_android(info["name"])
     return int(_dev_run(cwd, recipe, info))
 
 
@@ -1044,6 +1054,9 @@ def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     info = _fresh_sim(registry, cwd, dtype, variant, spec)
+    if info.get("physical"):
+        print(f"{dtype}.{variant} connected ({info['name']})", file=sys.stderr)
+        return 0
     if info["kind"] == "ios":
         _boot_ios(info["udid"], _ios_state(info["udid"]))
     elif info["kind"] == "android":
@@ -1057,6 +1070,9 @@ def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     _dev_shutdown = _resolve_fn("device_shutdown", device_shutdown)
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    if dtype == "physical":
+        print(f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop", file=sys.stderr)
+        return 0
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
     _dev_shutdown(dtype, resolved)
     print(f"stopped {dtype}.{variant} ({resolved})", file=sys.stderr)
@@ -1068,6 +1084,9 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     _dev_destroy = _resolve_fn("device_destroy", device_destroy)
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    if dtype == "physical":
+        print(f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to destroy", file=sys.stderr)
+        return 0
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
     _dev_destroy(dtype, resolved)
     Registry().remove_device(str(cwd.resolve()), dtype, variant)
@@ -1089,7 +1108,7 @@ def _infer_dtype(cwd: Path, dtype: str | None) -> str:
         raise DeviceError(f"no devices declared in {RECIPE_NAME} or {LOCAL_NAME}")
     raise DeviceError(
         f"multiple device types declared ({', '.join(sorted(declared))}); "
-        "specify one: simulator | emulator"
+        f"specify one: {' | '.join(DEVICE_TYPES)}"
     )
 
 
@@ -1409,6 +1428,8 @@ def _device_dispatch(args: Any, cwd: Path) -> int:
             "device": args.device,
             "image": args.image,
             "name": args.sim_name,
+            "id": args.device_id,
+            "platform": args.platform,
         }
         device_add(cwd, args.dtype, args.variant, fields)
         print(f"added device `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)

@@ -176,7 +176,9 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("--ios")
     add.add_argument("--device")
     add.add_argument("--image")
-    add.add_argument("--name", dest="sim_name", help="simulator/emulator name override")
+    add.add_argument("--name", dest="sim_name", help="simulator/emulator name override; physical: match by device name")
+    add.add_argument("--id", dest="device_id", help="physical: exact device udid / adb serial")
+    add.add_argument("--platform", choices=("ios", "android"), help="physical: scope auto-pick to one platform")
 
     rm = devsub.add_parser(
         "remove", help="remove a variant from splashdown.local.toml (and destroy its sim)"

@@ -26,7 +26,7 @@ DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEVICE_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-DEVICE_TYPES = ("simulator", "emulator")
+DEVICE_TYPES = ("simulator", "emulator", "physical")
 RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
 ENV_FILE_NAME = "splashdown.env"
@@ -59,11 +59,13 @@ from .devices import (
     _android_bin,
     _android_home,
     _android_latest_image,
+    _android_physical_devices,
     _android_running_serial,
     _default_sim_name,
     _device_status_for_row,
     _ios_current_state,
     _ios_latest_runtime_version,
+    _ios_physical_devices,
     _ios_udid_exists,
     _is_orphan_device,
     _resolve_device_name,
@@ -81,10 +83,13 @@ from .devices import (
     device_shutdown,
     device_status,
     ensure_fresh_sim,
+    ensure_physical,
     ios_boot,
     ios_destroy,
     ios_ensure,
     ios_shutdown,
+    physical_discover,
+    physical_status,
 )
 from .loaders import LOADERS, Loader
 from .profiles import SCAFFOLDS, Profile

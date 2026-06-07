@@ -397,6 +397,233 @@ def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
     assert info["udid"] == "UDID-NEW"
 
 
+# ---------- physical devices ----------
+
+_IPHONE = {"id": "00008-PHONE", "name": "Niels's iPhone", "platform": "ios"}
+_PIXEL = {"id": "PXL1234", "name": "Pixel_7", "platform": "android"}
+
+
+def _stub_physical(monkeypatch, ios=None, android=None):
+    monkeypatch.setattr(sd, "_ios_physical_devices", lambda: list(ios or []))
+    monkeypatch.setattr(sd, "_android_physical_devices", lambda: list(android or []))
+
+
+def test_ensure_physical_autopicks_lone_ios(monkeypatch):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    info = sd.ensure_physical({})
+    assert info == {"kind": "ios", "name": "Niels's iPhone", "physical": True, "udid": "00008-PHONE"}
+
+
+def test_ensure_physical_autopicks_lone_android(monkeypatch):
+    _stub_physical(monkeypatch, android=[_PIXEL])
+    info = sd.ensure_physical({})
+    assert info["kind"] == "android"
+    assert info["serial"] == "PXL1234"
+    assert info["physical"] is True
+
+
+def test_ensure_physical_filters_by_id(monkeypatch):
+    other = {"id": "OTHER", "name": "Spare", "platform": "ios"}
+    _stub_physical(monkeypatch, ios=[_IPHONE, other])
+    info = sd.ensure_physical({"id": "OTHER"})
+    assert info["udid"] == "OTHER"
+
+
+def test_ensure_physical_filters_by_name_case_insensitive(monkeypatch):
+    other = {"id": "OTHER", "name": "Spare", "platform": "ios"}
+    _stub_physical(monkeypatch, ios=[_IPHONE, other])
+    info = sd.ensure_physical({"name": "niels"})
+    assert info["udid"] == "00008-PHONE"
+
+
+def test_ensure_physical_platform_scopes_autopick(monkeypatch):
+    _stub_physical(monkeypatch, ios=[_IPHONE], android=[_PIXEL])
+    info = sd.ensure_physical({"platform": "android"})
+    assert info["serial"] == "PXL1234"
+
+
+def test_ensure_physical_errors_when_none(monkeypatch):
+    _stub_physical(monkeypatch)
+    with pytest.raises(sd.DeviceError, match="no connected physical device"):
+        sd.ensure_physical({})
+
+
+def test_ensure_physical_errors_when_ambiguous(monkeypatch):
+    _stub_physical(monkeypatch, ios=[_IPHONE], android=[_PIXEL])
+    with pytest.raises(sd.DeviceError, match="multiple connected"):
+        sd.ensure_physical({})
+
+
+def test_physical_discover_tolerates_missing_ios_toolchain(monkeypatch):
+    def _boom():
+        raise sd.DeviceError("xcrun devicectl failed")
+    monkeypatch.setattr(sd, "_ios_physical_devices", _boom)
+    monkeypatch.setattr(sd, "_android_physical_devices", lambda: [_PIXEL])
+    # Broad scan: iOS toolchain error is swallowed, android phone still found.
+    assert sd.physical_discover() == [_PIXEL]
+    # Explicit platform=ios: error propagates.
+    with pytest.raises(sd.DeviceError):
+        sd.physical_discover("ios")
+
+
+def test_physical_status_states(monkeypatch):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    assert sd.physical_status({}) == "connected"
+    _stub_physical(monkeypatch)
+    assert sd.physical_status({}) == "absent"
+    _stub_physical(monkeypatch, ios=[_IPHONE], android=[_PIXEL])
+    assert sd.physical_status({}) == "ambiguous"
+
+
+def test_ios_physical_devices_parses_devicectl(monkeypatch):
+    payload = json.dumps({"result": {"devices": [
+        {  # wired & actively tunneled — included
+            "deviceProperties": {"name": "Wired iPhone"},
+            "hardwareProperties": {"udid": "WIRED", "platform": "iOS"},
+            "connectionProperties": {"pairingState": "paired", "tunnelState": "connected"},
+        },
+        {  # wifi: paired but tunnel lazily disconnected — must still be included
+            "deviceProperties": {"name": "Wifi iPhone"},
+            "hardwareProperties": {"udid": "WIFI", "platform": "iOS"},
+            "connectionProperties": {"pairingState": "paired", "tunnelState": "disconnected"},
+        },
+        {  # paired but gone (unavailable) — skipped
+            "deviceProperties": {"name": "Old iPad"},
+            "hardwareProperties": {"udid": "IPAD", "platform": "iOS"},
+            "connectionProperties": {"pairingState": "paired", "tunnelState": "unavailable"},
+        },
+        {  # not paired with this Mac — skipped
+            "deviceProperties": {"name": "Stranger"},
+            "hardwareProperties": {"udid": "STRANGER", "platform": "iOS"},
+            "connectionProperties": {"pairingState": "unpaired", "tunnelState": "disconnected"},
+        },
+    ]}}).encode()
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: payload)
+    devices = sd._ios_physical_devices()
+    assert devices == [
+        {"id": "WIRED", "name": "Wired iPhone", "platform": "ios"},
+        {"id": "WIFI", "name": "Wifi iPhone", "platform": "ios"},
+    ]
+
+
+def test_android_physical_devices_excludes_emulators(monkeypatch):
+    out = (
+        "List of devices attached\n"
+        "emulator-5554       device product:sdk model:sdk_gphone device:emu transport_id:1\n"
+        "PXL1234             device product:panther model:Pixel_7 device:panther transport_id:2\n"
+        "ZZZ                 unauthorized\n"
+    ).encode()
+    monkeypatch.setattr(sd, "_android_bin", lambda name: "/fake/adb")
+    monkeypatch.setattr(
+        sd.devices.subprocess, "check_output", lambda *a, **k: out
+    )
+    devices = sd._android_physical_devices()
+    assert devices == [{"id": "PXL1234", "name": "Pixel_7", "platform": "android"}]
+
+
+# ---------- physical: CLI run / start / stop / destroy ----------
+
+def _write_physical_recipe(tmp_path):
+    (tmp_path / "splashdown.toml").write_text("""
+[devices.physical.default]
+
+[project]
+framework = "flutter"
+""")
+    (tmp_path / "pubspec.yaml").write_text("name: demo\n")
+
+
+def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
+    _write_physical_recipe(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    monkeypatch.setattr(sd, "ios_boot", lambda u, s: pytest.fail("should not boot hardware"))
+    captured = {}
+    def _fake_run(cwd, recipe, info):
+        captured["info"] = info
+        return 0
+    monkeypatch.setattr(sd, "device_run", _fake_run)
+    rc = sd.main(["--cwd", str(tmp_path), "run", "physical"])
+    assert rc == 0
+    assert captured["info"]["udid"] == "00008-PHONE"
+    assert captured["info"]["physical"] is True
+
+
+def test_cli_start_physical_reports_connected_without_boot(tmp_path, monkeypatch, capsys):
+    _write_physical_recipe(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    monkeypatch.setattr(sd, "ios_boot", lambda u, s: pytest.fail("should not boot hardware"))
+    rc = sd.main(["--cwd", str(tmp_path), "start", "physical"])
+    assert rc == 0
+    assert "connected" in capsys.readouterr().err.lower()
+
+
+def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
+    _write_physical_recipe(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd, "device_shutdown", lambda dt, name: pytest.fail("should not touch hardware"))
+    rc = sd.main(["--cwd", str(tmp_path), "stop", "physical"])
+    assert rc == 0
+
+
+def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
+    _write_physical_recipe(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd, "device_destroy", lambda dt, name: pytest.fail("should not touch hardware"))
+    rc = sd.main(["--cwd", str(tmp_path), "destroy", "physical"])
+    assert rc == 0
+
+
+def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
+    _write_physical_recipe(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    rc = sd.main(["--cwd", str(tmp_path), "devices"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "physical" in out
+    assert "connected" in out
+
+
+def test_device_add_physical_writes_id_and_platform(tmp_path):
+    sd.device_add(tmp_path, "physical", "my-phone",
+                  {"id": "ABC123", "platform": "ios", "name": None})
+    text = (tmp_path / "splashdown.local.toml").read_text()
+    assert "[devices.physical.my-phone]" in text
+    assert 'id = "ABC123"' in text
+    assert 'platform = "ios"' in text
+
+
+def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
+    # Build a fake .app with an Info.plist so the run path reaches install/launch.
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    import plistlib
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / "splashdown.toml",
+    )
+    calls = []
+    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: calls.append(args) or 0)
+
+    class _Done:
+        stdout = json.dumps([{"buildSettings": {
+            "BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}])
+    monkeypatch.setattr(sd.profiles.subprocess, "run", lambda *a, **k: _Done())
+
+    info = {"kind": "ios", "udid": "00008-PHONE", "physical": True}
+    rc = sd.profiles._ios_native_run(tmp_path, recipe, info)
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any("devicectl" in c and "install" in c for c in flat)
+    assert any("devicectl" in c and "launch" in c for c in flat)
+    assert not any("simctl" in c for c in flat)
+
+
 # ---------- device_add / device_remove (new shape) ----------
 
 

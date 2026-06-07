@@ -118,7 +118,16 @@ ios   = "17.0"
 device = "pixel_9"
 ```
 
-Device types: `simulator`, `emulator`.
+For a **plugged-in phone**, declare a `physical` variant (or just rely on auto-pick). Unlike sims/emulators, splashdown doesn't create or own physical devices — it discovers what's connected and hands the native id to the launcher. All fields are optional; with one device connected, no config is needed at all.
+
+```toml
+[devices.physical.default]
+# platform = "ios"        # scope auto-pick to one platform: "ios" | "android"
+# name     = "My iPhone"  # match by device name
+# id       = "..."        # exact udid / adb serial
+```
+
+Device types: `simulator`, `emulator`, `physical`.
 
 ## Per-checkout overrides: `splashdown.local.toml`
 
@@ -146,7 +155,7 @@ splash stop    [type] [variant]    # shut down the device (preserves it)
 splash destroy [type] [variant]    # delete the device + its registry entry
 ```
 
-Both `type` and `variant` are optional. `type` is inferred when exactly one device type is declared; otherwise pass `simulator` or `emulator`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
+Both `type` and `variant` are optional. `type` is inferred when exactly one device type is declared; otherwise pass `simulator`, `emulator`, or `physical`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
 ```sh
 splash run                            # one type, one variant, no args needed
@@ -165,7 +174,7 @@ Framework auto-detected for `run`:
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
-- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch`. Needs `[project.ios] scheme = "..."`.
+- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). Needs `[project.ios] scheme = "..."`.
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
 - Override via `[project] framework = "..."`
 
@@ -188,6 +197,19 @@ Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtim
 ### Android emulator management
 
 Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_9`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached; `splash` polls `adb` for the serial to appear.
+
+### Physical devices
+
+`splash run physical` builds and launches on a connected phone. Discovery uses `xcrun devicectl` (iOS, Xcode 15+) and `adb devices` (Android); the device's native udid/serial is passed straight to the framework launcher.
+
+```sh
+splash run physical                 # auto-picks the one connected device
+splash devices                      # physical rows show: connected / absent / ambiguous
+```
+
+With exactly one device plugged in, no config is needed — auto-pick resolves it. When both an iPhone and an Android phone are connected, or several of one platform, narrow with the variant's `platform`, `id`, or `name` (or `splash device add physical <variant> --platform ios` / `--id ...` / `--name "..."`).
+
+Because splashdown doesn't own the hardware, the lifecycle verbs differ: `start` just confirms the device is connected, and `stop`/`destroy` are no-ops (nothing is created, so nothing is torn down). Physical devices are never written to the registry.
 
 ## Framework wiring (`splash doctor`)
 

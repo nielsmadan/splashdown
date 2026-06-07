@@ -372,6 +372,159 @@ def android_destroy(avd_name: str) -> None:
     subprocess.run([_android_bin("avdmanager"), "delete", "avd", "-n", avd_name], check=False)
 
 
+# --- physical devices (discovered, not created) ---
+# Physical hardware is the odd one out: splashdown can't create, boot, or destroy
+# it. The only operation that makes sense is *discovery* — list what's plugged in
+# and hand its native identifier (iOS udid / adb serial) to the framework's
+# launcher, exactly the id `flutter run -d`, `run-ios --udid`, etc. already expect.
+
+
+def _devicectl_json(args: list[str]) -> Any:
+    """Run `xcrun devicectl … --json-output -` and parse stdout. devicectl ships
+    with Xcode 15+; raise a pointed error when it's missing or fails."""
+    try:
+        out = subprocess.check_output(
+            ["xcrun", "devicectl"] + args + ["--json-output", "-"],
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError as e:
+        raise DeviceError("xcrun not found; install Xcode command-line tools") from e
+    except subprocess.CalledProcessError as e:
+        raise DeviceError(
+            "xcrun devicectl failed (needs Xcode 15+ for physical-device support); "
+            f"exit {e.returncode}"
+        ) from e
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as e:
+        raise DeviceError(f"could not parse devicectl output: {e}") from e
+
+
+def _ios_physical_devices() -> list[dict[str, str]]:
+    """Paired physical iOS devices as {id (udid), name, platform: 'ios'}.
+
+    Gate on `pairingState == paired` (devices set up to run on from this Mac)
+    rather than `tunnelState == connected`: wifi devices routinely sit at
+    tunnelState `disconnected` and only establish a tunnel on demand at launch,
+    so requiring `connected` would hide every wireless device. `unavailable`
+    tunnels (the macOS host, long-gone pairings) are excluded."""
+    data = _devicectl_json(["list", "devices"])
+    devices = (data.get("result") or {}).get("devices") or []
+    out: list[dict[str, str]] = []
+    for d in devices:
+        hw = d.get("hardwareProperties") or {}
+        if (hw.get("platform") or "").lower() != "ios":
+            continue
+        conn = d.get("connectionProperties") or {}
+        if (conn.get("pairingState") or "").lower() != "paired":
+            continue
+        if (conn.get("tunnelState") or "").lower() == "unavailable":
+            continue
+        udid = hw.get("udid") or ""
+        if not udid:
+            continue
+        name = (d.get("deviceProperties") or {}).get("name") or udid
+        out.append({"id": udid, "name": name, "platform": "ios"})
+    return out
+
+
+def _android_physical_devices() -> list[dict[str, str]]:
+    """Connected physical Android devices as {id (serial), name, platform: 'android'}.
+    Emulators (serials starting `emulator-`) are excluded — those are the
+    `emulator` device type."""
+    adb = _android_bin("adb")
+    try:
+        out = subprocess.check_output([adb, "devices", "-l"], stderr=subprocess.DEVNULL).decode()
+    except subprocess.CalledProcessError as e:
+        raise DeviceError(f"adb devices failed: exit {e.returncode}") from e
+    devices: list[dict[str, str]] = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2 or parts[1] != "device":
+            continue
+        serial = parts[0]
+        if serial.startswith("emulator-"):
+            continue
+        model = next((p.split(":", 1)[1] for p in parts[2:] if p.startswith("model:")), serial)
+        devices.append({"id": serial, "name": model, "platform": "android"})
+    return devices
+
+
+def physical_discover(platform: str | None = None) -> list[dict[str, str]]:
+    """All connected physical devices, optionally scoped to one platform. When
+    scanning broadly (platform=None) a missing toolchain for one platform is
+    tolerated — an Android-only dev without Xcode still discovers their phone.
+    An explicitly requested platform propagates discovery errors."""
+    _ios = _resolve_fn("_ios_physical_devices", _ios_physical_devices)
+    _android = _resolve_fn("_android_physical_devices", _android_physical_devices)
+    out: list[dict[str, str]] = []
+    if platform in (None, "ios"):
+        try:
+            out += _ios()
+        except DeviceError:
+            if platform == "ios":
+                raise
+    if platform in (None, "android"):
+        try:
+            out += _android()
+        except DeviceError:
+            if platform == "android":
+                raise
+    return out
+
+
+def _physical_match(spec: dict[str, Any]) -> list[dict[str, str]]:
+    """Discover and filter physical devices by a variant spec's platform/id/name."""
+    devices = physical_discover(spec.get("platform"))
+    want_id = spec.get("id")
+    want_name = spec.get("name")
+    if want_id:
+        devices = [d for d in devices if d["id"] == want_id]
+    elif want_name:
+        needle = str(want_name).lower()
+        devices = [d for d in devices if needle in d["name"].lower()]
+    return devices
+
+
+def ensure_physical(spec: dict[str, Any]) -> dict[str, str]:
+    """Resolve a `physical` variant to a connected device. Auto-picks the lone
+    device; `id`/`name`/`platform` on the spec narrow the selection. Returns the
+    same `info` shape as the sim/emulator path, plus `physical: True`."""
+    devices = _physical_match(spec)
+    if not devices:
+        raise DeviceError(_physical_no_match_msg(spec))
+    if len(devices) > 1:
+        listing = ", ".join(f"{d['name']} ({d['id']})" for d in devices)
+        raise DeviceError(
+            f"multiple connected physical devices ({listing}); narrow with "
+            "`id`/`name`/`platform` on the variant"
+        )
+    d = devices[0]
+    info: dict[str, str] = {"kind": d["platform"] if d["platform"] == "ios" else "android",
+                            "name": d["name"], "physical": True}
+    info["udid" if d["platform"] == "ios" else "serial"] = d["id"]
+    return info
+
+
+def _physical_no_match_msg(spec: dict[str, Any]) -> str:
+    bits = [f"{k}={spec[k]!r}" for k in ("platform", "id", "name") if spec.get(k)]
+    qualifier = f" matching {', '.join(bits)}" if bits else ""
+    return (
+        f"no connected physical device{qualifier}; plug one in and unlock it "
+        "(iOS: trust this computer; Android: enable USB debugging)"
+    )
+
+
+def physical_status(spec: dict[str, Any]) -> str:
+    """Liveness for `splash devices`: connected / absent / ambiguous."""
+    devices = _physical_match(spec)
+    if not devices:
+        return "absent"
+    if len(devices) > 1:
+        return "ambiguous"
+    return "connected"
+
+
 # --- reconciliation (auto-upgrade on latest, pin on explicit) ---
 
 
@@ -395,6 +548,9 @@ def ensure_fresh_sim(
     """Reconcile a sim/AVD instance against the variant spec. Destroys + recreates
     if the OS image (or model) has drifted from what's in the registry. Pinned
     variants (`ios = "<explicit>"`) are kept on their declared version forever."""
+    if dtype == "physical":
+        return ensure_physical(spec)
+
     checkout = str(cwd.resolve())
     sim_name = _resolve_device_name(spec, cwd, variant, dtype)
 

@@ -150,6 +150,18 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     except (FileNotFoundError, KeyError) as e:
         raise DeviceError(f"ios-native: couldn't read bundle id from {app_path}: {e}") from e
 
+    if info.get("physical"):
+        # Physical iOS devices aren't reachable via simctl (simulator-only);
+        # devicectl (Xcode 15+) installs and launches on real hardware.
+        rc = subprocess.call(
+            ["xcrun", "devicectl", "device", "install", "app", "--device", udid, str(app_path)]
+        )
+        if rc != 0:
+            return rc
+        return subprocess.call(
+            ["xcrun", "devicectl", "device", "process", "launch", "--device", udid, bundle_id]
+        )
+
     rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
     if rc != 0:
         return rc
@@ -577,6 +589,14 @@ range = [8081, 8200]
 model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
                    # "18.5" if you want a fixed version that never upgrades.
+
+# Run on a plugged-in phone with `splash run physical`. With one device
+# connected, auto-pick resolves it — no config needed. Uncomment to pin a
+# specific device by id/name, or to scope auto-pick to one platform.
+# [devices.physical.default]
+# platform = "ios"        # optional: "ios" | "android"
+# name     = "My iPhone"  # optional: match by device name
+# id       = "..."        # optional: exact udid / adb serial
 """
 
 _FLUTTER_SCAFFOLD = """\
@@ -599,6 +619,14 @@ model = "iPhone 17"
 
 [devices.emulator.default]
 device = "pixel_9"
+
+# Run on a plugged-in phone with `splash run physical`. With one device
+# connected, auto-pick resolves it — no config needed. Uncomment to pin a
+# specific device by id/name, or to scope auto-pick to one platform.
+# [devices.physical.default]
+# platform = "ios"        # optional: "ios" | "android"
+# name     = "My iPhone"  # optional: match by device name
+# id       = "..."        # optional: exact udid / adb serial
 """
 
 _SERVER_SCAFFOLD = """\
