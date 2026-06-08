@@ -4,10 +4,6 @@ import json
 import re
 from pathlib import Path
 
-from .recipe import _find_table
-from . import ENV_FILE_NAME
-
-
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
@@ -16,6 +12,7 @@ from . import ENV_FILE_NAME
 
 class Loader:
     """Abstract base. Subclasses set `name` and override `detect` and `wire`."""
+
     name: str = ""
 
     def detect(self, cwd: Path) -> bool:
@@ -36,6 +33,7 @@ class MiseLoader(Loader):
         # Reuses the existing helper that already handles new-file creation,
         # existing [env] table append, and idempotent re-runs.
         from .commands import _ensure_mise_file_directive  # noqa: PLC0415
+
         _ensure_mise_file_directive(cwd)
 
 

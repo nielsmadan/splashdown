@@ -2,6 +2,7 @@
 
 Run with: python -m pytest tests/ -q
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import splashdown as sd  # noqa: E402
+import splashdown as sd
 
 
 @pytest.fixture
@@ -36,6 +37,7 @@ def checkout(tmp_path: Path) -> Path:
 
 # ---------- registry ----------
 
+
 def test_port_allocate_persists(registry, checkout):
     p1 = registry.allocate_port(str(checkout), "METRO", 18081, 18100)
     p2 = registry.allocate_port(str(checkout), "METRO", 18081, 18100)
@@ -45,15 +47,18 @@ def test_port_allocate_persists(registry, checkout):
 def test_two_checkouts_get_different_ports(registry, tmp_path):
     a = tmp_path / "a"
     b = tmp_path / "b"
-    a.mkdir(); b.mkdir()
+    a.mkdir()
+    b.mkdir()
     pa = registry.allocate_port(str(a), "METRO", 18081, 18100)
     pb = registry.allocate_port(str(b), "METRO", 18081, 18100)
     assert pa != pb
 
 
 def test_gc_frees_dead_checkout(registry, tmp_path):
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     pa = registry.allocate_port(str(a), "X", 18101, 18110)
     a.rmdir()  # simulate worktree removal
     pb = registry.allocate_port(str(b), "X", 18101, 18110)
@@ -84,6 +89,7 @@ def test_all_for_returns_combined(registry, checkout):
 
 # ---------- device registry (devices.tsv) ----------
 
+
 def test_device_registry_set_and_get(registry, checkout):
     registry.set_device(str(checkout), "simulator", "default", "UDID-X", "iPhone 17", "18.5")
     row = registry.get_device(str(checkout), "simulator", "default")
@@ -108,16 +114,20 @@ def test_device_registry_remove(registry, checkout):
 
 
 def test_device_registry_managed_udids(registry, tmp_path):
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
     assert registry.managed_udids() == {"UDID-A", "UDID-B"}
 
 
 def test_device_registry_devices_for(registry, tmp_path):
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(a), "simulator", "small", "UDID-S", "iPhone 13 Mini", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
@@ -126,7 +136,8 @@ def test_device_registry_devices_for(registry, tmp_path):
 
 
 def test_device_registry_gc_drops_defunct(registry, tmp_path):
-    a = tmp_path / "a"; a.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     a.rmdir()
     n = registry.gc_devices()
@@ -142,8 +153,10 @@ def test_device_registry_release_clears_devices_too(registry, checkout):
 
 
 def test_registry_gc_includes_devices(registry, tmp_path, monkeypatch):
-    a = tmp_path / "alive"; a.mkdir()
-    b = tmp_path / "dead"; b.mkdir()
+    a = tmp_path / "alive"
+    a.mkdir()
+    b = tmp_path / "dead"
+    b.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
     b.rmdir()
@@ -157,9 +170,12 @@ def test_registry_gc_includes_devices(registry, tmp_path, monkeypatch):
 
 def test_registry_all_checkouts_aggregates_three_files(registry, tmp_path):
     # Distinct paths across ports.tsv, kv.tsv, devices.tsv.
-    a = tmp_path / "a"; a.mkdir()
-    b = tmp_path / "b"; b.mkdir()
-    c = tmp_path / "c"; c.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    c = tmp_path / "c"
+    c.mkdir()
     registry.allocate_port(str(a), "PORT", 18100, 18110)
     registry.set_kv(str(b), "KEY", "v")
     registry.set_device(str(c), "simulator", "default", "UDID-C", "iPhone 17", "18.5")
@@ -181,7 +197,8 @@ def test_registry_all_checkouts_empty_returns_empty_list(registry):
 
 def test_registry_gc_drops_orphan_device_rows(registry, tmp_path, monkeypatch):
     # Checkout path EXISTS but the registered sim's UDID is gone from xcrun.
-    a = tmp_path / "alive"; a.mkdir()
+    a = tmp_path / "alive"
+    a.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: False)
     removed = registry.gc()
@@ -190,7 +207,8 @@ def test_registry_gc_drops_orphan_device_rows(registry, tmp_path, monkeypatch):
 
 
 def test_registry_gc_keeps_present_device_rows(registry, tmp_path, monkeypatch):
-    a = tmp_path / "alive"; a.mkdir()
+    a = tmp_path / "alive"
+    a.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-OK", "iPhone 17", "18.5")
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda udid: True)
     registry.gc()
@@ -198,7 +216,8 @@ def test_registry_gc_keeps_present_device_rows(registry, tmp_path, monkeypatch):
 
 
 def test_registry_gc_drops_orphan_android_avd_rows(registry, tmp_path, monkeypatch):
-    a = tmp_path / "alive"; a.mkdir()
+    a = tmp_path / "alive"
+    a.mkdir()
     registry.set_device(str(a), "emulator", "default", "AVD-NAME", "pixel_9", "android-34")
     monkeypatch.setattr(sd, "_android_avd_exists", lambda name: False)
     registry.gc()
@@ -247,7 +266,8 @@ def test_registry_gc_keeps_entries_when_recipe_unparseable(registry, tmp_path):
 
 
 def test_registry_summary_for_counts_by_source(registry, tmp_path):
-    a = tmp_path / "co"; a.mkdir()
+    a = tmp_path / "co"
+    a.mkdir()
     # 2 ports, 1 kv, 1 sim, 1 emu
     registry.allocate_port(str(a), "P1", 19700, 19710)
     registry.allocate_port(str(a), "P2", 19711, 19720)
@@ -260,7 +280,10 @@ def test_registry_summary_for_counts_by_source(registry, tmp_path):
 
 def test_registry_summary_for_unknown_checkout_returns_zeros(registry, tmp_path):
     assert registry.summary_for(str(tmp_path / "never-tracked")) == {
-        "port": 0, "kv": 0, "simulator": 0, "emulator": 0,
+        "port": 0,
+        "kv": 0,
+        "simulator": 0,
+        "emulator": 0,
     }
 
 
@@ -273,13 +296,19 @@ def test_short_path_uses_home_prefix(monkeypatch, tmp_path):
 
 
 def test_summary_string_format():
-    assert sd._summary_string({"port": 2, "kv": 1, "simulator": 1, "emulator": 0}) == "2 ports, 1 var, 1 sim"
+    assert (
+        sd._summary_string({"port": 2, "kv": 1, "simulator": 1, "emulator": 0})
+        == "2 ports, 1 var, 1 sim"
+    )
     assert sd._summary_string({"port": 1, "kv": 0, "simulator": 0, "emulator": 0}) == "1 port"
     assert sd._summary_string({"port": 0, "kv": 0, "simulator": 0, "emulator": 0}) == "—"
-    assert sd._summary_string({"port": 0, "kv": 0, "simulator": 2, "emulator": 2}) == "2 sims, 2 emus"
+    assert (
+        sd._summary_string({"port": 0, "kv": 0, "simulator": 2, "emulator": 2}) == "2 sims, 2 emus"
+    )
 
 
 # ---------- ensure_fresh_sim ----------
+
 
 def test_ensure_fresh_creates_when_missing(registry, checkout, monkeypatch):
     created = {}
@@ -305,7 +334,7 @@ def test_ensure_fresh_recreates_when_ios_stale(registry, checkout, monkeypatch):
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
     assert destroyed == ["UDID-OLD"]
@@ -318,7 +347,10 @@ def test_ensure_fresh_keeps_when_pinned_and_current(registry, checkout, monkeypa
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     info = sd.ensure_fresh_sim(
-        registry, checkout, "simulator", "legacy",
+        registry,
+        checkout,
+        "simulator",
+        "legacy",
         {"model": "iPhone 12", "ios": "17.0"},
     )
     assert info["udid"] == "UDID-X"
@@ -329,11 +361,14 @@ def test_ensure_fresh_recreates_when_pinned_ios_mismatch(registry, checkout, mon
     registry.set_device(abspath, "simulator", "legacy", "UDID-OLD", "iPhone 12", "17.0")
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     sd.ensure_fresh_sim(
-        registry, checkout, "simulator", "legacy",
+        registry,
+        checkout,
+        "simulator",
+        "legacy",
         {"model": "iPhone 12", "ios": "17.5"},
     )
     assert destroyed == ["UDID-OLD"]
@@ -345,7 +380,7 @@ def test_ensure_fresh_recreates_when_model_changed(registry, checkout, monkeypat
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     # Recipe bumped from iPhone 17 -> iPhone 18.
     sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 18"})
@@ -364,6 +399,7 @@ def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
 
 # ---------- device_add / device_remove (new shape) ----------
 
+
 def test_device_add_writes_nested_table(tmp_path):
     sd.device_add(tmp_path, "simulator", "repro-bug", {"model": "iPhone 16", "ios": "17.5"})
     text = (tmp_path / "splashdown.local.toml").read_text()
@@ -379,9 +415,7 @@ def test_device_add_rejects_collision_with_local(tmp_path):
 
 
 def test_device_add_rejects_collision_with_recipe(tmp_path):
-    (tmp_path / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
-    )
+    (tmp_path / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
     with pytest.raises(sd.DeviceError, match="recipe"):
         sd.device_add(tmp_path, "simulator", "default", {"model": "iPhone 16"})
 
@@ -406,9 +440,7 @@ def test_device_remove_strips_local_variant(tmp_path):
 
 
 def test_device_remove_refuses_recipe_variant(tmp_path):
-    (tmp_path / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
-    )
+    (tmp_path / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
     with pytest.raises(sd.DeviceError, match="recipe"):
         sd.device_remove(tmp_path, "simulator", "default")
 
@@ -419,6 +451,7 @@ def test_device_remove_errors_when_missing(tmp_path):
 
 
 # ---------- splash run / boot (top-level) ----------
+
 
 def _stub_ios_boot_chain(monkeypatch):
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
@@ -440,9 +473,11 @@ framework = "react-native"
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_ios_boot_chain(monkeypatch)
     captured = {}
+
     def _fake_run(cwd, recipe, info):
         captured["info"] = info
         return 0
+
     monkeypatch.setattr(sd, "device_run", _fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "run", "simulator"])
     assert rc == 0
@@ -465,9 +500,11 @@ framework = "react-native"
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_ios_boot_chain(monkeypatch)
     captured = {}
+
     def _fake_run(cwd, recipe, info):
         captured["info"] = info
         return 0
+
     monkeypatch.setattr(sd, "device_run", _fake_run)
     sd.main(["--cwd", str(tmp_path), "run", "simulator", "small-screen"])
     assert captured["info"]["name"].endswith("/small-screen")
@@ -516,9 +553,7 @@ def test_cli_devices_shows_recipe_and_local(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text(
         '[devices.simulator.default]\nmodel = "A"\n[project]\nframework = "react-native"\n'
     )
-    (tmp_path / "splashdown.local.toml").write_text(
-        '[devices.simulator.repro]\nmodel = "B"\n'
-    )
+    (tmp_path / "splashdown.local.toml").write_text('[devices.simulator.repro]\nmodel = "B"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Stub status checks to avoid hitting xcrun.
     monkeypatch.setattr(sd, "device_status", lambda dtype, name: "absent")
@@ -536,8 +571,10 @@ framework = "react-native"
 """)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
+
     def _shutdown(dt, name):
         captured["call"] = (dt, name)
+
     monkeypatch.setattr(sd, "device_shutdown", _shutdown)
     rc = sd.main(["--cwd", str(tmp_path), "stop", "simulator"])
     assert rc == 0
@@ -557,9 +594,11 @@ framework = "react-native"
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_ios_boot_chain(monkeypatch)
     captured = {}
+
     def _fake_run(cwd, recipe, info):
         captured["info"] = info
         return 0
+
     monkeypatch.setattr(sd, "device_run", _fake_run)
     # No TYPE given — should resolve to the only declared type (simulator).
     rc = sd.main(["--cwd", str(tmp_path), "run"])
@@ -590,7 +629,7 @@ def test_cli_status_local_positional_matches_bare(tmp_path, monkeypatch, capsys)
     """`splash status local` must produce the same output as bare `splash status`."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text(
-        "[resources.MY_PORT]\ntype = \"port\"\nrange = [19030, 19040]\n"
+        '[resources.MY_PORT]\ntype = "port"\nrange = [19030, 19040]\n'
     )
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
@@ -605,7 +644,7 @@ def test_cli_status_local_json_shape(tmp_path, monkeypatch, capsys):
     """Default-mode JSON must include checkout + resources + devices keys."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text(
-        "[resources.J_PORT]\ntype = \"port\"\nrange = [19050, 19060]\n"
+        '[resources.J_PORT]\ntype = "port"\nrange = [19050, 19060]\n'
     )
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
@@ -642,9 +681,11 @@ def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys
     """Unknown platform → argparse usage error, no destructive call."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     called = {"prune": False}
+
     def _fail(*a, **kw):
         called["prune"] = True
         return 0
+
     monkeypatch.setattr(sd, "cmd_device_prune", _fail)
     with pytest.raises(SystemExit) as exc:
         sd.main(["--cwd", str(tmp_path), "device", "prune", "mac"])
@@ -656,10 +697,12 @@ def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys
 
 def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    a = tmp_path / "co-a"; a.mkdir()
-    b = tmp_path / "co-b"; b.mkdir()
-    (a / "splashdown.toml").write_text("[resources.P_A]\ntype = \"port\"\nrange = [19100, 19110]\n")
-    (b / "splashdown.toml").write_text("[resources.P_B]\ntype = \"port\"\nrange = [19200, 19210]\n")
+    a = tmp_path / "co-a"
+    a.mkdir()
+    b = tmp_path / "co-b"
+    b.mkdir()
+    (a / "splashdown.toml").write_text('[resources.P_A]\ntype = "port"\nrange = [19100, 19110]\n')
+    (b / "splashdown.toml").write_text('[resources.P_B]\ntype = "port"\nrange = [19200, 19210]\n')
     assert sd.main(["--cwd", str(a)]) == 0
     assert sd.main(["--cwd", str(b)]) == 0
     capsys.readouterr()
@@ -683,10 +726,12 @@ def test_cli_status_all_shows_issue_column_when_a_row_has_one(tmp_path, monkeypa
     """ISSUE column appears the moment any row needs to flag something.
     Without --check we already detect defunct paths; that's enough."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    alive = tmp_path / "alive"; alive.mkdir()
-    dead = tmp_path / "dead"; dead.mkdir()
-    (alive / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19340, 19350]\n")
-    (dead / "splashdown.toml").write_text("[resources.Q]\ntype = \"port\"\nrange = [19440, 19450]\n")
+    alive = tmp_path / "alive"
+    alive.mkdir()
+    dead = tmp_path / "dead"
+    dead.mkdir()
+    (alive / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19340, 19350]\n')
+    (dead / "splashdown.toml").write_text('[resources.Q]\ntype = "port"\nrange = [19440, 19450]\n')
     assert sd.main(["--cwd", str(alive)]) == 0
     assert sd.main(["--cwd", str(dead)]) == 0
     capsys.readouterr()
@@ -704,13 +749,14 @@ def test_cli_status_all_shows_issue_column_when_a_row_has_one(tmp_path, monkeypa
 def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Provision in non-alphabetical order on purpose.
-    z = tmp_path / "zeta"; z.mkdir()
-    a = tmp_path / "alpha"; a.mkdir()
-    m = tmp_path / "mike"; m.mkdir()
+    z = tmp_path / "zeta"
+    z.mkdir()
+    a = tmp_path / "alpha"
+    a.mkdir()
+    m = tmp_path / "mike"
+    m.mkdir()
     for d in (z, a, m):
-        (d / "splashdown.toml").write_text(
-            "[resources.P]\ntype = \"port\"\nrange = [19800, 19810]\n"
-        )
+        (d / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19800, 19810]\n')
         assert sd.main(["--cwd", str(d)]) == 0
     capsys.readouterr()
     assert sd.main(["--cwd", str(a), "status", "all"]) == 0
@@ -726,7 +772,7 @@ def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys
 def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text(
-        "[resources.P_VERBOSE]\ntype = \"port\"\nrange = [19900, 19910]\n"
+        '[resources.P_VERBOSE]\ntype = "port"\nrange = [19900, 19910]\n'
     )
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
@@ -740,10 +786,12 @@ def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
 
 def test_cli_status_check_table_status_column_flags_defunct(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    alive = tmp_path / "alive"; alive.mkdir()
-    dead = tmp_path / "dead"; dead.mkdir()
-    (alive / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19300, 19310]\n")
-    (dead / "splashdown.toml").write_text("[resources.Q]\ntype = \"port\"\nrange = [19400, 19410]\n")
+    alive = tmp_path / "alive"
+    alive.mkdir()
+    dead = tmp_path / "dead"
+    dead.mkdir()
+    (alive / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19300, 19310]\n')
+    (dead / "splashdown.toml").write_text('[resources.Q]\ntype = "port"\nrange = [19400, 19410]\n')
     assert sd.main(["--cwd", str(alive)]) == 0
     assert sd.main(["--cwd", str(dead)]) == 0
     capsys.readouterr()
@@ -762,10 +810,12 @@ def test_cli_status_check_table_status_column_flags_defunct(tmp_path, monkeypatc
 
 def test_cli_status_check_verbose_keeps_bracket_tag(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    alive = tmp_path / "alive"; alive.mkdir()
-    dead = tmp_path / "dead"; dead.mkdir()
-    (alive / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19320, 19330]\n")
-    (dead / "splashdown.toml").write_text("[resources.Q]\ntype = \"port\"\nrange = [19420, 19430]\n")
+    alive = tmp_path / "alive"
+    alive.mkdir()
+    dead = tmp_path / "dead"
+    dead.mkdir()
+    (alive / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19320, 19330]\n')
+    (dead / "splashdown.toml").write_text('[resources.Q]\ntype = "port"\nrange = [19420, 19430]\n')
     assert sd.main(["--cwd", str(alive)]) == 0
     assert sd.main(["--cwd", str(dead)]) == 0
     capsys.readouterr()
@@ -781,7 +831,8 @@ def test_cli_status_check_verbose_keeps_bracket_tag(tmp_path, monkeypatch, capsy
 
 def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    a = tmp_path / "co"; a.mkdir()
+    a = tmp_path / "co"
+    a.mkdir()
     (a / "splashdown.toml").write_text("")
     assert sd.main(["--cwd", str(a)]) == 0
     state_home = tmp_path / "state"
@@ -807,7 +858,9 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
 
 def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19500, 19510]\n")
+    (tmp_path / "splashdown.toml").write_text(
+        '[resources.P]\ntype = "port"\nrange = [19500, 19510]\n'
+    )
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
     rc = sd.main(["--cwd", str(tmp_path), "status", "all", "--check"])
@@ -818,7 +871,9 @@ def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, c
 
 def test_cli_status_all_json_shape(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text("[resources.P]\ntype = \"port\"\nrange = [19600, 19610]\n")
+    (tmp_path / "splashdown.toml").write_text(
+        '[resources.P]\ntype = "port"\nrange = [19600, 19610]\n'
+    )
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
     rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "all", "--check"])
@@ -846,6 +901,7 @@ range = [19500, 19510]
     # Squat the assigned port from a different socket.
     port_str = first.split("=", 1)[1]
     import socket as _sock
+
     squatter = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
     squatter.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
     squatter.bind(("127.0.0.1", int(port_str)))
@@ -894,9 +950,7 @@ def test_cli_bare_device_lists(tmp_path, monkeypatch):
 
 
 def test_cli_device_remove_destroys_instance_by_default(tmp_path, monkeypatch):
-    (tmp_path / "splashdown.toml").write_text(
-        '[project]\nframework = "react-native"\n'
-    )
+    (tmp_path / "splashdown.toml").write_text('[project]\nframework = "react-native"\n')
     (tmp_path / "splashdown.local.toml").write_text(
         '[devices.simulator.repro]\nmodel = "iPhone 17"\n'
     )
@@ -910,19 +964,24 @@ def test_cli_device_remove_destroys_instance_by_default(tmp_path, monkeypatch):
 
 
 def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
-    (tmp_path / "splashdown.toml").write_text(
-        '[project]\nframework = "react-native"\n'
-    )
+    (tmp_path / "splashdown.toml").write_text('[project]\nframework = "react-native"\n')
     (tmp_path / "splashdown.local.toml").write_text(
         '[devices.simulator.repro]\nmodel = "iPhone 17"\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     destroyed: list[tuple[str, str]] = []
     monkeypatch.setattr(sd, "device_destroy", lambda dt, name: destroyed.append((dt, name)))
-    rc = sd.main([
-        "--cwd", str(tmp_path), "device", "remove",
-        "simulator", "repro", "--keep-instance",
-    ])
+    rc = sd.main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "device",
+            "remove",
+            "simulator",
+            "repro",
+            "--keep-instance",
+        ]
+    )
     assert rc == 0
     assert destroyed == []  # sim left alone
     assert "[devices.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
@@ -930,15 +989,18 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
 
 # ---------- device gc / prune ----------
 
+
 def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
-    a = tmp_path / "gone"; a.mkdir()
-    b = tmp_path / "live"; b.mkdir()
+    a = tmp_path / "gone"
+    a.mkdir()
+    b = tmp_path / "live"
+    b.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
     a.rmdir()
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     rc = sd.cmd_device_gc(registry, all_=False)
     assert rc == 0
     assert destroyed == ["UDID-A"]
@@ -946,7 +1008,8 @@ def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
 
 
 def test_device_gc_all_drops_stale_latest_but_keeps_pinned(registry, tmp_path, monkeypatch):
-    checkout = tmp_path / "co"; checkout.mkdir()
+    checkout = tmp_path / "co"
+    checkout.mkdir()
     (checkout / "splashdown.toml").write_text("""
 [devices.simulator.default]
 model = "iPhone 17"
@@ -956,12 +1019,16 @@ model = "iPhone 12"
 ios   = "17.0"
 """)
     abspath = str(checkout.resolve())
-    registry.set_device(abspath, "simulator", "default", "UDID-DEFAULT", "iPhone 17", "17.5")  # stale latest
-    registry.set_device(abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0")    # pinned, current
+    registry.set_device(
+        abspath, "simulator", "default", "UDID-DEFAULT", "iPhone 17", "17.5"
+    )  # stale latest
+    registry.set_device(
+        abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0"
+    )  # pinned, current
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     sd.cmd_device_gc(registry, all_=True)
     assert destroyed == ["UDID-DEFAULT"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-LEGACY"}
@@ -969,17 +1036,17 @@ ios   = "17.0"
 
 # ---------- device refresh ----------
 
+
 def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
-    checkout = tmp_path / "co"; checkout.mkdir()
-    (checkout / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
-    )
+    checkout = tmp_path / "co"
+    checkout.mkdir()
+    (checkout / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     monkeypatch.setattr(sd, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot"))
     rc = sd.cmd_device_refresh(registry)
@@ -989,18 +1056,23 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
 
 
 def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, monkeypatch):
-    checkout = tmp_path / "co"; checkout.mkdir()
+    checkout = tmp_path / "co"
+    checkout.mkdir()
     (checkout / "splashdown.toml").write_text(
         '[devices.simulator.default]\nmodel = "iPhone 17"\n\n'
         '[devices.simulator.legacy]\nmodel = "iPhone 12"\nios   = "17.0"\n'
     )
     abspath = str(checkout.resolve())
-    registry.set_device(abspath, "simulator", "default", "UDID-DEFAULT", "iPhone 17", "18.5")  # fresh latest
-    registry.set_device(abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0")     # pinned current
+    registry.set_device(
+        abspath, "simulator", "default", "UDID-DEFAULT", "iPhone 17", "18.5"
+    )  # fresh latest
+    registry.set_device(
+        abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0"
+    )  # pinned current
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated"))
     rc = sd.cmd_device_refresh(registry)
     assert rc == 0
@@ -1009,20 +1081,24 @@ def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, mo
 
 
 def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
-    checkout = tmp_path / "co"; checkout.mkdir()
-    (checkout / "splashdown.toml").write_text(
-        '[devices.emulator.default]\ndevice = "pixel_9"\n'
-    )
+    checkout = tmp_path / "co"
+    checkout.mkdir()
+    (checkout / "splashdown.toml").write_text('[devices.emulator.default]\ndevice = "pixel_9"\n')
     abspath = str(checkout.resolve())
     registry.set_device(
-        abspath, "emulator", "default", "avd-name", "pixel_9",
+        abspath,
+        "emulator",
+        "default",
+        "avd-name",
+        "pixel_9",
         "system-images;android-33;google_apis;arm64-v8a",  # stale vs latest below
     )
     touched = []
     monkeypatch.setattr(sd, "_android_avd_exists", lambda n: True)
-    monkeypatch.setattr(sd, "_android_latest_image",
-                        lambda: "system-images;android-34;google_apis;arm64-v8a")
-    monkeypatch.setattr(sd, "android_destroy", lambda n: touched.append(n))
+    monkeypatch.setattr(
+        sd, "_android_latest_image", lambda: "system-images;android-34;google_apis;arm64-v8a"
+    )
+    monkeypatch.setattr(sd, "android_destroy", touched.append)
     monkeypatch.setattr(sd, "android_ensure", lambda *a: touched.append("ensure"))
     rc = sd.cmd_device_refresh(registry, platforms=("ios",))
     assert rc == 0
@@ -1031,15 +1107,19 @@ def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
 
 
 def test_device_refresh_drops_defunct_and_undeclared(registry, tmp_path, monkeypatch):
-    gone = tmp_path / "gone"; gone.mkdir()
-    live = tmp_path / "live"; live.mkdir()
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    live = tmp_path / "live"
+    live.mkdir()
     (live / "splashdown.toml").write_text("")  # variant `old` is no longer declared
     registry.set_device(str(gone), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
-    registry.set_device(str(live.resolve()), "simulator", "old", "UDID-UNDECLARED", "iPhone 17", "18.5")
+    registry.set_device(
+        str(live.resolve()), "simulator", "old", "UDID-UNDECLARED", "iPhone 17", "18.5"
+    )
     gone.rmdir()
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated"))
     rc = sd.cmd_device_refresh(registry)
     assert rc == 0
@@ -1049,10 +1129,9 @@ def test_device_refresh_drops_defunct_and_undeclared(registry, tmp_path, monkeyp
 
 def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    co = tmp_path / "co"; co.mkdir()
-    (co / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
-    )
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
     state_home = tmp_path / "state"
     reg = sd.Registry(
         port_file=state_home / "splashdown" / "ports.tsv",
@@ -1074,10 +1153,9 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
 
 def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    co = tmp_path / "co"; co.mkdir()
-    (co / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "iPhone 17"\n'
-    )
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
     # Declared but never provisioned: no registry row, sim absent.
     monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "absent")
     capsys.readouterr()
@@ -1092,7 +1170,12 @@ def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
 def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
     fake_devices = {
         "iOS 18.5": [
-            {"name": "myapp/feat-x/default", "udid": "MANAGED", "isAvailable": True, "state": "Shutdown"},
+            {
+                "name": "myapp/feat-x/default",
+                "udid": "MANAGED",
+                "isAvailable": True,
+                "state": "Shutdown",
+            },
             {"name": "iPhone 17", "udid": "FOREIGN-1", "isAvailable": True, "state": "Shutdown"},
             {"name": "iPad Air", "udid": "FOREIGN-2", "isAvailable": True, "state": "Shutdown"},
         ]
@@ -1109,14 +1192,16 @@ def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
 
 
 def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
-    fake_devices = {"iOS 18.5": [
-        {"name": "iPhone 17", "udid": "FOREIGN", "isAvailable": True, "state": "Shutdown"},
-    ]}
+    fake_devices = {
+        "iOS 18.5": [
+            {"name": "iPhone 17", "udid": "FOREIGN", "isAvailable": True, "state": "Shutdown"},
+        ]
+    }
     monkeypatch.setattr(sd, "_xcrun_json", lambda args: {"devices": fake_devices})
     destroyed: list[str] = []
     shut: list[str] = []
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
-    monkeypatch.setattr(sd, "ios_shutdown", lambda u: shut.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
+    monkeypatch.setattr(sd, "ios_shutdown", shut.append)
     rc = sd.cmd_device_prune(registry, yes=True, dry_run=False, platforms=("ios",))
     assert rc == 0
     assert destroyed == ["FOREIGN"]
@@ -1134,9 +1219,11 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
     """`splash device prune ios` should pass platforms=("ios",) only."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
+
     def _fake_prune(reg, *, yes, dry_run, platforms):
         captured["platforms"] = platforms
         return 0
+
     monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "ios", "--yes", "--dry-run"])
     assert rc == 0
@@ -1147,9 +1234,11 @@ def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
     """No positional → both platforms."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
+
     def _fake_prune(reg, *, yes, dry_run, platforms):
         captured["platforms"] = platforms
         return 0
+
     monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "--yes", "--dry-run"])
     assert rc == 0
@@ -1160,9 +1249,11 @@ def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
     """Explicit `all` matches the no-arg default."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
+
     def _fake_prune(reg, *, yes, dry_run, platforms):
         captured["platforms"] = platforms
         return 0
+
     monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "all", "--yes", "--dry-run"])
     assert rc == 0
@@ -1170,6 +1261,7 @@ def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
 
 
 # ---------- presets ----------
+
 
 def test_rn_preset_declares_default_ios_variant(tmp_path):
     sd.cmd_init(tmp_path, preset="rn")
@@ -1197,6 +1289,7 @@ def test_local_skeleton_documents_additions(tmp_path):
 
 # ---------- templates ----------
 
+
 def test_template_basic_vars(tmp_path):
     cwd = tmp_path / "myrepo.feat"
     cwd.mkdir()
@@ -1207,7 +1300,8 @@ def test_template_basic_vars(tmp_path):
 
 
 def test_template_cross_resource(tmp_path):
-    cwd = tmp_path / "x"; cwd.mkdir()
+    cwd = tmp_path / "x"
+    cwd.mkdir()
     scope = sd._make_scope(cwd, "", {"PORT": "8081"})
     assert sd.render_template("http://localhost:{{ PORT }}", scope) == "http://localhost:8081"
 
@@ -1219,13 +1313,15 @@ def test_template_refs():
 
 
 def test_template_error_on_bad_expr(tmp_path):
-    cwd = tmp_path / "x"; cwd.mkdir()
+    cwd = tmp_path / "x"
+    cwd.mkdir()
     scope = sd._make_scope(cwd, "", {})
     with pytest.raises(sd.TemplateError):
         sd.render_template("{{ no_such_var }}", scope)
 
 
 # ---------- recipe / topo ----------
+
 
 def test_recipe_loads(tmp_path):
     p = tmp_path / "splashdown.toml"
@@ -1282,12 +1378,15 @@ type = "uuid"
 
 # ---------- end-to-end provision ----------
 
+
 def _write_recipe(cwd: Path, body: str) -> None:
     (cwd / "splashdown.toml").write_text(body)
 
 
 def test_provision_writes_splashdown_env(registry, checkout):
-    _write_recipe(checkout, """
+    _write_recipe(
+        checkout,
+        """
 [resources.PORT]
 type  = "port"
 range = [18400, 18410]
@@ -1298,7 +1397,8 @@ type = "uuid"
 [resources.URL]
 type     = "template"
 template = "http://localhost:{{ PORT }}"
-""")
+""",
+    )
     resolved = sd.provision(checkout, registry=registry)
     assert 18400 <= int(resolved["PORT"]) <= 18410
     assert resolved["URL"] == f"http://localhost:{resolved['PORT']}"
@@ -1307,28 +1407,34 @@ template = "http://localhost:{{ PORT }}"
     recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
     text = (checkout / "splashdown.env").read_text()
-    assert f'PORT={resolved["PORT"]}' in text
+    assert f"PORT={resolved['PORT']}" in text
     assert "URL=" in text
 
 
 def test_provision_idempotent(registry, checkout):
-    _write_recipe(checkout, """
+    _write_recipe(
+        checkout,
+        """
 [resources.RUN_ID]
 type = "uuid"
 [resources.PORT]
 type  = "port"
 range = [18500, 18510]
-""")
+""",
+    )
     r1 = sd.provision(checkout, registry=registry)
     r2 = sd.provision(checkout, registry=registry)
     assert r1 == r2
 
 
 def test_provision_reprovision_regenerates_uuid(registry, checkout):
-    _write_recipe(checkout, """
+    _write_recipe(
+        checkout,
+        """
 [resources.RUN_ID]
 type = "uuid"
-""")
+""",
+    )
     r1 = sd.provision(checkout, registry=registry)
     r2 = sd.provision(checkout, registry=registry, reprovision=True)
     assert r1["RUN_ID"] != r2["RUN_ID"]
@@ -1361,12 +1467,15 @@ def test_splashdown_env_writer_overwrites_wholesale(tmp_path):
 
 
 def test_envfile_writer(registry, checkout):
-    _write_recipe(checkout, """
+    _write_recipe(
+        checkout,
+        """
 [resources.MY_VAR]
 type     = "template"
 template = "hello"
 writer   = "envfile=.env.local"
-""")
+""",
+    )
     resolved = sd.provision(checkout, registry=registry)
     recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
@@ -1422,30 +1531,40 @@ type = "uuid"
 
 
 def test_cwd_resource_type(registry, tmp_path):
-    cwd = tmp_path / "mybranch"; cwd.mkdir()
-    _write_recipe(cwd, """
+    cwd = tmp_path / "mybranch"
+    cwd.mkdir()
+    _write_recipe(
+        cwd,
+        """
 [resources.NAME]
 type = "cwd"
-""")
+""",
+    )
     resolved = sd.provision(cwd, registry=registry)
     assert resolved["NAME"] == "mybranch"
 
 
 def test_set_type_uses_default(registry, checkout):
-    _write_recipe(checkout, """
+    _write_recipe(
+        checkout,
+        """
 [resources.MODE]
 type    = "set"
 default = "dev"
-""")
+""",
+    )
     resolved = sd.provision(checkout, registry=registry)
     assert resolved["MODE"] == "dev"
 
 
 def test_set_type_persists_user_value(registry, checkout):
-    _write_recipe(checkout, """
+    _write_recipe(
+        checkout,
+        """
 [resources.MODE]
 type = "set"
-""")
+""",
+    )
     registry.set_kv(str(checkout.resolve()), "MODE", "prod")
     resolved = sd.provision(checkout, registry=registry)
     assert resolved["MODE"] == "prod"
@@ -1459,20 +1578,22 @@ def test_toml_quoting_escapes_specials():
 
 # ---------- writers helper ----------
 
+
 def test_find_table_locates_env(tmp_path):
-    lines = ["[tools]", "node = \"20\"", "", "[env]", "X = \"1\"", "Y = \"2\"", "", "[other]", "k = 1"]
+    lines = ["[tools]", 'node = "20"', "", "[env]", 'X = "1"', 'Y = "2"', "", "[other]", "k = 1"]
     s, e = sd._find_table(lines, "env")
     assert s == 3
     assert e == 7
 
 
 def test_find_table_missing(tmp_path):
-    lines = ["[tools]", "node = \"20\""]
-    s, e = sd._find_table(lines, "env")
+    lines = ["[tools]", 'node = "20"']
+    s, _e = sd._find_table(lines, "env")
     assert s is None
 
 
 # ---------- recipe: devices + project ----------
+
 
 def test_recipe_parses_project(tmp_path):
     p = tmp_path / "splashdown.toml"
@@ -1482,21 +1603,24 @@ def test_recipe_parses_project(tmp_path):
 
 
 def test_resolve_device_name_template(tmp_path):
-    cwd = tmp_path / "feat-y"; cwd.mkdir()
+    cwd = tmp_path / "feat-y"
+    cwd.mkdir()
     spec = {"name": "{{ basename(parent) }}-{{ cwd }}"}
     out = sd._resolve_device_name(spec, cwd, "default")
     assert out == f"{tmp_path.name}-feat-y"
 
 
 def test_resolve_device_name_default_uses_variant_suffix(tmp_path):
-    cwd = tmp_path / "feat-z"; cwd.mkdir()
+    cwd = tmp_path / "feat-z"
+    cwd.mkdir()
     out = sd._resolve_device_name({}, cwd, "small-screen")
     assert out == f"{tmp_path.name}/feat-z/small-screen"
 
 
 def test_resolve_device_name_sanitized_for_android(tmp_path):
     """avdmanager rejects '/' in names; the default path-derived name has two slashes."""
-    cwd = tmp_path / "feat-z"; cwd.mkdir()
+    cwd = tmp_path / "feat-z"
+    cwd.mkdir()
     out = sd._resolve_device_name({}, cwd, "default", dtype="emulator")
     assert "/" not in out
     assert out == f"{tmp_path.name}_feat-z_default"
@@ -1504,12 +1628,14 @@ def test_resolve_device_name_sanitized_for_android(tmp_path):
 
 def test_resolve_device_name_ios_keeps_slashes(tmp_path):
     """iOS sims accept '/' so we preserve the human-readable separators."""
-    cwd = tmp_path / "feat-z"; cwd.mkdir()
+    cwd = tmp_path / "feat-z"
+    cwd.mkdir()
     out = sd._resolve_device_name({}, cwd, "default", dtype="simulator")
     assert out == f"{tmp_path.name}/feat-z/default"
 
 
 # ---------- framework detection ----------
+
 
 def test_detect_framework_flutter(tmp_path):
     (tmp_path / "pubspec.yaml").write_text("name: x\n")
@@ -1659,8 +1785,10 @@ def test_detect_framework_native_override_wins(tmp_path):
 
 # ---------- variant resolution ----------
 
+
 def test_default_sim_name_includes_variant(tmp_path):
-    cwd = tmp_path / "myapp.feat-x"; cwd.mkdir()
+    cwd = tmp_path / "myapp.feat-x"
+    cwd.mkdir()
     assert sd._default_sim_name(cwd, "default") == f"{tmp_path.name}/myapp.feat-x/default"
     assert sd._default_sim_name(cwd, "small-screen") == f"{tmp_path.name}/myapp.feat-x/small-screen"
 
@@ -1700,6 +1828,7 @@ def test_resolve_variant_errors_when_empty_catalog():
 
 
 # ---------- merged_devices ----------
+
 
 def test_merged_devices_unions_recipe_and_local(tmp_path):
     r = sd.Recipe(
@@ -1768,6 +1897,7 @@ ios   = "17.5"
 
 # ---------- CLI ----------
 
+
 def test_file_name_constants():
     assert sd.RECIPE_NAME == "splashdown.toml"
     assert sd.LOCAL_NAME == "splashdown.local.toml"
@@ -1807,7 +1937,7 @@ def test_init_writes_recipe_and_local_skeleton(tmp_path):
 
 
 def test_init_does_not_clobber_existing_local(tmp_path):
-    (tmp_path / "splashdown.local.toml").write_text("[devices.mine]\ntype = \"simulator\"\n")
+    (tmp_path / "splashdown.local.toml").write_text('[devices.mine]\ntype = "simulator"\n')
     sd.cmd_init(tmp_path, preset="rn")
     assert "devices.mine" in (tmp_path / "splashdown.local.toml").read_text()
 
@@ -1876,7 +2006,8 @@ def test_init_electron_preset_includes_user_data_dir(tmp_path):
 
 def test_cli_provision_is_default(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    cwd = tmp_path / "co"; cwd.mkdir()
+    cwd = tmp_path / "co"
+    cwd.mkdir()
     (cwd / "splashdown.toml").write_text("""
 [resources.PORT]
 type = "port"
@@ -1889,7 +2020,8 @@ range = [18900, 18910]
 
 def test_cli_provision_drops_local_skeleton(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    cwd = tmp_path / "co"; cwd.mkdir()
+    cwd = tmp_path / "co"
+    cwd.mkdir()
     (cwd / "splashdown.toml").write_text("""
 [resources.PORT]
 type  = "port"
@@ -1902,7 +2034,8 @@ range = [18900, 18910]
 
 def test_cli_provision_preserves_existing_local(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    cwd = tmp_path / "co"; cwd.mkdir()
+    cwd = tmp_path / "co"
+    cwd.mkdir()
     (cwd / "splashdown.toml").write_text("""
 [resources.PORT]
 type  = "port"
@@ -1964,6 +2097,7 @@ def test_init_writes_post_checkout_hook(tmp_path):
 
 # ---------- hook-manager detection and wiring ----------
 
+
 def test_detect_hook_manager_clean(tmp_path):
     assert sd._detect_hook_manager(tmp_path) == "none"
 
@@ -1994,7 +2128,9 @@ def test_detect_hook_manager_husky(tmp_path):
 
 
 def test_wire_lefthook_appends_block_when_absent(tmp_path):
-    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands:\n    lint:\n      run: echo lint\n")
+    (tmp_path / "lefthook.yml").write_text(
+        "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
+    )
     sd._wire_post_checkout_lefthook(tmp_path)
     text = (tmp_path / "lefthook.yml").read_text()
     assert "pre-commit:" in text
@@ -2064,6 +2200,7 @@ def test_ensure_hook_clean_falls_back_to_corehookspath(tmp_path):
 
 # ---------- doctor (no framework wiring entries yet) ----------
 
+
 def test_doctor_help_in_cli(capsys):
     with pytest.raises(SystemExit):
         sd.main(["doctor", "--help"])
@@ -2131,7 +2268,9 @@ def test_rn_hook_lefthook_detect_problem(tmp_path):
 
 
 def test_rn_hook_lefthook_autofix_then_ok(tmp_path):
-    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands:\n    lint:\n      run: echo lint\n")
+    (tmp_path / "lefthook.yml").write_text(
+        "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
+    )
     sd._ensure_post_checkout_hook(tmp_path)
     status, _ = sd._rn_hook_detect(tmp_path)
     assert status == "ok"
@@ -2169,6 +2308,7 @@ def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
 
 # ---------- rn-metro-config check ----------
 
+
 def test_rn_metro_not_applicable_without_config(tmp_path):
     assert sd._rn_metro_applies(tmp_path) is False
 
@@ -2181,9 +2321,7 @@ def test_rn_metro_detect_ok_when_env_present(tmp_path):
 
 
 def test_rn_metro_detect_problem_for_literal(tmp_path):
-    (tmp_path / "metro.config.js").write_text(
-        "module.exports = { server: { port: 8083 } };\n"
-    )
+    (tmp_path / "metro.config.js").write_text("module.exports = { server: { port: 8083 } };\n")
     status, detail = sd._rn_metro_detect(tmp_path)
     assert status == "problem"
     assert "autofixable" in detail
@@ -2202,9 +2340,7 @@ def test_rn_metro_autofix_replaces_literal(tmp_path):
 
 
 def test_rn_metro_autofix_idempotent(tmp_path):
-    (tmp_path / "metro.config.js").write_text(
-        "const config = { server: { port: 8083 } };\n"
-    )
+    (tmp_path / "metro.config.js").write_text("const config = { server: { port: 8083 } };\n")
     sd._rn_metro_autofix(tmp_path)
     once = (tmp_path / "metro.config.js").read_text()
     sd._rn_metro_autofix(tmp_path)
@@ -2259,44 +2395,50 @@ def test_rn_metro_autofix_noop_for_unrecognized_shape(tmp_path):
 
 # ---------- rn-pkg-port check ----------
 
+
 def test_rn_pkg_not_applicable_without_pkg(tmp_path):
     assert sd._rn_pkg_applies(tmp_path) is False
 
 
 def test_rn_pkg_detect_ok_when_clean(tmp_path):
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {"start": "react-native start", "ios": "react-native run-ios"}
-    }))
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"start": "react-native start", "ios": "react-native run-ios"}})
+    )
     assert sd._rn_pkg_detect(tmp_path)[0] == "ok"
 
 
 def test_rn_pkg_detect_problem_with_space_form(tmp_path):
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {"start": "react-native start --port 8083"}
-    }))
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"start": "react-native start --port 8083"}})
+    )
     status, detail = sd._rn_pkg_detect(tmp_path)
     assert status == "problem"
     assert "start" in detail
 
 
 def test_rn_pkg_detect_problem_with_equals_form(tmp_path):
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {"ios": "react-native run-ios --port=8083"}
-    }))
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"ios": "react-native run-ios --port=8083"}})
+    )
     assert sd._rn_pkg_detect(tmp_path)[0] == "problem"
 
 
 def test_rn_pkg_autofix_strips_port_flag(tmp_path):
-    (tmp_path / "package.json").write_text(json.dumps({
-        "name": "x",
-        "scripts": {
-            "android": "react-native run-android --port 8083",
-            "ios": "react-native run-ios --port 8083",
-            "start": "react-native start --port 8083",
-            "test": "jest",
-        },
-        "dependencies": {"react-native": "0.83"},
-    }, indent=2))
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "x",
+                "scripts": {
+                    "android": "react-native run-android --port 8083",
+                    "ios": "react-native run-ios --port 8083",
+                    "start": "react-native start --port 8083",
+                    "test": "jest",
+                },
+                "dependencies": {"react-native": "0.83"},
+            },
+            indent=2,
+        )
+    )
     sd._rn_pkg_autofix(tmp_path)
     data = json.loads((tmp_path / "package.json").read_text())
     assert data["scripts"]["start"] == "react-native start"
@@ -2308,9 +2450,9 @@ def test_rn_pkg_autofix_strips_port_flag(tmp_path):
 
 
 def test_rn_pkg_autofix_idempotent(tmp_path):
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {"start": "react-native start --port 8083"}
-    }))
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"start": "react-native start --port 8083"}})
+    )
     sd._rn_pkg_autofix(tmp_path)
     once = (tmp_path / "package.json").read_text()
     sd._rn_pkg_autofix(tmp_path)
@@ -2320,15 +2462,19 @@ def test_rn_pkg_autofix_idempotent(tmp_path):
 
 def test_rn_pkg_targets_react_native_scripts_by_command(tmp_path):
     # An unconventional script name that still invokes react-native should be caught.
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {"dev": "react-native start --port 8083"}
-    }))
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"dev": "react-native start --port 8083"}})
+    )
     assert sd._rn_pkg_detect(tmp_path)[0] == "problem"
     sd._rn_pkg_autofix(tmp_path)
-    assert json.loads((tmp_path / "package.json").read_text())["scripts"]["dev"] == "react-native start"
+    assert (
+        json.loads((tmp_path / "package.json").read_text())["scripts"]["dev"]
+        == "react-native start"
+    )
 
 
 # ---------- rn-xcode-env check ----------
+
 
 def _make_ios(tmp_path: Path, xcode_env_content: str) -> None:
     (tmp_path / "ios").mkdir()
@@ -2359,11 +2505,7 @@ def test_rn_xcode_detect_ok_with_block(tmp_path):
 def test_rn_xcode_autofix_replaces_static(tmp_path):
     _make_ios(
         tmp_path,
-        "# header\n"
-        "export NODE_BINARY=node\n"
-        "\n"
-        "# Pin Metro port\n"
-        "export RCT_METRO_PORT=8083\n",
+        "# header\nexport NODE_BINARY=node\n\n# Pin Metro port\nexport RCT_METRO_PORT=8083\n",
     )
     sd._rn_xcode_autofix(tmp_path)
     text = (tmp_path / "ios" / ".xcode.env").read_text()
@@ -2401,21 +2543,24 @@ def test_rn_xcode_autofix_idempotent(tmp_path):
 
 def test_rn_xcode_detect_ok_for_handwritten_splashdown_wiring(tmp_path):
     """A user-written, non-sentinel block that reads splashdown.env counts as ok."""
-    _make_ios(tmp_path, (
-        "export NODE_BINARY=node\n"
-        "if [ -z \"${RCT_METRO_PORT:-}\" ] && [ -f \"${SRCROOT}/../splashdown.env\" ]; then\n"
-        "  export RCT_METRO_PORT=\"$(grep '^RCT_METRO_PORT=' \"${SRCROOT}/../splashdown.env\" | cut -d= -f2)\"\n"
-        "fi\n"
-        "export RCT_METRO_PORT=\"${RCT_METRO_PORT:-8083}\"\n"
-    ))
+    _make_ios(
+        tmp_path,
+        (
+            "export NODE_BINARY=node\n"
+            'if [ -z "${RCT_METRO_PORT:-}" ] && [ -f "${SRCROOT}/../splashdown.env" ]; then\n'
+            '  export RCT_METRO_PORT="$(grep \'^RCT_METRO_PORT=\' "${SRCROOT}/../splashdown.env" | cut -d= -f2)"\n'
+            "fi\n"
+            'export RCT_METRO_PORT="${RCT_METRO_PORT:-8083}"\n'
+        ),
+    )
     assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
 
 
 def test_rn_xcode_autofix_noop_when_already_referencing_splashdown(tmp_path):
     content = (
         "export NODE_BINARY=node\n"
-        "if [ -f \"${SRCROOT}/../splashdown.env\" ]; then\n"
-        "  . \"${SRCROOT}/../splashdown.env\"\n"
+        'if [ -f "${SRCROOT}/../splashdown.env" ]; then\n'
+        '  . "${SRCROOT}/../splashdown.env"\n'
         "fi\n"
     )
     _make_ios(tmp_path, content)
@@ -2427,14 +2572,19 @@ def test_cmd_init_rn_preset_wires_everything(tmp_path):
     """`splash init --preset=rn` in an RN-shaped repo scaffolds AND wires."""
     _git_init(tmp_path)
     # RN-shaped repo before splashdown.
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {
-            "start": "react-native start --port 8083",
-            "ios": "react-native run-ios --port 8083",
-        },
-        "dependencies": {"react-native": "0.83"},
-        "devDependencies": {"lefthook": "^1.0"},
-    }, indent=2))
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "start": "react-native start --port 8083",
+                    "ios": "react-native run-ios --port 8083",
+                },
+                "dependencies": {"react-native": "0.83"},
+                "devDependencies": {"lefthook": "^1.0"},
+            },
+            indent=2,
+        )
+    )
     (tmp_path / "metro.config.js").write_text(
         "const config = { server: { port: 8083 } };\nmodule.exports = config;\n"
     )
@@ -2459,7 +2609,10 @@ def test_cmd_init_rn_preset_wires_everything(tmp_path):
     assert "post-checkout:" in (tmp_path / "lefthook.yml").read_text()
     # core.hooksPath NOT set (lefthook owns hooks).
     import subprocess as _sp
-    r = _sp.run(["git", "-C", str(tmp_path), "config", "--get", "core.hooksPath"], capture_output=True)
+
+    r = _sp.run(
+        ["git", "-C", str(tmp_path), "config", "--get", "core.hooksPath"], capture_output=True
+    )
     assert r.returncode != 0 or not r.stdout.strip()
     # Doctor confirms green.
     assert sd.cmd_doctor(tmp_path) == 0
@@ -2475,18 +2628,22 @@ def test_cmd_init_minimal_preset_skips_doctor(tmp_path, capsys):
 def test_doctor_fix_full_rn_project(tmp_path):
     _git_init(tmp_path)
     # An RN-shaped tmp dir mirroring FlowLab's pre-wiring state.
-    (tmp_path / "package.json").write_text(json.dumps({
-        "scripts": {
-            "start": "react-native start --port 8083",
-            "ios": "react-native run-ios --port 8083",
-            "android": "react-native run-android --port 8083",
-        },
-        "dependencies": {"react-native": "0.83"},
-        "devDependencies": {"lefthook": "^1.0"},
-    }, indent=2))
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "start": "react-native start --port 8083",
+                    "ios": "react-native run-ios --port 8083",
+                    "android": "react-native run-android --port 8083",
+                },
+                "dependencies": {"react-native": "0.83"},
+                "devDependencies": {"lefthook": "^1.0"},
+            },
+            indent=2,
+        )
+    )
     (tmp_path / "metro.config.js").write_text(
-        "const config = {\n  server: {\n    port: 8083,\n  },\n};\n"
-        "module.exports = config;\n"
+        "const config = {\n  server: {\n    port: 8083,\n  },\n};\nmodule.exports = config;\n"
     )
     (tmp_path / "ios").mkdir()
     (tmp_path / "ios" / ".xcode.env").write_text(
@@ -2695,7 +2852,9 @@ export default defineConfig(({ mode }) => {
 });
 """)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env")
+    check = next(
+        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+    )
     check.autofix(tmp_path)
     text = (tmp_path / "vite.config.ts").read_text()
     assert "process.env.WEB_DEV_PORT" in text
@@ -2705,10 +2864,12 @@ export default defineConfig(({ mode }) => {
 
 def test_vite_wiring_check_idempotent(tmp_path):
     (tmp_path / "vite.config.ts").write_text(
-        'export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n'
+        "export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n"
     )
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env")
+    check = next(
+        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+    )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
 
@@ -2722,7 +2883,7 @@ def test_loader_registry_exists_with_mise():
 def test_mise_loader_wire_creates_mise_toml(tmp_path):
     sd.LOADERS["mise"].wire(tmp_path)
     assert (tmp_path / "mise.toml").exists()
-    assert 'splashdown.env' in (tmp_path / "mise.toml").read_text()
+    assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
 
 
 def test_mise_loader_wire_is_idempotent(tmp_path):
@@ -2733,6 +2894,7 @@ def test_mise_loader_wire_is_idempotent(tmp_path):
 
 
 # ---------- resource-name app-scoping ----------
+
 
 def test_resource_name_scoping_single_instance_keeps_canonical_name():
     apps = [sd.AppInventory(name="api", path=Path("."), profile="node-backend")]
@@ -2748,7 +2910,7 @@ def test_resource_name_scoping_multi_instance_mangles_with_app_name():
         sd.AppInventory(name="customer", path=Path("/b"), profile="vite"),
     ]
     res_by_app = {
-        "admin":    {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+        "admin": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
         "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
     }
     merged = sd._merge_app_resources(apps, res_by_app)
@@ -2763,10 +2925,10 @@ def test_resource_name_scoping_preserves_per_app_resources_list():
         sd.AppInventory(name="customer", path=Path("/b"), profile="vite"),
     ]
     res_by_app = {
-        "admin":    {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+        "admin": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
         "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
     }
-    merged = sd._merge_app_resources(apps, res_by_app)
+    sd._merge_app_resources(apps, res_by_app)
     # The helper also reports which names each app should consume:
     consumed = sd._app_resource_names(apps, res_by_app)
     assert consumed["admin"] == ["WEB_DEV_PORT_ADMIN"]
@@ -2775,7 +2937,7 @@ def test_resource_name_scoping_preserves_per_app_resources_list():
 
 def test_cmd_init_scans_single_vite_app(tmp_path):
     (tmp_path / "vite.config.ts").write_text(
-        'export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n'
+        "export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n"
     )
     (tmp_path / "package.json").write_text('{"name": "web"}')
     sd.cmd_init(tmp_path)
@@ -2793,7 +2955,7 @@ def test_cmd_init_emits_mise_loader_wiring(tmp_path):
     sd.cmd_init(tmp_path)
     # mise.toml created and points at splashdown.env
     assert (tmp_path / "mise.toml").exists()
-    assert 'splashdown.env' in (tmp_path / "mise.toml").read_text()
+    assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
 
 
 def test_cmd_init_legacy_preset_path_still_works(tmp_path):
@@ -2852,7 +3014,7 @@ range = [9081, 9100]
 
 def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
     # A legacy single-resource recipe (no [project] / [apps.*]).
-    (tmp_path / "splashdown.toml").write_text("[resources.RUN_ID]\ntype = \"uuid\"\n")
+    (tmp_path / "splashdown.toml").write_text('[resources.RUN_ID]\ntype = "uuid"\n')
     (tmp_path / "vite.config.ts").write_text("export default {}")
     rc = sd.cmd_refresh_inventory(tmp_path)
     assert rc == 0
@@ -2903,7 +3065,7 @@ def test_nextjs_profile_emits_port_resource(tmp_path):
 
 
 def test_django_profile_detects_manage_py(tmp_path):
-    (tmp_path / "manage.py").write_text('import django\n')
+    (tmp_path / "manage.py").write_text("import django\n")
     assert sd.PROFILES["django"].detect(tmp_path) is True
 
 
@@ -2912,7 +3074,7 @@ def test_django_profile_does_not_detect_without_manage_py(tmp_path):
 
 
 def test_django_profile_emits_port_resource(tmp_path):
-    (tmp_path / "manage.py").write_text('import django\n')
+    (tmp_path / "manage.py").write_text("import django\n")
     app = sd.AppInventory(name="api", path=tmp_path, profile="django")
     assert sd.PROFILES["django"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}
 
@@ -2937,11 +3099,15 @@ def test_fastapi_profile_does_not_detect_without_fastapi(tmp_path):
 def test_fastapi_profile_emits_port_resource(tmp_path):
     (tmp_path / "requirements.txt").write_text("fastapi\n")
     app = sd.AppInventory(name="api", path=tmp_path, profile="fastapi")
-    assert sd.PROFILES["fastapi"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}
+    assert sd.PROFILES["fastapi"].resources(app) == {
+        "PORT": {"type": "port", "range": [8000, 8100]}
+    }
 
 
 def test_springboot_profile_detects_pom_xml(tmp_path):
-    (tmp_path / "pom.xml").write_text('<project><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>')
+    (tmp_path / "pom.xml").write_text(
+        "<project><dependencies><dependency><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>"
+    )
     assert sd.PROFILES["springboot"].detect(tmp_path) is True
 
 
@@ -2958,7 +3124,9 @@ def test_springboot_profile_does_not_detect_plain_gradle(tmp_path):
 def test_springboot_profile_emits_port_resource(tmp_path):
     (tmp_path / "pom.xml").write_text("spring-boot-starter")
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
-    assert sd.PROFILES["springboot"].resources(app) == {"PORT": {"type": "port", "range": [8080, 8180]}}
+    assert sd.PROFILES["springboot"].resources(app) == {
+        "PORT": {"type": "port", "range": [8080, 8180]}
+    }
 
 
 def test_springboot_wiring_check_flags_missing_port_placeholder(tmp_path):
@@ -2966,9 +3134,15 @@ def test_springboot_wiring_check_flags_missing_port_placeholder(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main").mkdir()
     (tmp_path / "src" / "main" / "resources").mkdir()
-    (tmp_path / "src" / "main" / "resources" / "application.properties").write_text("server.port=8080\n")
+    (tmp_path / "src" / "main" / "resources" / "application.properties").write_text(
+        "server.port=8080\n"
+    )
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
-    check = next(c for c in sd.PROFILES["springboot"].wiring_checks(app) if c.id == "springboot-application-properties")
+    check = next(
+        c
+        for c in sd.PROFILES["springboot"].wiring_checks(app)
+        if c.id == "springboot-application-properties"
+    )
     status, _ = check.detect(tmp_path)
     assert status == "problem"
 
@@ -2980,12 +3154,17 @@ def test_springboot_wiring_check_accepts_env_placeholder(tmp_path):
         "server.port=${PORT:8080}\n"
     )
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
-    check = next(c for c in sd.PROFILES["springboot"].wiring_checks(app) if c.id == "springboot-application-properties")
+    check = next(
+        c
+        for c in sd.PROFILES["springboot"].wiring_checks(app)
+        if c.id == "springboot-application-properties"
+    )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
 
 
 # ---------- DirenvLoader ----------
+
 
 def test_direnv_loader_wire_appends_sentinel_block(tmp_path):
     sd.LOADERS["direnv"].wire(tmp_path)
@@ -3012,6 +3191,7 @@ def test_direnv_loader_wire_preserves_existing_envrc(tmp_path):
 
 
 # ---------- DevboxLoader ----------
+
 
 def test_devbox_loader_wire_adds_init_hook(tmp_path):
     (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22"]}')

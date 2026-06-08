@@ -9,9 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    DEVICE_TYPES, DEVICE_VARIANT_RE, ENV_NAME_RE, RECIPE_NAME, LOCAL_NAME,
+    DEVICE_TYPES,
+    DEVICE_VARIANT_RE,
+    ENV_NAME_RE,
+    LOCAL_NAME,
+    RECIPE_NAME,
 )
-
 
 # ---------- template engine ----------
 
@@ -44,7 +47,10 @@ def _make_scope(cwd: Path, branch: str | None, resources: dict[str, str]) -> dic
         "upper": str.upper,
         "uuid": lambda: str(uuid_mod.uuid4()),
         "hash": lambda *xs: hashlib.sha256("|".join(map(str, xs)).encode()).hexdigest(),
-        "port_hash": lambda *xs, lo=8000, hi=9000: lo + (int(hashlib.sha256("|".join(map(str, xs)).encode()).hexdigest(), 16) % (hi - lo + 1)),
+        "port_hash": lambda *xs, lo=8000, hi=9000: (
+            lo
+            + (int(hashlib.sha256("|".join(map(str, xs)).encode()).hexdigest(), 16) % (hi - lo + 1))
+        ),
         "truncate": lambda s, n: s[:n],
     }
     scope.update(resources)
@@ -57,7 +63,7 @@ def _repo_name(cwd: Path) -> str:
             ["git", "rev-parse", "--show-toplevel"], cwd=cwd, stderr=subprocess.DEVNULL
         )
         return Path(out.decode().strip()).name
-    except Exception:
+    except Exception:  # noqa: BLE001 — not a git repo / git absent: fall back to dir name
         return cwd.name
 
 
@@ -67,12 +73,13 @@ def _current_branch(cwd: Path) -> str:
             ["git", "symbolic-ref", "--short", "HEAD"], cwd=cwd, stderr=subprocess.DEVNULL
         )
         return out.decode().strip()
-    except Exception:
+    except Exception:  # noqa: BLE001 — detached HEAD / git absent: no branch name
         return ""
 
 
 def render_template(tpl: str, scope: dict[str, Any]) -> str:
     """Render `{{ expr }}` placeholders. expr is a restricted Python expression."""
+
     def replace(m: re.Match[str]) -> str:
         expr = m.group(1)
         try:
@@ -80,8 +87,11 @@ def render_template(tpl: str, scope: dict[str, Any]) -> str:
         except Exception as e:
             raise TemplateError(f"failed to render `{{{{ {expr} }}}}`: {e}") from e
         if callable(value):
-            raise TemplateError(f"template expression `{expr}` resolved to a callable; did you mean to call it?")
+            raise TemplateError(
+                f"template expression `{expr}` resolved to a callable; did you mean to call it?"
+            )
         return str(value)
+
     return _TEMPLATE_RE.sub(replace, tpl)
 
 
@@ -95,6 +105,7 @@ def template_refs(tpl: str) -> set[str]:
 
 
 # ---------- recipe ----------
+
 
 def _parse_devices_section(
     data: dict[str, Any], *, source: str
@@ -113,8 +124,7 @@ def _parse_devices_section(
                     f"(e.g. [devices.{type_val['type']}.{type_key}])"
                 )
             raise ValueError(
-                f"{source}: unknown device type `{type_key}` "
-                f"(known: {', '.join(DEVICE_TYPES)})"
+                f"{source}: unknown device type `{type_key}` (known: {', '.join(DEVICE_TYPES)})"
             )
         if not isinstance(type_val, dict):
             raise ValueError(f"{source}: [devices.{type_key}] must be a table of variants")
@@ -122,13 +132,10 @@ def _parse_devices_section(
         for variant_name, spec in type_val.items():
             if not DEVICE_VARIANT_RE.match(variant_name):
                 raise ValueError(
-                    f"{source}: variant name `{variant_name}` must match "
-                    f"[A-Za-z][A-Za-z0-9_-]*"
+                    f"{source}: variant name `{variant_name}` must match [A-Za-z][A-Za-z0-9_-]*"
                 )
             if not isinstance(spec, dict):
-                raise ValueError(
-                    f"{source}: [devices.{type_key}.{variant_name}] must be a table"
-                )
+                raise ValueError(f"{source}: [devices.{type_key}.{variant_name}] must be a table")
             variants[variant_name] = dict(spec)
         out[type_key] = variants
     return out
@@ -141,14 +148,15 @@ class Recipe:
         self.setup: dict[str, dict[str, Any]] = dict(data.get("setup", {}) or {})
         self.project: dict[str, Any] = dict(data.get("project", {}) or {})
         self.devices: dict[str, dict[str, dict[str, Any]]] = _parse_devices_section(
-            data, source=path.name or RECIPE_NAME,
+            data,
+            source=path.name or RECIPE_NAME,
         )
         for name in self.resources:
             if not ENV_NAME_RE.match(name):
                 raise ValueError(f"resource name `{name}` is not a valid env var identifier")
 
     @classmethod
-    def load(cls, path: Path) -> "Recipe":
+    def load(cls, path: Path) -> Recipe:
         with path.open("rb") as f:
             data = tomllib.load(f)
         return cls(data, path)
@@ -180,11 +188,12 @@ class LocalConfig:
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
         self.devices: dict[str, dict[str, dict[str, Any]]] = _parse_devices_section(
-            data, source=path.name or LOCAL_NAME,
+            data,
+            source=path.name or LOCAL_NAME,
         )
 
     @classmethod
-    def load(cls, path: Path) -> "LocalConfig":
+    def load(cls, path: Path) -> LocalConfig:
         if not path.exists():
             return cls({}, path)
         with path.open("rb") as f:
@@ -192,9 +201,7 @@ class LocalConfig:
         return cls(data, path)
 
 
-def merged_devices(
-    recipe: Recipe, local: LocalConfig
-) -> dict[str, dict[str, dict[str, Any]]]:
+def merged_devices(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, dict[str, Any]]]:
     """Union recipe + local device catalogs. (type, variant) name collisions
     between the two files are an error — pick a different name in local."""
     merged: dict[str, dict[str, dict[str, Any]]] = {
@@ -223,13 +230,12 @@ def resolve_variant(
     """
     # Lazy import to avoid circular — devices.py imports recipe.py
     from .devices import DeviceError  # noqa: PLC0415
+
     if not catalog:
         raise DeviceError("no variants declared for this type")
     if requested is not None:
         if requested not in catalog:
-            raise DeviceError(
-                f"no variant `{requested}`; declared: {', '.join(sorted(catalog))}"
-            )
+            raise DeviceError(f"no variant `{requested}`; declared: {', '.join(sorted(catalog))}")
         return requested, catalog[requested]
     if "default" in catalog:
         return "default", catalog["default"]
@@ -237,8 +243,7 @@ def resolve_variant(
         only = next(iter(catalog))
         return only, catalog[only]
     raise DeviceError(
-        f"no `default` variant; pass a variant explicitly "
-        f"(declared: {', '.join(sorted(catalog))})"
+        f"no `default` variant; pass a variant explicitly (declared: {', '.join(sorted(catalog))})"
     )
 
 
@@ -275,6 +280,7 @@ def topo_sort(recipe: Recipe) -> list[str]:
 
 # ---------- writers ----------
 
+
 def _find_table(lines: list[str], name: str) -> tuple[int | None, int]:
     """Find a `[name]` table. Returns (header_index, end_index_exclusive)."""
     start: int | None = None
@@ -296,7 +302,13 @@ def _find_table(lines: list[str], name: str) -> tuple[int | None, int]:
 
 def _toml_quote(value: str) -> str:
     # Always emit basic strings; escape minimally.
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
     return f'"{escaped}"'
 
 
@@ -308,9 +320,6 @@ def _env_quote(value: str) -> str:
     if value and _ENV_SAFE_RE.fullmatch(value):
         return value
     escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
+        value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
     )
     return f'"{escaped}"'

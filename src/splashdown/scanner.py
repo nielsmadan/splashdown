@@ -7,23 +7,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 # ---------- scanner & inventory ----------
+
 
 @dataclass
 class AppInventory:
     """One consumer (app) inside the project that splashdown will wire."""
-    name: str          # e.g. "api"
-    path: Path         # absolute path to the app's root directory
-    profile: str       # the Profile name that matched, or "unknown"
+
+    name: str  # e.g. "api"
+    path: Path  # absolute path to the app's root directory
+    profile: str  # the Profile name that matched, or "unknown"
 
 
 @dataclass
 class ProjectInventory:
     """What the Scanner found about the repo as a whole."""
-    workspace: str     # "pnpm" | "yarn" | "npm" | "cargo" | "gradle" | "single"
+
+    workspace: str  # "pnpm" | "yarn" | "npm" | "cargo" | "gradle" | "single"
     apps: list[AppInventory]
-    loader: str        # "mise" | "direnv" | "devbox"
+    loader: str  # "mise" | "direnv" | "devbox"
 
 
 # Empty at module load time; profiles.py populates this at import time.
@@ -78,7 +80,7 @@ def _enumerate_apps(cwd: Path, workspace: str) -> list[tuple[str, Path]]:
                 continue
             if in_packages:
                 if stripped.startswith("- "):
-                    val = stripped[2:].strip().strip('"\'')
+                    val = stripped[2:].strip().strip("\"'")
                     if val:
                         globs.append(val)
                 elif stripped and not stripped.startswith("#"):
@@ -118,14 +120,18 @@ def _expand_workspace_globs(cwd: Path, globs: list[str]) -> list[tuple[str, Path
     """Expand pnpm/yarn-style workspace globs (`apps/*`, `packages/foo`) to
     [(name, path), ...]. Excludes node_modules and hidden dirs."""
     out: list[tuple[str, Path]] = []
-    for g in globs:
-        g = g.rstrip("/")
+    for raw in globs:
+        g = raw.rstrip("/")
         if "*" in g:
             base = cwd / g.split("*", 1)[0].rstrip("/")
             if not base.is_dir():
                 continue
             for child in sorted(base.iterdir()):
-                if child.is_dir() and not child.name.startswith(".") and child.name != "node_modules":
+                if (
+                    child.is_dir()
+                    and not child.name.startswith(".")
+                    and child.name != "node_modules"
+                ):
                     out.append((child.name, child))
         else:
             p = cwd / g

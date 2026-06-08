@@ -9,11 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .scanner import PROFILES, AppInventory
-from .wiring import WiringCheck, _RN_WIRING_CHECKS, _HOOK_WIRING_CHECK
-from .recipe import Recipe
 from .devices import DeviceError
-
+from .recipe import Recipe
+from .scanner import PROFILES, AppInventory
+from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
 
 # ---------- scaffold registry ----------
 # Named scaffolds for `splash init NAME`. Framework detection, wiring checks,
@@ -45,14 +44,16 @@ def _detect_rn(cwd: Path) -> bool:
 
 
 def _flutter_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    device_id = info.get("udid") if info["kind"] == "ios" else info.get("serial")
+    device_id = (info.get("udid") if info["kind"] == "ios" else info.get("serial")) or ""
     return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
 
 
 def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if info["kind"] == "ios":
         return subprocess.call(["npx", "react-native", "run-ios", "--udid", info["udid"]], cwd=cwd)
-    return subprocess.call(["npx", "react-native", "run-android", "--deviceId", info["serial"]], cwd=cwd)
+    return subprocess.call(
+        ["npx", "react-native", "run-android", "--deviceId", info["serial"]], cwd=cwd
+    )
 
 
 def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
@@ -94,7 +95,7 @@ def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
         return ["-project", projects[0].name]
     raise DeviceError(
         "ios-native: no .xcworkspace or .xcodeproj at repo root; "
-        "set `[project.ios] workspace = \"...\"` or `project = \"...\"`"
+        'set `[project.ios] workspace = "..."` or `project = "..."`'
     )
 
 
@@ -103,7 +104,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     scheme = cfg.get("scheme")
     if not scheme:
         raise DeviceError(
-            "ios-native: set `[project.ios] scheme = \"<your-scheme>\"` in splashdown.toml"
+            'ios-native: set `[project.ios] scheme = "<your-scheme>"` in splashdown.toml'
         )
     configuration = cfg.get("configuration", "Debug")
     udid = info["udid"]
@@ -111,26 +112,34 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     project_flag = _ios_xcodebuild_args(cwd, cfg)
 
     common = [
-        "xcodebuild", *project_flag,
-        "-scheme", scheme,
-        "-configuration", configuration,
-        "-destination", f"id={udid}",
-        "-derivedDataPath", str(derived),
+        "xcodebuild",
+        *project_flag,
+        "-scheme",
+        scheme,
+        "-configuration",
+        configuration,
+        "-destination",
+        f"id={udid}",
+        "-derivedDataPath",
+        str(derived),
     ]
-    rc = subprocess.call(common + ["build"], cwd=cwd)
+    rc = subprocess.call([*common, "build"], cwd=cwd)
     if rc != 0:
         return rc
 
     settings = subprocess.run(
-        common + ["-showBuildSettings", "-json"],
-        cwd=cwd, capture_output=True, text=True, check=False,
+        [*common, "-showBuildSettings", "-json"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     try:
         entries = json.loads(settings.stdout)
         bs = entries[0]["buildSettings"]
         app_path = Path(bs["BUILT_PRODUCTS_DIR"]) / bs["WRAPPER_NAME"]
     except (json.JSONDecodeError, KeyError, IndexError) as e:
-        raise DeviceError(f"ios-native: couldn't read xcodebuild settings: {e}")
+        raise DeviceError(f"ios-native: couldn't read xcodebuild settings: {e}") from e
     if not app_path.exists():
         raise DeviceError(f"ios-native: built .app missing at {app_path}")
 
@@ -139,7 +148,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
             plist = plistlib.load(f)
         bundle_id = plist["CFBundleIdentifier"]
     except (FileNotFoundError, KeyError) as e:
-        raise DeviceError(f"ios-native: couldn't read bundle id from {app_path}: {e}")
+        raise DeviceError(f"ios-native: couldn't read bundle id from {app_path}: {e}") from e
 
     rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
     if rc != 0:
@@ -157,7 +166,7 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
 
     install_task = f":{module}:install{variant[:1].upper()}{variant[1:]}"
     env = {**os.environ, "ANDROID_SERIAL": serial}
-    rc = subprocess.call(gradle_cmd + [install_task], cwd=cwd, env=env)
+    rc = subprocess.call([*gradle_cmd, install_task], cwd=cwd, env=env)
     if rc != 0:
         return rc
 
@@ -165,8 +174,10 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if not app_id:
         try:
             out = subprocess.check_output(
-                gradle_cmd + [f":{module}:properties", "-q"],
-                cwd=cwd, text=True, env=env,
+                [*gradle_cmd, f":{module}:properties", "-q"],
+                cwd=cwd,
+                text=True,
+                env=env,
             )
             for line in out.splitlines():
                 if line.startswith("applicationId:"):
@@ -177,7 +188,7 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if not app_id:
         raise DeviceError(
             "android-native: couldn't resolve applicationId; set "
-            "`[project.android] application_id = \"...\"` in splashdown.toml"
+            '`[project.android] application_id = "..."` in splashdown.toml'
         )
 
     if activity := cfg.get("launch_activity"):
@@ -185,8 +196,18 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
             ["adb", "-s", serial, "shell", "am", "start", "-n", f"{app_id}/{activity}"],
         )
     return subprocess.call(
-        ["adb", "-s", serial, "shell", "monkey", "-p", app_id,
-         "-c", "android.intent.category.LAUNCHER", "1"],
+        [
+            "adb",
+            "-s",
+            serial,
+            "shell",
+            "monkey",
+            "-p",
+            app_id,
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+        ],
     )
 
 
@@ -201,6 +222,7 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
 class Profile:
     """Abstract base. Subclasses set `name` and override `detect`, `resources`,
     and (where relevant) `wiring_checks` / `run`."""
+
     name: str = ""
 
     def detect(self, app_path: Path) -> bool:
@@ -218,7 +240,7 @@ class Profile:
         existing doctor flow runs these."""
         return []
 
-    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         """Build + install + launch the app on the given device. Mobile
         Profiles override; web/backend Profiles raise (no `splash run` semantics
         for them — those use `pnpm dev` / `gradle bootRun` / etc. directly)."""
@@ -275,6 +297,8 @@ def _vite_process_env_check() -> WiringCheck:
 
 def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
     cfg = _vite_config_path(cwd)
+    if cfg is None:  # applies() guarantees the vite config exists
+        raise DeviceError("vite.config.* not found")
     text = cfg.read_text()
     if "loadEnv" in text and _VITE_ENV_ACCESS_RE.search(text):
         return ("problem", "vite.config uses loadEnv; should read process.env")
@@ -283,6 +307,8 @@ def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
 
 def _vite_process_env_autofix(cwd: Path) -> None:
     cfg = _vite_config_path(cwd)
+    if cfg is None:  # applies() guarantees the vite config exists
+        raise DeviceError("vite.config.* not found")
     text = cfg.read_text()
     # Rewrite every `env.VAR` access to `process.env.VAR`. Keep loadEnv lines
     # untouched (the user may want them for other purposes) — the new access
@@ -381,9 +407,7 @@ class FastApiProfile(Profile):
             if req.exists() and "fastapi" in req.read_text().lower():
                 return True
         pyproject = app_path / "pyproject.toml"
-        if pyproject.exists() and "fastapi" in pyproject.read_text().lower():
-            return True
-        return False
+        return bool(pyproject.exists() and "fastapi" in pyproject.read_text().lower())
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [8000, 8100]}}
@@ -416,8 +440,10 @@ def _springboot_application_properties_check() -> WiringCheck:
     return WiringCheck(
         id="springboot-application-properties",
         description="application.properties reads server.port from PORT env",
-        applies=lambda cwd: (cwd / "src" / "main" / "resources" / "application.properties").exists()
-            or (cwd / "src" / "main" / "resources" / "application.yml").exists(),
+        applies=lambda cwd: (
+            (cwd / "src" / "main" / "resources" / "application.properties").exists()
+            or (cwd / "src" / "main" / "resources" / "application.yml").exists()
+        ),
         detect=_springboot_app_props_detect,
         autofix=None,  # manual-only — patching Java configs is too risky to auto-rewrite
         manual_instructions=_springboot_app_props_manual,
@@ -455,7 +481,7 @@ class ReactNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return list(_RN_WIRING_CHECKS)
 
-    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _rn_run(cwd, recipe, info)
 
 
@@ -465,7 +491,7 @@ class ExpoProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         return _detect_expo(app_path)
 
-    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _expo_run(cwd, recipe, info)
 
 
@@ -475,7 +501,7 @@ class FlutterProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         return _detect_flutter(app_path)
 
-    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _flutter_run(cwd, recipe, info)
 
 
@@ -488,7 +514,7 @@ class IosNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
-    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _ios_native_run(cwd, recipe, info)
 
 
@@ -501,7 +527,7 @@ class AndroidNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
-    def run(self, cwd: Path, recipe: "Recipe", info: dict[str, str]) -> int:
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _android_native_run(cwd, recipe, info)
 
 
@@ -675,11 +701,11 @@ device = "pixel_9"
 SCAFFOLDS: dict[str, str] = {
     "minimal": _MINIMAL_SCAFFOLD,
     "react-native": _RN_SCAFFOLD,
-    "rn": _RN_SCAFFOLD,                # short alias
+    "rn": _RN_SCAFFOLD,  # short alias
     "flutter": _FLUTTER_SCAFFOLD,
     "ios-native": _IOS_NATIVE_SCAFFOLD,
     "android-native": _ANDROID_NATIVE_SCAFFOLD,
     "electron": _ELECTRON_SCAFFOLD,
     "server": _SERVER_SCAFFOLD,
-    "nextjs": _SERVER_SCAFFOLD,        # historical alias for server
+    "nextjs": _SERVER_SCAFFOLD,  # historical alias for server
 }

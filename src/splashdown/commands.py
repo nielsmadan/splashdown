@@ -1,44 +1,73 @@
 from __future__ import annotations
 
+import contextlib
 import json
-import os
 import re
 import subprocess
 import sys
-import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .registry import Registry, DeviceRow
-from .recipe import (
-    Recipe, LocalConfig, TemplateError, LOCAL_SKELETON,
-    _find_table, _toml_quote, _current_branch,
-    merged_devices, resolve_variant,
-)
-from .provisioning import (
-    provision, write_outputs, run_setup,
-)
+from . import ENV_FILE_NAME, LOCAL_NAME, RECIPE_NAME
 from .devices import (
-    DeviceError, device_status, device_shutdown, device_destroy,
-    device_add, device_remove, device_run, detect_framework,
-    ensure_fresh_sim, ios_boot, ios_shutdown, ios_destroy,
-    android_boot, android_shutdown, android_destroy,
-    _ios_udid_exists, _android_avd_exists, _android_bin,
-    _ios_current_state, _resolve_device_name, _is_orphan_device,
-    _device_status_for_row, _short_path, _summary_string,
-    _load_recipe_or_empty, _ios_latest_runtime_version, _android_latest_image,
-    _android_running_serial, _xcrun_json,
-)
-from .scanner import (
-    Scanner, AppInventory, ProjectInventory,
-    _detect_loader, _merge_app_resources, _app_resource_names,
-)
-from .wiring import (
-    WiringCheck, _wiring_checks_for_framework, _resolve_doctor_framework, cmd_doctor,
+    DeviceError,
+    _android_avd_exists,
+    _android_bin,
+    _android_latest_image,
+    _device_status_for_row,
+    _ios_current_state,
+    _ios_latest_runtime_version,
+    _ios_udid_exists,
+    _is_orphan_device,
+    _load_recipe_or_empty,
+    _resolve_device_name,
+    _short_path,
+    _summary_string,
+    _xcrun_json,
+    android_boot,
+    android_destroy,
+    android_shutdown,
+    device_add,
+    device_destroy,
+    device_remove,
+    device_run,
+    device_shutdown,
+    device_status,
+    ensure_fresh_sim,
+    ios_boot,
+    ios_destroy,
+    ios_shutdown,
 )
 from .loaders import LOADERS
-from . import RECIPE_NAME, LOCAL_NAME, ENV_FILE_NAME, DEVICE_TYPES
-
+from .provisioning import (
+    provision,
+    run_setup,
+    write_outputs,
+)
+from .recipe import (
+    LOCAL_SKELETON,
+    LocalConfig,
+    Recipe,
+    TemplateError,
+    _find_table,
+    _toml_quote,
+    merged_devices,
+    resolve_variant,
+)
+from .registry import DeviceRow, Registry
+from .scanner import (
+    ProjectInventory,
+    Scanner,
+    _app_resource_names,
+    _detect_loader,
+    _merge_app_resources,
+)
+from .wiring import (
+    _resolve_doctor_framework,
+    _wiring_checks_for_framework,
+    cmd_doctor,
+)
 
 # ---------- init / scaffolding ----------
 
@@ -111,10 +140,15 @@ def _detect_hook_manager(cwd: Path) -> str:
     if (cwd / ".husky").is_dir():
         return "husky"
     try:
-        out = subprocess.check_output(
-            ["git", "config", "--get", "core.hooksPath"],
-            cwd=cwd, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        out = (
+            subprocess.check_output(
+                ["git", "config", "--get", "core.hooksPath"],
+                cwd=cwd,
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
         if out and out != ".githooks":
             return "core-hookspath-other"
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -139,31 +173,25 @@ def _wire_post_checkout_lefthook(cwd: Path) -> None:
         return
     lines = text.splitlines()
     pc_idx = next(
-        (i for i, l in enumerate(lines) if re.match(r"^post-checkout:\s*$", l)),
+        (i for i, ln in enumerate(lines) if re.match(r"^post-checkout:\s*$", ln)),
         None,
     )
     if pc_idx is None:
         sep = "" if not text or text.endswith("\n") else "\n"
-        text = text + sep + (
-            "\npost-checkout:\n"
-            "  commands:\n"
-            "    splashdown:\n"
-            "      run: splash\n"
-        )
+        text = text + sep + ("\npost-checkout:\n  commands:\n    splashdown:\n      run: splash\n")
         path.write_text(text)
     else:
         # Find end of post-checkout block (next top-level key or EOF).
         end_idx = len(lines)
         for j in range(pc_idx + 1, len(lines)):
-            l = lines[j]
-            if l and not l[0].isspace() and not l.startswith("#"):
+            ln = lines[j]
+            if ln and not ln[0].isspace() and not ln.startswith("#"):
                 end_idx = j
                 break
         # If 'commands:' exists under post-checkout, insert splashdown under it;
         # otherwise inject a fresh commands: block right after the header.
         cmds_idx = next(
-            (j for j in range(pc_idx + 1, end_idx)
-             if re.match(r"^\s+commands:\s*$", lines[j])),
+            (j for j in range(pc_idx + 1, end_idx) if re.match(r"^\s+commands:\s*$", lines[j])),
             None,
         )
         if cmds_idx is not None:
@@ -192,7 +220,12 @@ def _run_lefthook_install(cwd: Path) -> None:
     for cmd in candidates:
         try:
             r = subprocess.run(
-                cmd, cwd=cwd, capture_output=True, timeout=30, text=True,
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                timeout=30,
+                text=True,
+                check=False,
             )
             if r.returncode == 0:
                 return
@@ -222,14 +255,14 @@ def _wire_post_checkout_corehookspath(cwd: Path) -> None:
     hook = hooks_dir / "post-checkout"
     hook.write_text(POST_CHECKOUT_HOOK)
     hook.chmod(0o755)
-    try:
+    with contextlib.suppress(FileNotFoundError):
         subprocess.run(
             ["git", "config", "core.hooksPath", ".githooks"],
-            cwd=cwd, check=False,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=cwd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    except FileNotFoundError:
-        pass
     print("wrote .githooks/post-checkout, set core.hooksPath", file=sys.stderr)
 
 
@@ -242,10 +275,15 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
         _wire_post_checkout_husky(cwd)
     elif manager == "core-hookspath-other":
         try:
-            current = subprocess.check_output(
-                ["git", "config", "--get", "core.hooksPath"],
-                cwd=cwd, stderr=subprocess.DEVNULL,
-            ).decode().strip()
+            current = (
+                subprocess.check_output(
+                    ["git", "config", "--get", "core.hooksPath"],
+                    cwd=cwd,
+                    stderr=subprocess.DEVNULL,
+                )
+                .decode()
+                .strip()
+            )
         except (subprocess.CalledProcessError, FileNotFoundError):
             current = "?"
         print(
@@ -259,9 +297,134 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
 
 # ---------- status helpers ----------
 
+
+def _gather_resource_entries(
+    co_path: Path, *, co_exists: bool, resources: dict[str, str]
+) -> list[dict[str, str]]:
+    """Resource rows with port liveness tagged. Port-state needs port-typed-
+    resource knowledge, so read the recipe when the checkout path still exists."""
+    port_keys: set[str] = set()
+    if co_exists:
+        recipe_path = co_path / RECIPE_NAME
+        if recipe_path.exists():
+            try:
+                rec = Recipe.load(recipe_path)
+                port_keys = {n for n, s in rec.resources.items() if s.get("type") == "port"}
+            except Exception:  # noqa: BLE001, S110 — malformed recipe shouldn't kill status
+                pass
+
+    from .registry import _port_in_use  # noqa: PLC0415
+
+    entries: list[dict[str, str]] = []
+    for key, value in sorted(resources.items()):
+        state = ""
+        if key in port_keys:
+            try:
+                state = "in use" if _port_in_use(int(value)) else "free"
+            except ValueError:
+                state = ""
+        entries.append({"key": key, "value": value, "port_state": state})
+    return entries
+
+
+def _gather_devices_all(
+    registry: Registry,
+    co: str,
+    co_path: Path,
+    *,
+    check: bool,
+    summary: dict[str, int],
+    cache: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Device rows sourced from the registry (`--all` mode)."""
+    co_exists = co_path.exists()
+    entries: list[dict[str, Any]] = []
+    for row in registry.devices_for(co):
+        try:
+            status = _device_status_for_row(row)
+        except DeviceError as e:
+            status = f"error: {e}"
+        orphan = stale = False
+        if check and co_exists:
+            if _is_orphan_device(row):
+                orphan = True
+                summary["orphan_devices"] += 1
+            else:
+                spec = _load_variant_spec(co_path, row.dtype, row.variant)
+                if spec is not None and _device_stale(row, spec, cache):
+                    stale = True
+                    summary["stale_devices"] += 1
+        entries.append(
+            {
+                "type": row.dtype,
+                "variant": row.variant,
+                "source": "",
+                "device_name": row.udid,
+                "status": status,
+                "orphan": orphan,
+                "stale": stale,
+                "missing": False,
+            }
+        )
+    return entries
+
+
+def _gather_devices_declared(
+    registry: Registry,
+    co: str,
+    co_path: Path,
+    *,
+    check: bool,
+    summary: dict[str, int],
+    cache: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Device rows sourced from recipe + local catalog (default mode)."""
+    recipe = _load_recipe_or_empty(co_path)
+    local = LocalConfig.load(co_path / LOCAL_NAME)
+    entries: list[dict[str, Any]] = []
+    for dtype, variants in merged_devices(recipe, local).items():
+        for variant, spec in variants.items():
+            source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
+            resolved = _resolve_device_name(spec, co_path, variant, dtype)
+            try:
+                status = device_status(dtype, resolved)
+            except DeviceError as e:
+                status = f"error: {e}"
+            orphan = stale = missing = False
+            if check:
+                reg_row = registry.get_device(co, dtype, variant)
+                if reg_row is None:
+                    if status == "absent":
+                        missing = True
+                        summary["missing_devices"] += 1
+                elif _is_orphan_device(reg_row):
+                    orphan = True
+                    summary["orphan_devices"] += 1
+                elif _device_stale(reg_row, spec, cache):
+                    stale = True
+                    summary["stale_devices"] += 1
+            entries.append(
+                {
+                    "type": dtype,
+                    "variant": variant,
+                    "source": source,
+                    "device_name": resolved,
+                    "status": status,
+                    "orphan": orphan,
+                    "stale": stale,
+                    "missing": missing,
+                }
+            )
+    return entries
+
+
 def _gather_status_for_checkout(
-    co: str, registry: Registry, *,
-    show_all: bool, check: bool, summary: dict[str, int],
+    co: str,
+    registry: Registry,
+    *,
+    show_all: bool,
+    check: bool,
+    summary: dict[str, int],
     os_cache: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the per-checkout block consumed by both JSON serialization and
@@ -275,82 +438,20 @@ def _gather_status_for_checkout(
         summary["defunct_checkouts"] += 1
         summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
 
-    # Port-state needs port-typed-resource knowledge. Read the recipe when
-    # the checkout's path is still around; otherwise we can't tag.
-    port_keys: set[str] = set()
-    if co_exists:
-        recipe_path = co_path / RECIPE_NAME
-        if recipe_path.exists():
-            try:
-                rec = Recipe.load(recipe_path)
-                port_keys = {n for n, s in rec.resources.items() if s.get("type") == "port"}
-            except Exception:  # noqa: BLE001 — malformed recipe shouldn't kill status
-                pass
+    res_entries = _gather_resource_entries(co_path, co_exists=co_exists, resources=resources)
 
-    from .registry import _port_in_use  # noqa: PLC0415
-    res_entries: list[dict[str, str]] = []
-    for key, value in sorted(resources.items()):
-        state = ""
-        if key in port_keys:
-            try:
-                state = "in use" if _port_in_use(int(value)) else "free"
-            except ValueError:
-                state = ""
-        res_entries.append({"key": key, "value": value, "port_state": state})
-
-    # Device entries. In --all mode, source = registry only. In default
-    # mode, source = recipe + local catalog (today's behavior).
-    dev_entries: list[dict[str, Any]] = []
+    # Device entries. In --all mode, source = registry only. In default mode,
+    # source = recipe + local catalog.
     if show_all:
-        for row in registry.devices_for(co):
-            try:
-                status = _device_status_for_row(row)
-            except DeviceError as e:
-                status = f"error: {e}"
-            orphan = stale = False
-            if check and co_exists:
-                if _is_orphan_device(row):
-                    orphan = True
-                    summary["orphan_devices"] += 1
-                else:
-                    spec = _load_variant_spec(co_path, row.dtype, row.variant)
-                    if spec is not None and _device_stale(row, spec, cache):
-                        stale = True
-                        summary["stale_devices"] += 1
-            dev_entries.append({
-                "type": row.dtype, "variant": row.variant, "source": "",
-                "device_name": row.udid, "status": status,
-                "orphan": orphan, "stale": stale, "missing": False,
-            })
+        dev_entries = _gather_devices_all(
+            registry, co, co_path, check=check, summary=summary, cache=cache
+        )
     elif co_exists:
-        recipe = _load_recipe_or_empty(co_path)
-        local = LocalConfig.load(co_path / LOCAL_NAME)
-        for dtype, variants in merged_devices(recipe, local).items():
-            for variant, spec in variants.items():
-                source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
-                resolved = _resolve_device_name(spec, co_path, variant, dtype)
-                try:
-                    status = device_status(dtype, resolved)
-                except DeviceError as e:
-                    status = f"error: {e}"
-                orphan = stale = missing = False
-                if check:
-                    row = registry.get_device(co, dtype, variant)
-                    if row is None:
-                        if status == "absent":
-                            missing = True
-                            summary["missing_devices"] += 1
-                    elif _is_orphan_device(row):
-                        orphan = True
-                        summary["orphan_devices"] += 1
-                    elif _device_stale(row, spec, cache):
-                        stale = True
-                        summary["stale_devices"] += 1
-                dev_entries.append({
-                    "type": dtype, "variant": variant, "source": source,
-                    "device_name": resolved, "status": status,
-                    "orphan": orphan, "stale": stale, "missing": missing,
-                })
+        dev_entries = _gather_devices_declared(
+            registry, co, co_path, check=check, summary=summary, cache=cache
+        )
+    else:
+        dev_entries = []
 
     return {
         "checkout": co,
@@ -397,8 +498,11 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
     """Compact one-row-per-checkout view for `splash status --all`."""
     rows: list[tuple[str, str, str]] = []  # (path, summary, status)
     summary = {
-        "defunct_checkouts": 0, "defunct_rows": 0,
-        "orphan_devices": 0, "stale_devices": 0, "missing_devices": 0,
+        "defunct_checkouts": 0,
+        "defunct_rows": 0,
+        "orphan_devices": 0,
+        "stale_devices": 0,
+        "missing_devices": 0,
     }
     os_cache: dict[str, str] = {}
 
@@ -408,9 +512,9 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
         summary_str = _summary_string(counts)
         co_exists = Path(co).exists()
 
-        status_token = ""
+        status_label = ""
         if not co_exists:
-            status_token = "defunct"
+            status_label = "defunct"
             if check:
                 summary["defunct_checkouts"] += 1
                 summary["defunct_rows"] += sum(counts.values())
@@ -418,14 +522,14 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
             for row in registry.devices_for(co):
                 if _is_orphan_device(row):
                     summary["orphan_devices"] += 1
-                    status_token = "orphan"
+                    status_label = "orphan"
                     continue
                 spec = _load_variant_spec(Path(co), row.dtype, row.variant)
                 if spec is not None and _device_stale(row, spec, os_cache):
                     summary["stale_devices"] += 1
-                    status_token = status_token or "stale"
+                    status_label = status_label or "stale"
 
-        rows.append((path_label, summary_str, status_token))
+        rows.append((path_label, summary_str, status_label))
 
     path_width = max((len(r[0]) for r in rows), default=4)
     path_width = max(path_width, len("PATH"))
@@ -438,8 +542,8 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
     if has_issue:
         fmt_row = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
         print(fmt_row.format("PATH", "SUMMARY", "ISSUE").rstrip(), file=sys.stderr)
-        for path_label, summary_str, status_token in rows:
-            print(fmt_row.format(path_label, summary_str, status_token).rstrip(), file=sys.stderr)
+        for path_label, summary_str, status_label in rows:
+            print(fmt_row.format(path_label, summary_str, status_label).rstrip(), file=sys.stderr)
     else:
         fmt_row = f"{{:<{path_width}}}  {{}}"
         print(fmt_row.format("PATH", "SUMMARY").rstrip(), file=sys.stderr)
@@ -473,14 +577,21 @@ def _print_check_summary(summary: dict[str, int]) -> None:
             file=sys.stderr,
         )
     if orphan:
-        print(f"  {orphan} orphan device{'s' if orphan != 1 else ''} "
-              f"(underlying sim/AVD deleted).", file=sys.stderr)
+        print(
+            f"  {orphan} orphan device{'s' if orphan != 1 else ''} (underlying sim/AVD deleted).",
+            file=sys.stderr,
+        )
     if stale:
-        print(f"  {stale} stale device{'s' if stale != 1 else ''} "
-              f"(newer OS available).", file=sys.stderr)
+        print(
+            f"  {stale} stale device{'s' if stale != 1 else ''} (newer OS available).",
+            file=sys.stderr,
+        )
     if missing:
-        print(f"  {missing} missing device{'s' if missing != 1 else ''} "
-              f"(declared but not yet created).", file=sys.stderr)
+        print(
+            f"  {missing} missing device{'s' if missing != 1 else ''} "
+            f"(declared but not yet created).",
+            file=sys.stderr,
+        )
     # Route each hint to the command that actually fixes it. `splash gc` does NOT
     # recreate an orphan whose checkout still exists — `device refresh` does.
     if defunct:
@@ -493,9 +604,15 @@ def _print_check_summary(summary: dict[str, int]) -> None:
 
 # ---------- command functions ----------
 
+
 def cmd_status(
-    cwd: Path, registry: Registry, fmt: str, *,
-    show_all: bool = False, check: bool = False, verbose: bool = False,
+    cwd: Path,
+    registry: Registry,
+    fmt: str,
+    *,
+    show_all: bool = False,
+    check: bool = False,
+    verbose: bool = False,
 ) -> int:
     """Show resolved vars + declared devices.
 
@@ -516,21 +633,27 @@ def cmd_status(
         return _cmd_status_table(checkouts, registry, check)
 
     summary = {
-        "defunct_checkouts": 0, "defunct_rows": 0,
-        "orphan_devices": 0, "stale_devices": 0, "missing_devices": 0,
+        "defunct_checkouts": 0,
+        "defunct_rows": 0,
+        "orphan_devices": 0,
+        "stale_devices": 0,
+        "missing_devices": 0,
     }
     os_cache: dict[str, str] = {}
     blocks = [
         _gather_status_for_checkout(
-            co, registry, show_all=show_all, check=check, summary=summary, os_cache=os_cache,
+            co,
+            registry,
+            show_all=show_all,
+            check=check,
+            summary=summary,
+            os_cache=os_cache,
         )
         for co in checkouts
     ]
 
     if fmt == "json":
-        payload: dict[str, Any] = (
-            {"checkouts": blocks} if show_all else blocks[0]
-        )
+        payload: dict[str, Any] = {"checkouts": blocks} if show_all else blocks[0]
         if check:
             payload["summary"] = summary
         print(json.dumps(payload, indent=2))
@@ -543,11 +666,15 @@ def cmd_status(
         _print_check_summary(summary)
     elif not show_all:
         # Default-mode footer: lightweight defunct-row count.
-        from .registry import _port_in_use  # noqa: PLC0415
+
         stale = sum(
-            1 for r in registry._read_ports() if not Path(r[1]).exists()  # noqa: SLF001
+            1
+            for r in registry._read_ports()  # noqa: SLF001
+            if not Path(r[1]).exists()
         ) + sum(
-            1 for r in registry._read_kv() if not Path(r[0]).exists()  # noqa: SLF001
+            1
+            for r in registry._read_kv()  # noqa: SLF001
+            if not Path(r[0]).exists()
         )
         if stale:
             print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
@@ -582,10 +709,17 @@ def cmd_devices_list(cwd: Path, fmt: str) -> int:
                 status = f"error: {e}"
             rows.append((dtype, variant, source, resolved, status))
     if fmt == "json":
-        print(json.dumps(
-            [dict(zip(("type", "variant", "source", "device_name", "status"), r)) for r in rows],
-            indent=2,
-        ))
+        print(
+            json.dumps(
+                [
+                    dict(
+                        zip(("type", "variant", "source", "device_name", "status"), r, strict=False)
+                    )
+                    for r in rows
+                ],
+                indent=2,
+            )
+        )
     else:
         for dtype, variant, source, resolved, status in rows:
             print(f"{dtype}\t{variant}\t{source}\t{resolved}\t{status}")
@@ -622,11 +756,12 @@ def _finish_progress() -> None:
         sys.stderr.flush()
 
 
-def _resolve_fn(name: str, default):
+def _resolve_fn(name: str, default: Callable[..., Any]) -> Any:
     """Look up a function via sys.modules['splashdown'] so monkeypatch.setattr(sd, ...)
     in tests takes effect. Falls back to the local binding when the top-level module
     hasn't been imported yet (e.g., during module loading)."""
     import sys  # noqa: PLC0415
+
     _mod = sys.modules.get("splashdown")
     return getattr(_mod, name, default) if _mod else default
 
@@ -737,7 +872,9 @@ def _device_stale(row: DeviceRow, spec: dict[str, Any], cache: dict[str, str]) -
 
 
 def cmd_device_refresh(
-    registry: Registry, *, platforms: tuple[str, ...] = ("ios", "android"),
+    registry: Registry,
+    *,
+    platforms: tuple[str, ...] = ("ios", "android"),
 ) -> int:
     """Eagerly reconcile every splashdown-managed device to its declared spec.
 
@@ -786,6 +923,40 @@ def cmd_device_refresh(
     return 0
 
 
+def _discover_foreign_ios(managed: set[str]) -> list[tuple[str, str, str]]:
+    """Available simulators not in the registry, as (udid, name, runtime)."""
+    _xcrun = _resolve_fn("_xcrun_json", _xcrun_json)
+    try:
+        data = _xcrun(["simctl", "list", "devices", "-j"])
+    except DeviceError as e:
+        print(f"warning: skipping iOS sims ({e})", file=sys.stderr)
+        return []
+    foreign: list[tuple[str, str, str]] = []
+    for runtime, devs in (data.get("devices") or {}).items():
+        for d in devs:
+            udid = d.get("udid")
+            if not udid or udid in managed:
+                continue
+            if not d.get("isAvailable", True):
+                continue
+            foreign.append((udid, d.get("name", "?"), runtime))
+    return foreign
+
+
+def _discover_foreign_avds(managed: set[str]) -> list[str]:
+    """AVD names not in the registry."""
+    try:
+        out = subprocess.check_output(
+            [_android_bin("avdmanager"), "list", "avd", "-c"],
+            stderr=subprocess.DEVNULL,
+        )
+    except (DeviceError, subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    return [
+        name for line in out.decode().splitlines() if (name := line.strip()) and name not in managed
+    ]
+
+
 def cmd_device_prune(
     registry: Registry,
     *,
@@ -798,48 +969,19 @@ def cmd_device_prune(
 
     Splashdown-managed entries (those in the registry) are always preserved.
     Use --dry-run to preview, --yes to skip the prompt."""
-    _xcrun = _resolve_fn("_xcrun_json", _xcrun_json)
     _ios_shut = _resolve_fn("ios_shutdown", ios_shutdown)
     _ios_del = _resolve_fn("ios_destroy", ios_destroy)
     _avd_shut = _resolve_fn("android_shutdown", android_shutdown)
     _avd_del = _resolve_fn("android_destroy", android_destroy)
     managed = registry.managed_udids()
-    foreign_ios: list[tuple[str, str, str]] = []  # (udid, name, runtime)
-    foreign_avd: list[str] = []
-
-    if "ios" in platforms:
-        try:
-            data = _xcrun(["simctl", "list", "devices", "-j"])
-        except DeviceError as e:
-            print(f"warning: skipping iOS sims ({e})", file=sys.stderr)
-        else:
-            for runtime, devs in (data.get("devices") or {}).items():
-                for d in devs:
-                    udid = d.get("udid")
-                    if not udid or udid in managed:
-                        continue
-                    if not d.get("isAvailable", True):
-                        continue
-                    foreign_ios.append((udid, d.get("name", "?"), runtime))
-
-    if "android" in platforms:
-        try:
-            out = subprocess.check_output(
-                [_android_bin("avdmanager"), "list", "avd", "-c"],
-                stderr=subprocess.DEVNULL,
-            )
-        except (DeviceError, subprocess.CalledProcessError, FileNotFoundError):
-            pass
-        else:
-            for line in out.decode().splitlines():
-                name = line.strip()
-                if name and name not in managed:
-                    foreign_avd.append(name)
+    foreign_ios = _discover_foreign_ios(managed) if "ios" in platforms else []
+    foreign_avd = _discover_foreign_avds(managed) if "android" in platforms else []
 
     total = len(foreign_ios) + len(foreign_avd)
     if total == 0:
-        print("device prune: nothing to remove (every sim/AVD is splashdown-managed)",
-              file=sys.stderr)
+        print(
+            "device prune: nothing to remove (every sim/AVD is splashdown-managed)", file=sys.stderr
+        )
         return 0
 
     print(
@@ -890,7 +1032,7 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
         _boot_ios(info["udid"], _ios_state(info["udid"]))
     elif info["kind"] == "android":
         info["serial"] = _boot_android(info["name"])
-    return _dev_run(cwd, recipe, info)
+    return int(_dev_run(cwd, recipe, info))
 
 
 def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
@@ -944,9 +1086,7 @@ def _infer_dtype(cwd: Path, dtype: str | None) -> str:
     if len(declared) == 1:
         return declared[0]
     if not declared:
-        raise DeviceError(
-            f"no devices declared in {RECIPE_NAME} or {LOCAL_NAME}"
-        )
+        raise DeviceError(f"no devices declared in {RECIPE_NAME} or {LOCAL_NAME}")
     raise DeviceError(
         f"multiple device types declared ({', '.join(sorted(declared))}); "
         "specify one: simulator | emulator"
@@ -965,10 +1105,12 @@ def _resolve_variant_for_cli(
     return variant, spec, recipe
 
 
-def cmd_init(cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None) -> None:
+def cmd_init(
+    cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None
+) -> None:
     """Scaffold splashdown.toml from a project scan (default) or from a named
     preset (legacy path: `splash init --preset NAME`)."""
-    from .profiles import SCAFFOLDS  # noqa: PLC0415
+
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
         print(f"refusing to overwrite existing {RECIPE_NAME} (use --force)", file=sys.stderr)
@@ -980,12 +1122,16 @@ def cmd_init(cwd: Path, preset: str | None = None, force: bool = False, loader_o
 
     # Scanner-driven path.
     from .scanner import PROFILES  # noqa: PLC0415
+
     inv = Scanner().scan(cwd)
     if loader_override:
         inv = ProjectInventory(workspace=inv.workspace, apps=inv.apps, loader=loader_override)
 
-    print(f"scanning project…", file=sys.stderr)
-    print(f"  detected: {inv.workspace} ({'/'.join(a.name for a in inv.apps) or 'no apps'})", file=sys.stderr)
+    print("scanning project…", file=sys.stderr)
+    print(
+        f"  detected: {inv.workspace} ({'/'.join(a.name for a in inv.apps) or 'no apps'})",
+        file=sys.stderr,
+    )
     for app in inv.apps:
         rel = app.path.relative_to(cwd) if app.path != cwd else Path(".")
         print(f"  {rel}\t→ {app.profile}", file=sys.stderr)
@@ -1035,6 +1181,7 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
     """`splash init NAME` path: write the named scaffold, then wire the
     detected (or overridden) shell-env loader and the post-checkout hook."""
     from .profiles import SCAFFOLDS  # noqa: PLC0415
+
     scaffold = SCAFFOLDS.get(preset)
     if scaffold is None:
         available = sorted(SCAFFOLDS)
@@ -1065,6 +1212,7 @@ def cmd_refresh_inventory(cwd: Path) -> int:
     [resources.*] sections verbatim. Used both for picking up new apps and for
     upgrading legacy recipes to the new shape."""
     from .scanner import PROFILES  # noqa: PLC0415
+
     recipe_path = cwd / RECIPE_NAME
     if not recipe_path.exists():
         print(f"no {RECIPE_NAME} in {cwd}; run `splash init` instead", file=sys.stderr)
@@ -1096,7 +1244,10 @@ def cmd_refresh_inventory(cwd: Path) -> int:
     if preserved_resources:
         rebuilt = rebuilt.rstrip() + "\n\n" + "\n\n".join(preserved_resources.values()) + "\n"
     recipe_path.write_text(rebuilt)
-    print(f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {len(preserved_resources) + len(new_resources)} resource(s)", file=sys.stderr)
+    print(
+        f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {len(preserved_resources) + len(new_resources)} resource(s)",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -1115,7 +1266,9 @@ def _extract_resource_blocks(recipe_text: str) -> dict[str, str]:
         name = m.group(1)
         block = [lines[i]]
         i += 1
-        while i < len(lines) and not (lines[i].strip().startswith("[") and lines[i].strip().endswith("]")):
+        while i < len(lines) and not (
+            lines[i].strip().startswith("[") and lines[i].strip().endswith("]")
+        ):
             block.append(lines[i])
             i += 1
         # Drop trailing empty lines from the captured block.
@@ -1170,7 +1323,8 @@ def _toml_value(v: Any) -> str:
 
 def _cmd_provision(args: Any, cwd: Path, registry: Registry) -> int:
     return _cmd_provision_inner(
-        cwd, registry,
+        cwd,
+        registry,
         reprovision=args.reprovision,
         setup=args.setup,
         fmt=_resolve_format_arg(args),
@@ -1182,8 +1336,12 @@ def _resolve_format_arg(args: Any) -> str:
 
 
 def _cmd_provision_inner(
-    cwd: Path, registry: Registry, *,
-    reprovision: bool = False, setup: str | None = None, fmt: str = "text",
+    cwd: Path,
+    registry: Registry,
+    *,
+    reprovision: bool = False,
+    setup: str | None = None,
+    fmt: str = "text",
 ) -> int:
     abspath = str(cwd.resolve())
     before = registry.all_for(abspath)
@@ -1204,18 +1362,21 @@ def _cmd_provision_inner(
     setup_msgs = run_setup(cwd, recipe, setup, resolved)
 
     changed_vars = {k: v for k, v in resolved.items() if before.get(k) != v}
-    anything_changed = (
-        bool(changed_vars) or any(c for _, c in writer_results) or bool(setup_msgs)
-    )
+    anything_changed = bool(changed_vars) or any(c for _, c in writer_results) or bool(setup_msgs)
 
     if fmt == "json":
-        print(json.dumps({
-            "resolved": resolved,
-            "writers": [m for m, _ in writer_results],
-            "setup": setup_msgs,
-            "changed": anything_changed,
-            "changed_keys": sorted(changed_vars),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "resolved": resolved,
+                    "writers": [m for m, _ in writer_results],
+                    "setup": setup_msgs,
+                    "changed": anything_changed,
+                    "changed_keys": sorted(changed_vars),
+                },
+                indent=2,
+            )
+        )
         return 0
 
     if not anything_changed:
@@ -1262,14 +1423,16 @@ def _device_dispatch(args: Any, cwd: Path) -> int:
             spec = _load_variant_spec(cwd, args.dtype, variant_arg)
             if spec is not None:
                 resolved = _resolve_device_name(spec, cwd, variant_arg, args.dtype)
-                try:
+                # sim may not exist yet; the toml edit still proceeds
+                with contextlib.suppress(DeviceError):
                     _dev_destroy(args.dtype, resolved)
-                except DeviceError:
-                    pass  # sim may not exist yet; the toml edit still proceeds
                 Registry().remove_device(str(cwd.resolve()), args.dtype, variant_arg)
         device_remove(cwd, args.dtype, variant_arg)
         suffix = "" if args.keep_instance else " (and destroyed the instance)"
-        print(f"removed device `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}", file=sys.stderr)
+        print(
+            f"removed device `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}",
+            file=sys.stderr,
+        )
         return 0
 
     if args.device_cmd == "gc":
@@ -1278,13 +1441,18 @@ def _device_dispatch(args: Any, cwd: Path) -> int:
     if args.device_cmd == "refresh":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
         _refresh = _resolve_fn("cmd_device_refresh", cmd_device_refresh)
-        return _refresh(Registry(), platforms=platforms)
+        return int(_refresh(Registry(), platforms=platforms))
 
     if args.device_cmd == "prune":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
         _prune = _resolve_fn("cmd_device_prune", cmd_device_prune)
-        return _prune(
-            Registry(), yes=args.yes, dry_run=args.dry_run, platforms=platforms,
+        return int(
+            _prune(
+                Registry(),
+                yes=args.yes,
+                dry_run=args.dry_run,
+                platforms=platforms,
+            )
         )
 
     print(f"splash device {args.device_cmd}: unknown action", file=sys.stderr)

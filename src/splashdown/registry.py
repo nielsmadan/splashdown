@@ -4,14 +4,14 @@ import errno
 import fcntl
 import os
 import socket
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, NamedTuple
-
+from typing import NamedTuple
 
 # ---------- registry ----------
+
 
 class DeviceRow(NamedTuple):
     checkout: str
@@ -21,6 +21,13 @@ class DeviceRow(NamedTuple):
     model: str
     ios: str
     created_at: str
+
+
+# Column counts for the tab-separated registry files; rows that don't match are
+# skipped as malformed.
+_PORT_ROW_FIELDS = 3  # (port, checkout, key)
+_KV_ROW_FIELDS = 3  # (checkout, key, value)
+_DEVICE_ROW_FIELDS = len(DeviceRow._fields)
 
 
 class Registry:
@@ -50,7 +57,7 @@ class Registry:
         self.device_file.touch(exist_ok=True)
 
     @contextmanager
-    def _lock(self, path: Path):
+    def _lock(self, path: Path) -> Iterator[None]:
         # Lock a sidecar `.lock` file rather than the TSV itself so the
         # registry can be freely truncated and rewritten without releasing
         # or invalidating the held flock fd.
@@ -74,7 +81,7 @@ class Registry:
             if not line.strip():
                 continue
             parts = line.split("\t")
-            if len(parts) != 3:
+            if len(parts) != _PORT_ROW_FIELDS:
                 continue
             try:
                 port = int(parts[0])
@@ -161,7 +168,7 @@ class Registry:
             if not line.strip():
                 continue
             parts = line.split("\t", 2)
-            if len(parts) != 3:
+            if len(parts) != _KV_ROW_FIELDS:
                 continue
             out.append((parts[0], parts[1], parts[2]))
         return out
@@ -205,7 +212,7 @@ class Registry:
             if not line.strip():
                 continue
             parts = line.split("\t")
-            if len(parts) != 7:
+            if len(parts) != _DEVICE_ROW_FIELDS:
                 continue
             out.append(DeviceRow(*parts))
         return out
@@ -221,24 +228,38 @@ class Registry:
         return None
 
     def set_device(
-        self, abspath: str, dtype: str, variant: str,
-        udid: str, model: str, ios: str,
+        self,
+        abspath: str,
+        dtype: str,
+        variant: str,
+        udid: str,
+        model: str,
+        ios: str,
     ) -> None:
         with self._lock(self.device_file):
             rows = [
-                r for r in self._read_devices()
+                r
+                for r in self._read_devices()
                 if not (r.checkout == abspath and r.dtype == dtype and r.variant == variant)
             ]
-            rows.append(DeviceRow(
-                abspath, dtype, variant, udid, model, ios,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            ))
+            rows.append(
+                DeviceRow(
+                    abspath,
+                    dtype,
+                    variant,
+                    udid,
+                    model,
+                    ios,
+                    datetime.now(UTC).isoformat(timespec="seconds"),
+                )
+            )
             self._write_devices(rows)
 
     def remove_device(self, abspath: str, dtype: str, variant: str) -> None:
         with self._lock(self.device_file):
             rows = [
-                r for r in self._read_devices()
+                r
+                for r in self._read_devices()
                 if not (r.checkout == abspath and r.dtype == dtype and r.variant == variant)
             ]
             self._write_devices(rows)
@@ -257,12 +278,10 @@ class Registry:
         sim/AVD has been deleted out from under us. Returns count removed."""
         # Lazy import to avoid circular: registry ← devices ← registry.
         from .devices import _is_orphan_device as _orphan_check  # noqa: PLC0415
+
         with self._lock(self.device_file):
             rows = self._read_devices()
-            kept = [
-                r for r in rows
-                if Path(r.checkout).exists() and not _orphan_check(r)
-            ]
+            kept = [r for r in rows if Path(r.checkout).exists() and not _orphan_check(r)]
             self._write_devices(kept)
             return len(rows) - len(kept)
 
@@ -270,12 +289,12 @@ class Registry:
         """Every checkout path the registry knows about across ports.tsv,
         kv.tsv, and devices.tsv. Deduped + sorted."""
         seen: set[str] = set()
-        for row in self._read_ports():
-            seen.add(row[1])
-        for row in self._read_kv():
-            seen.add(row[0])
-        for row in self._read_devices():
-            seen.add(row.checkout)
+        for prow in self._read_ports():
+            seen.add(prow[1])
+        for krow in self._read_kv():
+            seen.add(krow[0])
+        for drow in self._read_devices():
+            seen.add(drow.checkout)
         return sorted(seen)
 
     def summary_for(self, abspath: str) -> dict[str, int]:
@@ -283,15 +302,15 @@ class Registry:
         keys (`port`, `kv`, `simulator`, `emulator`) even when zero, so callers
         can format without key-existence checks."""
         counts = {"port": 0, "kv": 0, "simulator": 0, "emulator": 0}
-        for row in self._read_ports():
-            if row[1] == abspath:
+        for prow in self._read_ports():
+            if prow[1] == abspath:
                 counts["port"] += 1
-        for row in self._read_kv():
-            if row[0] == abspath:
+        for krow in self._read_kv():
+            if krow[0] == abspath:
                 counts["kv"] += 1
-        for row in self._read_devices():
-            if row.checkout == abspath and row.dtype in counts:
-                counts[row.dtype] += 1
+        for drow in self._read_devices():
+            if drow.checkout == abspath and drow.dtype in counts:
+                counts[drow.dtype] += 1
         return counts
 
     def reconcile_with_recipes(self) -> int:
@@ -302,7 +321,8 @@ class Registry:
         read as "declares nothing" and nuke live entries. Returns count
         removed."""
         # Lazy import to avoid circular: registry ← recipe ← registry.
-        from .recipe import RECIPE_NAME, Recipe  # noqa: PLC0415
+        from . import RECIPE_NAME  # noqa: PLC0415
+        from .recipe import Recipe  # noqa: PLC0415
 
         cache: dict[str, set[str] | None] = {}
 
@@ -368,5 +388,3 @@ def _port_in_use(port: int) -> bool:
         except OSError:
             continue
     return False
-
-

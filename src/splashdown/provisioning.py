@@ -5,20 +5,26 @@ import re
 import subprocess
 import uuid as uuid_mod
 from pathlib import Path
-from typing import Any
 
-from .registry import Registry
+from . import ENV_FILE_NAME, RECIPE_NAME
 from .recipe import (
-    Recipe, LocalConfig, TemplateError,
-    _slug, _make_scope, _current_branch, render_template,
-    template_refs, topo_sort, _toml_quote, _env_quote, _find_table,
+    Recipe,
+    _current_branch,
+    _env_quote,
+    _make_scope,
+    _slug,
+    render_template,
+    topo_sort,
 )
-from . import RECIPE_NAME, LOCAL_NAME, ENV_FILE_NAME
-
+from .registry import Registry
 
 # ---------- provisioning ----------
 
-def provision(
+# A port resource's `range` is a two-element [lo, hi] list.
+_PORT_RANGE_LEN = 2
+
+
+def provision(  # noqa: PLR0912 — one branch per resource type; this is the dispatch
     cwd: Path,
     *,
     registry: Registry,
@@ -37,11 +43,11 @@ def provision(
         rtype = spec.get("type")
         if rtype == "port":
             rng = spec.get("range")
-            if not (isinstance(rng, list) and len(rng) == 2):
+            if not (isinstance(rng, list) and len(rng) == _PORT_RANGE_LEN):
                 raise ValueError(f"`{name}` port resource needs range = [lo, hi]")
             lo, hi = int(rng[0]), int(rng[1])
             if reprovision:
-                registry._remove_port(abspath, name)
+                registry._remove_port(abspath, name)  # noqa: SLF001
             value = str(registry.allocate_port(abspath, name, lo, hi))
         elif rtype == "uuid":
             existing = registry.get_kv(abspath, name) if not reprovision else None
@@ -90,6 +96,7 @@ def _template_uses_volatile(tpl: str) -> bool:
 
 
 # ---------- writers ----------
+
 
 def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[tuple[str, bool]]:
     """Dispatch resolved values to their writers. Returns (message, changed) per
@@ -173,14 +180,17 @@ def write_envrc(path: Path, items: dict[str, str]) -> bool:
         kept.append(line)
     while kept and not kept[-1].strip():
         kept.pop()
+
     # Naive shell quoting — single-quote, escape internal single quotes.
     def quote(v: str) -> str:
         return "'" + v.replace("'", "'\\''") + "'"
+
     new = kept + [f"export {k}={quote(v)}" for k, v in items.items()]
     return _write_if_changed(path, "\n".join(new) + "\n")
 
 
 # ---------- lifecycle (setup hooks) ----------
+
 
 def run_setup(cwd: Path, recipe: Recipe, preset: str | None, env: dict[str, str]) -> list[str]:
     if not preset:
@@ -195,7 +205,7 @@ def run_setup(cwd: Path, recipe: Recipe, preset: str | None, env: dict[str, str]
     proc_env = {**os.environ, **env}
     for cmd in commands:
         try:
-            subprocess.run(cmd, shell=True, cwd=cwd, env=proc_env, check=True)
+            subprocess.run(cmd, shell=True, cwd=cwd, env=proc_env, check=True)  # noqa: S602 — runs user-authored [setup.*] commands by design
             messages.append(f"setup.{preset}: {cmd}")
         except subprocess.CalledProcessError as e:
             messages.append(f"setup.{preset} FAILED ({cmd}): exit {e.returncode}")

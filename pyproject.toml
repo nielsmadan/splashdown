@@ -28,8 +28,44 @@ classifiers = [
 [project.scripts]
 splash = "splashdown:main"
 
-[project.optional-dependencies]
-dev = ["pytest>=7"]
+[dependency-groups]
+dev = ["pytest>=7", "ruff>=0.10", "mypy>=1.13"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Honors the rule groups the in-tree `# noqa` codes already reference
+# (PLC0415, BLE001, S307, SLF001, ...).
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PL", "BLE", "S", "SLF", "RUF"]
+ignore = [
+    "E501",     # line length is enforced by the formatter
+    "S603",     # subprocess without shell check — this tool shells out by design
+    "S607",     # partial executable path — we invoke PATH tools (xcrun, simctl, adb)
+]
+
+# Complexity rules stay on (to catch regressions) but with thresholds tuned for a
+# CLI: command dispatch and argparse setup are legitimately wider than a library's.
+[tool.ruff.lint.pylint]
+max-returns = 8
+max-branches = 15
+max-statements = 60
+max-args = 6
+
+[tool.ruff.lint.per-file-ignores]
+# Re-export hub: keeps unused imports, and imports follow module constants to
+# avoid circular imports (submodules do `from . import RECIPE_NAME`).
+"**/__init__.py" = ["F401", "E402"]
+# Tests use `setup; assert` one-liners, asserts, private access, /tmp paths,
+# local imports, unchecked subprocess, and literal expected values.
+"tests/*" = ["S101", "SLF001", "S108", "E702", "E402", "PLC0415", "PLW1510", "PLR2004"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/splashdown"]
+strict = true
 
 [tool.hatch.build.targets.wheel]
 sources = ["src"]

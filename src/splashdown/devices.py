@@ -6,22 +6,31 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .registry import Registry, DeviceRow, _port_in_use
-from .recipe import (
-    Recipe, LocalConfig, LOCAL_SKELETON,
-    _find_table, _toml_quote,
-    _make_scope, _current_branch, render_template,
-    merged_devices, resolve_variant,
-)
 from . import (
-    DEVICE_TYPES, DEVICE_VARIANT_RE, RECIPE_NAME, LOCAL_NAME, REGISTRY_DIR,
+    DEVICE_TYPES,
+    DEVICE_VARIANT_RE,
+    LOCAL_NAME,
+    RECIPE_NAME,
+    REGISTRY_DIR,
 )
-
+from .recipe import (
+    LOCAL_SKELETON,
+    LocalConfig,
+    Recipe,
+    _current_branch,
+    _find_table,
+    _make_scope,
+    _toml_quote,
+    render_template,
+)
+from .registry import DeviceRow, Registry
 
 # ---------- devices: iOS sims + Android emulators ----------
+
 
 class DeviceError(RuntimeError):
     pass
@@ -44,7 +53,9 @@ def _sanitize_avd_name(name: str) -> str:
     return _AVD_INVALID_RE.sub("_", name)
 
 
-def _resolve_device_name(spec: dict[str, Any], cwd: Path, variant: str, dtype: str | None = None) -> str:
+def _resolve_device_name(
+    spec: dict[str, Any], cwd: Path, variant: str, dtype: str | None = None
+) -> str:
     """Sim/AVD name: explicit `name` field on the variant (string or template),
     otherwise the path-derived default. For emulator, sanitize the
     result (avdmanager allows only [A-Za-z0-9._-])."""
@@ -63,9 +74,10 @@ def _resolve_device_name(spec: dict[str, Any], cwd: Path, variant: str, dtype: s
 
 # --- iOS simulator ---
 
+
 def _xcrun_json(args: list[str]) -> Any:
     try:
-        out = subprocess.check_output(["xcrun"] + args, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["xcrun", *args], stderr=subprocess.DEVNULL)
     except FileNotFoundError as e:
         raise DeviceError("xcrun not found; install Xcode command-line tools") from e
     except subprocess.CalledProcessError as e:
@@ -90,7 +102,7 @@ def _ios_latest_runtime() -> str:
     if not runtimes:
         raise DeviceError("no available iOS runtimes; install one in Xcode")
     runtimes.sort(key=lambda r: _version_tuple(r.get("version", "0")))
-    return runtimes[-1].get("identifier", "")
+    return str(runtimes[-1].get("identifier", ""))
 
 
 def _ios_latest_runtime_version() -> str:
@@ -100,7 +112,7 @@ def _ios_latest_runtime_version() -> str:
     if not runtimes:
         raise DeviceError("no available iOS runtimes; install one in Xcode")
     runtimes.sort(key=lambda r: _version_tuple(r.get("version", "0")))
-    return runtimes[-1].get("version", "")
+    return str(runtimes[-1].get("version", ""))
 
 
 def _version_tuple(s: str) -> tuple[int, ...]:
@@ -136,13 +148,15 @@ def _ios_device_type_identifier(model: str | None) -> str:
     if model:
         for t in types:
             if t.get("name") == model:
-                return t.get("identifier", "")
-        raise DeviceError(f"unknown iOS device model `{model}` — try `xcrun simctl list devicetypes`")
+                return str(t.get("identifier", ""))
+        raise DeviceError(
+            f"unknown iOS device model `{model}` — try `xcrun simctl list devicetypes`"
+        )
     pros = [t for t in types if re.search(r"iPhone.*Pro$", t.get("name", ""))]
     if not pros:
         raise DeviceError("no iPhone Pro device types found; specify `model = ...` explicitly")
     pros.sort(key=lambda t: t.get("name", ""))
-    return pros[-1].get("identifier", "")
+    return str(pros[-1].get("identifier", ""))
 
 
 def ios_ensure(name: str, model: str | None, ios_version: str | None) -> tuple[str, str]:
@@ -154,10 +168,14 @@ def ios_ensure(name: str, model: str | None, ios_version: str | None) -> tuple[s
     device_type = _ios_device_type_identifier(model)
     print(f"creating iOS sim '{name}' ({device_type} on {runtime})", file=sys.stderr)
     try:
-        udid = subprocess.check_output(
-            ["xcrun", "simctl", "create", name, device_type, runtime],
-            stderr=subprocess.PIPE,
-        ).decode().strip()
+        udid = (
+            subprocess.check_output(
+                ["xcrun", "simctl", "create", name, device_type, runtime],
+                stderr=subprocess.PIPE,
+            )
+            .decode()
+            .strip()
+        )
     except subprocess.CalledProcessError as e:
         raise DeviceError(f"simctl create failed: {e.stderr.decode().strip()}") from e
     return udid, "Shutdown"
@@ -184,13 +202,14 @@ def ios_destroy(udid: str) -> None:
 
 # --- Android emulator ---
 
+
 def _android_home() -> Path:
     h = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
     if h and Path(h).exists():
         return Path(h)
     candidates = [
         Path.home() / "Library/Android/sdk",  # macOS default
-        Path.home() / "Android/Sdk",          # Linux default (Android Studio)
+        Path.home() / "Android/Sdk",  # Linux default (Android Studio)
     ]
     for c in candidates:
         if c.exists():
@@ -216,7 +235,9 @@ def _android_bin(name: str) -> str:
 
 def _android_avd_exists(name: str) -> bool:
     try:
-        out = subprocess.check_output([_android_bin("avdmanager"), "list", "avd", "-c"], stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(
+            [_android_bin("avdmanager"), "list", "avd", "-c"], stderr=subprocess.DEVNULL
+        )
     except subprocess.CalledProcessError:
         return False
     return name in [line.strip() for line in out.decode().splitlines()]
@@ -230,9 +251,12 @@ def _is_orphan_device(row: DeviceRow) -> bool:
     NOTE: looks up _ios_udid_exists / _android_avd_exists via sys.modules so
     that monkeypatch.setattr(sd, ...) in tests takes effect correctly."""
     import sys  # noqa: PLC0415
+
     _mod = sys.modules.get("splashdown")
     _udid_exists = getattr(_mod, "_ios_udid_exists", _ios_udid_exists) if _mod else _ios_udid_exists
-    _avd_exists = getattr(_mod, "_android_avd_exists", _android_avd_exists) if _mod else _android_avd_exists
+    _avd_exists = (
+        getattr(_mod, "_android_avd_exists", _android_avd_exists) if _mod else _android_avd_exists
+    )
     if row.dtype == "simulator":
         return not _udid_exists(row.udid)
     if row.dtype == "emulator":
@@ -244,13 +268,20 @@ def _android_latest_image() -> str:
     """Pick a sensible default system image. Prefers installed; falls back to a known-good name."""
     sdkmgr = _android_bin("sdkmanager")
     try:
-        out = subprocess.check_output([sdkmgr, "--list_installed"], stderr=subprocess.DEVNULL).decode()
+        out = subprocess.check_output(
+            [sdkmgr, "--list_installed"], stderr=subprocess.DEVNULL
+        ).decode()
     except subprocess.CalledProcessError:
         out = ""
     installed = re.findall(r"^\s*(system-images;android-\d+;[^\s|]+)", out, re.M)
     if installed:
-        installed.sort(key=lambda s: int(re.search(r"android-(\d+)", s).group(1)), reverse=True)
-        return installed[0]
+
+        def _api_level(s: str) -> int:
+            m = re.search(r"android-(\d+)", s)
+            return int(m.group(1)) if m else 0
+
+        installed.sort(key=_api_level, reverse=True)
+        return str(installed[0])
     return "system-images;android-34;google_apis;arm64-v8a"
 
 
@@ -266,6 +297,7 @@ def android_ensure(name: str, device: str | None, image: str | None) -> str:
         [avdmgr, "create", "avd", "-n", name, "-k", image, "-d", device, "--force"],
         input=b"\n",  # answer "no" to "create custom hardware profile?"
         capture_output=True,
+        check=False,
     )
     if proc.returncode != 0:
         raise DeviceError(f"avdmanager create failed: {proc.stderr.decode().strip()}")
@@ -279,14 +311,22 @@ def _android_running_serial(avd_name: str) -> str | None:
         out = subprocess.check_output([adb, "devices"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
         return None
+    # `adb devices` rows are "<serial>\t<state>"; need both columns present.
+    adb_row_cols = 2
     for line in out.splitlines()[1:]:
         parts = line.split()
-        if len(parts) >= 2 and parts[0].startswith("emulator-") and parts[1] == "device":
+        if len(parts) >= adb_row_cols and parts[0].startswith("emulator-") and parts[1] == "device":
             serial = parts[0]
             try:
-                got = subprocess.check_output(
-                    [adb, "-s", serial, "emu", "avd", "name"], stderr=subprocess.DEVNULL, timeout=2,
-                ).decode().splitlines()
+                got = (
+                    subprocess.check_output(
+                        [adb, "-s", serial, "emu", "avd", "name"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=2,
+                    )
+                    .decode()
+                    .splitlines()
+                )
                 if got and got[0].strip() == avd_name:
                     return serial
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -301,13 +341,15 @@ def android_boot(avd_name: str) -> str:
         return serial
     emu = _android_bin("emulator")
     from .recipe import _slug as recipe_slug  # noqa: PLC0415
+
     log = REGISTRY_DIR / f"emulator-{recipe_slug(avd_name)}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     print(f"booting Android AVD '{avd_name}' (log: {log})", file=sys.stderr)
     with log.open("ab") as f:
         subprocess.Popen(
             [emu, "-avd", avd_name],
-            stdout=f, stderr=subprocess.STDOUT,
+            stdout=f,
+            stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
@@ -332,11 +374,13 @@ def android_destroy(avd_name: str) -> None:
 
 # --- reconciliation (auto-upgrade on latest, pin on explicit) ---
 
-def _resolve_fn(name: str, default):
+
+def _resolve_fn(name: str, default: Callable[..., Any]) -> Any:
     """Look up a function by name through sys.modules['splashdown'] so that
     monkeypatch.setattr(sd, name, ...) in tests takes effect. Falls back to
     the local binding when the top-level module hasn't been imported yet."""
     import sys  # noqa: PLC0415
+
     _mod = sys.modules.get("splashdown")
     return getattr(_mod, name, default) if _mod else default
 
@@ -370,6 +414,10 @@ def ensure_fresh_sim(
             or row.model != model_spec
         )
         if not stale:
+            # `stale` is True whenever row is None, so this never fires; it
+            # narrows the optional for the type-checker.
+            if row is None:
+                raise DeviceError("internal: simulator row vanished mid-check")
             return {"kind": "ios", "udid": row.udid, "name": sim_name}
         if row is not None and _udid_exists(row.udid):
             _destroy(row.udid)
@@ -393,17 +441,18 @@ def ensure_fresh_sim(
             or row.model != device_spec
         )
         if not stale:
-            return {"kind": "android", "serial": None, "name": sim_name}
+            return {"kind": "android", "serial": "", "name": sim_name}
         if row is not None and _avd_exists(sim_name):
             _avd_destroy(sim_name)
         _avd_ensure(sim_name, device_spec or None, target_image)
         registry.set_device(checkout, dtype, variant, sim_name, device_spec, target_image)
-        return {"kind": "android", "serial": None, "name": sim_name}
+        return {"kind": "android", "serial": "", "name": sim_name}
 
     raise DeviceError(f"unknown device type `{dtype}`")
 
 
 # --- generic device dispatch ---
+
 
 def device_status(dtype: str, resolved_name: str) -> str:
     if dtype == "simulator":
@@ -447,7 +496,7 @@ def _ios_current_state(udid: str) -> str:
     for devs in (data.get("devices") or {}).values():
         for d in devs:
             if d.get("udid") == udid:
-                return d.get("state", "Unknown")
+                return str(d.get("state", "Unknown"))
     return "Unknown"
 
 
@@ -473,7 +522,7 @@ def _short_path(abspath: str) -> str:
     if abspath == home:
         return "~"
     if abspath.startswith(home + "/"):
-        return "~" + abspath[len(home):]
+        return "~" + abspath[len(home) :]
     return abspath
 
 
@@ -509,13 +558,9 @@ def device_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
     if the (type, variant) pair already exists in either the recipe or the local
     file — pick a different variant name."""
     if dtype not in DEVICE_TYPES:
-        raise DeviceError(
-            f"device type `{dtype}` must be one of: {', '.join(DEVICE_TYPES)}"
-        )
+        raise DeviceError(f"device type `{dtype}` must be one of: {', '.join(DEVICE_TYPES)}")
     if not DEVICE_VARIANT_RE.match(variant):
-        raise DeviceError(
-            f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*"
-        )
+        raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
 
     path = cwd / LOCAL_NAME
     existing_text = path.read_text() if path.exists() else LOCAL_SKELETON
@@ -546,8 +591,7 @@ def device_remove(cwd: Path, dtype: str, variant: str) -> None:
     recipe = _load_recipe_or_empty(cwd)
     if variant in recipe.devices.get(dtype, {}):
         raise DeviceError(
-            f"`{dtype}.{variant}` is declared in the recipe; "
-            f"edit {RECIPE_NAME} to remove it"
+            f"`{dtype}.{variant}` is declared in the recipe; edit {RECIPE_NAME} to remove it"
         )
     path = cwd / LOCAL_NAME
     if not path.exists() or variant not in LocalConfig.load(path).devices.get(dtype, {}):
@@ -564,9 +608,10 @@ def device_remove(cwd: Path, dtype: str, variant: str) -> None:
 
 def detect_framework(cwd: Path, recipe: Recipe) -> str:
     from .scanner import PROFILES  # noqa: PLC0415
+
     override = recipe.project.get("framework")
     if override and override != "auto":
-        return override
+        return str(override)
     for name, profile in PROFILES.items():
         if profile.detect(cwd):
             return name
@@ -580,7 +625,8 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
     from .scanner import PROFILES  # noqa: PLC0415
+
     fw = detect_framework(cwd, recipe)
     if fw not in PROFILES:
         raise DeviceError(f"don't know how to run framework `{fw}`")
-    return PROFILES[fw].run(cwd, recipe, info)
+    return int(PROFILES[fw].run(cwd, recipe, info))

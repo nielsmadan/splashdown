@@ -3,19 +3,20 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 
-from .recipe import Recipe, _current_branch
-from .devices import DeviceError, detect_framework
 from . import RECIPE_NAME
-
+from .devices import DeviceError, detect_framework
+from .recipe import Recipe
 
 # ---------- framework wiring (doctor) ----------
 #
 # WIRING is the per-framework spec shipped with the tool. Each WiringCheck names
 # a small fact about the project (e.g. "metro.config.js consumes RCT_METRO_PORT")
 # that splashdown can inspect and, where safely mechanical, repair.
+
 
 class WiringCheck(NamedTuple):
     id: str
@@ -51,15 +52,18 @@ def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]
     """Resolve the doctor's check list for a framework name. Profiles take an
     AppInventory; synthesize one rooted at cwd."""
     from .scanner import PROFILES, AppInventory  # noqa: PLC0415
+
     if framework in PROFILES:
         app = AppInventory(name="main", path=cwd, profile=framework)
-        return PROFILES[framework].wiring_checks(app)
+        checks: list[WiringCheck] = PROFILES[framework].wiring_checks(app)
+        return checks
     return []
 
 
 def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None = None) -> int:
     """Run framework-aware wiring checks. With fix=True, apply safe autofixes."""
     import sys  # noqa: PLC0415
+
     framework = _resolve_doctor_framework(cwd, framework_override)
     if framework is None:
         print(
@@ -110,8 +114,10 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
 
 # ---------- React Native wiring checks ----------
 
+
 def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
     from .commands import _detect_hook_manager, _lefthook_config_path  # noqa: PLC0415
+
     manager = _detect_hook_manager(cwd)
     if manager == "lefthook":
         path = _lefthook_config_path(cwd)
@@ -131,15 +137,23 @@ def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
     hook = cwd / ".githooks" / "post-checkout"
     if hook.exists() and "splash" in hook.read_text():
         try:
-            out = subprocess.check_output(
-                ["git", "config", "--get", "core.hooksPath"],
-                cwd=cwd, stderr=subprocess.DEVNULL,
-            ).decode().strip()
+            out = (
+                subprocess.check_output(
+                    ["git", "config", "--get", "core.hooksPath"],
+                    cwd=cwd,
+                    stderr=subprocess.DEVNULL,
+                )
+                .decode()
+                .strip()
+            )
             if out == ".githooks":
                 return ("ok", ".githooks/post-checkout invokes splash, core.hooksPath set")
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
-        return ("problem", ".githooks/post-checkout exists but core.hooksPath isn't set to .githooks")
+        return (
+            "problem",
+            ".githooks/post-checkout exists but core.hooksPath isn't set to .githooks",
+        )
     return ("problem", "no post-checkout hook invokes splash")
 
 
@@ -152,6 +166,7 @@ def _rn_hook_manual(cwd: Path) -> str:
 
 def _autofix_ensure_post_checkout_hook(cwd: Path) -> None:
     from .commands import _ensure_post_checkout_hook  # noqa: PLC0415
+
     _ensure_post_checkout_hook(cwd)
 
 
@@ -214,6 +229,7 @@ def _rn_metro_inject(text: str) -> str | None:
 
 def _rn_metro_autofix(cwd: Path) -> None:
     import sys  # noqa: PLC0415
+
     path = cwd / "metro.config.js"
     text = path.read_text()
     if "process.env.RCT_METRO_PORT" in text:
@@ -228,10 +244,10 @@ def _rn_metro_autofix(cwd: Path) -> None:
         path.write_text(new_text)
         print(f"patched metro.config.js (RCT_METRO_PORT, fallback {m.group(1)})", file=sys.stderr)
         return
-    new_text = _rn_metro_inject(text)
-    if new_text is None:
+    injected = _rn_metro_inject(text)
+    if injected is None:
         return  # unrecognized shape — doctor will surface manual_instructions
-    path.write_text(new_text)
+    path.write_text(injected)
     print("patched metro.config.js (added server.port, fallback 8081)", file=sys.stderr)
 
 
@@ -274,9 +290,8 @@ def _pkg_scripts_with_port(data: dict[str, Any]) -> list[str]:
         if not isinstance(value, str):
             continue
         # Target the common RN scripts, plus any script invoking react-native.
-        if name in _PKG_RN_SCRIPTS or "react-native" in value:
-            if _PKG_PORT_RE.search(value):
-                hits.append(name)
+        if (name in _PKG_RN_SCRIPTS or "react-native" in value) and _PKG_PORT_RE.search(value):
+            hits.append(name)
     return hits
 
 
@@ -293,6 +308,7 @@ def _rn_pkg_detect(cwd: Path) -> tuple[str, str]:
 
 def _rn_pkg_autofix(cwd: Path) -> None:
     import sys  # noqa: PLC0415
+
     path = cwd / "package.json"
     data = json.loads(path.read_text())
     scripts = data.get("scripts") or {}
@@ -375,6 +391,7 @@ def _rn_xcode_detect(cwd: Path) -> tuple[str, str]:
 
 def _rn_xcode_autofix(cwd: Path) -> None:
     import sys  # noqa: PLC0415
+
     path = cwd / "ios" / ".xcode.env"
     text = path.read_text()
     if "splashdown.env" in text:

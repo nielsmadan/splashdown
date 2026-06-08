@@ -6,33 +6,50 @@ import os
 import sys
 from pathlib import Path
 
-from .registry import Registry
-from .recipe import LocalConfig, Recipe, TemplateError, LOCAL_SKELETON
-from .provisioning import provision, write_outputs, run_setup
-from .devices import DeviceError, device_add, device_remove, device_destroy, device_run
-from .wiring import cmd_doctor
+from . import DEVICE_TYPES, __version__
 from .commands import (
-    cmd_status, cmd_devices_list, cmd_device_gc, cmd_device_prune,
-    cmd_run, cmd_start, cmd_stop, cmd_destroy,
-    cmd_init, cmd_refresh_inventory,
-    _cmd_provision, _cmd_provision_inner, _cmd_refresh, _device_dispatch,
-    _resolve_format_arg,
+    _cmd_provision,
+    _cmd_refresh,
+    _device_dispatch,
+    cmd_destroy,
+    cmd_devices_list,
+    cmd_init,
+    cmd_refresh_inventory,
+    cmd_run,
+    cmd_start,
+    cmd_status,
+    cmd_stop,
 )
-from . import __version__, DEVICE_TYPES, RECIPE_NAME, LOCAL_NAME, ENV_FILE_NAME
-
+from .devices import DeviceError
+from .registry import Registry
+from .wiring import cmd_doctor
 
 # ---------- CLI ----------
 
 KNOWN_CMDS = {
-    "provision", "init", "list", "get", "set", "release", "gc", "doctor",
-    "status", "refresh", "refresh-inventory",
-    "run", "start", "stop", "destroy",
-    "devices", "device",
+    "provision",
+    "init",
+    "list",
+    "get",
+    "set",
+    "release",
+    "gc",
+    "doctor",
+    "status",
+    "refresh",
+    "refresh-inventory",
+    "run",
+    "start",
+    "stop",
+    "destroy",
+    "devices",
+    "device",
 }
 
 
 def _build_parser() -> argparse.ArgumentParser:
     from .profiles import SCAFFOLDS  # noqa: PLC0415
+
     parser = argparse.ArgumentParser(prog="splash", description="Per-checkout resource provisioner")
     parser.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
     parser.add_argument("--format", choices=["text", "json"], default=None)
@@ -43,23 +60,47 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reprovision", action="store_true", help="force re-allocate all resources")
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
-    p = sub.add_parser("status", help="show resolved vars, declared devices, and OS-level port collisions")
-    p.add_argument("scope", nargs="?", choices=("local", "all"), default="local",
-                   help="local (default): this checkout only. all: every tracked checkout.")
-    p.add_argument("--check", action="store_true", help="revalidate liveness and print a cleanup hint")
-    p.add_argument("--verbose", action="store_true", help="with `all`, expand each checkout into the per-block view")
-    sub.add_parser("refresh", help="re-provision and reallocate any port an OS process has squatted on")
+    p = sub.add_parser(
+        "status", help="show resolved vars, declared devices, and OS-level port collisions"
+    )
+    p.add_argument(
+        "scope",
+        nargs="?",
+        choices=("local", "all"),
+        default="local",
+        help="local (default): this checkout only. all: every tracked checkout.",
+    )
+    p.add_argument(
+        "--check", action="store_true", help="revalidate liveness and print a cleanup hint"
+    )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="with `all`, expand each checkout into the per-block view",
+    )
+    sub.add_parser(
+        "refresh", help="re-provision and reallocate any port an OS process has squatted on"
+    )
 
     p = sub.add_parser("init", help="scaffold a splashdown.toml")
     p.add_argument(
-        "preset", nargs="?", default=None,
+        "preset",
+        nargs="?",
+        default=None,
         choices=tuple(SCAFFOLDS),
         help="named scaffold (default: scan the project)",
     )
-    p.add_argument("--loader", default=None, choices=("mise", "direnv", "devbox"), help="override loader auto-detection")
+    p.add_argument(
+        "--loader",
+        default=None,
+        choices=("mise", "direnv", "devbox"),
+        help="override loader auto-detection",
+    )
     p.add_argument("--force", action="store_true")
 
-    sub.add_parser("refresh-inventory", help="re-scan and update [project]/[apps.*] in splashdown.toml")
+    sub.add_parser(
+        "refresh-inventory", help="re-scan and update [project]/[apps.*] in splashdown.toml"
+    )
 
     p = sub.add_parser("list", help="show this checkout's resolved vars")
     p.add_argument("--checkout", default=None)
@@ -68,7 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("key")
     p.add_argument("--checkout", default=None)
 
-    p = sub.add_parser("set", help="manually set a value (for type=\"set\" resources)")
+    p = sub.add_parser("set", help='manually set a value (for type="set" resources)')
     p.add_argument("assignment", metavar="KEY=VALUE")
 
     p = sub.add_parser("release", help="release this checkout's registry entries (or just KEY)")
@@ -77,8 +118,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("gc", help="garbage-collect dead registry entries")
 
     p = sub.add_parser("doctor", help="check framework-aware wiring of this project")
-    p.add_argument("--fix", action="store_true", help="apply safe autofixes; print manual instructions for the rest")
-    p.add_argument("--framework", default=None, help="override framework detection (react-native|flutter|expo)")
+    p.add_argument(
+        "--fix",
+        action="store_true",
+        help="apply safe autofixes; print manual instructions for the rest",
+    )
+    p.add_argument(
+        "--framework", default=None, help="override framework detection (react-native|flutter|expo)"
+    )
 
     for verb, helptxt in (
         ("run", "start the device + build & launch the app on it"),
@@ -98,19 +145,29 @@ def _build_parser() -> argparse.ArgumentParser:
     devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION")
 
     devsub.add_parser("gc", help="prune splashdown-managed sims for defunct checkouts")
-    ref = devsub.add_parser("refresh", help="destroy + recreate stale/missing sims & AVDs to latest (no boot)")
+    ref = devsub.add_parser(
+        "refresh", help="destroy + recreate stale/missing sims & AVDs to latest (no boot)"
+    )
     ref.add_argument(
-        "platform", nargs="?", default="all", choices=("ios", "android", "all"),
+        "platform",
+        nargs="?",
+        default="all",
+        choices=("ios", "android", "all"),
         help="scope (default: all = both)",
     )
 
     prune = devsub.add_parser("prune", help="destroy every sim/AVD splashdown did NOT create")
     prune.add_argument(
-        "platform", nargs="?", default="all", choices=("ios", "android", "all"),
+        "platform",
+        nargs="?",
+        default="all",
+        choices=("ios", "android", "all"),
         help="scope (default: all = both)",
     )
     prune.add_argument("--yes", action="store_true", help="skip confirmation prompt")
-    prune.add_argument("--dry-run", action="store_true", dest="dry_run", help="list without deleting")
+    prune.add_argument(
+        "--dry-run", action="store_true", dest="dry_run", help="list without deleting"
+    )
 
     add = devsub.add_parser("add", help="declare a variant in splashdown.local.toml")
     add.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
@@ -121,11 +178,15 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("--image")
     add.add_argument("--name", dest="sim_name", help="simulator/emulator name override")
 
-    rm = devsub.add_parser("remove", help="remove a variant from splashdown.local.toml (and destroy its sim)")
+    rm = devsub.add_parser(
+        "remove", help="remove a variant from splashdown.local.toml (and destroy its sim)"
+    )
     rm.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
     rm.add_argument("variant")
     rm.add_argument(
-        "--keep-instance", action="store_true", dest="keep_instance",
+        "--keep-instance",
+        action="store_true",
+        dest="keep_instance",
         help="leave the simulator/emulator alive; only edit the local toml",
     )
 
@@ -161,14 +222,14 @@ def _ensure_subcommand(argv: list[str]) -> list[str]:
             i += 1  # --flag=value
             continue
         break  # first non-flag, non-subcommand token: insert provision here
-    return argv[:i] + ["provision"] + argv[i:]
+    return [*argv[:i], "provision", *argv[i:]]
 
 
 def _resolve_format(args: object) -> str:
     return getattr(args, "format", None) or "text"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — one branch/return per subcommand; this is the dispatch table
     if argv is None:
         argv = sys.argv[1:]
     argv = _ensure_subcommand(list(argv))
@@ -212,8 +273,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "status":
             return cmd_status(
-                cwd, registry, _resolve_format(args),
-                show_all=(args.scope == "all"), check=args.check, verbose=args.verbose,
+                cwd,
+                registry,
+                _resolve_format(args),
+                show_all=(args.scope == "all"),
+                check=args.check,
+                verbose=args.verbose,
             )
 
         if args.cmd == "refresh":

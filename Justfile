@@ -13,6 +13,29 @@ test:
 test-verbose:
     @python3 -m pytest tests/ -v
 
+# Lint with ruff.
+lint:
+    @uv run ruff check
+
+# Format the codebase with ruff.
+fmt:
+    @uv run ruff format
+
+# Type-check src/splashdown with mypy.
+typecheck:
+    @uv run mypy
+
+# Run everything CI runs: lint, format check, type check, tests.
+check:
+    @uv run ruff check
+    @uv run ruff format --check
+    @uv run mypy
+    @uv run pytest -q
+
+# Install git hooks (lefthook).
+hooks:
+    @lefthook install
+
 # Build sdist + wheel into ./dist
 build:
     @rm -rf dist build *.egg-info
