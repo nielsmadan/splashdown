@@ -525,7 +525,7 @@ def test_android_physical_devices_excludes_emulators(monkeypatch):
 
 def _write_physical_recipe(tmp_path):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.physical.default]
+[targets.device.default]
 
 [project]
 framework = "flutter"
@@ -543,7 +543,7 @@ def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
         captured["info"] = info
         return 0
     monkeypatch.setattr(sd, "device_run", _fake_run)
-    rc = sd.main(["--cwd", str(tmp_path), "run", "physical"])
+    rc = sd.main(["--cwd", str(tmp_path), "run", "device"])
     assert rc == 0
     assert captured["info"]["udid"] == "00008-PHONE"
     assert captured["info"]["physical"] is True
@@ -554,7 +554,7 @@ def test_cli_start_physical_reports_connected_without_boot(tmp_path, monkeypatch
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_physical(monkeypatch, ios=[_IPHONE])
     monkeypatch.setattr(sd, "ios_boot", lambda u, s: pytest.fail("should not boot hardware"))
-    rc = sd.main(["--cwd", str(tmp_path), "start", "physical"])
+    rc = sd.main(["--cwd", str(tmp_path), "start", "device"])
     assert rc == 0
     assert "connected" in capsys.readouterr().err.lower()
 
@@ -563,7 +563,7 @@ def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(sd, "device_shutdown", lambda dt, name: pytest.fail("should not touch hardware"))
-    rc = sd.main(["--cwd", str(tmp_path), "stop", "physical"])
+    rc = sd.main(["--cwd", str(tmp_path), "stop", "device"])
     assert rc == 0
 
 
@@ -571,7 +571,7 @@ def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(sd, "device_destroy", lambda dt, name: pytest.fail("should not touch hardware"))
-    rc = sd.main(["--cwd", str(tmp_path), "destroy", "physical"])
+    rc = sd.main(["--cwd", str(tmp_path), "destroy", "device"])
     assert rc == 0
 
 
@@ -579,18 +579,18 @@ def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    rc = sd.main(["--cwd", str(tmp_path), "devices"])
+    rc = sd.main(["--cwd", str(tmp_path), "targets"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "physical" in out
+    assert "device" in out
     assert "connected" in out
 
 
 def test_device_add_physical_writes_id_and_platform(tmp_path):
-    sd.device_add(tmp_path, "physical", "my-phone",
+    sd.target_add(tmp_path, "device", "my-phone",
                   {"id": "ABC123", "platform": "ios", "name": None})
     text = (tmp_path / "splashdown.local.toml").read_text()
-    assert "[devices.physical.my-phone]" in text
+    assert "[targets.device.my-phone]" in text
     assert 'id = "ABC123"' in text
     assert 'platform = "ios"' in text
 
@@ -624,57 +624,57 @@ def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
     assert not any("simctl" in c for c in flat)
 
 
-# ---------- device_add / device_remove (new shape) ----------
+# ---------- target_add / target_remove (new shape) ----------
 
 
 def test_device_add_writes_nested_table(tmp_path):
-    sd.device_add(tmp_path, "simulator", "repro-bug", {"model": "iPhone 16", "ios": "17.5"})
+    sd.target_add(tmp_path, "simulator", "repro-bug", {"model": "iPhone 16", "ios": "17.5"})
     text = (tmp_path / "splashdown.local.toml").read_text()
-    assert "[devices.simulator.repro-bug]" in text
+    assert "[targets.simulator.repro-bug]" in text
     assert 'model = "iPhone 16"' in text
     assert 'ios = "17.5"' in text
 
 
 def test_device_add_rejects_collision_with_local(tmp_path):
-    sd.device_add(tmp_path, "simulator", "repro", {"model": "A"})
+    sd.target_add(tmp_path, "simulator", "repro", {"model": "A"})
     with pytest.raises(sd.DeviceError, match="already exists"):
-        sd.device_add(tmp_path, "simulator", "repro", {"model": "B"})
+        sd.target_add(tmp_path, "simulator", "repro", {"model": "B"})
 
 
 def test_device_add_rejects_collision_with_recipe(tmp_path):
-    (tmp_path / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
+    (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     with pytest.raises(sd.DeviceError, match="recipe"):
-        sd.device_add(tmp_path, "simulator", "default", {"model": "iPhone 16"})
+        sd.target_add(tmp_path, "simulator", "default", {"model": "iPhone 16"})
 
 
 def test_device_add_rejects_bad_type(tmp_path):
     with pytest.raises(sd.DeviceError, match="type"):
-        sd.device_add(tmp_path, "not-a-type", "default", {})
+        sd.target_add(tmp_path, "not-a-type", "default", {})
 
 
 def test_device_add_rejects_bad_variant(tmp_path):
     with pytest.raises(sd.DeviceError, match="variant"):
-        sd.device_add(tmp_path, "simulator", "has spaces", {"model": "X"})
+        sd.target_add(tmp_path, "simulator", "has spaces", {"model": "X"})
 
 
 def test_device_remove_strips_local_variant(tmp_path):
-    sd.device_add(tmp_path, "simulator", "repro", {"model": "X"})
-    sd.device_add(tmp_path, "simulator", "other", {"model": "Y"})
-    sd.device_remove(tmp_path, "simulator", "repro")
+    sd.target_add(tmp_path, "simulator", "repro", {"model": "X"})
+    sd.target_add(tmp_path, "simulator", "other", {"model": "Y"})
+    sd.target_remove(tmp_path, "simulator", "repro")
     lc = sd.LocalConfig.load(tmp_path / "splashdown.local.toml")
-    assert "repro" not in lc.devices.get("simulator", {})
-    assert "other" in lc.devices["simulator"]
+    assert "repro" not in lc.targets.get("simulator", {})
+    assert "other" in lc.targets["simulator"]
 
 
 def test_device_remove_refuses_recipe_variant(tmp_path):
-    (tmp_path / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
+    (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     with pytest.raises(sd.DeviceError, match="recipe"):
-        sd.device_remove(tmp_path, "simulator", "default")
+        sd.target_remove(tmp_path, "simulator", "default")
 
 
 def test_device_remove_errors_when_missing(tmp_path):
-    with pytest.raises(sd.DeviceError, match="no device"):
-        sd.device_remove(tmp_path, "simulator", "ghost")
+    with pytest.raises(sd.DeviceError, match="no target"):
+        sd.target_remove(tmp_path, "simulator", "ghost")
 
 
 # ---------- splash run / boot (top-level) ----------
@@ -690,7 +690,7 @@ def _stub_ios_boot_chain(monkeypatch):
 
 def test_cli_run_default_variant(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
 [project]
@@ -714,10 +714,10 @@ framework = "react-native"
 
 def test_cli_run_explicit_variant(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
-[devices.simulator.small-screen]
+[targets.simulator.small-screen]
 model = "iPhone 13 Mini"
 
 [project]
@@ -739,10 +739,10 @@ framework = "react-native"
 
 def test_cli_run_errors_when_no_default_and_no_pick(tmp_path, monkeypatch, capsys):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.simulator.a]
+[targets.simulator.a]
 model = "X"
 
-[devices.simulator.b]
+[targets.simulator.b]
 model = "Y"
 
 [project]
@@ -756,7 +756,7 @@ framework = "react-native"
 
 def test_cli_boot_does_not_call_device_run(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
 [project]
@@ -778,19 +778,19 @@ framework = "react-native"
 
 def test_cli_devices_shows_recipe_and_local(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "A"\n[project]\nframework = "react-native"\n'
+        '[targets.simulator.default]\nmodel = "A"\n[project]\nframework = "react-native"\n'
     )
-    (tmp_path / "splashdown.local.toml").write_text('[devices.simulator.repro]\nmodel = "B"\n')
+    (tmp_path / "splashdown.local.toml").write_text('[targets.simulator.repro]\nmodel = "B"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Stub status checks to avoid hitting xcrun.
     monkeypatch.setattr(sd, "device_status", lambda dtype, name: "absent")
-    rc = sd.main(["--cwd", str(tmp_path), "devices"])
+    rc = sd.main(["--cwd", str(tmp_path), "targets"])
     assert rc == 0
 
 
 def test_cli_stop_resolves_by_type_and_variant(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
 [project]
@@ -811,7 +811,7 @@ framework = "react-native"
 
 def test_cli_run_infers_dtype_when_only_one_declared(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
 [project]
@@ -881,7 +881,7 @@ def test_cli_status_local_json_shape(tmp_path, monkeypatch, capsys):
     # Local mode emits a flat per-checkout object (not the `checkouts` list).
     assert data["checkout"] == str(tmp_path.resolve())
     assert any(r["key"] == "J_PORT" for r in data["resources"])
-    assert "devices" in data
+    assert "targets" in data
 
 
 def test_cli_status_all_on_empty_registry_renders_only_cwd(tmp_path, monkeypatch, capsys):
@@ -913,9 +913,9 @@ def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys
         called["prune"] = True
         return 0
 
-    monkeypatch.setattr(sd, "cmd_device_prune", _fail)
+    monkeypatch.setattr(sd, "cmd_target_prune", _fail)
     with pytest.raises(SystemExit) as exc:
-        sd.main(["--cwd", str(tmp_path), "device", "prune", "mac"])
+        sd.main(["--cwd", str(tmp_path), "target", "prune", "mac"])
     assert exc.value.code == 2
     assert called["prune"] is False
     err = capsys.readouterr().err
@@ -1080,7 +1080,7 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
     assert "orphan device" in err
     # Orphans are recreated by `device refresh` (plain `gc` won't touch an orphan
     # whose checkout still exists).
-    assert "`splash device refresh`" in err
+    assert "`splash target refresh`" in err
 
 
 def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, capsys):
@@ -1168,32 +1168,32 @@ def test_cli_version_flag(capsys):
 
 def test_cli_bare_device_lists(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "X"\n[project]\nframework = "react-native"\n'
+        '[targets.simulator.default]\nmodel = "X"\n[project]\nframework = "react-native"\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(sd, "device_status", lambda dtype, name: "absent")
-    rc = sd.main(["--cwd", str(tmp_path), "device"])
+    rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 0
 
 
 def test_cli_device_remove_destroys_instance_by_default(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text('[project]\nframework = "react-native"\n')
     (tmp_path / "splashdown.local.toml").write_text(
-        '[devices.simulator.repro]\nmodel = "iPhone 17"\n'
+        '[targets.simulator.repro]\nmodel = "iPhone 17"\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     destroyed: list[tuple[str, str]] = []
     monkeypatch.setattr(sd, "device_destroy", lambda dt, name: destroyed.append((dt, name)))
-    rc = sd.main(["--cwd", str(tmp_path), "device", "remove", "simulator", "repro"])
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
     assert rc == 0
     assert destroyed and destroyed[0][0] == "simulator"
-    assert "[devices.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
+    assert "[targets.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
 
 
 def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text('[project]\nframework = "react-native"\n')
     (tmp_path / "splashdown.local.toml").write_text(
-        '[devices.simulator.repro]\nmodel = "iPhone 17"\n'
+        '[targets.simulator.repro]\nmodel = "iPhone 17"\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     destroyed: list[tuple[str, str]] = []
@@ -1202,8 +1202,7 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
         [
             "--cwd",
             str(tmp_path),
-            "device",
-            "remove",
+            "target",            "remove",
             "simulator",
             "repro",
             "--keep-instance",
@@ -1211,7 +1210,7 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
     )
     assert rc == 0
     assert destroyed == []  # sim left alone
-    assert "[devices.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
+    assert "[targets.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
 
 
 # ---------- device gc / prune ----------
@@ -1228,7 +1227,7 @@ def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
-    rc = sd.cmd_device_gc(registry, all_=False)
+    rc = sd.cmd_target_gc(registry, all_=False)
     assert rc == 0
     assert destroyed == ["UDID-A"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-B"}
@@ -1238,10 +1237,10 @@ def test_device_gc_all_drops_stale_latest_but_keeps_pinned(registry, tmp_path, m
     checkout = tmp_path / "co"
     checkout.mkdir()
     (checkout / "splashdown.toml").write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
-[devices.simulator.legacy]
+[targets.simulator.legacy]
 model = "iPhone 12"
 ios   = "17.0"
 """)
@@ -1256,7 +1255,7 @@ ios   = "17.0"
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
-    sd.cmd_device_gc(registry, all_=True)
+    sd.cmd_target_gc(registry, all_=True)
     assert destroyed == ["UDID-DEFAULT"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-LEGACY"}
 
@@ -1267,7 +1266,7 @@ ios   = "17.0"
 def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     checkout = tmp_path / "co"
     checkout.mkdir()
-    (checkout / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
+    (checkout / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
@@ -1276,7 +1275,7 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     monkeypatch.setattr(sd, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot"))
-    rc = sd.cmd_device_refresh(registry)
+    rc = sd.cmd_target_refresh(registry)
     assert rc == 0
     assert destroyed == ["UDID-OLD"]
     assert registry.get_device(abspath, "simulator", "default").udid == "UDID-NEW"
@@ -1286,8 +1285,8 @@ def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, mo
     checkout = tmp_path / "co"
     checkout.mkdir()
     (checkout / "splashdown.toml").write_text(
-        '[devices.simulator.default]\nmodel = "iPhone 17"\n\n'
-        '[devices.simulator.legacy]\nmodel = "iPhone 12"\nios   = "17.0"\n'
+        '[targets.simulator.default]\nmodel = "iPhone 17"\n\n'
+        '[targets.simulator.legacy]\nmodel = "iPhone 12"\nios   = "17.0"\n'
     )
     abspath = str(checkout.resolve())
     registry.set_device(
@@ -1301,7 +1300,7 @@ def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, mo
     destroyed = []
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated"))
-    rc = sd.cmd_device_refresh(registry)
+    rc = sd.cmd_target_refresh(registry)
     assert rc == 0
     assert destroyed == []
     assert {r.udid for r in registry.all_devices()} == {"UDID-DEFAULT", "UDID-LEGACY"}
@@ -1310,7 +1309,7 @@ def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, mo
 def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
     checkout = tmp_path / "co"
     checkout.mkdir()
-    (checkout / "splashdown.toml").write_text('[devices.emulator.default]\ndevice = "pixel_9"\n')
+    (checkout / "splashdown.toml").write_text('[targets.emulator.default]\ndevice = "pixel_9"\n')
     abspath = str(checkout.resolve())
     registry.set_device(
         abspath,
@@ -1327,7 +1326,7 @@ def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(sd, "android_destroy", touched.append)
     monkeypatch.setattr(sd, "android_ensure", lambda *a: touched.append("ensure"))
-    rc = sd.cmd_device_refresh(registry, platforms=("ios",))
+    rc = sd.cmd_target_refresh(registry, platforms=("ios",))
     assert rc == 0
     assert touched == []  # emulator row skipped entirely
     assert {r.udid for r in registry.all_devices()} == {"avd-name"}
@@ -1348,7 +1347,7 @@ def test_device_refresh_drops_defunct_and_undeclared(registry, tmp_path, monkeyp
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated"))
-    rc = sd.cmd_device_refresh(registry)
+    rc = sd.cmd_target_refresh(registry)
     assert rc == 0
     assert set(destroyed) == {"UDID-GONE", "UDID-UNDECLARED"}
     assert list(registry.all_devices()) == []
@@ -1358,7 +1357,7 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     co = tmp_path / "co"
     co.mkdir()
-    (co / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
+    (co / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     state_home = tmp_path / "state"
     reg = sd.Registry(
         port_file=state_home / "splashdown" / "ports.tsv",
@@ -1375,14 +1374,14 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "[stale]" in err
     assert "stale device" in err
-    assert "`splash device refresh`" in err
+    assert "`splash target refresh`" in err
 
 
 def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     co = tmp_path / "co"
     co.mkdir()
-    (co / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
+    (co / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     # Declared but never provisioned: no registry row, sim absent.
     monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "absent")
     capsys.readouterr()
@@ -1409,7 +1408,7 @@ def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
     }
     monkeypatch.setattr(sd, "_xcrun_json", lambda args: {"devices": fake_devices})
     registry.set_device("/tmp/something", "simulator", "default", "MANAGED", "iPhone 17", "18.5")
-    rc = sd.cmd_device_prune(registry, yes=False, dry_run=True, platforms=("ios",))
+    rc = sd.cmd_target_prune(registry, yes=False, dry_run=True, platforms=("ios",))
     assert rc == 0
     err = capsys.readouterr().err
     assert "FOREIGN-1" in err
@@ -1429,7 +1428,7 @@ def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
     shut: list[str] = []
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd, "ios_shutdown", shut.append)
-    rc = sd.cmd_device_prune(registry, yes=True, dry_run=False, platforms=("ios",))
+    rc = sd.cmd_target_prune(registry, yes=True, dry_run=False, platforms=("ios",))
     assert rc == 0
     assert destroyed == ["FOREIGN"]
     assert shut == ["FOREIGN"]
@@ -1437,7 +1436,7 @@ def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
 
 def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys):
     monkeypatch.setattr(sd, "_xcrun_json", lambda args: {"devices": {}})
-    rc = sd.cmd_device_prune(registry, yes=True, dry_run=False, platforms=("ios",))
+    rc = sd.cmd_target_prune(registry, yes=True, dry_run=False, platforms=("ios",))
     assert rc == 0
     assert "nothing" in capsys.readouterr().err.lower()
 
@@ -1451,8 +1450,8 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
         captured["platforms"] = platforms
         return 0
 
-    monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
-    rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "ios", "--yes", "--dry-run"])
+    monkeypatch.setattr(sd, "cmd_target_prune", _fake_prune)
+    rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "ios", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios",)
 
@@ -1466,8 +1465,8 @@ def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
         captured["platforms"] = platforms
         return 0
 
-    monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
-    rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "--yes", "--dry-run"])
+    monkeypatch.setattr(sd, "cmd_target_prune", _fake_prune)
+    rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios", "android")
 
@@ -1481,8 +1480,8 @@ def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
         captured["platforms"] = platforms
         return 0
 
-    monkeypatch.setattr(sd, "cmd_device_prune", _fake_prune)
-    rc = sd.main(["--cwd", str(tmp_path), "device", "prune", "all", "--yes", "--dry-run"])
+    monkeypatch.setattr(sd, "cmd_target_prune", _fake_prune)
+    rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "all", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios", "android")
 
@@ -1493,16 +1492,16 @@ def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
 def test_rn_preset_declares_default_ios_variant(tmp_path):
     sd.cmd_init(tmp_path, preset="rn")
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert "default" in recipe.devices.get("simulator", {})
-    assert recipe.devices["simulator"]["default"]["model"]
+    assert "default" in recipe.targets.get("simulator", {})
+    assert recipe.targets["simulator"]["default"]["model"]
     assert "SIM_NAME" not in recipe.resources
 
 
 def test_flutter_preset_declares_both_defaults(tmp_path):
     sd.cmd_init(tmp_path, preset="flutter")
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert "default" in recipe.devices.get("simulator", {})
-    assert "default" in recipe.devices.get("emulator", {})
+    assert "default" in recipe.targets.get("simulator", {})
+    assert "default" in recipe.targets.get("emulator", {})
     assert "SIM_NAME" not in recipe.resources
 
 
@@ -1511,7 +1510,7 @@ def test_local_skeleton_documents_additions(tmp_path):
     text = (tmp_path / "splashdown.local.toml").read_text()
     assert "additional" in text.lower() or "additions" in text.lower()
     assert "simulator" in text
-    assert "splash device add" in text
+    assert "splash target add" in text
 
 
 # ---------- templates ----------
@@ -2054,72 +2053,82 @@ def test_resolve_variant_errors_when_empty_catalog():
         sd.resolve_variant({}, None)
 
 
-# ---------- merged_devices ----------
+# ---------- merged_targets ----------
 
 
 def test_merged_devices_unions_recipe_and_local(tmp_path):
     r = sd.Recipe(
-        {"devices": {"simulator": {"default": {"model": "iPhone 17"}}}},
+        {"targets": {"simulator": {"default": {"model": "iPhone 17"}}}},
         tmp_path / "splashdown.toml",
     )
     lc = sd.LocalConfig(
-        {"devices": {"simulator": {"repro-bug": {"model": "iPhone 16"}}}},
+        {"targets": {"simulator": {"repro-bug": {"model": "iPhone 16"}}}},
         tmp_path / "splashdown.local.toml",
     )
-    merged = sd.merged_devices(r, lc)
+    merged = sd.merged_targets(r, lc)
     assert set(merged["simulator"]) == {"default", "repro-bug"}
 
 
 def test_merged_devices_collision_errors(tmp_path):
     r = sd.Recipe(
-        {"devices": {"simulator": {"default": {"model": "A"}}}},
+        {"targets": {"simulator": {"default": {"model": "A"}}}},
         tmp_path / "splashdown.toml",
     )
     lc = sd.LocalConfig(
-        {"devices": {"simulator": {"default": {"model": "B"}}}},
+        {"targets": {"simulator": {"default": {"model": "B"}}}},
         tmp_path / "splashdown.local.toml",
     )
     with pytest.raises(ValueError, match="already exists in recipe"):
-        sd.merged_devices(r, lc)
+        sd.merged_targets(r, lc)
 
 
 def test_recipe_accepts_nested_device_variants(tmp_path):
     p = tmp_path / "splashdown.toml"
     p.write_text("""
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
-[devices.simulator.lowest-supported]
+[targets.simulator.lowest-supported]
 model = "iPhone 12"
 """)
     r = sd.Recipe.load(p)
-    assert set(r.devices["simulator"]) == {"default", "lowest-supported"}
-    assert r.devices["simulator"]["default"]["model"] == "iPhone 17"
+    assert set(r.targets["simulator"]) == {"default", "lowest-supported"}
+    assert r.targets["simulator"]["default"]["model"] == "iPhone 17"
 
 
-def test_recipe_rejects_flat_device_shape(tmp_path):
+def test_recipe_rejects_legacy_devices_table(tmp_path):
     p = tmp_path / "splashdown.toml"
-    p.write_text('[devices.iphone]\ntype = "simulator"\n')
-    with pytest.raises(ValueError, match=r"flat device shape"):
+    p.write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
+    with pytest.raises(ValueError, match=r"renamed to `\[targets"):
         sd.Recipe.load(p)
+
+
+def test_cli_surfaces_recipe_errors_cleanly(tmp_path, monkeypatch, capsys):
+    # Recipe validation (ValueError) should print `error: …` and exit 1, not
+    # dump a traceback — notably the [devices.*]→[targets.*] migration error.
+    (tmp_path / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "X"\n')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    rc = sd.main(["--cwd", str(tmp_path), "targets"])
+    assert rc == 1
+    assert "renamed to `[targets" in capsys.readouterr().err
 
 
 def test_recipe_rejects_unknown_device_type(tmp_path):
     p = tmp_path / "splashdown.toml"
-    p.write_text('[devices.cardboard-vr.default]\nmodel = "Pixel"\n')
-    with pytest.raises(ValueError, match="unknown device type"):
+    p.write_text('[targets.cardboard-vr.default]\nmodel = "Pixel"\n')
+    with pytest.raises(ValueError, match="unknown target type"):
         sd.Recipe.load(p)
 
 
 def test_localconfig_accepts_nested_device_variants(tmp_path):
     p = tmp_path / "splashdown.local.toml"
     p.write_text("""
-[devices.simulator.repro-bug]
+[targets.simulator.repro-bug]
 model = "iPhone 16"
 ios   = "17.5"
 """)
     lc = sd.LocalConfig.load(p)
-    assert lc.devices["simulator"]["repro-bug"]["ios"] == "17.5"
+    assert lc.targets["simulator"]["repro-bug"]["ios"] == "17.5"
 
 
 # ---------- CLI ----------
@@ -2140,18 +2149,18 @@ def test_cli_help_shows_subcommands(capsys):
         sd.main(["--help"])
     out = capsys.readouterr().out
     assert "provision" in out
-    assert "device" in out
+    assert "target" in out
     assert "init" in out
 
 
 def test_localconfig_missing_file_is_empty(tmp_path):
     lc = sd.LocalConfig.load(tmp_path / "splashdown.local.toml")
-    assert lc.devices == {}
+    assert lc.targets == {}
 
 
 def test_localconfig_rejects_bad_variant_name(tmp_path):
     p = tmp_path / "splashdown.local.toml"
-    p.write_text('[devices.simulator."has spaces"]\nmodel = "iPhone"\n')
+    p.write_text('[targets.simulator."has spaces"]\nmodel = "iPhone"\n')
     with pytest.raises(ValueError, match="variant name"):
         sd.LocalConfig.load(p)
 
@@ -2164,9 +2173,9 @@ def test_init_writes_recipe_and_local_skeleton(tmp_path):
 
 
 def test_init_does_not_clobber_existing_local(tmp_path):
-    (tmp_path / "splashdown.local.toml").write_text('[devices.mine]\ntype = "simulator"\n')
+    (tmp_path / "splashdown.local.toml").write_text('[targets.mine]\ntype = "simulator"\n')
     sd.cmd_init(tmp_path, preset="rn")
-    assert "devices.mine" in (tmp_path / "splashdown.local.toml").read_text()
+    assert "targets.mine" in (tmp_path / "splashdown.local.toml").read_text()
 
 
 def test_cli_init_preset_is_positional(tmp_path, monkeypatch):
@@ -2256,7 +2265,7 @@ range = [18900, 18910]
 """)
     sd.main(["--cwd", str(cwd)])
     assert (cwd / "splashdown.local.toml").exists()
-    assert "devices.simulator" in (cwd / "splashdown.local.toml").read_text()
+    assert "targets.simulator" in (cwd / "splashdown.local.toml").read_text()
 
 
 def test_cli_provision_preserves_existing_local(tmp_path, monkeypatch):
@@ -2268,9 +2277,9 @@ def test_cli_provision_preserves_existing_local(tmp_path, monkeypatch):
 type  = "port"
 range = [18920, 18930]
 """)
-    (cwd / "splashdown.local.toml").write_text('[devices.mine]\ntype = "simulator"\n')
+    (cwd / "splashdown.local.toml").write_text('[targets.mine]\ntype = "simulator"\n')
     sd.main(["--cwd", str(cwd)])
-    assert "devices.mine" in (cwd / "splashdown.local.toml").read_text()
+    assert "targets.mine" in (cwd / "splashdown.local.toml").read_text()
 
 
 POST_CHECKOUT_SENTINEL = "splash"

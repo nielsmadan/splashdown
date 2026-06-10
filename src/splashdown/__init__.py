@@ -25,8 +25,8 @@ KV_REGISTRY = REGISTRY_DIR / "kv.tsv"
 DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-DEVICE_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-DEVICE_TYPES = ("simulator", "emulator", "physical")
+TARGET_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+TARGET_TYPES = ("simulator", "emulator", "device")
 RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
 ENV_FILE_NAME = "splashdown.env"
@@ -45,10 +45,10 @@ from .commands import (
     _render_scanned_recipe,
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
-    cmd_device_gc,
-    cmd_device_prune,
-    cmd_device_refresh,
-    cmd_devices_list,
+    cmd_target_gc,
+    cmd_target_prune,
+    cmd_target_refresh,
+    cmd_targets_list,
     cmd_init,
     cmd_refresh_inventory,
     cmd_status,
@@ -76,9 +76,9 @@ from .devices import (
     android_ensure,
     android_shutdown,
     detect_framework,
-    device_add,
+    target_add,
     device_destroy,
-    device_remove,
+    target_remove,
     device_run,
     device_shutdown,
     device_status,
@@ -109,7 +109,7 @@ from .recipe import (
     _find_table,
     _make_scope,
     _toml_quote,
-    merged_devices,
+    merged_targets,
     render_template,
     resolve_variant,
     template_refs,

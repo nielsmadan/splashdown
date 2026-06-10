@@ -585,15 +585,15 @@ resources = ["RCT_METRO_PORT"]
 type  = "port"
 range = [8081, 8200]
 
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
                    # "18.5" if you want a fixed version that never upgrades.
 
-# Run on a plugged-in phone with `splash run physical`. With one device
+# Run on a plugged-in phone with `splash run device`. With one device
 # connected, auto-pick resolves it — no config needed. Uncomment to pin a
 # specific device by id/name, or to scope auto-pick to one platform.
-# [devices.physical.default]
+# [targets.device.default]
 # platform = "ios"        # optional: "ios" | "android"
 # name     = "My iPhone"  # optional: match by device name
 # id       = "..."        # optional: exact udid / adb serial
@@ -614,16 +614,16 @@ path = "."
 profile = "flutter"
 resources = []
 
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
-[devices.emulator.default]
+[targets.emulator.default]
 device = "pixel_9"
 
-# Run on a plugged-in phone with `splash run physical`. With one device
+# Run on a plugged-in phone with `splash run device`. With one device
 # connected, auto-pick resolves it — no config needed. Uncomment to pin a
 # specific device by id/name, or to scope auto-pick to one platform.
-# [devices.physical.default]
+# [targets.device.default]
 # platform = "ios"        # optional: "ios" | "android"
 # name     = "My iPhone"  # optional: match by device name
 # id       = "..."        # optional: exact udid / adb serial
@@ -698,7 +698,7 @@ path = "."
 profile = "ios-native"
 resources = []
 
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 """
 
@@ -721,7 +721,7 @@ path = "."
 profile = "android-native"
 resources = []
 
-[devices.emulator.default]
+[targets.emulator.default]
 device = "pixel_9"
 """
 

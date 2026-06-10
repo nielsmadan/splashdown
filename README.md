@@ -28,8 +28,8 @@ Four files end up in the project:
 
 | File | Committed? | Purpose |
 |------|-----------|---------|
-| `splashdown.toml` | Yes | Recipe: `[project]`, `[apps.*]`, `[resources.*]`, and any team-shared `[devices.*]` variants |
-| `splashdown.local.toml` | **No** (gitignored) | Per-checkout *additional* `[devices.*]` variants on top of the recipe's |
+| `splashdown.toml` | Yes | Recipe: `[project]`, `[apps.*]`, `[resources.*]`, and any team-shared `[targets.*]` variants |
+| `splashdown.local.toml` | **No** (gitignored) | Per-checkout *additional* `[targets.*]` variants on top of the recipe's |
 | `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file. Splashdown owns it (overwritten wholesale on every run; don't hand-edit) |
 | `mise.toml` (or `.envrc` / `devbox.json`) | Yes | Your shell-env loader's config; gains a line that sources `splashdown.env` |
 
@@ -69,7 +69,7 @@ See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring la
 
 ## The recipe: `splashdown.toml`
 
-The committed file. Four kinds of top-level tables: `[project]`, `[apps.*]`, `[resources.*]`, and (for mobile) `[devices.*]`. The scanner produces a working version; edit freely.
+The committed file. Four kinds of top-level tables: `[project]`, `[apps.*]`, `[resources.*]`, and (for mobile) `[targets.*]`. The scanner produces a working version; edit freely.
 
 ```toml
 [project]
@@ -104,38 +104,38 @@ template = "{{ PORT }}"        # Vite's /api proxy must hit the api's actual por
 Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
 
-**For mobile**, the recipe also declares a `[devices.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands; pin an explicit version like `ios = "18.5"` for fixed coverage.
+**For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands; pin an explicit version like `ios = "18.5"` for fixed coverage.
 
 ```toml
-[devices.simulator.default]
+[targets.simulator.default]
 model = "iPhone 17"
 
-[devices.simulator.lowest-supported]
+[targets.simulator.lowest-supported]
 model = "iPhone 12"
 ios   = "17.0"
 
-[devices.emulator.default]
+[targets.emulator.default]
 device = "pixel_9"
 ```
 
-For a **plugged-in phone**, declare a `physical` variant (or just rely on auto-pick). Unlike sims/emulators, splashdown doesn't create or own physical devices — it discovers what's connected and hands the native id to the launcher. All fields are optional; with one device connected, no config is needed at all.
+For a **plugged-in phone**, declare a `device` target (or just rely on auto-pick). Unlike sims/emulators, splashdown doesn't create or own physical hardware — it discovers what's connected and hands the native id to the launcher. All fields are optional; with one device connected, no config is needed at all.
 
 ```toml
-[devices.physical.default]
+[targets.device.default]
 # platform = "ios"        # scope auto-pick to one platform: "ios" | "android"
 # name     = "My iPhone"  # match by device name
 # id       = "..."        # exact udid / adb serial
 ```
 
-Device types: `simulator`, `emulator`, `physical`.
+Target types: `simulator`, `emulator`, `device`.
 
 ## Per-checkout overrides: `splashdown.local.toml`
 
-A **gitignored**, per-checkout file. Use it to **add** extra device variants on top of what the recipe declares (never to override or repeat). Each checkout has its own copy; what you add here is local to this worktree/clone.
+A **gitignored**, per-checkout file. Use it to **add** extra target variants on top of what the recipe declares (never to override or repeat). Each checkout has its own copy; what you add here is local to this worktree/clone.
 
 ```toml
 # Reproduce a bug only this checkout sees:
-[devices.simulator.repro-bug]
+[targets.simulator.repro-bug]
 model = "iPhone 16"
 ios   = "17.5"
 ```
@@ -143,7 +143,7 @@ ios   = "17.5"
 Name collisions with a recipe-declared variant are an error (pick a different variant name). Add programmatically with:
 
 ```sh
-splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
+splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
 ```
 
 ## Running and managing devices
@@ -155,18 +155,18 @@ splash stop    [type] [variant]    # shut down the device (preserves it)
 splash destroy [type] [variant]    # delete the device + its registry entry
 ```
 
-Both `type` and `variant` are optional. `type` is inferred when exactly one device type is declared; otherwise pass `simulator`, `emulator`, or `physical`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
+Both `type` and `variant` are optional. `type` is inferred when exactly one target type is declared; otherwise pass `simulator`, `emulator`, or `device`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
 ```sh
 splash run                            # one type, one variant, no args needed
 splash run simulator                  # picks `default`
 splash run simulator lowest-supported
 
-splash devices                        # show every declared variant + its live sim state
+splash targets                        # show every declared variant + its live sim state
 splash stop    simulator              # shut down the running sim
 splash destroy simulator small-screen # delete that variant's sim
-splash device remove simulator repro-bug      # strip a local variant (and destroy its sim)
-splash device remove simulator repro-bug --keep-instance   # toml-only edit
+splash target remove simulator repro-bug      # strip a local variant (and destroy its sim)
+splash target remove simulator repro-bug --keep-instance   # toml-only edit
 ```
 
 Framework auto-detected for `run`:
@@ -183,9 +183,9 @@ Framework auto-detected for `run`:
 Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever; they're explicit version coverage.
 
 ```sh
-splash device gc                    # registry cleanup: defunct checkouts only
-splash device refresh               # destroy + recreate stale 'latest' sims (newer iOS landed)
-splash device prune [ios|android|all] [--yes] [--dry-run]
+splash target gc                    # registry cleanup: defunct checkouts only
+splash target refresh               # destroy + recreate stale 'latest' sims (newer iOS landed)
+splash target prune [ios|android|all] [--yes] [--dry-run]
                                     # destroys every sim/AVD splashdown did NOT create
                                     # (the Xcode default-template pile, hand-made sims, etc.)
 ```
@@ -200,14 +200,14 @@ Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`.
 
 ### Physical devices
 
-`splash run physical` builds and launches on a connected phone. Discovery uses `xcrun devicectl` (iOS, Xcode 15+) and `adb devices` (Android); the device's native udid/serial is passed straight to the framework launcher.
+`splash run device` builds and launches on a connected phone. Discovery uses `xcrun devicectl` (iOS, Xcode 15+) and `adb devices` (Android); the device's native udid/serial is passed straight to the framework launcher.
 
 ```sh
-splash run physical                 # auto-picks the one connected device
-splash devices                      # physical rows show: connected / absent / ambiguous
+splash run device                 # auto-picks the one connected device
+splash targets                      # device rows show: connected / absent / ambiguous
 ```
 
-With exactly one device plugged in, no config is needed — auto-pick resolves it. When both an iPhone and an Android phone are connected, or several of one platform, narrow with the variant's `platform`, `id`, or `name` (or `splash device add physical <variant> --platform ios` / `--id ...` / `--name "..."`).
+With exactly one device plugged in, no config is needed — auto-pick resolves it. When both an iPhone and an Android phone are connected, or several of one platform, narrow with the variant's `platform`, `id`, or `name` (or `splash target add device <variant> --platform ios` / `--id ...` / `--name "..."`).
 
 Because splashdown doesn't own the hardware, the lifecycle verbs differ: `start` just confirms the device is connected, and `stop`/`destroy` are no-ops (nothing is created, so nothing is torn down). Physical devices are never written to the registry.
 
@@ -282,12 +282,12 @@ splash start   [type] [variant]    # reconcile + start (no build/launch)
 splash stop    [type] [variant]    # shut down the device (preserves it)
 splash destroy [type] [variant]    # delete the device + its registry entry
 
-splash devices                     # all declared variants + live sim state
-splash device add <type> <variant> [--model] [--ios] [--device] [--image]
-splash device remove <type> <variant> [--keep-instance]   # also destroys the sim
-splash device gc                   # registry cleanup: defunct checkouts only
-splash device refresh              # destroy + recreate stale 'latest' sims
-splash device prune [ios|android|all] [--yes] [--dry-run]
+splash targets                     # all declared variants + live sim state
+splash target add <type> <variant> [--model] [--ios] [--device] [--image]
+splash target remove <type> <variant> [--keep-instance]   # also destroys the sim
+splash target gc                   # registry cleanup: defunct checkouts only
+splash target refresh              # destroy + recreate stale 'latest' sims
+splash target prune [ios|android|all] [--yes] [--dry-run]
                                    # destroy every sim/AVD splashdown didn't create
 
 splash list                        # this checkout's resolved env vars

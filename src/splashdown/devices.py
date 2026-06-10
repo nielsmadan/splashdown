@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    DEVICE_TYPES,
-    DEVICE_VARIANT_RE,
+    TARGET_TYPES,
+    TARGET_VARIANT_RE,
     LOCAL_NAME,
     RECIPE_NAME,
     REGISTRY_DIR,
@@ -487,9 +487,10 @@ def _physical_match(spec: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def ensure_physical(spec: dict[str, Any]) -> dict[str, str]:
-    """Resolve a `physical` variant to a connected device. Auto-picks the lone
-    device; `id`/`name`/`platform` on the spec narrow the selection. Returns the
-    same `info` shape as the sim/emulator path, plus `physical: True`."""
+    """Resolve a `device` target (physical hardware) to a connected device.
+    Auto-picks the lone device; `id`/`name`/`platform` on the spec narrow the
+    selection. Returns the same `info` shape as the sim/emulator path, plus
+    `physical: True`."""
     devices = _physical_match(spec)
     if not devices:
         raise DeviceError(_physical_no_match_msg(spec))
@@ -516,7 +517,7 @@ def _physical_no_match_msg(spec: dict[str, Any]) -> str:
 
 
 def physical_status(spec: dict[str, Any]) -> str:
-    """Liveness for `splash devices`: connected / absent / ambiguous."""
+    """Liveness for `splash targets`: connected / absent / ambiguous."""
     devices = _physical_match(spec)
     if not devices:
         return "absent"
@@ -548,7 +549,7 @@ def ensure_fresh_sim(
     """Reconcile a sim/AVD instance against the variant spec. Destroys + recreates
     if the OS image (or model) has drifted from what's in the registry. Pinned
     variants (`ios = "<explicit>"`) are kept on their declared version forever."""
-    if dtype == "physical":
+    if dtype == "device":
         return ensure_physical(spec)
 
     checkout = str(cwd.resolve())
@@ -604,7 +605,7 @@ def ensure_fresh_sim(
         registry.set_device(checkout, dtype, variant, sim_name, device_spec, target_image)
         return {"kind": "android", "serial": "", "name": sim_name}
 
-    raise DeviceError(f"unknown device type `{dtype}`")
+    raise DeviceError(f"unknown target type `{dtype}`")
 
 
 # --- generic device dispatch ---
@@ -620,7 +621,7 @@ def device_status(dtype: str, resolved_name: str) -> str:
         if not _android_avd_exists(resolved_name):
             return "absent"
         return "running" if _android_running_serial(resolved_name) else "stopped"
-    raise DeviceError(f"unknown device type `{dtype}`")
+    raise DeviceError(f"unknown target type `{dtype}`")
 
 
 def device_shutdown(dtype: str, resolved_name: str) -> None:
@@ -709,13 +710,13 @@ def _load_recipe_or_empty(cwd: Path) -> Recipe:
     return Recipe.load(path) if path.exists() else Recipe({}, path)
 
 
-def device_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None]) -> None:
-    """Append a [devices.<type>.<variant>] table to splashdown.local.toml. Errors
+def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None]) -> None:
+    """Append a [targets.<type>.<variant>] table to splashdown.local.toml. Errors
     if the (type, variant) pair already exists in either the recipe or the local
     file — pick a different variant name."""
-    if dtype not in DEVICE_TYPES:
-        raise DeviceError(f"device type `{dtype}` must be one of: {', '.join(DEVICE_TYPES)}")
-    if not DEVICE_VARIANT_RE.match(variant):
+    if dtype not in TARGET_TYPES:
+        raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
+    if not TARGET_VARIANT_RE.match(variant):
         raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
 
     path = cwd / LOCAL_NAME
@@ -723,17 +724,17 @@ def device_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
 
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(path)
-    if variant in recipe.devices.get(dtype, {}):
+    if variant in recipe.targets.get(dtype, {}):
         raise DeviceError(
-            f"device `{dtype}.{variant}` is declared in the recipe; "
+            f"target `{dtype}.{variant}` is declared in the recipe; "
             f"edit {RECIPE_NAME} or pick a different variant name"
         )
-    if variant in local.devices.get(dtype, {}):
+    if variant in local.targets.get(dtype, {}):
         raise DeviceError(
-            f"device `{dtype}.{variant}` already exists in {LOCAL_NAME}; remove it first"
+            f"target `{dtype}.{variant}` already exists in {LOCAL_NAME}; remove it first"
         )
 
-    block = [f"\n[devices.{dtype}.{variant}]"]
+    block = [f"\n[targets.{dtype}.{variant}]"]
     for key, value in fields.items():
         if value is not None:
             block.append(f"{key} = {_toml_quote(value)}")
@@ -741,21 +742,21 @@ def device_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
     path.write_text(new_text)
 
 
-def device_remove(cwd: Path, dtype: str, variant: str) -> None:
-    """Delete the [devices.<type>.<variant>] table from splashdown.local.toml.
+def target_remove(cwd: Path, dtype: str, variant: str) -> None:
+    """Delete the [targets.<type>.<variant>] table from splashdown.local.toml.
     Refuses to touch recipe-declared variants (those you remove by editing the recipe)."""
     recipe = _load_recipe_or_empty(cwd)
-    if variant in recipe.devices.get(dtype, {}):
+    if variant in recipe.targets.get(dtype, {}):
         raise DeviceError(
             f"`{dtype}.{variant}` is declared in the recipe; edit {RECIPE_NAME} to remove it"
         )
     path = cwd / LOCAL_NAME
-    if not path.exists() or variant not in LocalConfig.load(path).devices.get(dtype, {}):
-        raise DeviceError(f"no device `{dtype}.{variant}` in {LOCAL_NAME}")
+    if not path.exists() or variant not in LocalConfig.load(path).targets.get(dtype, {}):
+        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
     lines = path.read_text().splitlines()
-    start, end = _find_table(lines, f"devices.{dtype}.{variant}")
+    start, end = _find_table(lines, f"targets.{dtype}.{variant}")
     if start is None:
-        raise DeviceError(f"no device `{dtype}.{variant}` in {LOCAL_NAME}")
+        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
     kept = lines[:start] + lines[end:]
     while kept and not kept[-1].strip():
         kept.pop()

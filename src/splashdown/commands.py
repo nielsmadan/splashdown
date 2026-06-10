@@ -28,9 +28,9 @@ from .devices import (
     android_boot,
     android_destroy,
     android_shutdown,
-    device_add,
+    target_add,
     device_destroy,
-    device_remove,
+    target_remove,
     device_run,
     device_shutdown,
     device_status,
@@ -53,7 +53,7 @@ from .recipe import (
     TemplateError,
     _find_table,
     _toml_quote,
-    merged_devices,
+    merged_targets,
     resolve_variant,
 )
 from .registry import DeviceRow, Registry
@@ -370,7 +370,7 @@ def _gather_devices_all(
     return entries
 
 
-def _gather_devices_declared(
+def _gather_targets_declared(
     registry: Registry,
     co: str,
     co_path: Path,
@@ -383,9 +383,9 @@ def _gather_devices_declared(
     recipe = _load_recipe_or_empty(co_path)
     local = LocalConfig.load(co_path / LOCAL_NAME)
     entries: list[dict[str, Any]] = []
-    for dtype, variants in merged_devices(recipe, local).items():
+    for dtype, variants in merged_targets(recipe, local).items():
         for variant, spec in variants.items():
-            source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
+            source = "recipe" if variant in recipe.targets.get(dtype, {}) else "local"
             resolved = _resolve_device_name(spec, co_path, variant, dtype)
             try:
                 status = device_status(dtype, resolved)
@@ -448,7 +448,7 @@ def _gather_status_for_checkout(
             registry, co, co_path, check=check, summary=summary, cache=cache
         )
     elif co_exists:
-        dev_entries = _gather_devices_declared(
+        dev_entries = _gather_targets_declared(
             registry, co, co_path, check=check, summary=summary, cache=cache
         )
     else:
@@ -458,7 +458,7 @@ def _gather_status_for_checkout(
         "checkout": co,
         "exists": co_exists,
         "resources": res_entries,
-        "devices": dev_entries,
+        "targets": dev_entries,
     }
 
 
@@ -475,10 +475,10 @@ def _emit_status_block_text(block: dict[str, Any], *, show_all: bool) -> None:
     for r in block["resources"]:
         suffix = f"  [{r['port_state']}]" if r["port_state"] else ""
         print(f"  {r['key']}={r['value']}{suffix}", file=sys.stderr)
-    print("devices:", file=sys.stderr)
-    if not block["devices"]:
+    print("targets:", file=sys.stderr)
+    if not block["targets"]:
         print("  (none)", file=sys.stderr)
-    for d in block["devices"]:
+    for d in block["targets"]:
         cols = [f"{d['type']}.{d['variant']}"]
         if d["source"]:
             cols.append(d["source"])
@@ -594,11 +594,11 @@ def _print_check_summary(summary: dict[str, int]) -> None:
             file=sys.stderr,
         )
     # Route each hint to the command that actually fixes it. `splash gc` does NOT
-    # recreate an orphan whose checkout still exists — `device refresh` does.
+    # recreate an orphan whose checkout still exists — `target refresh` does.
     if defunct:
         print("  Run `splash gc` to drop dead checkouts.", file=sys.stderr)
     if orphan or stale:
-        print("  Run `splash device refresh` to recreate.", file=sys.stderr)
+        print("  Run `splash target refresh` to recreate.", file=sys.stderr)
     if missing:
         print("  Run `splash run` to provision.", file=sys.stderr)
 
@@ -690,28 +690,28 @@ def _cmd_refresh(cwd: Path, registry: Registry) -> int:
     return _cmd_provision_inner(cwd, registry, reprovision=False)
 
 
-def cmd_devices_list(cwd: Path, fmt: str) -> int:
+def cmd_targets_list(cwd: Path, fmt: str) -> int:
     """List declared device variants and their live instance state."""
     _dev_status = _resolve_fn("device_status", device_status)
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    catalog = merged_devices(recipe, local)
+    catalog = merged_targets(recipe, local)
     if not catalog:
-        print(f"(no devices declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
+        print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
         return 0
     rows: list[tuple[str, str, str, str, str]] = []
     _phys_status = _resolve_fn("physical_status", physical_status)
     for dtype, variants in catalog.items():
         for variant, spec in variants.items():
-            source = "recipe" if variant in recipe.devices.get(dtype, {}) else "local"
-            if dtype == "physical":
+            source = "recipe" if variant in recipe.targets.get(dtype, {}) else "local"
+            if dtype == "device":
                 # Hardware has no created instance name; show its selector
                 # (id/name/platform or "auto") and live connection state.
                 resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
             else:
                 resolved = _resolve_device_name(spec, cwd, variant, dtype)
             try:
-                status = _phys_status(spec) if dtype == "physical" else _dev_status(dtype, resolved)
+                status = _phys_status(spec) if dtype == "device" else _dev_status(dtype, resolved)
             except DeviceError as e:
                 status = f"error: {e}"
             rows.append((dtype, variant, source, resolved, status))
@@ -741,7 +741,7 @@ def _load_variant_spec(cwd: Path, dtype: str, variant: str) -> dict[str, Any] | 
         local = LocalConfig.load(cwd / LOCAL_NAME)
     except ValueError:
         local = LocalConfig({}, cwd / LOCAL_NAME)
-    return merged_devices(recipe, local).get(dtype, {}).get(variant)
+    return merged_targets(recipe, local).get(dtype, {}).get(variant)
 
 
 def _emit_progress(label: str, current: int, total: int) -> None:
@@ -773,7 +773,7 @@ def _resolve_fn(name: str, default: Callable[..., Any]) -> Any:
     return getattr(_mod, name, default) if _mod else default
 
 
-def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
+def cmd_target_gc(registry: Registry, *, all_: bool = False) -> int:
     """Splashdown-managed sim cleanup.
 
     Default: drop registry entries whose checkout dir is gone, destroy their sims.
@@ -791,7 +791,7 @@ def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
     rows = list(registry.all_devices())
     total = len(rows)
     for i, row in enumerate(rows, 1):
-        _emit_progress("device gc", i, total)
+        _emit_progress("target gc", i, total)
         cwd = Path(row.checkout)
         if not cwd.exists():
             if row.dtype == "simulator" and _udid_exists(row.udid):
@@ -825,7 +825,7 @@ def cmd_device_gc(registry: Registry, *, all_: bool = False) -> int:
             pruned_count += 1
     _finish_progress()
     print(
-        f"device gc: removed {destroyed_count} defunct + {pruned_count} stale entries",
+        f"target gc: removed {destroyed_count} defunct + {pruned_count} stale entries",
         file=sys.stderr,
     )
     return 0
@@ -870,7 +870,7 @@ def _device_needs_recreate(row: DeviceRow, spec: dict[str, Any], cache: dict[str
 
 def _device_stale(row: DeviceRow, spec: dict[str, Any], cache: dict[str, str]) -> bool:
     """A present device whose declared-`latest` OS is behind what's now
-    available — the `status --check` signal that `device refresh` will act on.
+    available — the `status --check` signal that `target refresh` will act on.
     Pinned variants are never stale."""
     requested = spec.get("ios" if row.dtype == "simulator" else "image", "latest")
     if requested != "latest":
@@ -878,7 +878,7 @@ def _device_stale(row: DeviceRow, spec: dict[str, Any], cache: dict[str, str]) -
     return row.ios != _latest_os(row.dtype, cache)
 
 
-def cmd_device_refresh(
+def cmd_target_refresh(
     registry: Registry,
     *,
     platforms: tuple[str, ...] = ("ios", "android"),
@@ -901,7 +901,7 @@ def cmd_device_refresh(
     rows = [r for r in registry.all_devices() if _PLATFORM_OF_DTYPE.get(r.dtype) in platforms]
     total = len(rows)
     for i, row in enumerate(rows, 1):
-        _emit_progress("device refresh", i, total)
+        _emit_progress("target refresh", i, total)
         cwd = Path(row.checkout)
         spec = _load_variant_spec(cwd, row.dtype, row.variant) if cwd.exists() else None
         if spec is None:
@@ -924,7 +924,7 @@ def cmd_device_refresh(
             unchanged += 1
     _finish_progress()
     print(
-        f"device refresh: recreated {recreated}, unchanged {unchanged}, dropped {dropped}",
+        f"target refresh: recreated {recreated}, unchanged {unchanged}, dropped {dropped}",
         file=sys.stderr,
     )
     return 0
@@ -964,7 +964,7 @@ def _discover_foreign_avds(managed: set[str]) -> list[str]:
     ]
 
 
-def cmd_device_prune(
+def cmd_target_prune(
     registry: Registry,
     *,
     yes: bool = False,
@@ -987,7 +987,7 @@ def cmd_device_prune(
     total = len(foreign_ios) + len(foreign_avd)
     if total == 0:
         print(
-            "device prune: nothing to remove (every sim/AVD is splashdown-managed)", file=sys.stderr
+            "target prune: nothing to remove (every sim/AVD is splashdown-managed)", file=sys.stderr
         )
         return 0
 
@@ -1001,12 +1001,12 @@ def cmd_device_prune(
         print(f"  android     {name}", file=sys.stderr)
 
     if dry_run:
-        print("device prune: --dry-run, nothing destroyed", file=sys.stderr)
+        print("target prune: --dry-run, nothing destroyed", file=sys.stderr)
         return 0
     if not yes:
         print("Continue? [y/N] ", end="", file=sys.stderr, flush=True)
         if input().strip().lower() not in ("y", "yes"):
-            print("device prune: aborted", file=sys.stderr)
+            print("target prune: aborted", file=sys.stderr)
             return 1
 
     done = 0
@@ -1014,14 +1014,14 @@ def cmd_device_prune(
         _ios_shut(udid)
         _ios_del(udid)
         done += 1
-        _emit_progress("device prune", done, total)
+        _emit_progress("target prune", done, total)
     for name in foreign_avd:
         _avd_shut(name)
         _avd_del(name)
         done += 1
-        _emit_progress("device prune", done, total)
+        _emit_progress("target prune", done, total)
     _finish_progress()
-    print(f"device prune: removed {total} device(s)", file=sys.stderr)
+    print(f"target prune: removed {total} device(s)", file=sys.stderr)
     return 0
 
 
@@ -1070,7 +1070,7 @@ def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     _dev_shutdown = _resolve_fn("device_shutdown", device_shutdown)
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-    if dtype == "physical":
+    if dtype == "device":
         print(f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop", file=sys.stderr)
         return 0
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
@@ -1084,7 +1084,7 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     _dev_destroy = _resolve_fn("device_destroy", device_destroy)
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-    if dtype == "physical":
+    if dtype == "device":
         print(f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to destroy", file=sys.stderr)
         return 0
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
@@ -1101,14 +1101,14 @@ def _infer_dtype(cwd: Path, dtype: str | None) -> str:
         return dtype
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    declared = [t for t, variants in merged_devices(recipe, local).items() if variants]
+    declared = [t for t, variants in merged_targets(recipe, local).items() if variants]
     if len(declared) == 1:
         return declared[0]
     if not declared:
-        raise DeviceError(f"no devices declared in {RECIPE_NAME} or {LOCAL_NAME}")
+        raise DeviceError(f"no targets declared in {RECIPE_NAME} or {LOCAL_NAME}")
     raise DeviceError(
-        f"multiple device types declared ({', '.join(sorted(declared))}); "
-        f"specify one: {' | '.join(DEVICE_TYPES)}"
+        f"multiple target types declared ({', '.join(sorted(declared))}); "
+        f"specify one: {' | '.join(TARGET_TYPES)}"
     )
 
 
@@ -1119,7 +1119,7 @@ def _resolve_variant_for_cli(
     merge, pick variant."""
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    catalog = merged_devices(recipe, local).get(dtype, {})
+    catalog = merged_targets(recipe, local).get(dtype, {})
     variant, spec = resolve_variant(catalog, variant_arg)
     return variant, spec, recipe
 
@@ -1416,12 +1416,12 @@ def _cmd_provision_inner(
     return 0
 
 
-def _device_dispatch(args: Any, cwd: Path) -> int:
-    # Bare `splash device` → list devices (mirrors bare `splash` → provision).
-    if args.device_cmd is None:
-        return cmd_devices_list(cwd, _resolve_format_arg(args))
+def _target_dispatch(args: Any, cwd: Path) -> int:
+    # Bare `splash target` → list targets (mirrors bare `splash` → provision).
+    if args.target_cmd is None:
+        return cmd_targets_list(cwd, _resolve_format_arg(args))
 
-    if args.device_cmd == "add":
+    if args.target_cmd == "add":
         fields = {
             "model": args.model,
             "ios": args.ios,
@@ -1431,11 +1431,11 @@ def _device_dispatch(args: Any, cwd: Path) -> int:
             "id": args.device_id,
             "platform": args.platform,
         }
-        device_add(cwd, args.dtype, args.variant, fields)
-        print(f"added device `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
+        target_add(cwd, args.dtype, args.variant, fields)
+        print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
         return 0
 
-    if args.device_cmd == "remove":
+    if args.target_cmd == "remove":
         # Default: also destroy the instance — most users want both. Opt out
         # of state destruction with --keep-instance.
         _dev_destroy = _resolve_fn("device_destroy", device_destroy)
@@ -1448,25 +1448,25 @@ def _device_dispatch(args: Any, cwd: Path) -> int:
                 with contextlib.suppress(DeviceError):
                     _dev_destroy(args.dtype, resolved)
                 Registry().remove_device(str(cwd.resolve()), args.dtype, variant_arg)
-        device_remove(cwd, args.dtype, variant_arg)
+        target_remove(cwd, args.dtype, variant_arg)
         suffix = "" if args.keep_instance else " (and destroyed the instance)"
         print(
-            f"removed device `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}",
+            f"removed target `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}",
             file=sys.stderr,
         )
         return 0
 
-    if args.device_cmd == "gc":
-        return cmd_device_gc(Registry(), all_=False)
+    if args.target_cmd == "gc":
+        return cmd_target_gc(Registry(), all_=False)
 
-    if args.device_cmd == "refresh":
+    if args.target_cmd == "refresh":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-        _refresh = _resolve_fn("cmd_device_refresh", cmd_device_refresh)
+        _refresh = _resolve_fn("cmd_target_refresh", cmd_target_refresh)
         return int(_refresh(Registry(), platforms=platforms))
 
-    if args.device_cmd == "prune":
+    if args.target_cmd == "prune":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-        _prune = _resolve_fn("cmd_device_prune", cmd_device_prune)
+        _prune = _resolve_fn("cmd_target_prune", cmd_target_prune)
         return int(
             _prune(
                 Registry(),
@@ -1476,5 +1476,5 @@ def _device_dispatch(args: Any, cwd: Path) -> int:
             )
         )
 
-    print(f"splash device {args.device_cmd}: unknown action", file=sys.stderr)
+    print(f"splash target {args.target_cmd}: unknown action", file=sys.stderr)
     return 2

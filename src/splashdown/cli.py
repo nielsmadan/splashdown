@@ -6,13 +6,13 @@ import os
 import sys
 from pathlib import Path
 
-from . import DEVICE_TYPES, __version__
+from . import TARGET_TYPES, __version__
 from .commands import (
     _cmd_provision,
     _cmd_refresh,
-    _device_dispatch,
+    _target_dispatch,
     cmd_destroy,
-    cmd_devices_list,
+    cmd_targets_list,
     cmd_init,
     cmd_refresh_inventory,
     cmd_run,
@@ -42,8 +42,8 @@ KNOWN_CMDS = {
     "start",
     "stop",
     "destroy",
-    "devices",
-    "device",
+    "targets",
+    "target",
 }
 
 
@@ -134,15 +134,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ("destroy", "delete the device and its registry entry"),
     ):
         p = sub.add_parser(verb, help=helptxt)
-        # dtype optional: if there's exactly one declared device type for this
+        # dtype optional: if there's exactly one declared target type for this
         # checkout, that's what's used.
-        p.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE", nargs="?")
+        p.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE", nargs="?")
         p.add_argument("variant", nargs="?", help="variant name (defaults to `default`)")
 
-    sub.add_parser("devices", help="show declared variants + instance state")
+    sub.add_parser("targets", help="show declared targets + instance state")
 
-    dev = sub.add_parser("device", help="manage device variants (add/remove/gc/refresh/prune)")
-    devsub = dev.add_subparsers(dest="device_cmd", metavar="ACTION")
+    dev = sub.add_parser("target", help="manage run targets (add/remove/gc/refresh/prune)")
+    devsub = dev.add_subparsers(dest="target_cmd", metavar="ACTION")
 
     devsub.add_parser("gc", help="prune splashdown-managed sims for defunct checkouts")
     ref = devsub.add_parser(
@@ -170,20 +170,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     add = devsub.add_parser("add", help="declare a variant in splashdown.local.toml")
-    add.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+    add.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
     add.add_argument("variant", help="variant name (e.g. `default`, `small-screen`)")
     add.add_argument("--model")
     add.add_argument("--ios")
     add.add_argument("--device")
     add.add_argument("--image")
-    add.add_argument("--name", dest="sim_name", help="simulator/emulator name override; physical: match by device name")
-    add.add_argument("--id", dest="device_id", help="physical: exact device udid / adb serial")
-    add.add_argument("--platform", choices=("ios", "android"), help="physical: scope auto-pick to one platform")
+    add.add_argument(
+        "--name",
+        dest="sim_name",
+        help="simulator/emulator name override; device: match by device name",
+    )
+    add.add_argument("--id", dest="device_id", help="device: exact udid / adb serial")
+    add.add_argument(
+        "--platform",
+        choices=("ios", "android"),
+        help="device: scope auto-pick to one platform",
+    )
 
     rm = devsub.add_parser(
         "remove", help="remove a variant from splashdown.local.toml (and destroy its sim)"
     )
-    rm.add_argument("dtype", choices=DEVICE_TYPES, metavar="TYPE")
+    rm.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
     rm.add_argument("variant")
     rm.add_argument(
         "--keep-instance",
@@ -270,8 +278,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
         if args.cmd == "destroy":
             return cmd_destroy(cwd, args.dtype, args.variant)
 
-        if args.cmd == "devices":
-            return cmd_devices_list(cwd, _resolve_format(args))
+        if args.cmd == "targets":
+            return cmd_targets_list(cwd, _resolve_format(args))
 
         if args.cmd == "status":
             return cmd_status(
@@ -325,11 +333,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
                 print(f"released {n} entries for {cwd}", file=sys.stderr)
             return 0
 
-        if args.cmd == "device":
-            return _device_dispatch(args, cwd)
+        if args.cmd == "target":
+            return _target_dispatch(args, cwd)
 
         # provision (default)
         return _cmd_provision(args, cwd, registry)
-    except DeviceError as e:
+    except (DeviceError, ValueError) as e:
+        # DeviceError: device/target lifecycle failures. ValueError: recipe
+        # validation (unknown target type, the [devices.*]→[targets.*] rename, …).
         print(f"error: {e}", file=sys.stderr)
         return 1

@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    DEVICE_TYPES,
-    DEVICE_VARIANT_RE,
+    TARGET_TYPES,
+    TARGET_VARIANT_RE,
     ENV_NAME_RE,
     LOCAL_NAME,
     RECIPE_NAME,
@@ -107,35 +107,32 @@ def template_refs(tpl: str) -> set[str]:
 # ---------- recipe ----------
 
 
-def _parse_devices_section(
+def _parse_targets_section(
     data: dict[str, Any], *, source: str
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Parse [devices.<type>.<variant>] tables. Rejects the legacy flat shape
-    [devices.<name>] with a clear pointer to the new nested form."""
-    raw = data.get("devices", {}) or {}
+    """Parse [targets.<type>.<variant>] tables (type ∈ simulator/emulator/device)."""
+    if "devices" in data and "targets" not in data:
+        raise ValueError(
+            f"{source}: `[devices.*]` was renamed to `[targets.*]`; rename the table "
+            "(target types are simulator/emulator/device)"
+        )
+    raw = data.get("targets", {}) or {}
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for type_key, type_val in raw.items():
-        if type_key not in DEVICE_TYPES:
-            # Detect the legacy flat shape so we can give a useful error.
-            if isinstance(type_val, dict) and isinstance(type_val.get("type"), str):
-                raise ValueError(
-                    f"{source}: flat device shape `[devices.{type_key}]` is no "
-                    f"longer supported; use `[devices.<type>.<variant>]` instead "
-                    f"(e.g. [devices.{type_val['type']}.{type_key}])"
-                )
+        if type_key not in TARGET_TYPES:
             raise ValueError(
-                f"{source}: unknown device type `{type_key}` (known: {', '.join(DEVICE_TYPES)})"
+                f"{source}: unknown target type `{type_key}` (known: {', '.join(TARGET_TYPES)})"
             )
         if not isinstance(type_val, dict):
-            raise ValueError(f"{source}: [devices.{type_key}] must be a table of variants")
+            raise ValueError(f"{source}: [targets.{type_key}] must be a table of variants")
         variants: dict[str, dict[str, Any]] = {}
         for variant_name, spec in type_val.items():
-            if not DEVICE_VARIANT_RE.match(variant_name):
+            if not TARGET_VARIANT_RE.match(variant_name):
                 raise ValueError(
                     f"{source}: variant name `{variant_name}` must match [A-Za-z][A-Za-z0-9_-]*"
                 )
             if not isinstance(spec, dict):
-                raise ValueError(f"{source}: [devices.{type_key}.{variant_name}] must be a table")
+                raise ValueError(f"{source}: [targets.{type_key}.{variant_name}] must be a table")
             variants[variant_name] = dict(spec)
         out[type_key] = variants
     return out
@@ -147,7 +144,7 @@ class Recipe:
         self.resources: dict[str, dict[str, Any]] = dict(data.get("resources", {}) or {})
         self.setup: dict[str, dict[str, Any]] = dict(data.get("setup", {}) or {})
         self.project: dict[str, Any] = dict(data.get("project", {}) or {})
-        self.devices: dict[str, dict[str, dict[str, Any]]] = _parse_devices_section(
+        self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
             data,
             source=path.name or RECIPE_NAME,
         )
@@ -163,7 +160,7 @@ class Recipe:
 
 
 LOCAL_SKELETON = """\
-# splashdown.local.toml — additional, per-checkout device variants.
+# splashdown.local.toml — additional, per-checkout target variants.
 # Gitignored. Each checkout has its own copy.
 #
 # Recipe-declared variants don't go here; use this only to ADD variants on top
@@ -171,23 +168,23 @@ LOCAL_SKELETON = """\
 #
 # Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
 #
-# [devices.simulator.repro-bug]
+# [targets.simulator.repro-bug]
 # model = "iPhone 16"
 # ios   = "17.5"
 #
 # Or, equivalently, via CLI:
 #
-#   splash device add simulator repro-bug --model="iPhone 16" --ios=17.5
+#   splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
 """
 
 
 class LocalConfig:
     """Per-checkout local config from splashdown.local.toml. Holds additional
-    [devices.<type>.<variant>] variants, alongside (not replacing) the recipe's."""
+    [targets.<type>.<variant>] variants, alongside (not replacing) the recipe's."""
 
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
-        self.devices: dict[str, dict[str, dict[str, Any]]] = _parse_devices_section(
+        self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
             data,
             source=path.name or LOCAL_NAME,
         )
@@ -201,18 +198,18 @@ class LocalConfig:
         return cls(data, path)
 
 
-def merged_devices(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, dict[str, Any]]]:
-    """Union recipe + local device catalogs. (type, variant) name collisions
+def merged_targets(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, dict[str, Any]]]:
+    """Union recipe + local target catalogs. (type, variant) name collisions
     between the two files are an error — pick a different name in local."""
     merged: dict[str, dict[str, dict[str, Any]]] = {
-        type_key: dict(variants) for type_key, variants in recipe.devices.items()
+        type_key: dict(variants) for type_key, variants in recipe.targets.items()
     }
-    for type_key, variants in local.devices.items():
+    for type_key, variants in local.targets.items():
         bucket = merged.setdefault(type_key, {})
         for variant_name, spec in variants.items():
             if variant_name in bucket:
                 raise ValueError(
-                    f"device `{type_key}.{variant_name}` already exists in recipe; "
+                    f"target `{type_key}.{variant_name}` already exists in recipe; "
                     f"pick a different name in {LOCAL_NAME}"
                 )
             bucket[variant_name] = spec
