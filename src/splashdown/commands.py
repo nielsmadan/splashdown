@@ -80,7 +80,7 @@ TOP=$(git rev-parse --show-toplevel) || exit 0
 cd "$TOP"
 [ -f splashdown.toml ] || exit 0
 if command -v splash >/dev/null 2>&1; then
-    splash >&2 || true
+    splash sync >&2 || true
 else
     echo "post-checkout: \\`splash\\` not on PATH — install splashdown" >&2
 fi
@@ -166,7 +166,7 @@ def _lefthook_config_path(cwd: Path) -> Path:
 
 
 def _wire_post_checkout_lefthook(cwd: Path) -> None:
-    """Idempotently add a `post-checkout` -> `splash` entry to the lefthook config."""
+    """Idempotently add a `post-checkout` -> `splash sync` entry to the lefthook config."""
     path = _lefthook_config_path(cwd)
     text = path.read_text() if path.exists() else ""
     if "splashdown" in text and "run: splash" in text:
@@ -240,7 +240,7 @@ def _run_lefthook_install(cwd: Path) -> None:
 
 
 def _wire_post_checkout_husky(cwd: Path) -> None:
-    """Drop a husky post-checkout hook invoking `splash`."""
+    """Drop a husky post-checkout hook invoking `splash sync`."""
     husky_dir = cwd / ".husky"
     husky_dir.mkdir(exist_ok=True)
     hook = husky_dir / "post-checkout"
@@ -268,7 +268,7 @@ def _wire_post_checkout_corehookspath(cwd: Path) -> None:
 
 
 def _ensure_post_checkout_hook(cwd: Path) -> None:
-    """Wire `post-checkout -> splash`, coexisting with any existing hook manager."""
+    """Wire `post-checkout -> splash sync`, coexisting with any existing hook manager."""
     manager = _detect_hook_manager(cwd)
     if manager == "lefthook":
         _wire_post_checkout_lefthook(cwd)
@@ -289,7 +289,7 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
             current = "?"
         print(
             f"warning: core.hooksPath is `{current}` — not wiring automatically. "
-            f"Add a post-checkout hook there that runs `splash`.",
+            f"Add a post-checkout hook there that runs `splash sync`.",
             file=sys.stderr,
         )
     else:
@@ -683,13 +683,6 @@ def cmd_status(
     return 0
 
 
-def _cmd_refresh(cwd: Path, registry: Registry) -> int:
-    """Re-provision. Identical to bare `splash` — exists as a named verb because
-    the OS-squatter auto-reallocation in Registry.allocate_port is the thing
-    users reach for under that label."""
-    return _cmd_provision_inner(cwd, registry, reprovision=False)
-
-
 def cmd_targets_list(cwd: Path, fmt: str) -> int:
     """List declared device variants and their live instance state."""
     _dev_status = _resolve_fn("device_status", device_status)
@@ -773,7 +766,7 @@ def _resolve_fn(name: str, default: Callable[..., Any]) -> Any:
     return getattr(_mod, name, default) if _mod else default
 
 
-def cmd_target_gc(registry: Registry, *, all_: bool = False) -> int:
+def cmd_target_gc(registry: Registry, *, all_: bool = False) -> tuple[int, int]:
     """Splashdown-managed sim cleanup.
 
     Default: drop registry entries whose checkout dir is gone, destroy their sims.
@@ -791,7 +784,7 @@ def cmd_target_gc(registry: Registry, *, all_: bool = False) -> int:
     rows = list(registry.all_devices())
     total = len(rows)
     for i, row in enumerate(rows, 1):
-        _emit_progress("target gc", i, total)
+        _emit_progress("gc", i, total)
         cwd = Path(row.checkout)
         if not cwd.exists():
             if row.dtype == "simulator" and _udid_exists(row.udid):
@@ -824,10 +817,15 @@ def cmd_target_gc(registry: Registry, *, all_: bool = False) -> int:
             registry.remove_device(row.checkout, row.dtype, row.variant)
             pruned_count += 1
     _finish_progress()
-    print(
-        f"target gc: removed {destroyed_count} defunct + {pruned_count} stale entries",
-        file=sys.stderr,
-    )
+    return destroyed_count, pruned_count
+
+
+def cmd_gc(registry: Registry) -> int:
+    """Drop every dead-checkout entry machine-wide: destroy orphaned sims/AVDs,
+    then prune port/kv/device rows and reconcile live checkouts to their recipes."""
+    destroyed, _stale = cmd_target_gc(registry)   # destroys orphaned sims + removes their rows
+    n = registry.gc()                             # ports/kv/remaining devices + reconcile
+    print(f"gc: removed {n} registry entries, destroyed {destroyed} orphaned device(s)", file=sys.stderr)
     return 0
 
 
@@ -1344,7 +1342,7 @@ def _cmd_provision(args: Any, cwd: Path, registry: Registry) -> int:
     return _cmd_provision_inner(
         cwd,
         registry,
-        reprovision=args.reprovision,
+        reprovision=args.force,
         setup=args.setup,
         fmt=_resolve_format_arg(args),
     )
@@ -1456,9 +1454,6 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
         )
         return 0
 
-    if args.target_cmd == "gc":
-        return cmd_target_gc(Registry(), all_=False)
-
     if args.target_cmd == "refresh":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
         _refresh = _resolve_fn("cmd_target_refresh", cmd_target_refresh)
@@ -1477,4 +1472,46 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
         )
 
     print(f"splash target {args.target_cmd}: unknown action", file=sys.stderr)
+    return 2
+
+
+def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
+    """`splash env …` — this checkout's resolved values. Bare = list."""
+    fmt = _resolve_format_arg(args)
+    if args.env_cmd is None:  # bare `splash env` → list
+        target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
+        data = registry.all_for(target)
+        if fmt == "json":
+            print(json.dumps(data, indent=2))
+        else:
+            if not data:
+                print(f"(empty) {target}", file=sys.stderr)
+            for k, v in sorted(data.items()):
+                print(f"{k}={v}")
+        return 0
+    if args.env_cmd == "get":
+        target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
+        value = registry.all_for(target).get(args.key)
+        if value is None:
+            return 1
+        print(value)
+        return 0
+    if args.env_cmd == "set":
+        if "=" not in args.assignment:
+            print("usage: splash env set KEY=VALUE", file=sys.stderr)
+            return 2
+        key, value = args.assignment.split("=", 1)
+        registry.set_kv(str(cwd), key, value)
+        print(f"set {key}={value}", file=sys.stderr)
+        return 0
+    if args.env_cmd == "release":
+        if args.key:
+            registry.remove_kv(str(cwd), args.key)
+            registry._remove_port(str(cwd), args.key)  # noqa: SLF001
+            print(f"released {args.key}", file=sys.stderr)
+        else:
+            n = registry.release(str(cwd))
+            print(f"released {n} entries for {cwd}", file=sys.stderr)
+        return 0
+    print(f"splash env {args.env_cmd}: unknown action", file=sys.stderr)
     return 2

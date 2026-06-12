@@ -579,7 +579,7 @@ def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    rc = sd.main(["--cwd", str(tmp_path), "targets"])
+    rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "device" in out
@@ -784,7 +784,7 @@ def test_cli_devices_shows_recipe_and_local(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Stub status checks to avoid hitting xcrun.
     monkeypatch.setattr(sd, "device_status", lambda dtype, name: "absent")
-    rc = sd.main(["--cwd", str(tmp_path), "targets"])
+    rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 0
 
 
@@ -1114,7 +1114,7 @@ def test_cli_status_all_json_shape(tmp_path, monkeypatch, capsys):
     assert data["summary"]["defunct_checkouts"] == 0
 
 
-def test_cli_refresh_reallocates_on_squatter(tmp_path, monkeypatch, capsys):
+def test_cli_sync_reallocates_squatted_port(tmp_path, monkeypatch, capsys):
     (tmp_path / "splashdown.toml").write_text("""
 [resources.HOT_PORT]
 type  = "port"
@@ -1134,7 +1134,7 @@ range = [19500, 19510]
     squatter.bind(("127.0.0.1", int(port_str)))
     squatter.listen(1)
     try:
-        rc = sd.main(["--cwd", str(tmp_path), "refresh"])
+        rc = sd.main(["--cwd", str(tmp_path), "sync"])
         assert rc == 0
     finally:
         squatter.close()
@@ -1151,10 +1151,30 @@ range = [19600, 19610]
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     sd.main(["--cwd", str(tmp_path)])
     capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "release", "GONE"])
+    rc = sd.main(["--cwd", str(tmp_path), "env", "release", "GONE"])
     assert rc == 0
-    rc = sd.main(["--cwd", str(tmp_path), "get", "GONE"])
+    rc = sd.main(["--cwd", str(tmp_path), "env", "get", "GONE"])
     assert rc == 1  # key gone
+
+
+def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text(
+        '[resources.PORT]\ntype = "port"\nrange = [19700, 19710]\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    sd.main(["--cwd", str(tmp_path)])           # sync → allocate PORT
+    capsys.readouterr()
+    assert sd.main(["--cwd", str(tmp_path), "env", "get", "PORT"]) == 0
+    assert capsys.readouterr().out.strip().isdigit()
+    assert sd.main(["--cwd", str(tmp_path), "env"]) == 0   # bare list
+    assert "PORT=" in capsys.readouterr().out
+
+
+def test_cli_env_set(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1"]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 0
+    assert capsys.readouterr().out.strip() == "v1"
 
 
 def test_cli_version_flag(capsys):
@@ -1227,8 +1247,9 @@ def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
-    rc = sd.cmd_target_gc(registry, all_=False)
-    assert rc == 0
+    destroyed_count, pruned_count = sd.cmd_target_gc(registry, all_=False)
+    assert destroyed_count == 1
+    assert pruned_count == 0
     assert destroyed == ["UDID-A"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-B"}
 
@@ -1255,9 +1276,29 @@ ios   = "17.0"
     monkeypatch.setattr(sd, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
-    sd.cmd_target_gc(registry, all_=True)
+    destroyed_count, pruned_count = sd.cmd_target_gc(registry, all_=True)
+    assert destroyed_count == 0  # no defunct checkouts
+    assert pruned_count == 1    # one stale "latest" variant pruned
     assert destroyed == ["UDID-DEFAULT"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-LEGACY"}
+
+
+def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    dead = tmp_path / "dead"          # a checkout dir that won't exist at gc time
+    reg = sd.Registry()
+    reg.allocate_port(str(dead), "PORT", 19800, 19810)
+    reg.set_device(str(dead), "simulator", "default", "UDID-DEAD", "iPhone 17", "18.5")
+    destroyed = []
+    monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    # dead/ never created on disk → it's a defunct checkout
+    rc = sd.main(["--cwd", str(tmp_path), "gc"])
+    assert rc == 0
+    assert "UDID-DEAD" in destroyed                       # sim torn down
+    assert reg.get_device(str(dead), "simulator", "default") is None
+    assert str(dead) not in reg.all_checkouts()           # port row pruned too
 
 
 # ---------- device refresh ----------
@@ -1748,8 +1789,8 @@ type = "uuid"
 """)
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     capsys.readouterr()
-    # --reprovision regenerates RUN_ID, so exactly that var + its writer report.
-    assert sd.main(["--cwd", str(tmp_path), "provision", "--reprovision"]) == 0
+    # --force regenerates RUN_ID, so exactly that var + its writer report.
+    assert sd.main(["--cwd", str(tmp_path), "sync", "--force"]) == 0
     err = capsys.readouterr().err
     assert "RUN_ID=" in err
     assert f"-> {sd.ENV_FILE_NAME}: 1 vars (changed)" in err
@@ -2108,7 +2149,7 @@ def test_cli_surfaces_recipe_errors_cleanly(tmp_path, monkeypatch, capsys):
     # dump a traceback — notably the [devices.*]→[targets.*] migration error.
     (tmp_path / "splashdown.toml").write_text('[devices.simulator.default]\nmodel = "X"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    rc = sd.main(["--cwd", str(tmp_path), "targets"])
+    rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 1
     assert "renamed to `[targets" in capsys.readouterr().err
 
@@ -2144,13 +2185,13 @@ def test_cli_prog_name_is_splash():
     assert sd._build_parser().prog == "splash"
 
 
-def test_cli_help_shows_subcommands(capsys):
+def test_cli_help_shows_tiers(capsys):
     with pytest.raises(SystemExit):
         sd.main(["--help"])
     out = capsys.readouterr().out
-    assert "provision" in out
-    assert "target" in out
-    assert "init" in out
+    for token in ("run", "sync", "status", "init", "target", "env"):
+        assert token in out
+    assert "provision" not in out      # old word is gone
 
 
 def test_localconfig_missing_file_is_empty(tmp_path):
@@ -2212,6 +2253,23 @@ def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
     assert 'profile = "react-native"' in recipe
     assert "[resources.RCT_METRO_PORT]" in recipe
     assert 'resources = ["RCT_METRO_PORT"]' in recipe
+
+
+def test_cli_init_rescan_updates_inventory(tmp_path, monkeypatch):
+    # `init --rescan` re-detects apps in an existing recipe instead of scaffolding.
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nworkspace = "single"\nloader = "mise"\n'
+    )
+    (tmp_path / "pubspec.yaml").write_text("name: demo\n")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    called = {}
+    def _fake(cwd):
+        called["cwd"] = cwd
+        return 0
+    monkeypatch.setattr(sd.cli, "cmd_refresh_inventory", _fake)
+    rc = sd.main(["--cwd", str(tmp_path), "init", "--rescan"])
+    assert rc == 0
+    assert called["cwd"] == tmp_path
 
 
 def test_init_server_preset_writes_generic_scaffold(tmp_path):
