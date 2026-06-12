@@ -30,7 +30,8 @@ class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
     """Hide the auto-generated subcommand list; the epilog carries the tiered overview."""
 
     def _format_action(self, action: argparse.Action) -> str:
-        if isinstance(action, argparse._SubParsersAction):
+        # argparse exposes no public type for the subparsers action.
+        if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
             return ""
         return super()._format_action(action)
 
@@ -149,12 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--framework", default=None, help="override framework detection (react-native|flutter|expo)"
     )
 
-    for verb, helptxt in (
-        ("run", "start the device + build & launch the app on it"),
-        ("start", "start the device (create-if-missing); don't build/launch"),
-        ("stop", "shut down the device (preserves it for next start)"),
-        ("destroy", "delete the device and its registry entry"),
-    ):
+    for verb in ("run", "start", "stop", "destroy"):
         p = sub.add_parser(verb, help=argparse.SUPPRESS)
         # dtype optional: if there's exactly one declared target type for this
         # checkout, that's what's used.
@@ -258,7 +254,7 @@ def _resolve_format(args: object) -> str:
     return getattr(args, "format", None) or "text"
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — one branch/return per subcommand; this is the dispatch table
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return per subcommand; this is the dispatch table
     if argv is None:
         argv = sys.argv[1:]
     argv = _ensure_subcommand(list(argv))
