@@ -5,7 +5,6 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -386,9 +385,15 @@ def _gather_targets_declared(
     for dtype, variants in merged_targets(recipe, local).items():
         for variant, spec in variants.items():
             source = "recipe" if variant in recipe.targets.get(dtype, {}) else "local"
-            resolved = _resolve_device_name(spec, co_path, variant, dtype)
+            if dtype == "device":
+                # Hardware has no created instance; show its selector + live state.
+                resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
+            else:
+                resolved = _resolve_device_name(spec, co_path, variant, dtype)
             try:
-                status = device_status(dtype, resolved)
+                status = (
+                    physical_status(spec) if dtype == "device" else device_status(dtype, resolved)
+                )
             except DeviceError as e:
                 status = f"error: {e}"
             orphan = stale = missing = False
@@ -685,7 +690,7 @@ def cmd_status(
 
 def cmd_targets_list(cwd: Path, fmt: str) -> int:
     """List declared device variants and their live instance state."""
-    _dev_status = _resolve_fn("device_status", device_status)
+    _dev_status = device_status
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
     catalog = merged_targets(recipe, local)
@@ -693,7 +698,7 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
         print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
         return 0
     rows: list[tuple[str, str, str, str, str]] = []
-    _phys_status = _resolve_fn("physical_status", physical_status)
+    _phys_status = physical_status
     for dtype, variants in catalog.items():
         for variant, spec in variants.items():
             source = "recipe" if variant in recipe.targets.get(dtype, {}) else "local"
@@ -756,16 +761,6 @@ def _finish_progress() -> None:
         sys.stderr.flush()
 
 
-def _resolve_fn(name: str, default: Callable[..., Any]) -> Any:
-    """Look up a function via sys.modules['splashdown'] so monkeypatch.setattr(sd, ...)
-    in tests takes effect. Falls back to the local binding when the top-level module
-    hasn't been imported yet (e.g., during module loading)."""
-    import sys  # noqa: PLC0415
-
-    _mod = sys.modules.get("splashdown")
-    return getattr(_mod, name, default) if _mod else default
-
-
 def cmd_target_gc(registry: Registry, *, all_: bool = False) -> tuple[int, int]:
     """Splashdown-managed sim cleanup.
 
@@ -773,11 +768,11 @@ def cmd_target_gc(registry: Registry, *, all_: bool = False) -> tuple[int, int]:
     --all: additionally destroy sims whose recipe variant uses `ios = "latest"`
     and whose registered iOS is older than the current latest. Pinned variants
     are always preserved."""
-    _udid_exists = _resolve_fn("_ios_udid_exists", _ios_udid_exists)
-    _avd_exists = _resolve_fn("_android_avd_exists", _android_avd_exists)
-    _destroy_ios = _resolve_fn("ios_destroy", ios_destroy)
-    _destroy_avd = _resolve_fn("android_destroy", android_destroy)
-    _get_latest_ios = _resolve_fn("_ios_latest_runtime_version", _ios_latest_runtime_version)
+    _udid_exists = _ios_udid_exists
+    _avd_exists = _android_avd_exists
+    _destroy_ios = ios_destroy
+    _destroy_avd = android_destroy
+    _get_latest_ios = _ios_latest_runtime_version
     destroyed_count = 0
     pruned_count = 0
     latest_ios: str | None = None
@@ -841,9 +836,9 @@ def _latest_os(dtype: str, cache: dict[str, str]) -> str:
     key = _PLATFORM_OF_DTYPE.get(dtype, dtype)
     if key not in cache:
         if dtype == "simulator":
-            cache[key] = _resolve_fn("_ios_latest_runtime_version", _ios_latest_runtime_version)()
+            cache[key] = _ios_latest_runtime_version()
         else:
-            cache[key] = _resolve_fn("_android_latest_image", _android_latest_image)()
+            cache[key] = _android_latest_image()
     return cache[key]
 
 
@@ -859,11 +854,11 @@ def _device_needs_recreate(row: DeviceRow, spec: dict[str, Any], cache: dict[str
     gone, or its OS/model has drifted from the variant spec."""
     target = _target_os(row.dtype, spec, cache)
     if row.dtype == "simulator":
-        if not _resolve_fn("_ios_udid_exists", _ios_udid_exists)(row.udid):
+        if not _ios_udid_exists(row.udid):
             return True
         return row.ios != target or row.model != spec.get("model", "")
     if row.dtype == "emulator":
-        if not _resolve_fn("_android_avd_exists", _android_avd_exists)(row.udid):
+        if not _android_avd_exists(row.udid):
             return True
         return row.ios != target or row.model != spec.get("device", "")
     return False
@@ -892,11 +887,11 @@ def cmd_target_refresh(
     variants no longer declared are dropped (their sim destroyed). Recreation
     leaves the new sim Shutdown — nothing is booted, so no concurrency limits
     apply."""
-    _udid_exists = _resolve_fn("_ios_udid_exists", _ios_udid_exists)
-    _avd_exists = _resolve_fn("_android_avd_exists", _android_avd_exists)
-    _destroy_ios = _resolve_fn("ios_destroy", ios_destroy)
-    _destroy_avd = _resolve_fn("android_destroy", android_destroy)
-    _fresh_sim = _resolve_fn("ensure_fresh_sim", ensure_fresh_sim)
+    _udid_exists = _ios_udid_exists
+    _avd_exists = _android_avd_exists
+    _destroy_ios = ios_destroy
+    _destroy_avd = android_destroy
+    _fresh_sim = ensure_fresh_sim
     recreated = unchanged = dropped = 0
     cache: dict[str, str] = {}
     rows = [r for r in registry.all_devices() if _PLATFORM_OF_DTYPE.get(r.dtype) in platforms]
@@ -933,7 +928,7 @@ def cmd_target_refresh(
 
 def _discover_foreign_ios(managed: set[str]) -> list[tuple[str, str, str]]:
     """Available simulators not in the registry, as (udid, name, runtime)."""
-    _xcrun = _resolve_fn("_xcrun_json", _xcrun_json)
+    _xcrun = _xcrun_json
     try:
         data = _xcrun(["simctl", "list", "devices", "-j"])
     except DeviceError as e:
@@ -977,10 +972,10 @@ def cmd_target_prune(
 
     Splashdown-managed entries (those in the registry) are always preserved.
     Use --dry-run to preview, --yes to skip the prompt."""
-    _ios_shut = _resolve_fn("ios_shutdown", ios_shutdown)
-    _ios_del = _resolve_fn("ios_destroy", ios_destroy)
-    _avd_shut = _resolve_fn("android_shutdown", android_shutdown)
-    _avd_del = _resolve_fn("android_destroy", android_destroy)
+    _ios_shut = ios_shutdown
+    _ios_del = ios_destroy
+    _avd_shut = android_shutdown
+    _avd_del = android_destroy
     managed = registry.managed_udids()
     foreign_ios = _discover_foreign_ios(managed) if "ios" in platforms else []
     foreign_avd = _discover_foreign_avds(managed) if "android" in platforms else []
@@ -1028,11 +1023,11 @@ def cmd_target_prune(
 
 def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     """Reconcile the sim, boot it, then build + launch the app via the framework's CLI."""
-    _fresh_sim = _resolve_fn("ensure_fresh_sim", ensure_fresh_sim)
-    _boot_ios = _resolve_fn("ios_boot", ios_boot)
-    _ios_state = _resolve_fn("_ios_current_state", _ios_current_state)
-    _boot_android = _resolve_fn("android_boot", android_boot)
-    _dev_run = _resolve_fn("device_run", device_run)
+    _fresh_sim = ensure_fresh_sim
+    _boot_ios = ios_boot
+    _ios_state = _ios_current_state
+    _boot_android = android_boot
+    _dev_run = device_run
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     info = _fresh_sim(registry, cwd, dtype, variant, spec)
@@ -1048,10 +1043,10 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
 
 def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     """Reconcile the sim, then boot it. No build/launch."""
-    _fresh_sim = _resolve_fn("ensure_fresh_sim", ensure_fresh_sim)
-    _boot_ios = _resolve_fn("ios_boot", ios_boot)
-    _ios_state = _resolve_fn("_ios_current_state", _ios_current_state)
-    _boot_android = _resolve_fn("android_boot", android_boot)
+    _fresh_sim = ensure_fresh_sim
+    _boot_ios = ios_boot
+    _ios_state = _ios_current_state
+    _boot_android = android_boot
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     info = _fresh_sim(registry, cwd, dtype, variant, spec)
@@ -1068,7 +1063,7 @@ def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str
 
 def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     """Shut down the sim/emulator (preserves it for next start)."""
-    _dev_shutdown = _resolve_fn("device_shutdown", device_shutdown)
+    _dev_shutdown = device_shutdown
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
@@ -1085,7 +1080,7 @@ def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
 
 def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     """Delete the sim/emulator and its registry entry."""
-    _dev_destroy = _resolve_fn("device_destroy", device_destroy)
+    _dev_destroy = device_destroy
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
@@ -1445,9 +1440,11 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
     if args.target_cmd == "remove":
         # Default: also destroy the instance — most users want both. Opt out
         # of state destruction with --keep-instance.
-        _dev_destroy = _resolve_fn("device_destroy", device_destroy)
+        _dev_destroy = device_destroy
         variant_arg = args.variant
-        if not args.keep_instance:
+        # Physical hardware has no instance to destroy — only sims/emulators do.
+        destroyed = False
+        if not args.keep_instance and args.dtype != "device":
             spec = _load_variant_spec(cwd, args.dtype, variant_arg)
             if spec is not None:
                 resolved = _resolve_device_name(spec, cwd, variant_arg, args.dtype)
@@ -1455,8 +1452,9 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
                 with contextlib.suppress(DeviceError):
                     _dev_destroy(args.dtype, resolved)
                 Registry().remove_device(str(cwd.resolve()), args.dtype, variant_arg)
+                destroyed = True
         target_remove(cwd, args.dtype, variant_arg)
-        suffix = "" if args.keep_instance else " (and destroyed the instance)"
+        suffix = " (and destroyed the instance)" if destroyed else ""
         print(
             f"removed target `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}",
             file=sys.stderr,
@@ -1465,12 +1463,12 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
 
     if args.target_cmd == "refresh":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-        _refresh = _resolve_fn("cmd_target_refresh", cmd_target_refresh)
+        _refresh = cmd_target_refresh
         return int(_refresh(Registry(), platforms=platforms))
 
     if args.target_cmd == "prune":
         platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-        _prune = _resolve_fn("cmd_target_prune", cmd_target_prune)
+        _prune = cmd_target_prune
         return int(
             _prune(
                 Registry(),
@@ -1516,7 +1514,7 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     if args.env_cmd == "release":
         if args.key:
             registry.remove_kv(str(cwd), args.key)
-            registry._remove_port(str(cwd), args.key)  # noqa: SLF001
+            registry.remove_port(str(cwd), args.key)
             print(f"released {args.key}", file=sys.stderr)
         else:
             n = registry.release(str(cwd))

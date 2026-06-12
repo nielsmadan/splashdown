@@ -29,6 +29,19 @@ _PORT_ROW_FIELDS = 3  # (port, checkout, key)
 _KV_ROW_FIELDS = 3  # (checkout, key, value)
 _DEVICE_ROW_FIELDS = len(DeviceRow._fields)
 
+# The registry files are flat tab/newline-delimited TSV with no escaping, so a
+# field containing a tab or newline would forge or corrupt rows on the next read
+# (a value like "a\n/other\tKEY\tval" parses as a second, well-formed row for a
+# different checkout). These chars never legitimately appear in checkout paths,
+# resource keys, ports, or resolved values, so reject them at write time.
+_TSV_FORBIDDEN = ("\t", "\n", "\r")
+
+
+def _tsv_field(value: str, *, what: str) -> str:
+    if any(ch in value for ch in _TSV_FORBIDDEN):
+        raise ValueError(f"registry {what} may not contain tab or newline characters: {value!r}")
+    return value
+
 
 class Registry:
     """Machine-local registry. TSV files protected by flock.
@@ -91,7 +104,10 @@ class Registry:
         return out
 
     def _write_ports(self, rows: Iterable[tuple[int, str, str]]) -> None:
-        lines = [f"{p}\t{path}\t{key}" for (p, path, key) in rows]
+        lines = [
+            f"{p}\t{_tsv_field(path, what='checkout path')}\t{_tsv_field(key, what='resource key')}"
+            for (p, path, key) in rows
+        ]
         self.port_file.write_text("\n".join(lines) + ("\n" if lines else ""))
 
     def get_port(self, abspath: str, key: str) -> int | None:
@@ -120,7 +136,7 @@ class Registry:
                 if not _port_in_use(existing):
                     return existing
                 # Someone else grabbed it — fall through and reallocate.
-                self._remove_port(abspath, key)
+                self.remove_port(abspath, key)
             busy = self.busy_ports(gc=True)
             for candidate in range(lo, hi + 1):
                 if candidate in busy:
@@ -136,7 +152,7 @@ class Registry:
         rows.append((port, abspath, key))
         self._write_ports(rows)
 
-    def _remove_port(self, abspath: str, key: str) -> None:
+    def remove_port(self, abspath: str, key: str) -> None:
         rows = [r for r in self._read_ports() if not (r[1] == abspath and r[2] == key)]
         self._write_ports(rows)
 
@@ -174,7 +190,12 @@ class Registry:
         return out
 
     def _write_kv(self, rows: Iterable[tuple[str, str, str]]) -> None:
-        lines = [f"{path}\t{key}\t{value}" for (path, key, value) in rows]
+        lines = [
+            f"{_tsv_field(path, what='checkout path')}\t"
+            f"{_tsv_field(key, what='resource key')}\t"
+            f"{_tsv_field(value, what='resource value')}"
+            for (path, key, value) in rows
+        ]
         self.kv_file.write_text("\n".join(lines) + ("\n" if lines else ""))
 
     def get_kv(self, abspath: str, key: str) -> str | None:
@@ -218,7 +239,13 @@ class Registry:
         return out
 
     def _write_devices(self, rows: Iterable[DeviceRow]) -> None:
-        lines = ["\t".join(r) for r in rows]
+        lines = [
+            "\t".join(
+                _tsv_field(field, what=f"device {name}")
+                for name, field in zip(r._fields, r, strict=True)
+            )
+            for r in rows
+        ]
         self.device_file.write_text("\n".join(lines) + ("\n" if lines else ""))
 
     def get_device(self, abspath: str, dtype: str, variant: str) -> DeviceRow | None:

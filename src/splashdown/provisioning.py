@@ -47,7 +47,7 @@ def provision(  # noqa: PLR0912 — one branch per resource type; this is the di
                 raise ValueError(f"`{name}` port resource needs range = [lo, hi]")
             lo, hi = int(rng[0]), int(rng[1])
             if reprovision:
-                registry._remove_port(abspath, name)  # noqa: SLF001
+                registry.remove_port(abspath, name)
             value = str(registry.allocate_port(abspath, name, lo, hi))
         elif rtype == "uuid":
             existing = registry.get_kv(abspath, name) if not reprovision else None

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import operator
 import re
 import subprocess
 import tomllib
@@ -77,13 +79,85 @@ def _current_branch(cwd: Path) -> str:
         return ""
 
 
+# Restricted expression evaluator for `{{ ... }}` templates. We deliberately do
+# NOT use eval(): an empty-`__builtins__` eval is not a real sandbox (object-graph
+# walks like `().__class__.__base__.__subclasses__()` reach `os`/`subprocess`), and
+# recipes run automatically from the post-checkout hook on untrusted checkouts.
+# This walks the AST and permits only literals, names bound in `scope`, calls to
+# scope-provided helpers, indexing/slicing, and arithmetic — and forbids attribute
+# access entirely, which is the escape hatch every eval-sandbox break relies on.
+_BINOPS: dict[type[ast.operator], Any] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+}
+_UNARYOPS: dict[type[ast.unaryop], Any] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+
+def _eval_node(node: ast.AST, scope: dict[str, Any], expr: str) -> Any:
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id not in scope:
+            raise TemplateError(f"unknown name `{node.id}`")
+        return scope[node.id]
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        left = _eval_node(node.left, scope, expr)
+        right = _eval_node(node.right, scope, expr)
+        return _BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARYOPS:
+        return _UNARYOPS[type(node.op)](_eval_node(node.operand, scope, expr))
+    if isinstance(node, ast.Call):
+        func = _eval_node(node.func, scope, expr)
+        if any(kw.arg is None for kw in node.keywords) or any(
+            isinstance(a, ast.Starred) for a in node.args
+        ):
+            raise TemplateError(f"argument unpacking is not allowed in `{expr}`")
+        if not callable(func):
+            raise TemplateError(f"`{ast.unparse(node.func)}` is not callable")
+        args = [_eval_node(a, scope, expr) for a in node.args]
+        kwargs = {
+            kw.arg: _eval_node(kw.value, scope, expr) for kw in node.keywords if kw.arg is not None
+        }
+        return func(*args, **kwargs)
+    if isinstance(node, ast.Subscript):
+        value = _eval_node(node.value, scope, expr)
+        return value[_eval_subscript(node.slice, scope, expr)]
+    raise TemplateError(f"disallowed expression element `{type(node).__name__}` in `{expr}`")
+
+
+def _eval_subscript(node: ast.AST, scope: dict[str, Any], expr: str) -> Any:
+    if isinstance(node, ast.Slice):
+        lo = _eval_node(node.lower, scope, expr) if node.lower else None
+        hi = _eval_node(node.upper, scope, expr) if node.upper else None
+        step = _eval_node(node.step, scope, expr) if node.step else None
+        return slice(lo, hi, step)
+    return _eval_node(node, scope, expr)
+
+
+def _safe_eval(expr: str, scope: dict[str, Any]) -> Any:
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError as e:
+        raise TemplateError(f"invalid expression `{expr}`: {e}") from e
+    return _eval_node(tree.body, scope, expr)
+
+
 def render_template(tpl: str, scope: dict[str, Any]) -> str:
-    """Render `{{ expr }}` placeholders. expr is a restricted Python expression."""
+    """Render `{{ expr }}` placeholders. expr is a restricted expression subset."""
 
     def replace(m: re.Match[str]) -> str:
         expr = m.group(1)
         try:
-            value = eval(expr, {"__builtins__": {}}, scope)  # noqa: S307 - sandboxed
+            value = _safe_eval(expr, scope)
+        except TemplateError:
+            raise
         except Exception as e:
             raise TemplateError(f"failed to render `{{{{ {expr} }}}}`: {e}") from e
         if callable(value):

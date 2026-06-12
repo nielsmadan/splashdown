@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -184,7 +183,15 @@ def ios_ensure(name: str, model: str | None, ios_version: str | None) -> tuple[s
 def ios_boot(udid: str, state: str) -> None:
     if state == "Booted":
         return
-    subprocess.run(["xcrun", "simctl", "boot", udid], check=True)
+    proc = subprocess.run(
+        ["xcrun", "simctl", "boot", udid], capture_output=True, text=True, check=False
+    )
+    # A concurrent boot can flip the state between our check and this call; simctl
+    # reports that benign race as a non-zero "current state: Booted".
+    if proc.returncode != 0 and "current state: Booted" not in proc.stderr:
+        raise DeviceError(
+            f"simctl boot failed for {udid}: {proc.stderr.strip() or proc.returncode}"
+        )
     subprocess.run(["open", "-a", "Simulator"], check=False)
 
 
@@ -246,21 +253,11 @@ def _android_avd_exists(name: str) -> bool:
 def _is_orphan_device(row: DeviceRow) -> bool:
     """A registered device whose underlying sim/AVD no longer exists. Happens
     when the user runs `xcrun simctl delete` or `avdmanager delete avd` by
-    hand, leaving the registry pointing at a ghost.
-
-    NOTE: looks up _ios_udid_exists / _android_avd_exists via sys.modules so
-    that monkeypatch.setattr(sd, ...) in tests takes effect correctly."""
-    import sys  # noqa: PLC0415
-
-    _mod = sys.modules.get("splashdown")
-    _udid_exists = getattr(_mod, "_ios_udid_exists", _ios_udid_exists) if _mod else _ios_udid_exists
-    _avd_exists = (
-        getattr(_mod, "_android_avd_exists", _android_avd_exists) if _mod else _android_avd_exists
-    )
+    hand, leaving the registry pointing at a ghost."""
     if row.dtype == "simulator":
-        return not _udid_exists(row.udid)
+        return not _ios_udid_exists(row.udid)
     if row.dtype == "emulator":
-        return not _avd_exists(row.udid)
+        return not _android_avd_exists(row.udid)
     return False
 
 
@@ -461,8 +458,8 @@ def physical_discover(platform: str | None = None) -> list[dict[str, str]]:
     scanning broadly (platform=None) a missing toolchain for one platform is
     tolerated — an Android-only dev without Xcode still discovers their phone.
     An explicitly requested platform propagates discovery errors."""
-    _ios = _resolve_fn("_ios_physical_devices", _ios_physical_devices)
-    _android = _resolve_fn("_android_physical_devices", _android_physical_devices)
+    _ios = _ios_physical_devices
+    _android = _android_physical_devices
     out: list[dict[str, str]] = []
     if platform in (None, "ios"):
         try:
@@ -538,16 +535,6 @@ def physical_status(spec: dict[str, Any]) -> str:
 # --- reconciliation (auto-upgrade on latest, pin on explicit) ---
 
 
-def _resolve_fn(name: str, default: Callable[..., Any]) -> Any:
-    """Look up a function by name through sys.modules['splashdown'] so that
-    monkeypatch.setattr(sd, name, ...) in tests takes effect. Falls back to
-    the local binding when the top-level module hasn't been imported yet."""
-    import sys  # noqa: PLC0415
-
-    _mod = sys.modules.get("splashdown")
-    return getattr(_mod, name, default) if _mod else default
-
-
 def ensure_fresh_sim(
     registry: Registry,
     cwd: Path,
@@ -566,10 +553,10 @@ def ensure_fresh_sim(
 
     if dtype == "simulator":
         requested = spec.get("ios", "latest")
-        _get_latest = _resolve_fn("_ios_latest_runtime_version", _ios_latest_runtime_version)
-        _udid_exists = _resolve_fn("_ios_udid_exists", _ios_udid_exists)
-        _ensure = _resolve_fn("ios_ensure", ios_ensure)
-        _destroy = _resolve_fn("ios_destroy", ios_destroy)
+        _get_latest = _ios_latest_runtime_version
+        _udid_exists = _ios_udid_exists
+        _ensure = ios_ensure
+        _destroy = ios_destroy
         target_ios = _get_latest() if requested == "latest" else requested
         model_spec = spec.get("model", "")
         row = registry.get_device(checkout, dtype, variant)
@@ -593,10 +580,10 @@ def ensure_fresh_sim(
 
     if dtype == "emulator":
         requested = spec.get("image", "latest")
-        _get_latest_image = _resolve_fn("_android_latest_image", _android_latest_image)
-        _avd_exists = _resolve_fn("_android_avd_exists", _android_avd_exists)
-        _avd_ensure = _resolve_fn("android_ensure", android_ensure)
-        _avd_destroy = _resolve_fn("android_destroy", android_destroy)
+        _get_latest_image = _android_latest_image
+        _avd_exists = _android_avd_exists
+        _avd_ensure = android_ensure
+        _avd_destroy = android_destroy
         target_image = _get_latest_image() if requested == "latest" else requested
         device_spec = spec.get("device", "")
         row = registry.get_device(checkout, dtype, variant)
