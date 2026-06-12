@@ -162,7 +162,7 @@ splash run                            # one type, one variant, no args needed
 splash run simulator                  # picks `default`
 splash run simulator lowest-supported
 
-splash targets                        # show every declared variant + its live sim state
+splash target                         # show every declared variant + its live sim state
 splash stop    simulator              # shut down the running sim
 splash destroy simulator small-screen # delete that variant's sim
 splash target remove simulator repro-bug      # strip a local variant (and destroy its sim)
@@ -183,10 +183,9 @@ Framework auto-detected for `run`:
 Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever; they're explicit version coverage.
 
 ```sh
-splash target gc                    # registry cleanup: defunct checkouts only
+splash gc                           # drop dead-checkout entries (ports, vars, sims)
 splash target refresh               # destroy + recreate stale 'latest' sims (newer iOS landed)
-splash target prune [ios|android|all] [--yes] [--dry-run]
-                                    # destroys every sim/AVD splashdown did NOT create
+splash target prune [ios|android]   # destroys every sim/AVD splashdown did NOT create
                                     # (the Xcode default-template pile, hand-made sims, etc.)
 ```
 
@@ -204,7 +203,7 @@ Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`.
 
 ```sh
 splash run device                 # auto-picks the one connected device
-splash targets                      # device rows show: connected / absent / ambiguous
+splash target                       # device rows show: connected / absent / ambiguous
 ```
 
 With exactly one device plugged in, no config is needed — auto-pick resolves it. When both an iPhone and an Android phone are connected, or several of one platform, narrow with the variant's `platform`, `id`, or `name` (or `splash target add device <variant> --platform ios` / `--id ...` / `--name "..."`).
@@ -242,7 +241,7 @@ A **Profile** is the per-framework integration rules: what resources this kind o
 
 A **Loader** is the per-shell-env-tool wiring: how `splashdown.env` gets sourced into your shell when you `cd` into the project. Splashdown supports three: `mise` (sets `_.file = "splashdown.env"` in `mise.toml`), `direnv` (appends `dotenv splashdown.env` between sentinel markers in `.envrc`), `devbox` (adds an `init_hook` entry in `devbox.json`). All three are idempotent and reversible.
 
-**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table; splashdown picks up the change on the next provision and never re-scans unless you ask. `splash refresh-inventory` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
+**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table; splashdown picks up the change on the next sync and never re-scans unless you ask. `splash init --rescan` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
 
 **Multi-instance collisions** are mangled at scan time. Two Vite apps both want `WEB_DEV_PORT`; the scanner renames them `WEB_DEV_PORT_ADMIN` / `WEB_DEV_PORT_CUSTOMER` based on the app names, so the recipe stays unambiguous.
 
@@ -266,38 +265,30 @@ Most of the time the framework Profile handles routing implicitly and `writer` s
 ## CLI summary
 
 ```
-splash                             # provision (what the post-checkout hook calls)
+splash                              # sync this checkout (the post-checkout hook runs this)
 splash --version
-splash provision --reprovision     # force re-allocate (regenerates uuids etc.)
-splash refresh                     # re-provision and reallocate any port a process squatted on
-splash status                      # resources + devices + which ports are bound right now
-splash init [NAME] [--loader=mise|direnv|devbox] [--force]
-                                   # scan project → write recipe + wire loader + hook
-                                   # NAME picks a named scaffold (rn / flutter / server / etc.)
-splash refresh-inventory           # re-scan and rewrite [project] / [apps.*] in place
-splash doctor [--fix] [--framework=NAME]   # framework-aware wiring check
+splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
+splash status [all]                 # resources + targets + which ports are bound right now
+splash init [preset] [--rescan] [--loader=…] [--force]
+splash doctor [--fix] [--framework=…]
 
-splash run     [type] [variant]    # reconcile + start + build + launch
-splash start   [type] [variant]    # reconcile + start (no build/launch)
-splash stop    [type] [variant]    # shut down the device (preserves it)
-splash destroy [type] [variant]    # delete the device + its registry entry
+splash run     [type] [variant]     # boot target + build + launch
+splash start   [type] [variant]     # boot target (no build/launch)
+splash stop    [type] [variant]     # shut down
+splash destroy [type] [variant]     # delete this checkout's target instance
 
-splash targets                     # all declared variants + live sim state
-splash target add <type> <variant> [--model] [--ios] [--device] [--image]
-splash target remove <type> <variant> [--keep-instance]   # also destroys the sim
-splash target gc                   # registry cleanup: defunct checkouts only
-splash target refresh              # destroy + recreate stale 'latest' sims
-splash target prune [ios|android|all] [--yes] [--dry-run]
-                                   # destroy every sim/AVD splashdown didn't create
+splash target                       # list declared targets + live state
+splash target add/remove <type> <variant> …
+splash target refresh [ios|android] # recreate stale sims/emulators
+splash target prune   [ios|android] # destroy sims/emulators splashdown didn't create
 
-splash list                        # this checkout's resolved env vars
-splash get KEY [--checkout=PATH]
-splash set KEY=VALUE
-splash release [KEY]               # release this checkout's registry entries (all, or just KEY)
-splash gc                          # GC the resource registry (ports, uuids, devices)
+splash env                          # list this checkout's resolved values
+splash env get KEY | set KEY=VALUE | release [KEY]
+
+splash gc                           # drop dead-checkout entries (ports, vars, sims)
 ```
 
-`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash refresh` fixes port collisions; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash refresh-inventory` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init NAME`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
+`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash sync --force` reallocates ports; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash init --rescan` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
 
 ## Global port coordination
 
