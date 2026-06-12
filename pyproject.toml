@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "splashdown"
-version = "0.9.0"
+version = "0.10.0"
 description = "Per-checkout iOS sims, Android emulators, and dev ports for mobile development across git worktrees on macOS. Keeps ports, env vars, and device targets in sync across macOS and Linux."
 readme = "README.md"
 requires-python = ">=3.13"
