@@ -73,9 +73,11 @@ jobs:
 
           FORMULA_FILE="$RUNNER_TEMP/homebrew-tap/Formula/splashdown.rb"
 
-          # Update url (any prior tag pattern -> new tag) and sha256.
+          # Update url (any prior tag pattern -> new tag) and the main package
+          # sha256. Anchor the sha to the 2-space-indented top-level line so
+          # resource shas (indented 4 spaces, e.g. argcomplete) are left alone.
           sed -i "s|tags/v[^\"]*\.tar\.gz|tags/${GITHUB_REF_NAME}.tar.gz|" "$FORMULA_FILE"
-          sed -i "s/sha256 \"[^\"]*\"/sha256 \"${TARBALL_SHA}\"/" "$FORMULA_FILE"
+          sed -i "s|^  sha256 \"[^\"]*\"|  sha256 \"${TARBALL_SHA}\"|" "$FORMULA_FILE"
 
           cd "$RUNNER_TEMP/homebrew-tap"
           git config user.name "github-actions[bot]"
