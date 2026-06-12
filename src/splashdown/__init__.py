@@ -5,7 +5,7 @@ expands templates, and writes resolved values to `splashdown.env`. Per-checkout
 device config lives in `splashdown.local.toml`. Maintains a machine-local
 registry so concurrent checkouts don't collide.
 
-Stdlib-only. Python 3.11+ (uses tomllib).
+Python 3.11+ (uses tomllib). One runtime dependency: argcomplete (shell completion).
 """
 
 from __future__ import annotations

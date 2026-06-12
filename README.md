@@ -20,6 +20,29 @@ pipx install splashdown
 
 This puts `splash` on your `PATH`. The registry at `$XDG_STATE_HOME/splashdown/` (default `~/.local/state/splashdown/`) is shared across every repo on your machine.
 
+## Shell completion
+
+`splash` ships bash/zsh tab-completion (subcommands, device types, and dynamic device-variant names).
+
+| Install method | Setup |
+|---|---|
+| Homebrew | Zero-touch — the formula installs completion files. |
+| pipx / uv-tool / source | `register-python-argcomplete` is not on PATH from an isolated venv, so install argcomplete separately: `uv tool install argcomplete` (or `pipx install argcomplete`), then add the line below to your shell rc and reload. |
+| mise | `mise use -g pipx:argcomplete`, then add the line below. |
+
+For **zsh**, load bash-compat completion first:
+
+```zsh
+autoload -U +X bashcompinit && bashcompinit
+eval "$(register-python-argcomplete splash)"
+```
+
+For **bash**:
+
+```bash
+eval "$(register-python-argcomplete splash)"
+```
+
 ## How it works
 
 Run `splash init` once in your project. Splashdown walks the filesystem, identifies your apps and their frameworks, and writes a recipe (`splashdown.toml`) declaring per-checkout resources (ports, db urls, UUIDs, sim/emulator variants). On every `git checkout` or `git worktree add`, a post-checkout hook fires `splash`, which allocates concrete values into a gitignored `splashdown.env`. Your shell-env loader (mise / direnv / devbox) sources that file automatically, so every process in the checkout sees the right `PORT`, `DATABASE_URL`, etc.

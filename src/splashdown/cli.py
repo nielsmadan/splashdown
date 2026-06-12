@@ -1,3 +1,4 @@
+# PYTHON_ARGCOMPLETE_OK
 from __future__ import annotations
 
 import argparse
@@ -75,6 +76,7 @@ KNOWN_CMDS = {
 
 def _build_parser() -> argparse.ArgumentParser:
     from .profiles import SCAFFOLDS  # noqa: PLC0415
+    from .completion import device_arg_completer, variant_completer  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
         prog="splash",
@@ -158,9 +160,17 @@ def _build_parser() -> argparse.ArgumentParser:
     for verb in ("run", "start", "stop", "destroy"):
         p = sub.add_parser(verb, help=argparse.SUPPRESS)
         # dtype optional: if there's exactly one declared target type for this
-        # checkout, that's what's used.
-        p.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE", nargs="?")
-        p.add_argument("variant", nargs="?", help="variant name (defaults to `default`)")
+        # checkout, that's what's used. No argparse `choices` here so a lone
+        # variant token (`splash run small-screen`) is accepted; validated in
+        # _normalize_device_args.
+        dtype_arg = p.add_argument(
+            "dtype", metavar="TYPE", nargs="?",
+            help="target type (simulator|emulator|device); inferred if one is declared",
+        )
+        dtype_arg.completer = device_arg_completer
+        variant_arg = p.add_argument(
+            "variant", nargs="?", help="variant name (defaults to `default`)")
+        variant_arg.completer = variant_completer
 
     dev = sub.add_parser("target", help=argparse.SUPPRESS)
     devsub = dev.add_subparsers(dest="target_cmd", metavar="ACTION")
@@ -212,7 +222,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "remove", help="remove a variant from splashdown.local.toml (and destroy its sim)"
     )
     rm.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
-    rm.add_argument("variant")
+    rm_variant = rm.add_argument("variant")
+    rm_variant.completer = variant_completer
     rm.add_argument(
         "--keep-instance",
         action="store_true",
@@ -226,6 +237,20 @@ def _build_parser() -> argparse.ArgumentParser:
 def _resolve_cwd(args: object) -> Path:
     cwd = getattr(args, "cwd", None)
     return Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
+
+
+def _normalize_device_args(args: argparse.Namespace) -> None:
+    """For run/start/stop/destroy: the `dtype` slot no longer uses argparse
+    `choices`, so a lone non-type token (`splash run small-screen`) lands in
+    `dtype`. Reinterpret it as the variant, and validate anything left in the
+    type slot. Type names win over equally-named variants."""
+    if args.dtype is not None and args.dtype not in TARGET_TYPES and args.variant is None:
+        args.dtype, args.variant = None, args.dtype
+    if args.dtype is not None and args.dtype not in TARGET_TYPES:
+        raise DeviceError(
+            f"invalid device type `{args.dtype}`; "
+            f"expected one of {', '.join(TARGET_TYPES)}"
+        )
 
 
 # Top-level flags whose value lives in the next argv slot (`--flag value`). Used
@@ -265,12 +290,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
     argv = _ensure_subcommand(list(argv))
 
     parser = _build_parser()
+    # Must stay immediately before parse_args: during an active completion,
+    # autocomplete() parses COMP_LINE itself and exits before parse_args runs.
+    from .completion import install as _install_completion  # noqa: PLC0415
+    _install_completion(parser)
     args = parser.parse_args(argv)
 
     cwd = _resolve_cwd(args)
     registry = Registry()
 
     try:
+        if args.cmd in ("run", "start", "stop", "destroy"):
+            _normalize_device_args(args)
         if args.cmd == "init":
             if args.rescan:
                 return cmd_refresh_inventory(cwd)
