@@ -88,7 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
     p = sub.add_parser("sync", help=argparse.SUPPRESS)
-    p.add_argument("--force", action="store_true", help="re-allocate everything from scratch (regenerates uuids etc.)")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="re-allocate everything from scratch (regenerates uuids etc.)",
+    )
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
     p = sub.add_parser("status", help=argparse.SUPPRESS)
@@ -123,7 +127,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--force", action="store_true")
     p.add_argument(
-        "--rescan", action="store_true",
+        "--rescan",
+        action="store_true",
         help="re-detect [project]/[apps.*] in an existing splashdown.toml (don't scaffold)",
     )
 

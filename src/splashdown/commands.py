@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import ENV_FILE_NAME, LOCAL_NAME, RECIPE_NAME
+from . import ENV_FILE_NAME, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .devices import (
     DeviceError,
     _android_avd_exists,
@@ -28,9 +28,7 @@ from .devices import (
     android_boot,
     android_destroy,
     android_shutdown,
-    target_add,
     device_destroy,
-    target_remove,
     device_run,
     device_shutdown,
     device_status,
@@ -39,6 +37,8 @@ from .devices import (
     ios_destroy,
     ios_shutdown,
     physical_status,
+    target_add,
+    target_remove,
 )
 from .loaders import LOADERS
 from .provisioning import (
@@ -823,9 +823,12 @@ def cmd_target_gc(registry: Registry, *, all_: bool = False) -> tuple[int, int]:
 def cmd_gc(registry: Registry) -> int:
     """Drop every dead-checkout entry machine-wide: destroy orphaned sims/AVDs,
     then prune port/kv/device rows and reconcile live checkouts to their recipes."""
-    destroyed, _stale = cmd_target_gc(registry)   # destroys orphaned sims + removes their rows
-    n = registry.gc()                             # ports/kv/remaining devices + reconcile
-    print(f"gc: removed {n} registry entries, destroyed {destroyed} orphaned device(s)", file=sys.stderr)
+    destroyed, _stale = cmd_target_gc(registry)  # destroys orphaned sims + removes their rows
+    n = registry.gc()  # ports/kv/remaining devices + reconcile
+    print(
+        f"gc: removed {n} registry entries, destroyed {destroyed} orphaned device(s)",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -1069,7 +1072,10 @@ def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
-        print(f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop", file=sys.stderr)
+        print(
+            f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop",
+            file=sys.stderr,
+        )
         return 0
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
     _dev_shutdown(dtype, resolved)
@@ -1083,7 +1089,10 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
-        print(f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to destroy", file=sys.stderr)
+        print(
+            f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to destroy",
+            file=sys.stderr,
+        )
         return 0
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
     _dev_destroy(dtype, resolved)

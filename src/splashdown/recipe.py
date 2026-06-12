@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    TARGET_TYPES,
-    TARGET_VARIANT_RE,
     ENV_NAME_RE,
     LOCAL_NAME,
     RECIPE_NAME,
+    TARGET_TYPES,
+    TARGET_VARIANT_RE,
 )
 
 # ---------- template engine ----------

@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    TARGET_TYPES,
-    TARGET_VARIANT_RE,
     LOCAL_NAME,
     RECIPE_NAME,
     REGISTRY_DIR,
+    TARGET_TYPES,
+    TARGET_VARIANT_RE,
 )
 from .recipe import (
     LOCAL_SKELETON,
@@ -304,6 +304,10 @@ def android_ensure(name: str, device: str | None, image: str | None) -> str:
     return name
 
 
+# `adb devices` rows are "<serial>\t<state>"; both columns must be present.
+_ADB_ROW_COLS = 2
+
+
 def _android_running_serial(avd_name: str) -> str | None:
     """Match a running emulator to an AVD via `adb -s <serial> emu avd name`."""
     adb = _android_bin("adb")
@@ -311,11 +315,13 @@ def _android_running_serial(avd_name: str) -> str | None:
         out = subprocess.check_output([adb, "devices"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
         return None
-    # `adb devices` rows are "<serial>\t<state>"; need both columns present.
-    adb_row_cols = 2
     for line in out.splitlines()[1:]:
         parts = line.split()
-        if len(parts) >= adb_row_cols and parts[0].startswith("emulator-") and parts[1] == "device":
+        if (
+            len(parts) >= _ADB_ROW_COLS
+            and parts[0].startswith("emulator-")
+            and parts[1] == "device"
+        ):
             serial = parts[0]
             try:
                 got = (
@@ -384,7 +390,7 @@ def _devicectl_json(args: list[str]) -> Any:
     with Xcode 15+; raise a pointed error when it's missing or fails."""
     try:
         out = subprocess.check_output(
-            ["xcrun", "devicectl"] + args + ["--json-output", "-"],
+            ["xcrun", "devicectl", *args, "--json-output", "-"],
             stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError as e:
@@ -440,7 +446,7 @@ def _android_physical_devices() -> list[dict[str, str]]:
     devices: list[dict[str, str]] = []
     for line in out.splitlines()[1:]:
         parts = line.split()
-        if len(parts) < 2 or parts[1] != "device":
+        if len(parts) < _ADB_ROW_COLS or parts[1] != "device":
             continue
         serial = parts[0]
         if serial.startswith("emulator-"):
@@ -501,8 +507,11 @@ def ensure_physical(spec: dict[str, Any]) -> dict[str, str]:
             "`id`/`name`/`platform` on the variant"
         )
     d = devices[0]
-    info: dict[str, str] = {"kind": d["platform"] if d["platform"] == "ios" else "android",
-                            "name": d["name"], "physical": True}
+    info: dict[str, Any] = {
+        "kind": d["platform"] if d["platform"] == "ios" else "android",
+        "name": d["name"],
+        "physical": True,
+    }
     info["udid" if d["platform"] == "ios" else "serial"] = d["id"]
     return info
 

@@ -231,8 +231,9 @@ def _write_recipe(checkout: Path, body: str) -> None:
 def test_registry_gc_drops_port_not_in_recipe(registry, tmp_path):
     # Checkout exists; recipe declares PORT but not DART_PORT. The leftover
     # DART_PORT row (from an older recipe) should be reconciled away.
-    a = tmp_path / "alive"; a.mkdir()
-    _write_recipe(a, "[resources.PORT]\ntype = \"port\"\nrange = [3000, 3100]\n")
+    a = tmp_path / "alive"
+    a.mkdir()
+    _write_recipe(a, '[resources.PORT]\ntype = "port"\nrange = [3000, 3100]\n')
     registry.allocate_port(str(a), "PORT", 3000, 3100)
     registry.allocate_port(str(a), "DART_PORT", 9100, 9200)
     registry.gc()
@@ -241,8 +242,9 @@ def test_registry_gc_drops_port_not_in_recipe(registry, tmp_path):
 
 
 def test_registry_gc_drops_kv_not_in_recipe(registry, tmp_path):
-    a = tmp_path / "alive"; a.mkdir()
-    _write_recipe(a, "[resources.NAME]\ntype = \"set\"\n")
+    a = tmp_path / "alive"
+    a.mkdir()
+    _write_recipe(a, '[resources.NAME]\ntype = "set"\n')
     registry.set_kv(str(a), "NAME", "kept")
     registry.set_kv(str(a), "STALE", "gone")
     registry.gc()
@@ -251,14 +253,16 @@ def test_registry_gc_drops_kv_not_in_recipe(registry, tmp_path):
 
 def test_registry_gc_keeps_entries_when_recipe_missing(registry, tmp_path):
     # Dir exists but no recipe — don't read that as "zero declared resources".
-    a = tmp_path / "alive"; a.mkdir()
+    a = tmp_path / "alive"
+    a.mkdir()
     registry.allocate_port(str(a), "DART_PORT", 9100, 9200)
     registry.gc()
     assert set(registry.all_for(str(a))) == {"DART_PORT"}
 
 
 def test_registry_gc_keeps_entries_when_recipe_unparseable(registry, tmp_path):
-    a = tmp_path / "alive"; a.mkdir()
+    a = tmp_path / "alive"
+    a.mkdir()
     _write_recipe(a, "this is not = valid toml [[[")
     registry.allocate_port(str(a), "DART_PORT", 9100, 9200)
     registry.gc()
@@ -411,7 +415,12 @@ def _stub_physical(monkeypatch, ios=None, android=None):
 def test_ensure_physical_autopicks_lone_ios(monkeypatch):
     _stub_physical(monkeypatch, ios=[_IPHONE])
     info = sd.ensure_physical({})
-    assert info == {"kind": "ios", "name": "Niels's iPhone", "physical": True, "udid": "00008-PHONE"}
+    assert info == {
+        "kind": "ios",
+        "name": "Niels's iPhone",
+        "physical": True,
+        "udid": "00008-PHONE",
+    }
 
 
 def test_ensure_physical_autopicks_lone_android(monkeypatch):
@@ -457,6 +466,7 @@ def test_ensure_physical_errors_when_ambiguous(monkeypatch):
 def test_physical_discover_tolerates_missing_ios_toolchain(monkeypatch):
     def _boom():
         raise sd.DeviceError("xcrun devicectl failed")
+
     monkeypatch.setattr(sd, "_ios_physical_devices", _boom)
     monkeypatch.setattr(sd, "_android_physical_devices", lambda: [_PIXEL])
     # Broad scan: iOS toolchain error is swallowed, android phone still found.
@@ -476,28 +486,46 @@ def test_physical_status_states(monkeypatch):
 
 
 def test_ios_physical_devices_parses_devicectl(monkeypatch):
-    payload = json.dumps({"result": {"devices": [
-        {  # wired & actively tunneled — included
-            "deviceProperties": {"name": "Wired iPhone"},
-            "hardwareProperties": {"udid": "WIRED", "platform": "iOS"},
-            "connectionProperties": {"pairingState": "paired", "tunnelState": "connected"},
-        },
-        {  # wifi: paired but tunnel lazily disconnected — must still be included
-            "deviceProperties": {"name": "Wifi iPhone"},
-            "hardwareProperties": {"udid": "WIFI", "platform": "iOS"},
-            "connectionProperties": {"pairingState": "paired", "tunnelState": "disconnected"},
-        },
-        {  # paired but gone (unavailable) — skipped
-            "deviceProperties": {"name": "Old iPad"},
-            "hardwareProperties": {"udid": "IPAD", "platform": "iOS"},
-            "connectionProperties": {"pairingState": "paired", "tunnelState": "unavailable"},
-        },
-        {  # not paired with this Mac — skipped
-            "deviceProperties": {"name": "Stranger"},
-            "hardwareProperties": {"udid": "STRANGER", "platform": "iOS"},
-            "connectionProperties": {"pairingState": "unpaired", "tunnelState": "disconnected"},
-        },
-    ]}}).encode()
+    payload = json.dumps(
+        {
+            "result": {
+                "devices": [
+                    {  # wired & actively tunneled — included
+                        "deviceProperties": {"name": "Wired iPhone"},
+                        "hardwareProperties": {"udid": "WIRED", "platform": "iOS"},
+                        "connectionProperties": {
+                            "pairingState": "paired",
+                            "tunnelState": "connected",
+                        },
+                    },
+                    {  # wifi: paired but tunnel lazily disconnected — must still be included
+                        "deviceProperties": {"name": "Wifi iPhone"},
+                        "hardwareProperties": {"udid": "WIFI", "platform": "iOS"},
+                        "connectionProperties": {
+                            "pairingState": "paired",
+                            "tunnelState": "disconnected",
+                        },
+                    },
+                    {  # paired but gone (unavailable) — skipped
+                        "deviceProperties": {"name": "Old iPad"},
+                        "hardwareProperties": {"udid": "IPAD", "platform": "iOS"},
+                        "connectionProperties": {
+                            "pairingState": "paired",
+                            "tunnelState": "unavailable",
+                        },
+                    },
+                    {  # not paired with this Mac — skipped
+                        "deviceProperties": {"name": "Stranger"},
+                        "hardwareProperties": {"udid": "STRANGER", "platform": "iOS"},
+                        "connectionProperties": {
+                            "pairingState": "unpaired",
+                            "tunnelState": "disconnected",
+                        },
+                    },
+                ]
+            }
+        }
+    ).encode()
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: payload)
     devices = sd._ios_physical_devices()
     assert devices == [
@@ -508,20 +536,19 @@ def test_ios_physical_devices_parses_devicectl(monkeypatch):
 
 def test_android_physical_devices_excludes_emulators(monkeypatch):
     out = (
-        "List of devices attached\n"
-        "emulator-5554       device product:sdk model:sdk_gphone device:emu transport_id:1\n"
-        "PXL1234             device product:panther model:Pixel_7 device:panther transport_id:2\n"
-        "ZZZ                 unauthorized\n"
-    ).encode()
-    monkeypatch.setattr(sd, "_android_bin", lambda name: "/fake/adb")
-    monkeypatch.setattr(
-        sd.devices.subprocess, "check_output", lambda *a, **k: out
+        b"List of devices attached\n"
+        b"emulator-5554       device product:sdk model:sdk_gphone device:emu transport_id:1\n"
+        b"PXL1234             device product:panther model:Pixel_7 device:panther transport_id:2\n"
+        b"ZZZ                 unauthorized\n"
     )
+    monkeypatch.setattr(sd, "_android_bin", lambda name: "/fake/adb")
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: out)
     devices = sd._android_physical_devices()
     assert devices == [{"id": "PXL1234", "name": "Pixel_7", "platform": "android"}]
 
 
 # ---------- physical: CLI run / start / stop / destroy ----------
+
 
 def _write_physical_recipe(tmp_path):
     (tmp_path / "splashdown.toml").write_text("""
@@ -539,9 +566,11 @@ def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
     _stub_physical(monkeypatch, ios=[_IPHONE])
     monkeypatch.setattr(sd, "ios_boot", lambda u, s: pytest.fail("should not boot hardware"))
     captured = {}
+
     def _fake_run(cwd, recipe, info):
         captured["info"] = info
         return 0
+
     monkeypatch.setattr(sd, "device_run", _fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "run", "device"])
     assert rc == 0
@@ -562,7 +591,9 @@ def test_cli_start_physical_reports_connected_without_boot(tmp_path, monkeypatch
 def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(sd, "device_shutdown", lambda dt, name: pytest.fail("should not touch hardware"))
+    monkeypatch.setattr(
+        sd, "device_shutdown", lambda dt, name: pytest.fail("should not touch hardware")
+    )
     rc = sd.main(["--cwd", str(tmp_path), "stop", "device"])
     assert rc == 0
 
@@ -570,7 +601,9 @@ def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
 def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(sd, "device_destroy", lambda dt, name: pytest.fail("should not touch hardware"))
+    monkeypatch.setattr(
+        sd, "device_destroy", lambda dt, name: pytest.fail("should not touch hardware")
+    )
     rc = sd.main(["--cwd", str(tmp_path), "destroy", "device"])
     assert rc == 0
 
@@ -587,8 +620,7 @@ def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
 
 
 def test_device_add_physical_writes_id_and_platform(tmp_path):
-    sd.target_add(tmp_path, "device", "my-phone",
-                  {"id": "ABC123", "platform": "ios", "name": None})
+    sd.target_add(tmp_path, "device", "my-phone", {"id": "ABC123", "platform": "ios", "name": None})
     text = (tmp_path / "splashdown.local.toml").read_text()
     assert "[targets.device.my-phone]" in text
     assert 'id = "ABC123"' in text
@@ -600,6 +632,7 @@ def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
     app = tmp_path / "Demo.app"
     app.mkdir()
     import plistlib
+
     with (app / "Info.plist").open("wb") as f:
         plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
 
@@ -611,8 +644,10 @@ def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
     monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: calls.append(args) or 0)
 
     class _Done:
-        stdout = json.dumps([{"buildSettings": {
-            "BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}])
+        stdout = json.dumps(
+            [{"buildSettings": {"BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}]
+        )
+
     monkeypatch.setattr(sd.profiles.subprocess, "run", lambda *a, **k: _Done())
 
     info = {"kind": "ios", "udid": "00008-PHONE", "physical": True}
@@ -1162,11 +1197,11 @@ def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
         '[resources.PORT]\ntype = "port"\nrange = [19700, 19710]\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    sd.main(["--cwd", str(tmp_path)])           # sync → allocate PORT
+    sd.main(["--cwd", str(tmp_path)])  # sync → allocate PORT
     capsys.readouterr()
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "PORT"]) == 0
     assert capsys.readouterr().out.strip().isdigit()
-    assert sd.main(["--cwd", str(tmp_path), "env"]) == 0   # bare list
+    assert sd.main(["--cwd", str(tmp_path), "env"]) == 0  # bare list
     assert "PORT=" in capsys.readouterr().out
 
 
@@ -1222,7 +1257,8 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
         [
             "--cwd",
             str(tmp_path),
-            "target",            "remove",
+            "target",
+            "remove",
             "simulator",
             "repro",
             "--keep-instance",
@@ -1278,7 +1314,7 @@ ios   = "17.0"
     monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     destroyed_count, pruned_count = sd.cmd_target_gc(registry, all_=True)
     assert destroyed_count == 0  # no defunct checkouts
-    assert pruned_count == 1    # one stale "latest" variant pruned
+    assert pruned_count == 1  # one stale "latest" variant pruned
     assert destroyed == ["UDID-DEFAULT"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-LEGACY"}
 
@@ -1286,19 +1322,19 @@ ios   = "17.0"
 def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, capsys):
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    dead = tmp_path / "dead"          # a checkout dir that won't exist at gc time
+    dead = tmp_path / "dead"  # a checkout dir that won't exist at gc time
     reg = sd.Registry()
     reg.allocate_port(str(dead), "PORT", 19800, 19810)
     reg.set_device(str(dead), "simulator", "default", "UDID-DEAD", "iPhone 17", "18.5")
     destroyed = []
     monkeypatch.setattr(sd, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd, "ios_destroy", lambda u: destroyed.append(u))
+    monkeypatch.setattr(sd, "ios_destroy", destroyed.append)
     # dead/ never created on disk → it's a defunct checkout
     rc = sd.main(["--cwd", str(tmp_path), "gc"])
     assert rc == 0
-    assert "UDID-DEAD" in destroyed                       # sim torn down
+    assert "UDID-DEAD" in destroyed  # sim torn down
     assert reg.get_device(str(dead), "simulator", "default") is None
-    assert str(dead) not in reg.all_checkouts()           # port row pruned too
+    assert str(dead) not in reg.all_checkouts()  # port row pruned too
 
 
 # ---------- device refresh ----------
@@ -2191,7 +2227,7 @@ def test_cli_help_shows_tiers(capsys):
     out = capsys.readouterr().out
     for token in ("run", "sync", "status", "init", "target", "env"):
         assert token in out
-    assert "provision" not in out      # old word is gone
+    assert "provision" not in out  # old word is gone
 
 
 def test_localconfig_missing_file_is_empty(tmp_path):
@@ -2257,15 +2293,15 @@ def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
 
 def test_cli_init_rescan_updates_inventory(tmp_path, monkeypatch):
     # `init --rescan` re-detects apps in an existing recipe instead of scaffolding.
-    (tmp_path / "splashdown.toml").write_text(
-        '[project]\nworkspace = "single"\nloader = "mise"\n'
-    )
+    (tmp_path / "splashdown.toml").write_text('[project]\nworkspace = "single"\nloader = "mise"\n')
     (tmp_path / "pubspec.yaml").write_text("name: demo\n")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     called = {}
+
     def _fake(cwd):
         called["cwd"] = cwd
         return 0
+
     monkeypatch.setattr(sd.cli, "cmd_refresh_inventory", _fake)
     rc = sd.main(["--cwd", str(tmp_path), "init", "--rescan"])
     assert rc == 0

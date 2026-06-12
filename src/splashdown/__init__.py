@@ -47,13 +47,13 @@ from .commands import (
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
     cmd_gc,
+    cmd_init,
+    cmd_refresh_inventory,
+    cmd_status,
     cmd_target_gc,
     cmd_target_prune,
     cmd_target_refresh,
     cmd_targets_list,
-    cmd_init,
-    cmd_refresh_inventory,
-    cmd_status,
 )
 from .devices import (
     DeviceError,
@@ -78,9 +78,7 @@ from .devices import (
     android_ensure,
     android_shutdown,
     detect_framework,
-    target_add,
     device_destroy,
-    target_remove,
     device_run,
     device_shutdown,
     device_status,
@@ -92,6 +90,8 @@ from .devices import (
     ios_shutdown,
     physical_discover,
     physical_status,
+    target_add,
+    target_remove,
 )
 from .loaders import LOADERS, Loader
 from .profiles import SCAFFOLDS, Profile
