@@ -86,7 +86,6 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
         if status == "ok":
             print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
             continue
-        # Problem.
         if fix and check.autofix is not None:
             try:
                 check.autofix(cwd)
@@ -233,7 +232,7 @@ def _rn_metro_autofix(cwd: Path) -> None:
     path = cwd / "metro.config.js"
     text = path.read_text()
     if "process.env.RCT_METRO_PORT" in text:
-        return  # already wired
+        return
     m = _METRO_LITERAL_PORT_RE.search(text)
     if m:
         new_text = (
@@ -395,7 +394,7 @@ def _rn_xcode_autofix(cwd: Path) -> None:
     path = cwd / "ios" / ".xcode.env"
     text = path.read_text()
     if "splashdown.env" in text:
-        return  # already wired (sentinel block or hand-written equivalent)
+        return
     # Strip any literal-digit export so the file has one source of truth.
     text = _XCODE_LITERAL_EXPORT_RE.sub("", text)
     # Strip any prior sentinel block (only reachable if sentinels existed but no

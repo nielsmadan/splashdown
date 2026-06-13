@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import ENV_FILE_NAME, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .devices import (
@@ -181,15 +181,12 @@ def _wire_post_checkout_lefthook(cwd: Path) -> None:
         text = text + sep + ("\npost-checkout:\n  commands:\n    splashdown:\n      run: splash\n")
         path.write_text(text)
     else:
-        # Find end of post-checkout block (next top-level key or EOF).
         end_idx = len(lines)
         for j in range(pc_idx + 1, len(lines)):
             ln = lines[j]
             if ln and not ln[0].isspace() and not ln.startswith("#"):
                 end_idx = j
                 break
-        # If 'commands:' exists under post-checkout, insert splashdown under it;
-        # otherwise inject a fresh commands: block right after the header.
         cmds_idx = next(
             (j for j in range(pc_idx + 1, end_idx) if re.match(r"^\s+commands:\s*$", lines[j])),
             None,
@@ -500,9 +497,15 @@ def _emit_status_block_text(block: dict[str, Any], *, show_all: bool) -> None:
         print("", file=sys.stderr)
 
 
+class _StatusRow(NamedTuple):
+    path: str
+    summary: str
+    status: str
+
+
 def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> int:
     """Compact one-row-per-checkout view for `splash status --all`."""
-    rows: list[tuple[str, str, str]] = []  # (path, summary, status)
+    rows: list[_StatusRow] = []
     summary = {
         "defunct_checkouts": 0,
         "defunct_rows": 0,
@@ -535,16 +538,16 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
                     summary["stale_devices"] += 1
                     status_label = status_label or "stale"
 
-        rows.append((path_label, summary_str, status_label))
+        rows.append(_StatusRow(path_label, summary_str, status_label))
 
-    path_width = max((len(r[0]) for r in rows), default=4)
+    path_width = max((len(r.path) for r in rows), default=4)
     path_width = max(path_width, len("PATH"))
-    summary_width = max((len(r[1]) for r in rows), default=7)
+    summary_width = max((len(r.summary) for r in rows), default=7)
     summary_width = max(summary_width, len("SUMMARY"))
 
     # ISSUE column only appears when at least one row flags something. Empty
     # cells across the board would just be dead width.
-    has_issue = any(r[2] for r in rows)
+    has_issue = any(r.status for r in rows)
     if has_issue:
         fmt_row = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
         print(fmt_row.format("PATH", "SUMMARY", "ISSUE").rstrip(), file=sys.stderr)
@@ -802,11 +805,11 @@ def cmd_target_gc(registry: Registry, *, all_: bool = False) -> tuple[int, int]:
             continue
         if row.dtype == "simulator":
             if spec.get("ios", "latest") != "latest":
-                continue  # pinned — leave alone
+                continue
             if latest_ios is None:
                 latest_ios = _get_latest_ios()
             if row.ios == latest_ios:
-                continue  # already fresh
+                continue
             if _udid_exists(row.udid):
                 _destroy_ios(row.udid)
             registry.remove_device(row.checkout, row.dtype, row.variant)
@@ -1181,7 +1184,6 @@ def cmd_init(
     LOADERS[inv.loader].wire(cwd)
     _ensure_post_checkout_hook(cwd)
 
-    # Run consumer-side wiring (the Profiles' wiring checks).
     if any(app.profile != "unknown" for app in inv.apps):
         for app in inv.apps:
             if app.profile == "unknown":
@@ -1248,7 +1250,6 @@ def cmd_refresh_inventory(cwd: Path) -> int:
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
 
-    # Preserve existing resource definitions verbatim.
     existing = recipe_path.read_text()
     preserved_resources = _extract_resource_blocks(existing)
 

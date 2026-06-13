@@ -92,7 +92,7 @@ class DevboxLoader(Loader):
         new_hooks = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
         new_hooks.append(_DEVBOX_HOOK_CMD)
         if new_hooks == hooks:
-            return  # nothing changed
+            return
         shell["init_hook"] = new_hooks
         path.write_text(json.dumps(data, indent=2) + "\n")
 

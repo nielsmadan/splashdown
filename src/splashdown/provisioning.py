@@ -181,11 +181,10 @@ def write_envrc(path: Path, items: dict[str, str]) -> bool:
     while kept and not kept[-1].strip():
         kept.pop()
 
-    # Naive shell quoting — single-quote, escape internal single quotes.
-    def quote(v: str) -> str:
+    def _shell_single_quote(v: str) -> str:
         return "'" + v.replace("'", "'\\''") + "'"
 
-    new = kept + [f"export {k}={quote(v)}" for k, v in items.items()]
+    new = kept + [f"export {k}={_shell_single_quote(v)}" for k, v in items.items()]
     return _write_if_changed(path, "\n".join(new) + "\n")
 
 

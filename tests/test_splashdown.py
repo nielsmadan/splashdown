@@ -903,9 +903,8 @@ framework = "react-native"
         return 0
 
     monkeypatch.setattr(sd.devices, "device_run", _fake_run)
-    monkeypatch.setattr(
-        sd.commands, "device_run", _fake_run
-    )  # No TYPE given — should resolve to the only declared type (simulator).
+    monkeypatch.setattr(sd.commands, "device_run", _fake_run)
+    # No TYPE given — should resolve to the only declared type (simulator).
     rc = sd.main(["--cwd", str(tmp_path), "run"])
     assert rc == 0
     assert captured["info"]["kind"] == "ios"
@@ -1344,7 +1343,7 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
         ]
     )
     assert rc == 0
-    assert destroyed == []  # sim left alone
+    assert destroyed == []
     assert "[targets.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
 
 
