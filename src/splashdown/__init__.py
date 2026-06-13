@@ -16,7 +16,33 @@ from pathlib import Path
 
 # ---------- paths & constants ----------
 
-__version__ = "0.9.0"  # keep in sync with pyproject.toml
+
+def _resolve_version() -> str:
+    """Resolve the version from installed package metadata (single source of
+    truth: pyproject.toml). Falls back to reading pyproject directly for an
+    uninstalled source checkout (e.g. the test suite). Called lazily — never on
+    the hot path — because a metadata lookup costs ~20ms."""
+    from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
+
+    try:
+        return version("splashdown")
+    except PackageNotFoundError:
+        import tomllib  # noqa: PLC0415
+
+        try:
+            pyproject = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+            return tomllib.loads(pyproject.read_text())["project"]["version"]
+        except Exception:
+            return "0.0.0+unknown"
+
+
+def __getattr__(name: str) -> object:
+    # `__version__` is resolved lazily so importing the package (the git-hook
+    # hot path) doesn't pay for a metadata lookup.
+    if name == "__version__":
+        return _resolve_version()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
 REGISTRY_DIR = STATE_HOME / "splashdown"

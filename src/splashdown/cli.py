@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import TARGET_TYPES, __version__
+from . import TARGET_TYPES
 from .commands import (
     _cmd_provision,
     _env_dispatch,
@@ -35,6 +35,22 @@ class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
         if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
             return ""
         return super()._format_action(action)
+
+
+class _VersionAction(argparse.Action):
+    """Like argparse's built-in version action, but resolves the version
+    lazily (only when `--version` is given) so the hot path skips the
+    ~20ms metadata lookup."""
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS,
+                 help="show program's version number and exit"):
+        super().__init__(option_strings, dest, nargs=0, default=default, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from . import _resolve_version  # noqa: PLC0415
+
+        print(f"splashdown {_resolve_version()}")
+        parser.exit()
 
 
 _HELP_EPILOG = """\
@@ -86,7 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
     parser.add_argument("--format", choices=["text", "json"], default=None)
-    parser.add_argument("--version", action="version", version=f"splashdown {__version__}")
+    parser.add_argument("--version", action=_VersionAction)
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
     p = sub.add_parser("sync", help=argparse.SUPPRESS)
