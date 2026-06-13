@@ -31,8 +31,8 @@ def _resolve_version() -> str:
 
         try:
             pyproject = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
-            return tomllib.loads(pyproject.read_text())["project"]["version"]
-        except Exception:
+            return str(tomllib.loads(pyproject.read_text())["project"]["version"])
+        except Exception:  # noqa: BLE001 — best-effort fallback; never block on version
             return "0.0.0+unknown"
 
 

@@ -42,11 +42,22 @@ class _VersionAction(argparse.Action):
     lazily (only when `--version` is given) so the hot path skips the
     ~20ms metadata lookup."""
 
-    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS,
-                 help="show program's version number and exit"):
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str | None = "show program's version number and exit",
+    ) -> None:
         super().__init__(option_strings, dest, nargs=0, default=default, help=help)
 
-    def __call__(self, parser, namespace, values, option_string=None):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
         from . import _resolve_version  # noqa: PLC0415
 
         print(f"splashdown {_resolve_version()}")
@@ -90,9 +101,9 @@ KNOWN_CMDS = {
 }
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    from .profiles import SCAFFOLDS  # noqa: PLC0415
+def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser; one block per subcommand
     from .completion import device_arg_completer, variant_completer  # noqa: PLC0415
+    from .profiles import SCAFFOLDS  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
         prog="splash",
@@ -180,13 +191,16 @@ def _build_parser() -> argparse.ArgumentParser:
         # variant token (`splash run small-screen`) is accepted; validated in
         # _normalize_device_args.
         dtype_arg = p.add_argument(
-            "dtype", metavar="TYPE", nargs="?",
+            "dtype",
+            metavar="TYPE",
+            nargs="?",
             help="target type (simulator|emulator|device); inferred if one is declared",
         )
-        dtype_arg.completer = device_arg_completer
+        dtype_arg.completer = device_arg_completer  # type: ignore[attr-defined]
         variant_arg = p.add_argument(
-            "variant", nargs="?", help="variant name (defaults to `default`)")
-        variant_arg.completer = variant_completer
+            "variant", nargs="?", help="variant name (defaults to `default`)"
+        )
+        variant_arg.completer = variant_completer  # type: ignore[attr-defined]
 
     dev = sub.add_parser("target", help=argparse.SUPPRESS)
     devsub = dev.add_subparsers(dest="target_cmd", metavar="ACTION")
@@ -239,7 +253,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rm.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
     rm_variant = rm.add_argument("variant")
-    rm_variant.completer = variant_completer
+    rm_variant.completer = variant_completer  # type: ignore[attr-defined]
     rm.add_argument(
         "--keep-instance",
         action="store_true",
@@ -264,8 +278,7 @@ def _normalize_device_args(args: argparse.Namespace) -> None:
         args.dtype, args.variant = None, args.dtype
     if args.dtype is not None and args.dtype not in TARGET_TYPES:
         raise DeviceError(
-            f"invalid device type `{args.dtype}`; "
-            f"expected one of {', '.join(TARGET_TYPES)}"
+            f"invalid device type `{args.dtype}`; expected one of {', '.join(TARGET_TYPES)}"
         )
 
 
@@ -309,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
     # Must stay immediately before parse_args: during an active completion,
     # autocomplete() parses COMP_LINE itself and exits before parse_args runs.
     from .completion import install as _install_completion  # noqa: PLC0415
+
     _install_completion(parser)
     args = parser.parse_args(argv)
 

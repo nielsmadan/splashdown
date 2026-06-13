@@ -3770,6 +3770,7 @@ def test_react_native_profile_inherits_existing_wiring_checks(tmp_path):
 
 # ---------- completion: packaging ----------
 
+
 def test_argcomplete_marker_present_in_cli():
     cli_src = (ROOT / "src" / "splashdown" / "cli.py").read_text()
     # Marker must be within the first 1 KB so argcomplete's wrapper-follow finds it.
@@ -3782,8 +3783,9 @@ def test_argcomplete_importable():
 
 # ---------- completion: completers ----------
 
-from argparse import Namespace  # noqa: E402
-from splashdown.completion import variant_completer, device_arg_completer  # noqa: E402
+from argparse import Namespace
+
+from splashdown.completion import device_arg_completer, variant_completer
 
 
 def _write_recipe(d: Path, body: str) -> None:
@@ -3791,51 +3793,57 @@ def _write_recipe(d: Path, body: str) -> None:
 
 
 def test_variant_completer_lists_variants_for_typed_dtype(checkout):
-    _write_recipe(checkout,
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.simulator.small-screen]\nmodel = "B"\n')
+    _write_recipe(
+        checkout,
+        '[targets.simulator.default]\nmodel = "A"\n[targets.simulator.small-screen]\nmodel = "B"\n',
+    )
     args = Namespace(cwd=str(checkout), dtype="simulator")
     assert variant_completer("", args) == ["default", "small-screen"]
 
 
 def test_variant_completer_prefix_filters(checkout):
-    _write_recipe(checkout,
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.simulator.small-screen]\nmodel = "B"\n')
+    _write_recipe(
+        checkout,
+        '[targets.simulator.default]\nmodel = "A"\n[targets.simulator.small-screen]\nmodel = "B"\n',
+    )
     args = Namespace(cwd=str(checkout), dtype="simulator")
     assert variant_completer("sm", args) == ["small-screen"]
 
 
 def test_variant_completer_infers_single_type_when_dtype_none(checkout):
-    _write_recipe(checkout,
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.simulator.tablet]\nmodel = "B"\n')
+    _write_recipe(
+        checkout,
+        '[targets.simulator.default]\nmodel = "A"\n[targets.simulator.tablet]\nmodel = "B"\n',
+    )
     args = Namespace(cwd=str(checkout), dtype=None)
     assert variant_completer("", args) == ["default", "tablet"]
 
 
 def test_variant_completer_dedupes_across_types(checkout):
-    _write_recipe(checkout,
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.emulator.default]\nimage = "X"\n')
+    _write_recipe(
+        checkout,
+        '[targets.simulator.default]\nmodel = "A"\n[targets.emulator.default]\nimage = "X"\n',
+    )
     args = Namespace(cwd=str(checkout), dtype=None)
     # `default` declared under both types must appear once.
     assert variant_completer("", args) == ["default"]
 
 
 def test_device_arg_completer_offers_variants_for_single_type(checkout):
-    _write_recipe(checkout,
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.simulator.tablet]\nmodel = "B"\n')
+    _write_recipe(
+        checkout,
+        '[targets.simulator.default]\nmodel = "A"\n[targets.simulator.tablet]\nmodel = "B"\n',
+    )
     args = Namespace(cwd=str(checkout), dtype=None)
     # type name + variant names, sorted, deduped.
     assert device_arg_completer("", args) == ["default", "simulator", "tablet"]
 
 
 def test_device_arg_completer_offers_only_type_names_for_multi_type(checkout):
-    _write_recipe(checkout,
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.emulator.default]\nimage = "X"\n')
+    _write_recipe(
+        checkout,
+        '[targets.simulator.default]\nmodel = "A"\n[targets.emulator.default]\nimage = "X"\n',
+    )
     args = Namespace(cwd=str(checkout), dtype=None)
     # Two declared types: offer only type names, no variants.
     assert device_arg_completer("", args) == ["emulator", "simulator"]
@@ -3850,8 +3858,8 @@ def test_completer_fail_silent_on_malformed_toml(checkout):
 
 # ---------- completion: arg normalization ----------
 
-from splashdown.cli import _normalize_device_args  # noqa: E402
-from splashdown.devices import DeviceError  # noqa: E402
+from splashdown.cli import _normalize_device_args
+from splashdown.devices import DeviceError
 
 
 def test_normalize_leaves_explicit_type_and_variant():
@@ -3892,7 +3900,8 @@ def test_normalize_type_name_wins_as_type():
 
 def test_run_accepts_lone_variant(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text(
-        '[targets.simulator.small-screen]\nmodel = "iPhone SE"\n')
+        '[targets.simulator.small-screen]\nmodel = "iPhone SE"\n'
+    )
     captured = {}
 
     def fake_cmd_run(cwd, registry, dtype, variant):
@@ -3909,8 +3918,7 @@ def test_run_accepts_lone_variant(tmp_path, monkeypatch):
 
 
 def test_run_rejects_nontype_with_variant_via_main(tmp_path):
-    (tmp_path / "splashdown.toml").write_text(
-        '[targets.simulator.default]\nmodel = "A"\n')
+    (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "A"\n')
     # `foo` is not a device type and a variant is already given -> DeviceError,
     # which main()'s try/except turns into exit code 1 (not an uncaught crash).
     rc = sd.main(["--cwd", str(tmp_path), "run", "foo", "bar"])
@@ -3919,13 +3927,16 @@ def test_run_rejects_nontype_with_variant_via_main(tmp_path):
 
 # ---------- completion: protocol + wiring ----------
 
-import io  # noqa: E402
+import io
 
 
 def _argcomplete_completions(parser, comp_line, cwd):
     """Drive argcomplete in-process via its env protocol and return the list of
     completion strings it would emit for `comp_line`."""
-    import argcomplete  # noqa: PLC0415
+    import contextlib
+
+    import argcomplete
+
     env = {
         "_ARGCOMPLETE": "1",
         "_ARGCOMPLETE_IFS": "\013",
@@ -3939,20 +3950,19 @@ def _argcomplete_completions(parser, comp_line, cwd):
     os.environ.update(env)
     os.chdir(cwd)
     try:
-        try:
+        with contextlib.suppress(SystemExit):
             argcomplete.autocomplete(parser, exit_method=sys.exit, output_stream=out)
-        except SystemExit:
-            pass
     finally:
-        os.environ.clear(); os.environ.update(saved)
+        os.environ.clear()
+        os.environ.update(saved)
         os.chdir(saved_cwd)
     return out.getvalue().split("\013")
 
 
 def test_comp_line_offers_variants_for_run_single_type(tmp_path):
     (tmp_path / "splashdown.toml").write_text(
-        '[targets.simulator.default]\nmodel = "A"\n'
-        '[targets.simulator.small-screen]\nmodel = "B"\n')
+        '[targets.simulator.default]\nmodel = "A"\n[targets.simulator.small-screen]\nmodel = "B"\n'
+    )
     parser = sd._build_parser()
     out = _argcomplete_completions(parser, "splash run ", tmp_path)
     assert "small-screen" in out
@@ -3960,7 +3970,8 @@ def test_comp_line_offers_variants_for_run_single_type(tmp_path):
 
 
 def test_install_is_noop_without_argcomplete_env(monkeypatch):
-    from splashdown.completion import install  # noqa: PLC0415
+    from splashdown.completion import install
+
     # No _ARGCOMPLETE in env -> returns without importing/inspecting.
     monkeypatch.delenv("_ARGCOMPLETE", raising=False)
     assert install(sd._build_parser()) is None
