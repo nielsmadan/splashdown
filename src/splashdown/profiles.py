@@ -590,6 +590,9 @@ model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
                    # "18.5" if you want a fixed version that never upgrades.
 
+[targets.emulator.default]
+device = "pixel_9"
+
 # Run on a plugged-in phone with `splash run device`. With one device
 # connected, auto-pick resolves it — no config needed. Uncomment to pin a
 # specific device by id/name, or to scope auto-pick to one platform.
