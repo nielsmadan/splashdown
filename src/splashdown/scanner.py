@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .loaders import LOADERS
+
 # ---------- scanner & inventory ----------
 
 
@@ -25,7 +27,7 @@ class ProjectInventory:
 
     workspace: str  # "pnpm" | "yarn" | "npm" | "cargo" | "gradle" | "single"
     apps: list[AppInventory]
-    loader: str  # "mise" | "direnv" | "devbox"
+    loader: str  # "mise" | "direnv" | "devbox" | "none"
 
 
 # Empty at module load time; profiles.py populates this at import time.
@@ -141,15 +143,14 @@ def _expand_workspace_globs(cwd: Path, globs: list[str]) -> list[tuple[str, Path
 
 
 def _detect_loader(cwd: Path) -> str:
-    """Detect which shell-env loader the user has configured. Order: mise → direnv
-    → devbox → default mise (which `Loader.wire()` will scaffold)."""
-    if (cwd / "mise.toml").exists() or (cwd / ".mise.toml").exists():
-        return "mise"
-    if (cwd / ".envrc").exists() or (cwd / ".envrc.local").exists():
-        return "direnv"
-    if (cwd / "devbox.json").exists():
-        return "devbox"
-    return "mise"
+    """Detect which shell-env loader the user has configured by asking each loader
+    in priority order (mise → direnv → devbox). Returns "none" when no loader is
+    present — `cmd_init` then delivers values into a dotenv file or prints
+    instructions, rather than imposing a loader the user never chose."""
+    for name, loader in LOADERS.items():
+        if loader.detect(cwd):
+            return name
+    return "none"
 
 
 class Scanner:

@@ -151,8 +151,8 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     p.add_argument(
         "--loader",
         default=None,
-        choices=("mise", "direnv", "devbox"),
-        help="override loader auto-detection",
+        choices=("mise", "direnv", "devbox", "none"),
+        help="override loader auto-detection (none = write a dotenv file, wire nothing)",
     )
     p.add_argument("--force", action="store_true")
     p.add_argument(

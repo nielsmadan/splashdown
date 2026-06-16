@@ -70,6 +70,7 @@ from .commands import (
     _env_dispatch,
     _extract_resource_blocks,
     _render_scanned_recipe,
+    _resolve_no_loader_delivery,
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
     cmd_gc,

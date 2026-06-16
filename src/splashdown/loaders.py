@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 # ---------- loaders ----------
@@ -39,8 +40,10 @@ class MiseLoader(Loader):
 
 _DIRENV_BEGIN = "# >>> splashdown-managed dotenv >>>"
 _DIRENV_END = "# <<< splashdown-managed dotenv <<<"
+# `dotenv_if_exists` (not `dotenv`) so a fresh checkout doesn't hard-error before
+# splashdown.env has been generated.
 _DIRENV_BLOCK = f"""{_DIRENV_BEGIN}
-dotenv splashdown.env
+dotenv_if_exists splashdown.env
 {_DIRENV_END}
 """
 _DIRENV_BLOCK_RE = re.compile(
@@ -59,12 +62,18 @@ class DirenvLoader(Loader):
         path = cwd / ".envrc"
         existing = path.read_text() if path.exists() else ""
         if _DIRENV_BLOCK_RE.search(existing):
+            new_text = _DIRENV_BLOCK_RE.sub(_DIRENV_BLOCK, existing, count=1)
+        else:
+            text = existing.rstrip()
+            if text:
+                text += "\n\n"
+            new_text = text + _DIRENV_BLOCK
+        if new_text == existing:
             return  # already wired
-        text = existing.rstrip()
-        if text:
-            text += "\n\n"
-        text += _DIRENV_BLOCK
-        path.write_text(text)
+        path.write_text(new_text)
+        # Editing .envrc invalidates direnv's trust hash; vars stay unloaded
+        # until the user re-approves the file.
+        print("wired .envrc — run `direnv allow` to load splashdown.env", file=sys.stderr)
 
 
 # Marker baked into the init_hook string so we can find-and-replace idempotently
@@ -97,8 +106,23 @@ class DevboxLoader(Loader):
         path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+class NoneLoader(Loader):
+    """Fallback when no shell-env loader is present. Wires nothing — `cmd_init`
+    decides whether to route values into a dotenv file or print instructions.
+    `detect` is always False; this loader is only ever selected as the fallback."""
+
+    name = "none"
+
+    def detect(self, cwd: Path) -> bool:
+        return False
+
+    def wire(self, cwd: Path) -> None:
+        return None
+
+
 LOADERS: dict[str, Loader] = {
     "mise": MiseLoader(),
     "direnv": DirenvLoader(),
     "devbox": DevboxLoader(),
+    "none": NoneLoader(),
 }

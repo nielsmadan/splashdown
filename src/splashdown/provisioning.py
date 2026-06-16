@@ -165,7 +165,7 @@ def write_envfile(path: Path, items: dict[str, str]) -> bool:
         kept.append(line)
     while kept and not kept[-1].strip():
         kept.pop()
-    new = kept + [f"{k}={v}" for k, v in items.items()]
+    new = kept + [f"{k}={_env_quote(v)}" for k, v in items.items()]
     return _write_if_changed(path, "\n".join(new) + "\n")
 
 

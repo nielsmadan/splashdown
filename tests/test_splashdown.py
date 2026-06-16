@@ -1984,6 +1984,16 @@ def test_envfile_writer_reports_changed(tmp_path):
     assert sd.write_envfile(target, {"MY_VAR": "hello"}) is False
 
 
+def test_envfile_writer_quotes_unsafe_values(tmp_path):
+    # A value with a space must be quoted so the dotenv line stays parseable;
+    # a safe value stays bare (consistent with write_splashdown_env).
+    target = tmp_path / ".env.local"
+    sd.write_envfile(target, {"MSG": "hello world", "PORT": "8082"})
+    text = target.read_text()
+    assert 'MSG="hello world"' in text
+    assert "PORT=8082" in text
+
+
 def test_provision_noop_prints_up_to_date(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text("""
@@ -2577,7 +2587,7 @@ def test_init_gitignore_no_duplicates(tmp_path):
 
 
 def test_init_adds_mise_file_directive_new_file(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
     mise = (tmp_path / "mise.toml").read_text()
     assert '_.file = "splashdown.env"' in mise
     assert "[env]" in mise
@@ -2594,8 +2604,8 @@ def test_init_adds_mise_file_directive_existing_env_table(tmp_path):
 
 
 def test_init_mise_directive_idempotent(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal")
-    sd.cmd_init(tmp_path, preset="minimal", force=True)
+    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    sd.cmd_init(tmp_path, preset="minimal", force=True, loader_override="mise")
     mise = (tmp_path / "mise.toml").read_text()
     assert mise.count('_.file = "splashdown.env"') == 1
 
@@ -3108,8 +3118,9 @@ def test_cmd_init_rn_preset_wires_everything(tmp_path):
     (tmp_path / "lefthook.yml").write_text(
         "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
     )
-    # Run init — should scaffold + wire.
-    sd.cmd_init(tmp_path, preset="rn")
+    # Run init — should scaffold + wire. Force mise so the loader-wiring leg is
+    # exercised (the repo has no loader config, so detection now yields "none").
+    sd.cmd_init(tmp_path, preset="rn", loader_override="mise")
     # Scaffolding present.
     assert (tmp_path / "splashdown.toml").exists()
     assert (tmp_path / "splashdown.local.toml").exists()
@@ -3255,9 +3266,9 @@ def test_scanner_pnpm_monorepo_enumerates_apps(tmp_path):
     assert names == ["api", "web"]
 
 
-def test_scanner_loader_defaults_to_mise(tmp_path):
+def test_scanner_loader_defaults_to_none(tmp_path):
     inv = sd.Scanner().scan(tmp_path)
-    assert inv.loader == "mise"
+    assert inv.loader == "none"
 
 
 def test_scanner_detects_mise_loader(tmp_path):
@@ -3283,6 +3294,104 @@ def test_scanner_loader_precedence_mise_over_direnv(tmp_path):
     (tmp_path / ".envrc").write_text("")
     inv = sd.Scanner().scan(tmp_path)
     assert inv.loader == "mise"
+
+
+# ---------- no-loader delivery fallback ----------
+
+
+def _inv_none(tmp_path, *profiles):
+    apps = [
+        sd.AppInventory(name=f"app{i}", path=tmp_path, profile=p) for i, p in enumerate(profiles)
+    ]
+    return sd.ProjectInventory(workspace="single", apps=apps, loader="none")
+
+
+def test_no_loader_delivery_prefers_env_for_dotenv_app(tmp_path):
+    (tmp_path / ".env").write_text("")
+    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert writer == "envfile=.env"
+    assert ".env" in msg
+
+
+def test_no_loader_delivery_falls_back_to_env_local(tmp_path):
+    (tmp_path / ".env.local").write_text("")
+    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert writer == "envfile=.env.local"
+
+
+def test_no_loader_delivery_prefers_env_over_env_local(tmp_path):
+    # Both files present → .env wins (documented precedence).
+    (tmp_path / ".env").write_text("")
+    (tmp_path / ".env.local").write_text("")
+    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert writer == "envfile=.env"
+
+
+def test_no_loader_delivery_no_apps_routes_to_file(tmp_path):
+    # The `not inv.apps` guard: an empty repo with a .env is still file-capable.
+    (tmp_path / ".env").write_text("")
+    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path))
+    assert writer == "envfile=.env"
+
+
+def test_no_loader_delivery_unknown_profile_routes_to_file(tmp_path):
+    # `unknown` apps get the benefit of the doubt (treated as dotenv-capable).
+    (tmp_path / ".env").write_text("")
+    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "unknown"))
+    assert writer == "envfile=.env"
+
+
+def test_no_loader_delivery_no_dotenv_file_returns_none(tmp_path):
+    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert writer is None
+    assert "splashdown.env" in msg
+
+
+def test_no_loader_delivery_process_env_only_app_returns_none(tmp_path):
+    # A dotenv file exists, but the only app (vite) reads from process.env — a
+    # plain .env would reach nothing, so fall to instructions.
+    (tmp_path / ".env").write_text("")
+    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "vite"))
+    assert writer is None
+    assert "install mise/direnv/devbox" in msg
+
+
+def test_no_loader_delivery_mixed_routes_to_file_with_caveat(tmp_path):
+    (tmp_path / ".env").write_text("")
+    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs", "vite"))
+    assert writer == "envfile=.env"
+    assert "app1" in msg  # the vite app is named in the caveat
+    assert "read env from the process" in msg
+
+
+def test_no_loader_delivery_warns_when_target_tracked(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".env").write_text("")
+    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert writer == "envfile=.env"
+    assert "not gitignored" in msg
+
+
+def test_no_loader_delivery_no_warning_when_target_ignored(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text(".env\n")
+    (tmp_path / ".env").write_text("")
+    _writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert "not gitignored" not in msg
+
+
+def test_no_loader_delivery_no_warning_outside_git_repo(tmp_path):
+    # No repo → `git check-ignore` exits 128; we must not nag spuriously.
+    (tmp_path / ".env").write_text("")
+    _writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
+    assert "not gitignored" not in msg
+
+
+def test_none_loader_wire_is_noop(tmp_path):
+    assert sd.LOADERS["none"].detect(tmp_path) is False
+    sd.LOADERS["none"].wire(tmp_path)
+    assert not (tmp_path / "mise.toml").exists()
+    assert not (tmp_path / ".envrc").exists()
 
 
 def test_profile_registry_exists_and_is_dict_of_str_to_profile():
@@ -3457,7 +3566,7 @@ def test_cmd_init_scans_single_vite_app(tmp_path):
     recipe_text = (tmp_path / "splashdown.toml").read_text()
     assert "[project]" in recipe_text
     assert 'workspace = "single"' in recipe_text
-    assert 'loader = "mise"' in recipe_text
+    assert 'loader = "none"' in recipe_text  # no loader config present → no imposition
     assert "[apps.main]" in recipe_text
     assert 'profile = "vite"' in recipe_text
     assert "[resources.WEB_DEV_PORT]" in recipe_text
@@ -3465,10 +3574,32 @@ def test_cmd_init_scans_single_vite_app(tmp_path):
 
 def test_cmd_init_emits_mise_loader_wiring(tmp_path):
     (tmp_path / "vite.config.ts").write_text("export default {}")
-    sd.cmd_init(tmp_path)
+    sd.cmd_init(tmp_path, loader_override="mise")
     # mise.toml created and points at splashdown.env
     assert (tmp_path / "mise.toml").exists()
     assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
+
+
+def test_cmd_init_no_loader_routes_dotenv_app_to_env_file(tmp_path):
+    # Next.js app, no shell loader, existing .env → values route into .env.
+    (tmp_path / "next.config.js").write_text("module.exports = {}")
+    (tmp_path / "package.json").write_text('{"dependencies": {"next": "15"}}')
+    (tmp_path / ".env").write_text("")
+    sd.cmd_init(tmp_path)
+    recipe_text = (tmp_path / "splashdown.toml").read_text()
+    assert 'loader = "none"' in recipe_text
+    assert 'writer = "envfile=.env"' in recipe_text
+
+
+def test_cmd_init_no_loader_no_dotenv_file_omits_writer_and_prints_instructions(tmp_path, capsys):
+    # Vite app (process.env only), no shell loader, no .env → no writer routing,
+    # and the user is told nothing sources splashdown.env.
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path)
+    recipe_text = (tmp_path / "splashdown.toml").read_text()
+    assert 'loader = "none"' in recipe_text
+    assert "writer =" not in recipe_text
+    assert "nothing sources it" in capsys.readouterr().err
 
 
 def test_cmd_init_legacy_preset_path_still_works(tmp_path):
@@ -3477,6 +3608,14 @@ def test_cmd_init_legacy_preset_path_still_works(tmp_path):
     # Legacy: writes the minimal scaffold verbatim, no [apps.*] / [project] tables.
     assert "[resources.RUN_ID]" in recipe_text
     assert "[apps.main]" not in recipe_text
+
+
+def test_cmd_init_legacy_preset_no_loader_prints_instructions(tmp_path, capsys):
+    # No loader config → the preset path can't route to a dotenv file, but it must
+    # not leave the user with a silent no-op.
+    sd.cmd_init(tmp_path, preset="minimal")
+    err = capsys.readouterr().err
+    assert "nothing sources it" in err
 
 
 def test_cmd_init_unknown_framework_app_gets_unknown_profile(tmp_path):
@@ -3683,7 +3822,7 @@ def test_direnv_loader_wire_appends_sentinel_block(tmp_path):
     sd.LOADERS["direnv"].wire(tmp_path)
     text = (tmp_path / ".envrc").read_text()
     assert "# >>> splashdown-managed dotenv >>>" in text
-    assert "dotenv splashdown.env" in text
+    assert "dotenv_if_exists splashdown.env" in text
     assert "# <<< splashdown-managed dotenv <<<" in text
 
 
@@ -3694,13 +3833,25 @@ def test_direnv_loader_wire_idempotent(tmp_path):
     assert (tmp_path / ".envrc").read_text() == first
 
 
+def test_direnv_loader_wire_upgrades_legacy_dotenv_block(tmp_path):
+    (tmp_path / ".envrc").write_text(
+        "# >>> splashdown-managed dotenv >>>\n"
+        "dotenv splashdown.env\n"
+        "# <<< splashdown-managed dotenv <<<\n"
+    )
+    sd.LOADERS["direnv"].wire(tmp_path)
+    text = (tmp_path / ".envrc").read_text()
+    assert "dotenv_if_exists splashdown.env" in text
+    assert "\ndotenv splashdown.env\n" not in text
+
+
 def test_direnv_loader_wire_preserves_existing_envrc(tmp_path):
     (tmp_path / ".envrc").write_text("use nix\nlayout python\n")
     sd.LOADERS["direnv"].wire(tmp_path)
     text = (tmp_path / ".envrc").read_text()
     assert "use nix" in text
     assert "layout python" in text
-    assert "dotenv splashdown.env" in text
+    assert "dotenv_if_exists splashdown.env" in text
 
 
 # ---------- DevboxLoader ----------

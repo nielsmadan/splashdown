@@ -237,6 +237,16 @@ class Profile:
 
     name: str = ""
 
+    # Whether this framework reads values from a plain dotenv file (`.env` /
+    # `.env.local`) on its own. True for server frameworks where loading a
+    # dotenv file is the conventional setup (Next.js natively; Django/FastAPI/
+    # Node via the near-ubiquitous dotenv libraries). False for frameworks that
+    # only see values already exported into the process environment — Vite
+    # (config rewritten to read `process.env`), Spring Boot (`${PORT}`
+    # placeholder), and the mobile build systems. Used to decide, when no shell
+    # loader is detected, whether a dotenv-file fallback can actually reach the app.
+    reads_dotenv: bool = False
+
     def detect(self, app_path: Path) -> bool:
         raise NotImplementedError
 
@@ -346,6 +356,7 @@ _NODE_BACKEND_DEPS = {"hono", "express", "fastify", "koa", "@hapi/hapi", "@nestj
 
 class NodeBackendProfile(Profile):
     name = "node-backend"
+    reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
         pkg = app_path / "package.json"
@@ -369,6 +380,7 @@ _NEXTJS_CONFIG_NAMES = ("next.config.js", "next.config.ts", "next.config.mjs")
 
 class NextJsProfile(Profile):
     name = "nextjs"
+    reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
         for name in _NEXTJS_CONFIG_NAMES:
@@ -393,6 +405,7 @@ PROFILES["nextjs"] = NextJsProfile()
 
 class DjangoProfile(Profile):
     name = "django"
+    reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
         mp = app_path / "manage.py"
@@ -412,6 +425,7 @@ PROFILES["django"] = DjangoProfile()
 
 class FastApiProfile(Profile):
     name = "fastapi"
+    reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
         for f in ("requirements.txt", "requirements-dev.txt"):

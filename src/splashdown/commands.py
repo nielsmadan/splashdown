@@ -100,12 +100,21 @@ def _ensure_gitignore(cwd: Path) -> None:
 
 
 def _ensure_mise_file_directive(cwd: Path) -> None:
-    """Ensure mise.toml has `_.file = "splashdown.env"` under [env]."""
+    """Ensure mise's config has `_.file = "splashdown.env"` under [env].
+
+    Targets an existing `.mise.toml` when that is the only config present, so we
+    edit the file the user already has instead of scaffolding a second one.
+    """
     directive = f'_.file = "{ENV_FILE_NAME}"'
-    path = cwd / "mise.toml"
+    if (cwd / "mise.toml").exists():
+        path = cwd / "mise.toml"
+    elif (cwd / ".mise.toml").exists():
+        path = cwd / ".mise.toml"
+    else:
+        path = cwd / "mise.toml"
     if not path.exists():
         path.write_text(f"[env]\n{directive}\n")
-        print(f"created mise.toml with {directive}", file=sys.stderr)
+        print(f"created {path.name} with {directive}", file=sys.stderr)
         return
     text = path.read_text()
     if directive in text:
@@ -118,7 +127,7 @@ def _ensure_mise_file_directive(cwd: Path) -> None:
         lines.insert(start + 1, directive)
         new_text = "\n".join(lines) + "\n"
     path.write_text(new_text)
-    print(f"updated mise.toml (+{directive})", file=sys.stderr)
+    print(f"updated {path.name} (+{directive})", file=sys.stderr)
 
 
 def _detect_hook_manager(cwd: Path) -> str:
@@ -1129,6 +1138,90 @@ def _resolve_variant_for_cli(
     return variant, spec, recipe
 
 
+_NO_LOADER_INSTRUCTIONS = (
+    "no shell loader detected — wrote splashdown.env but nothing sources it.\n"
+    "  install mise/direnv/devbox and re-run `splash init`, or source it "
+    "yourself (e.g. `set -a; . ./splashdown.env; set +a`)"
+)
+
+
+def _path_git_ignored(cwd: Path, name: str) -> bool:
+    """True if `name` is gitignored in `cwd`. Best-effort: any git error counts
+    as ignored so we never nag spuriously (e.g. outside a repo)."""
+    try:
+        r = subprocess.run(
+            ["git", "check-ignore", "-q", "--", name],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return True
+    # check-ignore: 0 = ignored, 1 = not ignored, 128 = fatal (e.g. not a repo).
+    # Only the explicit "not ignored" answer should let the warning fire; treat
+    # everything else (ignored, or any error) as "don't nag".
+    return r.returncode != 1
+
+
+def _resolve_no_loader_delivery(cwd: Path, inv: ProjectInventory) -> tuple[str | None, str]:
+    """Decide how to deliver values when no shell-env loader is detected.
+
+    Returns `(writer, message)`. `writer` is an `envfile=<name>` string to apply
+    to the generated resources — chosen by `.env` → `.env.local` precedence and
+    only when at least one app actually reads a dotenv file. Otherwise it is
+    None, meaning: keep generating `splashdown.env` and tell the user how to make
+    it reach their processes. `message` is always printed.
+    """
+    from .scanner import PROFILES  # noqa: PLC0415
+
+    def reads_dotenv(profile: str) -> bool:
+        if profile == "unknown":
+            return True  # give the benefit of the doubt; the caveat note covers it
+        prof = PROFILES.get(profile)
+        return bool(prof and prof.reads_dotenv)
+
+    target = None
+    if (cwd / ".env").exists():
+        target = ".env"
+    elif (cwd / ".env.local").exists():
+        target = ".env.local"
+
+    proc_only = [a for a in inv.apps if not reads_dotenv(a.profile)]
+    file_capable = len(proc_only) < len(inv.apps) or not inv.apps
+
+    if target and file_capable:
+        msg = f"no shell loader detected — routing values into {target}"
+        if proc_only:
+            names = ", ".join(a.name for a in proc_only)
+            msg += (
+                f"\n  note: {names} read env from the process, not {target}; "
+                "install mise/direnv/devbox so those pick up values"
+            )
+        if not _path_git_ignored(cwd, target):
+            msg += (
+                f"\n  warning: {target} is not gitignored — per-checkout values "
+                "will show up as local changes"
+            )
+        return f"envfile={target}", msg
+
+    return None, _NO_LOADER_INSTRUCTIONS
+
+
+def _apply_no_loader_fallback(
+    cwd: Path, inv: ProjectInventory, merged_resources: dict[str, dict[str, Any]]
+) -> str | None:
+    """When no loader is detected, route generated resources into a dotenv file
+    (where one fits) and return the message to print. Returns None when a loader
+    is present — nothing to do."""
+    if inv.loader != "none":
+        return None
+    writer, msg = _resolve_no_loader_delivery(cwd, inv)
+    if writer:
+        for spec in merged_resources.values():
+            spec.setdefault("writer", writer)
+    return msg
+
+
 def cmd_init(
     cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None
 ) -> None:
@@ -1172,6 +1265,8 @@ def cmd_init(
     merged_resources = _merge_app_resources(inv.apps, res_by_app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
 
+    no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
+
     recipe_path.write_text(_render_scanned_recipe(inv, merged_resources, app_resource_names, cwd))
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
@@ -1182,6 +1277,8 @@ def cmd_init(
 
     _ensure_gitignore(cwd)
     LOADERS[inv.loader].wire(cwd)
+    if no_loader_msg:
+        print(f"  {no_loader_msg}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
 
     if any(app.profile != "unknown" for app in inv.apps):
@@ -1222,6 +1319,10 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
 
     _ensure_gitignore(cwd)
     LOADERS[loader_name].wire(cwd)
+    if loader_name == "none":
+        # Preset scaffolds are written verbatim, so we can't re-route resources to
+        # a dotenv file here — but we must not leave the user with a silent no-op.
+        print(f"  {_NO_LOADER_INSTRUCTIONS}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
 
     framework = _resolve_doctor_framework(cwd, None)
