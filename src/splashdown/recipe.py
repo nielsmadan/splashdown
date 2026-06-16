@@ -387,10 +387,11 @@ _ENV_SAFE_RE = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
 
 def _env_quote(value: str) -> str:
-    """Quote a dotenv value only when it contains characters a loader could mangle."""
+    """Quote a dotenv value when it isn't bare-safe. Uses SINGLE quotes: this file
+    is `source`d by a shell in two paths (devbox's init_hook and the no-loader
+    `set -a; source` fallback), where double-quoted `$(...)`/backticks would
+    EXECUTE. Single quotes neutralize them, and mise/direnv read single-quoted
+    dotenv values literally too. Matches `write_envrc`'s shell-quoting."""
     if value and _ENV_SAFE_RE.fullmatch(value):
         return value
-    escaped = (
-        value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
-    )
-    return f'"{escaped}"'
+    return "'" + value.replace("'", "'\\''") + "'"

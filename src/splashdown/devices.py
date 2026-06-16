@@ -66,6 +66,9 @@ def _resolve_device_name(
         name = render_template(raw, scope)
     else:
         name = str(raw)
+    if name.startswith("-"):
+        # A leading dash would be read as a flag by simctl/avdmanager create.
+        raise DeviceError(f"device name must not start with '-': {name!r}")
     if dtype == "emulator":
         return _sanitize_avd_name(name)
     return name

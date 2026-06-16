@@ -1283,6 +1283,18 @@ def test_cli_env_set(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "v1"
 
 
+def test_cli_env_set_rejects_invalid_key(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # A key that isn't a valid env name would write a malformed dotenv line.
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "FOO BAR=x"]) == 2
+    assert "invalid env name" in capsys.readouterr().err
+
+
+def test_resolve_device_name_rejects_leading_dash(tmp_path):
+    with pytest.raises(sd.DeviceError):
+        sd._resolve_device_name({"name": "-rf"}, tmp_path, "default")
+
+
 def test_cli_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         sd.main(["--version"])
@@ -1938,9 +1950,20 @@ def test_splashdown_env_writer_quotes_specials(tmp_path):
     target = tmp_path / "splashdown.env"
     sd.write_splashdown_env(target, {"URL": "http://localhost:8082", "MSG": "has spaces"})
     text = target.read_text()
-    assert 'MSG="has spaces"' in text
+    assert "MSG='has spaces'" in text
     # A plain URL has no spaces; ':' and '/' are allowed unquoted.
     assert "URL=http://localhost:8082" in text
+
+
+def test_splashdown_env_writer_neutralizes_shell_injection(tmp_path):
+    # The file is `source`d by devbox / the no-loader fallback. A value with a
+    # command substitution must be SINGLE-quoted so bash won't execute it.
+    target = tmp_path / "splashdown.env"
+    sd.write_splashdown_env(target, {"X": "$(touch /tmp/pwned)", "Y": "`id`"})
+    text = target.read_text()
+    assert "X='$(touch /tmp/pwned)'" in text
+    assert "Y='`id`'" in text
+    assert '"$(' not in text  # never double-quoted
 
 
 def test_splashdown_env_writer_overwrites_wholesale(tmp_path):
@@ -1990,7 +2013,7 @@ def test_envfile_writer_quotes_unsafe_values(tmp_path):
     target = tmp_path / ".env.local"
     sd.write_envfile(target, {"MSG": "hello world", "PORT": "8082"})
     text = target.read_text()
-    assert 'MSG="hello world"' in text
+    assert "MSG='hello world'" in text
     assert "PORT=8082" in text
 
 

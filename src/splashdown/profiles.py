@@ -19,6 +19,15 @@ from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
 # and `splash run` logic live on `Profile` subclasses (below).
 
 
+def _no_flag(label: str, value: str) -> str:
+    """Reject a recipe-supplied value that argv would parse as an option (leading
+    `-`). These reach xcodebuild/gradle/adb as bare positionals where a `-foo`
+    would silently become a tool flag."""
+    if value.startswith("-"):
+        raise DeviceError(f"{label} must not start with '-': {value!r}")
+    return value
+
+
 def _detect_flutter(cwd: Path) -> bool:
     return (cwd / "pubspec.yaml").exists()
 
@@ -106,7 +115,8 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         raise DeviceError(
             'ios-native: set `[project.ios] scheme = "<your-scheme>"` in splashdown.toml'
         )
-    configuration = cfg.get("configuration", "Debug")
+    scheme = _no_flag("ios scheme", scheme)
+    configuration = _no_flag("ios configuration", cfg.get("configuration", "Debug"))
     udid = info["udid"]
     derived = cwd / "build" / "splash-derived"
     project_flag = _ios_xcodebuild_args(cwd, cfg)
@@ -170,8 +180,8 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
 
 def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     cfg = recipe.project.get("android") or {}
-    module = cfg.get("module", "app")
-    variant = cfg.get("variant", "debug")
+    module = _no_flag("android module", cfg.get("module", "app"))
+    variant = _no_flag("android variant", cfg.get("variant", "debug"))
     serial = info["serial"]
     gradlew = cwd / "gradlew"
     gradle_cmd = [f"./{gradlew.name}"] if gradlew.exists() else ["gradle"]
@@ -202,8 +212,10 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
             "android-native: couldn't resolve applicationId; set "
             '`[project.android] application_id = "..."` in splashdown.toml'
         )
+    app_id = _no_flag("android application_id", app_id)
 
     if activity := cfg.get("launch_activity"):
+        activity = _no_flag("android launch_activity", activity)
         return subprocess.call(
             ["adb", "-s", serial, "shell", "am", "start", "-n", f"{app_id}/{activity}"],
         )

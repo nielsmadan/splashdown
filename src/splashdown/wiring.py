@@ -275,6 +275,9 @@ _RN_WIRING_CHECKS.append(
 # stops RCT_METRO_PORT from taking effect.
 _PKG_PORT_RE = re.compile(r"\s+--port[=\s]\d+")
 _PKG_RN_SCRIPTS = ("start", "ios", "android")  # default RN script names
+# Only `react-native start` boots Metro. Match that specifically so we don't strip
+# `--port` from unrelated tools like `react-native-test-runner --port 4000`.
+_PKG_RN_START_RE = re.compile(r"\breact-native\s+start\b")
 
 
 def _rn_pkg_applies(cwd: Path) -> bool:
@@ -288,8 +291,11 @@ def _pkg_scripts_with_port(data: dict[str, Any]) -> list[str]:
     for name, value in scripts.items():
         if not isinstance(value, str):
             continue
-        # Target the common RN scripts, plus any script invoking react-native.
-        if (name in _PKG_RN_SCRIPTS or "react-native" in value) and _PKG_PORT_RE.search(value):
+        # Target the common RN scripts, plus any script that boots Metro via
+        # `react-native start` (not merely any script mentioning react-native).
+        if (name in _PKG_RN_SCRIPTS or _PKG_RN_START_RE.search(value)) and _PKG_PORT_RE.search(
+            value
+        ):
             hits.append(name)
     return hits
 

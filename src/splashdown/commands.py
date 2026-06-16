@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import ENV_FILE_NAME, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
+from . import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .devices import (
     DeviceError,
     _android_avd_exists,
@@ -1598,9 +1598,12 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
             for k, v in sorted(data.items()):
                 print(f"{k}={v}")
         return 0
+    # Normalize the same way provision() keys the registry (str(cwd.resolve())),
+    # or get/set/release silently miss each other on symlinked/relative invocations.
+    target = str(cwd.resolve())
     if args.env_cmd == "get":
-        target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
-        value = registry.all_for(target).get(args.key)
+        lookup = str(Path(args.checkout).resolve()) if args.checkout else target
+        value = registry.all_for(lookup).get(args.key)
         if value is None:
             return 1
         print(value)
@@ -1610,16 +1613,19 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
             print("usage: splash env set KEY=VALUE", file=sys.stderr)
             return 2
         key, value = args.assignment.split("=", 1)
-        registry.set_kv(str(cwd), key, value)
+        if not ENV_NAME_RE.match(key):
+            print(f"invalid env name `{key}` (must match {ENV_NAME_RE.pattern})", file=sys.stderr)
+            return 2
+        registry.set_kv(target, key, value)
         print(f"set {key}={value}", file=sys.stderr)
         return 0
     if args.env_cmd == "release":
         if args.key:
-            registry.remove_kv(str(cwd), args.key)
-            registry.remove_port(str(cwd), args.key)
+            registry.remove_kv(target, args.key)
+            registry.remove_port(target, args.key)
             print(f"released {args.key}", file=sys.stderr)
         else:
-            n = registry.release(str(cwd))
+            n = registry.release(target)
             print(f"released {n} entries for {cwd}", file=sys.stderr)
         return 0
     print(f"splash env {args.env_cmd}: unknown action", file=sys.stderr)

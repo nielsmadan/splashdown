@@ -136,7 +136,7 @@ class Registry:
                 if not _port_in_use(existing):
                     return existing
                 # Someone else grabbed it — fall through and reallocate.
-                self.remove_port(abspath, key)
+                self._remove_port_unlocked(abspath, key)
             busy = self.busy_ports(gc=True)
             for candidate in range(lo, hi + 1):
                 if candidate in busy:
@@ -153,6 +153,12 @@ class Registry:
         self._write_ports(rows)
 
     def remove_port(self, abspath: str, key: str) -> None:
+        with self._lock(self.port_file):
+            self._remove_port_unlocked(abspath, key)
+
+    def _remove_port_unlocked(self, abspath: str, key: str) -> None:
+        """Caller MUST hold the port_file lock (allocate_port does; the public
+        `remove_port` takes it). Rewrites ports.tsv from a fresh read."""
         rows = [r for r in self._read_ports() if not (r[1] == abspath and r[2] == key)]
         self._write_ports(rows)
 

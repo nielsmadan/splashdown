@@ -64,7 +64,8 @@ def provision(  # noqa: PLR0912 — one branch per resource type; this is the di
             if not isinstance(tpl, str):
                 raise ValueError(f"`{name}` template resource needs `template = ...`")
             existing = registry.get_kv(abspath, name) if not reprovision else None
-            if existing is not None and not _template_uses_volatile(tpl):
+            # A persisted template value stays stable until `--reprovision`.
+            if existing is not None:
                 value = existing
             else:
                 scope = _make_scope(cwd, branch, resolved)
@@ -87,12 +88,6 @@ def provision(  # noqa: PLR0912 — one branch per resource type; this is the di
             raise ValueError(f"`{name}` has unknown type `{rtype}`")
         resolved[name] = value
     return resolved
-
-
-def _template_uses_volatile(tpl: str) -> bool:
-    """Templates that contain `uuid()` etc. should re-evaluate only on reprovision."""
-    # Currently: nothing here — once persisted, keep stable. Reprovision via --reprovision.
-    return False
 
 
 # ---------- writers ----------
