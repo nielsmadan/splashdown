@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -50,8 +51,6 @@ from .recipe import (
     LocalConfig,
     Recipe,
     TemplateError,
-    _find_table,
-    _toml_quote,
     merged_targets,
     resolve_variant,
 )
@@ -105,6 +104,8 @@ def _ensure_mise_file_directive(cwd: Path) -> None:
     Targets an existing `.mise.toml` when that is the only config present, so we
     edit the file the user already has instead of scaffolding a second one.
     """
+    from .tomlio import ensure_mise_file_directive_text  # noqa: PLC0415
+
     directive = f'_.file = "{ENV_FILE_NAME}"'
     if (cwd / "mise.toml").exists():
         path = cwd / "mise.toml"
@@ -112,22 +113,13 @@ def _ensure_mise_file_directive(cwd: Path) -> None:
         path = cwd / ".mise.toml"
     else:
         path = cwd / "mise.toml"
-    if not path.exists():
-        path.write_text(f"[env]\n{directive}\n")
-        print(f"created {path.name} with {directive}", file=sys.stderr)
-        return
-    text = path.read_text()
-    if directive in text:
-        return
-    lines = text.splitlines()
-    start, _end = _find_table(lines, "env")
-    if start is None:
-        new_text = text.rstrip() + f"\n\n[env]\n{directive}\n"
-    else:
-        lines.insert(start + 1, directive)
-        new_text = "\n".join(lines) + "\n"
+    text = path.read_text() if path.exists() else None
+    new_text = ensure_mise_file_directive_text(text)
+    if new_text is None:
+        return  # directive already present
     path.write_text(new_text)
-    print(f"updated {path.name} (+{directive})", file=sys.stderr)
+    verb = "updated" if text is not None else "created"
+    print(f"{verb} {path.name} (+{directive})", file=sys.stderr)
 
 
 def _detect_hook_manager(cwd: Path) -> str:
@@ -1267,7 +1259,9 @@ def cmd_init(
 
     no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
 
-    recipe_path.write_text(_render_scanned_recipe(inv, merged_resources, app_resource_names, cwd))
+    from .tomlio import render_scanned_recipe  # noqa: PLC0415
+
+    recipe_path.write_text(render_scanned_recipe(inv, merged_resources, app_resource_names, cwd))
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME
@@ -1350,98 +1344,18 @@ def cmd_refresh_inventory(cwd: Path) -> int:
             continue
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
-
-    existing = recipe_path.read_text()
-    preserved_resources = _extract_resource_blocks(existing)
-
-    # Rebuild the recipe head ([project], [apps.*]) from the inventory; append
-    # the existing [resources.*] blocks at the end. Any resource the Profile
-    # newly emits is added only if it's not already in the preserved set.
-    new_resources: dict[str, dict[str, Any]] = {}
     profile_emitted = _merge_app_resources(inv.apps, res_by_app)
-    for name, spec in profile_emitted.items():
-        if name not in preserved_resources:
-            new_resources[name] = spec
 
-    rebuilt = _render_scanned_recipe(inv, new_resources, app_resource_names, cwd)
-    if preserved_resources:
-        rebuilt = rebuilt.rstrip() + "\n\n" + "\n\n".join(preserved_resources.values()) + "\n"
+    from .tomlio import refresh_recipe  # noqa: PLC0415
+
+    rebuilt = refresh_recipe(recipe_path.read_text(), inv, profile_emitted, app_resource_names, cwd)
     recipe_path.write_text(rebuilt)
+    n_resources = len(tomllib.loads(rebuilt).get("resources", {}))
     print(
-        f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {len(preserved_resources) + len(new_resources)} resource(s)",
+        f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {n_resources} resource(s)",
         file=sys.stderr,
     )
     return 0
-
-
-def _extract_resource_blocks(recipe_text: str) -> dict[str, str]:
-    """Parse [resources.NAME] blocks out of a recipe, preserving their text.
-    Returns {name: full_block_text}. Used to keep existing definitions intact
-    when refresh-inventory rebuilds the head of the file."""
-    out: dict[str, str] = {}
-    lines = recipe_text.splitlines()
-    i = 0
-    while i < len(lines):
-        m = re.match(r"\[resources\.([A-Za-z_][A-Za-z0-9_]*)\]", lines[i].strip())
-        if not m:
-            i += 1
-            continue
-        name = m.group(1)
-        block = [lines[i]]
-        i += 1
-        while i < len(lines) and not (
-            lines[i].strip().startswith("[") and lines[i].strip().endswith("]")
-        ):
-            block.append(lines[i])
-            i += 1
-        # Drop trailing empty lines from the captured block.
-        while block and not block[-1].strip():
-            block.pop()
-        out[name] = "\n".join(block)
-    return out
-
-
-def _render_scanned_recipe(
-    inv: ProjectInventory,
-    merged_resources: dict[str, dict[str, Any]],
-    app_resource_names: dict[str, list[str]],
-    cwd: Path,
-) -> str:
-    """Render the new recipe shape: [project], [apps.*], [resources.*]."""
-    parts: list[str] = [
-        "# splashdown.toml — auto-generated by `splash init`. Edit freely;",
-        "# splashdown preserves comments and unknown keys on subsequent runs.",
-        "",
-        "[project]",
-        f'workspace = "{inv.workspace}"',
-        f'loader = "{inv.loader}"',
-        "",
-    ]
-    for app in inv.apps:
-        rel = "." if app.path == cwd else str(app.path.relative_to(cwd))
-        parts.append(f"[apps.{app.name}]")
-        parts.append(f'path = "{rel}"')
-        parts.append(f'profile = "{app.profile}"')
-        names = app_resource_names.get(app.name, [])
-        parts.append("resources = [" + ", ".join(f'"{n}"' for n in names) + "]")
-        parts.append("")
-    if merged_resources:
-        for res_name, spec in merged_resources.items():
-            parts.append(f"[resources.{res_name}]")
-            for k, v in spec.items():
-                parts.append(f"{k} = {_toml_value(v)}")
-            parts.append("")
-    return "\n".join(parts).rstrip() + "\n"
-
-
-def _toml_value(v: Any) -> str:
-    if isinstance(v, str):
-        return _toml_quote(v)
-    if isinstance(v, list):
-        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
 
 
 def _cmd_provision(args: Any, cwd: Path, registry: Registry) -> int:

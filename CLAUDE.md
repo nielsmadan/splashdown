@@ -44,7 +44,7 @@ The data flow, end to end:
 
 ## Conventions
 
-- **Python 3.13** runtime (`requires-python >=3.13`); ruff/mypy target 3.11. One runtime dependency only: `argcomplete`. Keep it that way — the git-hook hot path must stay lightweight (note `__version__` and other costly lookups are lazy in `__init__.py`).
+- **Python 3.13** runtime (`requires-python >=3.13`); ruff/mypy target 3.11. Two runtime dependencies: `argcomplete` (shell completion) and `tomlkit` (comment/unknown-key-preserving TOML *writing*). **tomlkit is lazy-imported inside the writer functions in `tomlio.py` only** — never at module top-level, and `tomlio` is never re-exported from `__init__.py` — so the git-hook hot path (`splash` → `provision()`/`status`, which only *reads* TOML via stdlib `tomllib`) never imports it. Reads stay on `tomllib`. Keep the hot path lightweight (note `__version__` and other costly lookups are lazy in `__init__.py`). Don't add more deps.
 - **mypy strict** over `src/splashdown`. **ruff** with a broad rule set (`PL`, `B`, `S`, `SIM`, `SLF`, `RUF`, …); line length is formatter-enforced, not lint-enforced. `# noqa` codes in the tree are intentional — match the existing pattern rather than disabling rules globally.
 - Shelling out to PATH tools (`xcrun`, `simctl`, `adb`, `git`) is by design — `S603`/`S607` are globally ignored.
 - Tests are plain pytest, one file, fixture-driven (`registry`, `checkout`, `tmp_path`), heavy on monkeypatching the re-exported symbols. New behavior gets a test in `tests/test_splashdown.py`.

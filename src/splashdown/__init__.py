@@ -5,7 +5,10 @@ expands templates, and writes resolved values to `splashdown.env`. Per-checkout
 device config lives in `splashdown.local.toml`. Maintains a machine-local
 registry so concurrent checkouts don't collide.
 
-Python 3.11+ (uses tomllib). One runtime dependency: argcomplete (shell completion).
+Python 3.11+ (reads TOML via stdlib tomllib). Two runtime dependencies: argcomplete
+(shell completion) and tomlkit (comment-preserving TOML writing). tomlkit is
+lazy-imported by writer functions only (see tomlio.py), so the git-hook hot path —
+which only reads TOML — never loads it.
 """
 
 from __future__ import annotations
@@ -68,8 +71,6 @@ from .commands import (
     _detect_hook_manager,
     _ensure_post_checkout_hook,
     _env_dispatch,
-    _extract_resource_blocks,
-    _render_scanned_recipe,
     _resolve_no_loader_delivery,
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
@@ -135,9 +136,7 @@ from .recipe import (
     LocalConfig,
     Recipe,
     TemplateError,
-    _find_table,
     _make_scope,
-    _toml_quote,
     merged_targets,
     render_template,
     resolve_variant,

@@ -21,9 +21,7 @@ from .recipe import (
     LocalConfig,
     Recipe,
     _current_branch,
-    _find_table,
     _make_scope,
-    _toml_quote,
     render_template,
 )
 from .registry import DeviceRow, Registry
@@ -733,12 +731,9 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
             f"target `{dtype}.{variant}` already exists in {LOCAL_NAME}; remove it first"
         )
 
-    block = [f"\n[targets.{dtype}.{variant}]"]
-    for key, value in fields.items():
-        if value is not None:
-            block.append(f"{key} = {_toml_quote(value)}")
-    new_text = existing_text.rstrip() + "\n" + "\n".join(block) + "\n"
-    path.write_text(new_text)
+    from .tomlio import target_add_text  # noqa: PLC0415
+
+    path.write_text(target_add_text(existing_text, dtype, variant, fields))
 
 
 def target_remove(cwd: Path, dtype: str, variant: str) -> None:
@@ -749,17 +744,15 @@ def target_remove(cwd: Path, dtype: str, variant: str) -> None:
         raise DeviceError(
             f"`{dtype}.{variant}` is declared in the recipe; edit {RECIPE_NAME} to remove it"
         )
+    from .tomlio import target_remove_text  # noqa: PLC0415
+
     path = cwd / LOCAL_NAME
     if not path.exists() or variant not in LocalConfig.load(path).targets.get(dtype, {}):
         raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
-    lines = path.read_text().splitlines()
-    start, end = _find_table(lines, f"targets.{dtype}.{variant}")
-    if start is None:
+    new_text = target_remove_text(path.read_text(), dtype, variant)
+    if new_text is None:
         raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
-    kept = lines[:start] + lines[end:]
-    while kept and not kept[-1].strip():
-        kept.pop()
-    path.write_text("\n".join(kept) + ("\n" if kept else ""))
+    path.write_text(new_text)
 
 
 def detect_framework(cwd: Path, recipe: Recipe) -> str:

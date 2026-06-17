@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -1304,6 +1305,18 @@ def test_cli_version_flag(capsys):
     assert re.search(r"\d+\.\d+\.\d+", out)
 
 
+def test_tomlkit_not_imported_on_hot_path():
+    """The git-hook hot path only READS TOML (stdlib tomllib). tomlkit is a
+    write-only dep and must stay lazy — importing the package or the read modules
+    must not pull it in. Checked in a fresh subprocess for a clean module table."""
+    code = (
+        "import sys, splashdown, splashdown.recipe, splashdown.provisioning, splashdown.scanner; "
+        "assert 'tomlkit' not in sys.modules, "
+        "sorted(m for m in sys.modules if 'toml' in m)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_cli_bare_device_lists(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text(
         '[targets.simulator.default]\nmodel = "X"\n[project]\nframework = "react-native"\n'
@@ -2089,28 +2102,6 @@ type = "set"
     assert resolved["MODE"] == "prod"
 
 
-def test_toml_quoting_escapes_specials():
-    assert sd._toml_quote("a\\b") == r'"a\\b"'
-    assert sd._toml_quote('he said "hi"') == r'"he said \"hi\""'
-    assert sd._toml_quote("line\nbreak") == r'"line\nbreak"'
-
-
-# ---------- writers helper ----------
-
-
-def test_find_table_locates_env(tmp_path):
-    lines = ["[tools]", 'node = "20"', "", "[env]", 'X = "1"', 'Y = "2"', "", "[other]", "k = 1"]
-    s, e = sd._find_table(lines, "env")
-    assert s == 3
-    assert e == 7
-
-
-def test_find_table_missing(tmp_path):
-    lines = ["[tools]", 'node = "20"']
-    s, _e = sd._find_table(lines, "env")
-    assert s is None
-
-
 # ---------- recipe: devices + project ----------
 
 
@@ -2213,16 +2204,33 @@ export default defineConfig(({ mode }) => {
     # which we infer from rc != 0 instead of rc == 0 with "no wiring defined".
 
 
-def test_extract_resource_blocks_handles_underscore_resource_names(tmp_path):
-    """Underscores in resource names must round-trip through refresh-inventory.
-    (Quoted/hyphenated TOML names are not currently supported; this test pins
-    what IS supported, so we don't accidentally regress.)"""
-    blocks = sd._extract_resource_blocks("""\
+def test_refresh_inventory_preserves_resource_comments_and_unknown_keys(tmp_path):
+    """refresh-inventory must round-trip an underscore-named resource verbatim,
+    including a user comment and an unknown key inside the block."""
+    (tmp_path / "splashdown.toml").write_text("""\
+# top-of-file comment
+[project]
+workspace = "single"
+loader = "mise"
+
+[apps.main]
+path = "."
+profile = "unknown"
+resources = ["MY_PORT_WITH_UNDERSCORES"]
+
 [resources.MY_PORT_WITH_UNDERSCORES]
 type = "port"
 range = [9000, 9010]
+# user note inside the block
+custom_unknown_key = "keep me"
 """)
-    assert "MY_PORT_WITH_UNDERSCORES" in blocks
+    assert sd.cmd_refresh_inventory(tmp_path) == 0
+    text = (tmp_path / "splashdown.toml").read_text()
+    # Comment + unknown key survive; resource still parses with its value.
+    assert "# user note inside the block" in text
+    assert 'custom_unknown_key = "keep me"' in text
+    rec = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert "MY_PORT_WITH_UNDERSCORES" in rec.resources
 
 
 def test_enumerate_apps_handles_pnpm_workspace_with_comments(tmp_path):
@@ -2631,6 +2639,24 @@ def test_init_mise_directive_idempotent(tmp_path):
     sd.cmd_init(tmp_path, preset="minimal", force=True, loader_override="mise")
     mise = (tmp_path / "mise.toml").read_text()
     assert mise.count('_.file = "splashdown.env"') == 1
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        '[env]\n_.path = "./bin"\n',  # coexisting mise PATH directive
+        '[env]\n_.file = "other.env"\n',  # different file value (dotted form)
+        '[env._]\npath = ["./bin"]\n',  # subtable form
+    ],
+)
+def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, existing):
+    # Adding `_.file` must not crash or produce a double-declared/unparseable
+    # `[env]._` when the table already exists.
+    (tmp_path / "mise.toml").write_text(existing)
+    sd.cmd_init(tmp_path, preset="minimal", force=True, loader_override="mise")
+    text = (tmp_path / "mise.toml").read_text()
+    data = tomllib.loads(text)  # must stay valid TOML
+    assert data["env"]["_"]["file"] == "splashdown.env"
 
 
 def test_init_writes_post_checkout_hook(tmp_path):

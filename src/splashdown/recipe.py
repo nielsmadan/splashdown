@@ -352,37 +352,6 @@ def topo_sort(recipe: Recipe) -> list[str]:
 # ---------- writers ----------
 
 
-def _find_table(lines: list[str], name: str) -> tuple[int | None, int]:
-    """Find a `[name]` table. Returns (header_index, end_index_exclusive)."""
-    start: int | None = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == f"[{name}]":
-            start = i
-            break
-    if start is None:
-        return None, len(lines)
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        s = lines[j].strip()
-        if s.startswith("[") and s.endswith("]"):
-            end = j
-            break
-    return start, end
-
-
-def _toml_quote(value: str) -> str:
-    # Always emit basic strings; escape minimally.
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-    )
-    return f'"{escaped}"'
-
-
 _ENV_SAFE_RE = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
 
