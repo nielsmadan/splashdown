@@ -8,10 +8,10 @@ default:
 # --- Dev ---
 
 test:
-    @python3 -m pytest tests/ -q
+    @uv run pytest tests/ -q
 
 test-verbose:
-    @python3 -m pytest tests/ -v
+    @uv run pytest tests/ -v
 
 # Lint with ruff.
 lint:

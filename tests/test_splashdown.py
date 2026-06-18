@@ -4148,10 +4148,25 @@ def _argcomplete_completions(parser, comp_line, cwd):
     saved_cwd = os.getcwd()
     os.environ.update(env)
     os.chdir(cwd)
+    # argcomplete's completion protocol unconditionally reopens its debug stream
+    # via `os.fdopen(9, "w")` (finders.py) and never closes it. Under pytest, fd 9
+    # is the faulthandler's dup of stderr, so the dangling wrapper collides with
+    # pytest's own close of fd 9 at teardown ("Bad file descriptor"). Divert just
+    # that fd-9 open to an in-memory stream so argcomplete never touches the real
+    # fd. (fd 8, the completion output, is already handled via `output_stream`.)
+    real_fdopen = os.fdopen
+
+    def _fdopen(fd, *args, **kwargs):
+        if fd == 9:
+            return io.StringIO()
+        return real_fdopen(fd, *args, **kwargs)
+
+    os.fdopen = _fdopen
     try:
         with contextlib.suppress(SystemExit):
             argcomplete.autocomplete(parser, exit_method=sys.exit, output_stream=out)
     finally:
+        os.fdopen = real_fdopen
         os.environ.clear()
         os.environ.update(saved)
         os.chdir(saved_cwd)
