@@ -13,6 +13,10 @@ test:
 test-verbose:
     @uv run pytest tests/ -v
 
+# Run tests with a coverage report (terminal + HTML in htmlcov/).
+cov:
+    @uv run pytest --cov --cov-report=term-missing --cov-report=html -q
+
 # Lint with ruff.
 lint:
     @uv run ruff check
@@ -57,7 +61,7 @@ reset-local:
     @uv tool uninstall splashdown
 
 clean:
-    @rm -rf dist build *.egg-info .pytest_cache
+    @rm -rf dist build *.egg-info .pytest_cache htmlcov .coverage coverage.xml
 
 # --- Release ---
 #
