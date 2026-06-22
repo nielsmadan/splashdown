@@ -3676,6 +3676,34 @@ def test_cmd_init_unknown_framework_app_gets_unknown_profile(tmp_path):
     assert "[resources." not in recipe_text
 
 
+def test_cli_init_runs_first_sync(tmp_path, monkeypatch):
+    # `splash init` scaffolds AND allocates ports for the current checkout, so
+    # splashdown.env exists immediately (no manual `splash sync` needed).
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"])
+    assert rc == 0
+    assert (tmp_path / "splashdown.toml").exists()
+    env_text = (tmp_path / "splashdown.env").read_text()
+    assert "WEB_DEV_PORT=" in env_text
+    # The allocation is pinned in the machine-wide registry.
+    ports = (tmp_path / "state" / "splashdown" / "ports.tsv").read_text()
+    assert str(tmp_path.resolve()) in ports
+
+
+def test_cli_init_no_sync_skips_provision(tmp_path, monkeypatch):
+    # `--no-sync` scaffolds the files but allocates nothing: no splashdown.env,
+    # no registry entry for this checkout.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=mise", "--no-sync"])
+    assert rc == 0
+    assert (tmp_path / "splashdown.toml").exists()
+    assert not (tmp_path / "splashdown.env").exists()
+    ports_file = tmp_path / "state" / "splashdown" / "ports.tsv"
+    assert not ports_file.exists() or str(tmp_path.resolve()) not in ports_file.read_text()
+
+
 def test_cmd_init_writes_post_checkout_hook(tmp_path):
     # The hook wiring is independent of the Scanner-driven flow and must persist.
     (tmp_path / "vite.config.ts").write_text("export default {}")
@@ -4189,3 +4217,286 @@ def test_install_is_noop_without_argcomplete_env(monkeypatch):
     # No _ARGCOMPLETE in env -> returns without importing/inspecting.
     monkeypatch.delenv("_ARGCOMPLETE", raising=False)
     assert install(sd._build_parser()) is None
+
+
+# ---------- template scope helpers (pure) ----------
+
+
+def test_template_scope_helpers(tmp_path):
+    scope = sd._make_scope(tmp_path, "main", {})
+    assert sd.render_template("{{ lower('HELLO') }}", scope) == "hello"
+    assert sd.render_template("{{ upper('hello') }}", scope) == "HELLO"
+    assert sd.render_template("{{ truncate('hello', 3) }}", scope) == "hel"
+    h = sd.render_template("{{ hash('a', 'b') }}", scope)
+    assert len(h) == 64 and all(c in "0123456789abcdef" for c in h)
+    p = sd.render_template("{{ port_hash('x') }}", scope)
+    assert 8000 <= int(p) <= 9000
+    assert sd.render_template("{{ port_hash('x') }}", scope) == p  # deterministic
+
+
+# ---------- devices: iOS/Android selection + parsing (stubbed subprocess) ----------
+
+
+def test_version_tuple_parses_and_falls_back():
+    assert sd.devices._version_tuple("18.5") == (18, 5)
+    assert sd.devices._version_tuple("17.0.1") == (17, 0, 1)
+    assert sd.devices._version_tuple("nope") == (0,)
+
+
+def test_ios_latest_runtime_sorts_numerically(monkeypatch):
+    monkeypatch.setattr(
+        sd.devices,
+        "_xcrun_json",
+        lambda args: {
+            "runtimes": [
+                {"identifier": "x.iOS-17-0", "version": "17.0", "isAvailable": True},
+                {"identifier": "x.iOS-9-0", "version": "9.0", "isAvailable": True},
+                {"identifier": "x.iOS-18-5", "version": "18.5", "isAvailable": True},
+                {"identifier": "x.iOS-19-0", "version": "19.0", "isAvailable": False},  # filtered
+            ]
+        },
+    )
+    assert sd.devices._ios_latest_runtime_version() == "18.5"
+    assert sd.devices._ios_latest_runtime().endswith("iOS-18-5")
+
+
+def test_ios_device_type_identifier_selection(monkeypatch):
+    monkeypatch.setattr(
+        sd.devices,
+        "_xcrun_json",
+        lambda args: {
+            "devicetypes": [
+                {"identifier": "t.iPhone-16", "name": "iPhone 16"},
+                {"identifier": "t.iPhone-16-Pro", "name": "iPhone 16 Pro"},
+                {"identifier": "t.iPhone-17-Pro", "name": "iPhone 17 Pro"},
+            ]
+        },
+    )
+    assert sd.devices._ios_device_type_identifier(None).endswith("iPhone-17-Pro")  # latest Pro
+    assert sd.devices._ios_device_type_identifier("iPhone 16").endswith("iPhone-16")
+    with pytest.raises(sd.DeviceError):
+        sd.devices._ios_device_type_identifier("iPhone 99")
+
+
+def test_android_latest_image_picks_highest_api(monkeypatch):
+    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    monkeypatch.setattr(
+        sd.devices.subprocess,
+        "check_output",
+        lambda *a, **k: (
+            b"system-images;android-33;google_apis;arm64-v8a\n"
+            b"system-images;android-34;google_apis;arm64-v8a\n"
+        ),
+    )
+    assert sd.devices._android_latest_image() == "system-images;android-34;google_apis;arm64-v8a"
+
+
+def test_android_running_serial_matches_avd(monkeypatch):
+    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    outputs = [b"List of devices attached\nemulator-5554\tdevice\n", b"my_avd\n"]
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: outputs.pop(0))
+    assert sd.devices._android_running_serial("my_avd") == "emulator-5554"
+
+
+def test_android_running_serial_no_match(monkeypatch):
+    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    outputs = [b"List of devices attached\nemulator-5554\tdevice\n", b"other_avd\n"]
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: outputs.pop(0))
+    assert sd.devices._android_running_serial("my_avd") is None
+
+
+# ---------- profiles: framework launchers (stubbed subprocess) ----------
+
+
+def _capture_profile_calls(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: calls.append(args) or 0)
+    return calls
+
+
+def test_flutter_run_builds_argv(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    rc = sd.profiles._flutter_run(
+        tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"}
+    )
+    assert rc == 0
+    assert ["flutter", "run", "-d", "U1"] in calls
+
+
+def test_rn_run_ios_and_android(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    r = sd.Recipe({}, tmp_path / "x.toml")
+    sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.profiles._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    flat = [" ".join(c) for c in calls]
+    assert any("run-ios" in c and "--udid U1" in c for c in flat)
+    assert any("run-android" in c and "--deviceId S1" in c for c in flat)
+
+
+def test_expo_run_ios_and_android(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    r = sd.Recipe({}, tmp_path / "x.toml")
+    sd.profiles._expo_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.profiles._expo_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    flat = [" ".join(c) for c in calls]
+    assert any("run:ios" in c and "--device U1" in c for c in flat)
+    assert any("run:android" in c and "--device S1" in c for c in flat)
+
+
+def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    import plistlib
+
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / "splashdown.toml",
+    )
+    calls = _capture_profile_calls(monkeypatch)
+
+    class _Done:
+        stdout = json.dumps(
+            [{"buildSettings": {"BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}]
+        )
+
+    monkeypatch.setattr(sd.profiles.subprocess, "run", lambda *a, **k: _Done())
+    rc = sd.profiles._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any("simctl install SIM-1" in c for c in flat)
+    assert any("simctl launch SIM-1 com.demo" in c for c in flat)
+    assert not any("devicectl" in c for c in flat)
+
+
+def test_android_native_run_monkey_launcher(tmp_path, monkeypatch):
+    recipe = sd.Recipe({"project": {"android": {}}}, tmp_path / "splashdown.toml")
+    calls = _capture_profile_calls(monkeypatch)
+    monkeypatch.setattr(
+        sd.profiles.subprocess, "check_output", lambda *a, **k: "applicationId: com.example.app\n"
+    )
+    rc = sd.profiles._android_native_run(
+        tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
+    )
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any(":app:installDebug" in c for c in flat)  # variant casing
+    assert any("monkey" in c and "com.example.app" in c for c in flat)
+
+
+def test_android_native_run_launch_activity(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {"project": {"android": {"application_id": "com.x", "launch_activity": ".Main"}}},
+        tmp_path / "splashdown.toml",
+    )
+    calls = _capture_profile_calls(monkeypatch)
+    rc = sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any("am start -n com.x/.Main" in c for c in flat)
+
+
+# ---------- provisioning: resource types, writers, setup hook ----------
+
+
+def test_cwd_slug_resource_type(registry, tmp_path):
+    cwd = tmp_path / "My App"
+    cwd.mkdir()
+    _write_recipe(cwd, '[resources.SLUG]\ntype = "cwd-slug"\n')
+    resolved = sd.provision(cwd, registry=registry)
+    assert resolved["SLUG"] == "my-app"
+
+
+def test_set_resource_without_default_errors(registry, checkout):
+    _write_recipe(checkout, '[resources.MODE]\ntype = "set"\n')
+    with pytest.raises(ValueError):
+        sd.provision(checkout, registry=registry)
+
+
+def test_invalid_port_range_errors(registry, checkout):
+    _write_recipe(checkout, '[resources.P]\ntype = "port"\nrange = 8000\n')
+    with pytest.raises(ValueError):
+        sd.provision(checkout, registry=registry)
+
+
+def test_run_setup_runs_commands_and_reports(tmp_path):
+    recipe = sd.Recipe({"setup": {"dev": {"run": ["echo hi"]}}}, tmp_path / "splashdown.toml")
+    assert sd.run_setup(tmp_path, recipe, "dev", {}) == ["setup.dev: echo hi"]
+
+
+def test_run_setup_reports_failure(tmp_path):
+    recipe = sd.Recipe({"setup": {"dev": {"run": ["exit 3"]}}}, tmp_path / "splashdown.toml")
+    msgs = sd.run_setup(tmp_path, recipe, "dev", {})
+    assert len(msgs) == 1 and "FAILED" in msgs[0] and "exit 3" in msgs[0]
+
+
+def test_write_envrc_preserves_unmanaged_and_replaces_managed(tmp_path):
+    target = tmp_path / ".envrc.local"
+    target.write_text("export OLD='x'\n# keep me\n")
+    sd.write_envrc(target, {"NEW": "hello"})
+    text = target.read_text()
+    assert "export OLD='x'" in text and "# keep me" in text
+    assert "export NEW='hello'" in text
+    sd.write_envrc(target, {"NEW": "again"})  # replace in place, not duplicate
+    text2 = target.read_text()
+    assert text2.count("export NEW=") == 1
+    assert "export NEW='again'" in text2
+
+
+def test_write_envfile_preserves_unmanaged(tmp_path):
+    target = tmp_path / ".env.local"
+    target.write_text("UNMANAGED=x\n")
+    sd.write_envfile(target, {"MY": "hello"})
+    text = target.read_text()
+    assert "UNMANAGED=x" in text and "MY=hello" in text
+
+
+def test_stdout_writer_prints_keyvalue(registry, checkout, capsys):
+    _write_recipe(
+        checkout, '[resources.MSG]\ntype = "template"\ntemplate = "hi"\nwriter = "stdout"\n'
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+    sd.write_outputs(checkout, recipe, resolved)
+    assert "MSG=hi" in capsys.readouterr().out
+
+
+def test_none_writer_creates_no_file(registry, checkout):
+    _write_recipe(checkout, '[resources.X]\ntype = "template"\ntemplate = "v"\nwriter = "none"\n')
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+    msgs = sd.write_outputs(checkout, recipe, resolved)
+    assert any("registry-only" in m for m, _ in msgs)
+    assert not (checkout / sd.ENV_FILE_NAME).exists()
+
+
+# ---------- registry: exhaustion + reconcile ----------
+
+
+def test_allocate_port_exhaustion_raises(registry, checkout, monkeypatch):
+    monkeypatch.setattr(sd.registry, "_port_in_use", lambda port: False)
+    assert registry.allocate_port(str(checkout), "A", 8000, 8000) == 8000
+    with pytest.raises(RuntimeError):
+        registry.allocate_port(str(checkout), "B", 8000, 8000)
+
+
+def test_reconcile_with_recipes_drops_stale_key(registry, tmp_path):
+    a = tmp_path / "alive"
+    a.mkdir()
+    _write_recipe(a, '[resources.PORT]\ntype = "port"\nrange = [3000, 3100]\n')
+    registry.allocate_port(str(a), "PORT", 3000, 3100)
+    registry.allocate_port(str(a), "STALE", 9100, 9200)
+    registry.reconcile_with_recipes()
+    keys = set(registry.all_for(str(a)))
+    assert "PORT" in keys and "STALE" not in keys
+
+
+# ---------- scanner: gradle module skip ----------
+
+
+def test_scanner_gradle_skips_missing_module_dir(tmp_path):
+    (tmp_path / "settings.gradle.kts").write_text('include("ghost")\n')
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.workspace == "gradle"
+    assert all(app.name != "ghost" for app in inv.apps)

@@ -1,5 +1,8 @@
 # splashdown
 
+[![CI](https://github.com/nielsmadan/splashdown/actions/workflows/ci.yml/badge.svg)](https://github.com/nielsmadan/splashdown/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/nielsmadan/splashdown/branch/main/graph/badge.svg)](https://codecov.io/gh/nielsmadan/splashdown)
+
 **Per-checkout or per-worktree simulators, emulators, and dev ports for development.**
 
 Do you have any of these problems?
@@ -8,42 +11,76 @@ Do you have any of these problems?
 * You created two worktrees from the same project, and now the ports are clashing during dev or e2e testing.
 * You want to select a free port for a new project, so it doesn't conflict, but you don't know which one is free.
 
-Splashdown is here to solve these problems. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
+Splashdown solves them. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
 
 ## Install
 
 ```sh
-brew install nielsmadan/tap/splashdown          
-# or
-pipx install splashdown
+brew install nielsmadan/tap/splashdown
+# or, managed by mise
+mise use -g pipx:splashdown
 ```
 
-This puts `splash` on your `PATH`. The registry at `$XDG_STATE_HOME/splashdown/` (default `~/.local/state/splashdown/`) is shared across every repo on your machine.
+This puts `splash` on your `PATH`. The resource registry at `$XDG_STATE_HOME/splashdown/` (default `~/.local/state/splashdown/`) is shared across every repo on your machine.
 
-## Shell completion
+## Quick start
 
-`splash` ships bash/zsh tab-completion (subcommands, device types, and dynamic device-variant names).
+In any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, wires your loader and the post-checkout hook, then allocates ports for this checkout. Most popular frameworks are auto-detected, nothing to declare:
 
-| Install method | Setup |
-|---|---|
-| Homebrew | Zero-touch — the formula installs completion files. |
-| pipx / uv-tool / source | `register-python-argcomplete` is not on PATH from an isolated venv, so install argcomplete separately: `uv tool install argcomplete` (or `pipx install argcomplete`), then add the line below to your shell rc and reload. |
-| mise | `mise use -g pipx:argcomplete`, then add the line below. |
-
-For **zsh**, load bash-compat completion first:
-
-```zsh
-autoload -U +X bashcompinit && bashcompinit
-eval "$(register-python-argcomplete splash)"
+```sh
+splash init
+# scanning project…
+#   detected: pnpm (apps/api/apps/web-admin)
+#   apps/api          → node-backend
+#   apps/web-admin    → vite
+#   shell loader      → mise
+# wrote splashdown.toml + splashdown.local.toml + mise.toml + post-checkout hook
+# allocating ports…  PORT=9081  WEB_DEV_PORT=5174
+# wrote splashdown.env
 ```
 
-For **bash**:
+(Pass `--no-sync` to scaffold the files without reserving ports.)
 
-```bash
-eval "$(register-python-argcomplete splash)"
+The recipe is on disk, the loader is wired, the hook fires on every checkout. Add a worktree and the second checkout allocates free ports automatically, no manual editing or syncing needed:
+
+```sh
+git worktree add ../myapp.feat-x feat-x
+cd ../myapp.feat-x
+
+# post-checkout hook fired `splash`. splashdown.env now has the per-checkout ports.
+pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
 ```
+
+See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring later with `splash doctor` (and `splash doctor --fix` to re-apply).
+
+### Mobile: simulators & emulators
+
+For a mobile app, the scan also declares the simulator/emulator variants in `[targets.*]`. Each checkout gets its own sim/emulator instance (named `<parent>/<cwd>/<variant>`), so worktrees never fight over one device. Boot, build, and launch in one command:
+
+```sh
+splash run                            # one target type + one variant: no args needed
+splash run simulator                  # name the type when you declare more than one
+splash run simulator lowest-supported # ...and a specific variant
+
+splash target                         # list declared variants + which are booted right now
+splash stop simulator                 # shut the sim down (keeps it)
+```
+
+When a new iOS (or Android system image) lands, recreate the `latest` sims in place and clear out the cruft Xcode/`avdmanager` leave behind:
+
+```sh
+splash target refresh                 # destroy + recreate stale 'latest' sims (newer iOS landed)
+splash target prune ios               # delete every sim splashdown did NOT create (the Xcode template pile)
+splash gc                             # drop registry entries for checkouts you've since deleted
+```
+
+Variants pinned to a fixed version (`ios = "17.0"`) are never touched by `refresh` — they're deliberate version coverage. See [Running and managing devices](#running-and-managing-devices) for the full lifecycle.
 
 ## How it works
+
+Splashdown is the glue between your env loader (mise, direnv, devbox) and git. It hooks into XYZ git hooks via lefthook. When you create a new worktree or checkout, the hook calls on splash to find free ports and set them for your env loader to use.
+
+
 
 Run `splash init` once in your project. Splashdown walks the filesystem, identifies your apps and their frameworks, and writes a recipe (`splashdown.toml`) declaring per-checkout resources (ports, db urls, UUIDs, sim/emulator variants). On every `git checkout` or `git worktree add`, a post-checkout hook fires `splash`, which allocates concrete values into a gitignored `splashdown.env`. Your shell-env loader (mise / direnv / devbox) sources that file automatically, so every process in the checkout sees the right `PORT`, `DATABASE_URL`, etc.
 
@@ -57,38 +94,6 @@ Four files end up in the project:
 | `mise.toml` (or `.envrc` / `devbox.json`) | Yes | Your shell-env loader's config; gains a line that sources `splashdown.env` |
 
 The registry at `~/.local/state/splashdown/` is machine-wide, so when two checkouts both want port 8081 splashdown gives one of them 8082, even across unrelated repos.
-
-## Quick start
-
-In any project (single app or monorepo, web or backend or mobile):
-
-```sh
-splash init
-# scanning project…
-#   detected: pnpm (apps/api/apps/web-admin)
-#   apps/api          → node-backend
-#   apps/web-admin    → vite
-#   shell loader      → mise
-# wrote splashdown.toml + splashdown.local.toml + mise.toml + post-checkout hook
-```
-
-The recipe is on disk, the loader is wired, the hook fires on every checkout. Add a worktree and the second checkout picks free ports automatically:
-
-```sh
-git worktree add ../myapp.feat-x feat-x
-cd ../myapp.feat-x
-# post-checkout hook fired `splash`. splashdown.env now has the per-checkout ports.
-pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
-```
-
-For React Native, the legacy preset path also still works and applies the four `rn-*` wiring fixes (Metro port, package.json scripts, `ios/.xcode.env`) in one go:
-
-```sh
-splash init rn
-splash run simulator       # boots a per-checkout sim, builds, installs, launches
-```
-
-See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring later with `splash doctor` (and `splash doctor --fix` to re-apply).
 
 ## The recipe: `splashdown.toml`
 
@@ -167,6 +172,28 @@ Name collisions with a recipe-declared variant are an error (pick a different va
 
 ```sh
 splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
+```
+
+## Shell completion
+
+`splash` ships bash/zsh tab-completion (subcommands, device types, and dynamic device-variant names).
+
+| Install method | Setup |
+|---|---|
+| Homebrew | Zero-touch — the formula installs completion files. |
+| mise | `mise use -g pipx:argcomplete`, then add the line below. |
+
+For **zsh**, load bash-compat completion first:
+
+```zsh
+autoload -U +X bashcompinit && bashcompinit
+eval "$(register-python-argcomplete splash)"
+```
+
+For **bash**:
+
+```bash
+eval "$(register-python-argcomplete splash)"
 ```
 
 ## Running and managing devices
@@ -294,7 +321,7 @@ splash                              # sync this checkout (the post-checkout hook
 splash --version
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [all]                 # resources + targets + which ports are bound right now
-splash init [preset] [--rescan] [--loader=…] [--force]
+splash init [preset] [--rescan] [--no-sync] [--loader=…] [--force]   # scaffold + first sync
 splash doctor [--fix] [--framework=…]
 
 splash run     [type] [variant]     # boot target + build + launch
@@ -313,7 +340,7 @@ splash env get KEY | set KEY=VALUE | release [KEY]
 splash gc                           # drop dead-checkout entries (ports, vars, sims)
 ```
 
-`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash sync --force` reallocates ports; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash init --rescan` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
+`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash sync --force` reallocates ports; the auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash init` scaffolds the project files and then runs the first sync so the current checkout has values immediately (`--no-sync` scaffolds only). `splash init --rescan` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
 
 ## Global port coordination
 

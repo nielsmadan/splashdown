@@ -9,6 +9,7 @@ from pathlib import Path
 from . import TARGET_TYPES
 from .commands import (
     _cmd_provision,
+    _cmd_provision_inner,
     _env_dispatch,
     _target_dispatch,
     cmd_destroy,
@@ -77,7 +78,7 @@ This checkout
   status   [all]              state of this checkout (or every checkout)
 
 Set up a project
-  init     [preset] [--rescan]   scaffold splashdown.toml (--rescan re-detects apps)
+  init     [preset] [--rescan]   scaffold splashdown.toml + first sync (--no-sync skips it)
   doctor   [--fix]            check & fix framework wiring
 
 More
@@ -159,6 +160,11 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         "--rescan",
         action="store_true",
         help="re-detect [project]/[apps.*] in an existing splashdown.toml (don't scaffold)",
+    )
+    p.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="scaffold only; skip the first sync (don't allocate ports / write splashdown.env)",
     )
 
     env = sub.add_parser("env", help=argparse.SUPPRESS)
@@ -336,7 +342,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
             if args.rescan:
                 return cmd_refresh_inventory(cwd)
             cmd_init(cwd, preset=args.preset, force=args.force, loader_override=args.loader)
-            return 0
+            if args.no_sync:
+                return 0
+            return _cmd_provision_inner(cwd, registry)
 
         if args.cmd == "gc":
             return cmd_gc(registry)
