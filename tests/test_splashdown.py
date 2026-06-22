@@ -4500,3 +4500,67 @@ def test_scanner_gradle_skips_missing_module_dir(tmp_path):
     inv = sd.Scanner().scan(tmp_path)
     assert inv.workspace == "gradle"
     assert all(app.name != "ghost" for app in inv.apps)
+
+
+# ---------- devices: name/state parse helpers ----------
+
+
+def test_default_sim_name():
+    assert sd.devices._default_sim_name(Path("/work/myapp/co"), "default") == "myapp/co/default"
+
+
+def test_sanitize_avd_name():
+    assert sd.devices._sanitize_avd_name("My App/v1.2") == "My_App_v1.2"
+
+
+def _stub_ios_devices(monkeypatch, devices):
+    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": devices})
+
+
+def test_ios_find_device_by_name(monkeypatch):
+    _stub_ios_devices(
+        monkeypatch,
+        {
+            "iOS-18-5": [
+                {"name": "MySim", "udid": "U1", "state": "Booted", "isAvailable": True},
+                {"name": "Other", "udid": "U2", "state": "Shutdown", "isAvailable": True},
+            ]
+        },
+    )
+    assert sd.devices._ios_find_device_by_name("MySim") == ("U1", "Booted")
+    assert sd.devices._ios_find_device_by_name("Nope") is None
+
+
+def test_ios_find_device_by_name_skips_unavailable(monkeypatch):
+    _stub_ios_devices(
+        monkeypatch,
+        {"iOS-18-5": [{"name": "MySim", "udid": "U1", "state": "Shutdown", "isAvailable": False}]},
+    )
+    assert sd.devices._ios_find_device_by_name("MySim") is None
+
+
+def test_ios_current_state_and_udid_exists(monkeypatch):
+    _stub_ios_devices(monkeypatch, {"iOS-18-5": [{"udid": "U1", "state": "Booted"}]})
+    assert sd.devices._ios_current_state("U1") == "Booted"
+    assert sd.devices._ios_current_state("MISSING") == "Unknown"
+    assert sd.devices._ios_udid_exists("U1") is True
+    assert sd.devices._ios_udid_exists("U2") is False
+
+
+def test_android_avd_exists(monkeypatch):
+    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: b"pixel_9\nmy_avd\n")
+    assert sd.devices._android_avd_exists("my_avd") is True
+    assert sd.devices._android_avd_exists("ghost") is False
+
+
+def test_detect_framework_override_and_autodetect(tmp_path):
+    vite = sd.detect_framework(tmp_path, sd.Recipe({"project": {"framework": "vite"}}, tmp_path))
+    assert vite == "vite"
+    (tmp_path / "pubspec.yaml").write_text("name: app\n")  # auto-detect → flutter
+    assert sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path)) == "flutter"
+
+
+def test_detect_framework_unknown_raises(tmp_path):
+    with pytest.raises(sd.DeviceError):
+        sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path))

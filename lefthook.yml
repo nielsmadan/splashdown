@@ -13,4 +13,4 @@ pre-push:
     mypy:
       run: uv run mypy
     tests:
-      run: uv run pytest -q
+      run: uv run pytest -q --cov  # --cov enforces fail_under (see [tool.coverage.report])
