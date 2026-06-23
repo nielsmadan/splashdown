@@ -105,7 +105,8 @@ tag-release bump="":
         VERSION="$MAJOR.$MINOR.$PATCH"
         echo "Bumping version: ${LATEST_TAG:-(none)} -> $VERSION"
         sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
-        git add pyproject.toml
+        uv lock  # keep uv.lock's splashdown version in sync (else the pre-commit hook regenerates it post-commit, leaving it uncommitted)
+        git add pyproject.toml uv.lock
         git commit -m "chore: bump version to $VERSION"
     else
         VERSION="$PY_VERSION"
