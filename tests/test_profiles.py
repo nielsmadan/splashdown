@@ -1,0 +1,93 @@
+"""Tests for splashdown profiles behavior."""
+
+from __future__ import annotations
+
+import json
+
+import splashdown as sd
+from conftest import (
+    _capture_profile_calls,
+)
+
+
+def test_flutter_run_builds_argv(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    rc = sd.profiles._flutter_run(
+        tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"}
+    )
+    assert rc == 0
+    assert ["flutter", "run", "-d", "U1"] in calls
+
+
+def test_rn_run_ios_and_android(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    r = sd.Recipe({}, tmp_path / "x.toml")
+    sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.profiles._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    flat = [" ".join(c) for c in calls]
+    assert any("run-ios" in c and "--udid U1" in c for c in flat)
+    assert any("run-android" in c and "--deviceId S1" in c for c in flat)
+
+
+def test_expo_run_ios_and_android(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    r = sd.Recipe({}, tmp_path / "x.toml")
+    sd.profiles._expo_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.profiles._expo_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    flat = [" ".join(c) for c in calls]
+    assert any("run:ios" in c and "--device U1" in c for c in flat)
+    assert any("run:android" in c and "--device S1" in c for c in flat)
+
+
+def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    import plistlib
+
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / "splashdown.toml",
+    )
+    calls = _capture_profile_calls(monkeypatch)
+
+    class _Done:
+        stdout = json.dumps(
+            [{"buildSettings": {"BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}]
+        )
+
+    monkeypatch.setattr(sd.profiles.subprocess, "run", lambda *a, **k: _Done())
+    rc = sd.profiles._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any("simctl install SIM-1" in c for c in flat)
+    assert any("simctl launch SIM-1 com.demo" in c for c in flat)
+    assert not any("devicectl" in c for c in flat)
+
+
+def test_android_native_run_monkey_launcher(tmp_path, monkeypatch):
+    recipe = sd.Recipe({"project": {"android": {}}}, tmp_path / "splashdown.toml")
+    calls = _capture_profile_calls(monkeypatch)
+    monkeypatch.setattr(
+        sd.profiles.subprocess, "check_output", lambda *a, **k: "applicationId: com.example.app\n"
+    )
+    rc = sd.profiles._android_native_run(
+        tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
+    )
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any(":app:installDebug" in c for c in flat)  # variant casing
+    assert any("monkey" in c and "com.example.app" in c for c in flat)
+
+
+def test_android_native_run_launch_activity(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {"project": {"android": {"application_id": "com.x", "launch_activity": ".Main"}}},
+        tmp_path / "splashdown.toml",
+    )
+    calls = _capture_profile_calls(monkeypatch)
+    rc = sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
+    assert rc == 0
+    flat = [" ".join(c) for c in calls]
+    assert any("am start -n com.x/.Main" in c for c in flat)

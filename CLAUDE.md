@@ -18,8 +18,10 @@ just fmt            # ruff format (writes)
 just typecheck      # mypy (strict, src/splashdown only)
 ```
 
-Run a single test: `uv run pytest tests/test_splashdown.py::test_two_checkouts_get_different_ports -q`
-(or filter with `-k`). The whole suite lives in one file, `tests/test_splashdown.py` (~4k lines).
+Run a single test: `uv run pytest tests/test_registry.py::test_two_checkouts_get_different_ports -q`
+(or filter with `-k`). The suite is split into per-module files under `tests/` (one
+`test_<module>.py` per `src/splashdown/` module); shared fixtures (`registry`, `checkout`)
+and helpers live in `tests/conftest.py`.
 
 Local install of the source as the real `splash` binary: `just install-local` / `just refresh-local` (reinstall after edits) / `just reset-local`.
 
@@ -47,5 +49,5 @@ The data flow, end to end:
 - **Python 3.13** runtime (`requires-python >=3.13`); ruff/mypy target 3.11. Two runtime dependencies: `argcomplete` (shell completion) and `tomlkit` (comment/unknown-key-preserving TOML *writing*). **`tomlio` (which imports tomlkit at its top level) is itself lazy-imported by its callers (`commands.py`/`devices.py`), and never re-exported from `__init__.py`** — so the git-hook hot path (`splash` → `provision()`/`status`, which only *reads* TOML via stdlib `tomllib`) never imports it. Reads stay on `tomllib`. Keep the hot path lightweight (note `__version__` and other costly lookups are lazy in `__init__.py`). Don't add more deps.
 - **mypy strict** over `src/splashdown`. **ruff** with a broad rule set (`PL`, `B`, `S`, `SIM`, `SLF`, `RUF`, …); line length is formatter-enforced, not lint-enforced. `# noqa` codes in the tree are intentional — match the existing pattern rather than disabling rules globally.
 - Shelling out to PATH tools (`xcrun`, `simctl`, `adb`, `git`) is by design — `S603`/`S607` are globally ignored.
-- Tests are plain pytest, one file, fixture-driven (`registry`, `checkout`, `tmp_path`), heavy on monkeypatching the re-exported symbols. New behavior gets a test in `tests/test_splashdown.py`.
+- Tests are plain pytest, split into per-module files under `tests/`, fixture-driven (`registry`, `checkout`, `tmp_path`), heavy on monkeypatching the re-exported symbols. New behavior gets a test in the matching `tests/test_<module>.py` (shared fixtures/helpers in `tests/conftest.py`).
 - The four project files splashdown manages: `splashdown.toml` (committed recipe), `splashdown.local.toml` (gitignored, per-checkout add-only target variants), `splashdown.env` (gitignored, generated — never hand-edit), and the loader config. splashdown owns `splashdown.env` wholesale.
