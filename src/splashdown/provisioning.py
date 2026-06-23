@@ -117,6 +117,15 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[t
         elif writer.startswith("envfile"):
             path_arg = writer.split("=", 1)[1] if "=" in writer else ".env.local"
             target = cwd / path_arg
+            # The recipe is auto-run by the post-checkout hook, so a committed
+            # `envfile=` value is untrusted input. Reject absolute paths and any
+            # `..` that escapes the checkout — otherwise it is an arbitrary-file
+            # write primitive for any cloned repo.
+            if not target.resolve().is_relative_to(cwd.resolve()):
+                raise ValueError(
+                    f"writer `envfile={path_arg}` resolves outside the checkout; "
+                    "envfile paths must stay within the project directory"
+                )
             changed = write_envfile(target, items)
             msgs.append((f"{path_arg}: {len(items)} vars", changed))
         elif writer == "envrc":

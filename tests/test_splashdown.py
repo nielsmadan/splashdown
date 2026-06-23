@@ -2022,6 +2022,43 @@ writer   = "envfile=.env.local"
     assert "MY_VAR=hello" in text
 
 
+def test_envfile_writer_rejects_escaping_relative_path(registry, checkout):
+    # The recipe is auto-run from the post-checkout hook, so an `envfile=` path
+    # that escapes the checkout would be an arbitrary-file-write primitive.
+    _write_recipe(
+        checkout,
+        """
+[resources.MY_VAR]
+type     = "template"
+template = "hello"
+writer   = "envfile=../escape.env"
+""",
+    )
+    resolved = sd.provision(checkout, registry=registry)
+    recipe = sd.Recipe.load(checkout / "splashdown.toml")
+    with pytest.raises(ValueError, match="outside the checkout"):
+        sd.write_outputs(checkout, recipe, resolved)
+    assert not (checkout.parent / "escape.env").exists()
+
+
+def test_envfile_writer_rejects_absolute_path(registry, checkout, tmp_path):
+    abs_target = tmp_path / "abs_escape.env"
+    _write_recipe(
+        checkout,
+        f"""
+[resources.MY_VAR]
+type     = "template"
+template = "hello"
+writer   = "envfile={abs_target}"
+""",
+    )
+    resolved = sd.provision(checkout, registry=registry)
+    recipe = sd.Recipe.load(checkout / "splashdown.toml")
+    with pytest.raises(ValueError, match="outside the checkout"):
+        sd.write_outputs(checkout, recipe, resolved)
+    assert not abs_target.exists()
+
+
 def test_writer_reports_changed_then_unchanged(tmp_path):
     target = tmp_path / "splashdown.env"
     assert sd.write_splashdown_env(target, {"PORT": "8082"}) is True  # created
