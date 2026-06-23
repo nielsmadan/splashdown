@@ -170,11 +170,23 @@ def render_template(tpl: str, scope: dict[str, Any]) -> str:
 
 
 def template_refs(tpl: str) -> set[str]:
-    """Identifier-shaped names referenced from a template (for topo sort)."""
+    """Names referenced from a template's `{{ expr }}` placeholders (for topo sort).
+
+    Collects `ast.Name` identifiers from each parsed expression, so a name that
+    only appears inside a string literal (e.g. `{{ "PORT" }}`) is not treated as
+    a dependency and cannot fabricate a false cycle in topo_sort.
+    """
     refs: set[str] = set()
     for m in _TEMPLATE_RE.finditer(tpl):
-        for ident in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(1)):
-            refs.add(ident)
+        expr = m.group(1)
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            # Malformed expression: fall back to a lenient identifier scan;
+            # render_template surfaces the real error when the value is resolved.
+            refs.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr))
+            continue
+        refs.update(node.id for node in ast.walk(tree) if isinstance(node, ast.Name))
     return refs
 
 

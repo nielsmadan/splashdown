@@ -1775,6 +1775,14 @@ def test_template_refs():
     assert "basename" in refs
 
 
+def test_template_refs_ignores_string_literals():
+    # An identifier that only appears inside a string literal is not a real
+    # dependency and must not fabricate an edge (which could trip cycle detection).
+    refs = sd.template_refs('{{ "PORT" + slug(cwd) }}')
+    assert "PORT" not in refs
+    assert {"slug", "cwd"} <= refs
+
+
 def test_template_error_on_bad_expr(tmp_path):
     cwd = tmp_path / "x"
     cwd.mkdir()
