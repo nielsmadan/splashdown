@@ -14,6 +14,21 @@ Do you have any of these problems?
 
 Splashdown solves them. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
 
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [The recipe: `splashdown.toml`](#the-recipe-splashdowntoml)
+- [Per-checkout overrides: `splashdown.local.toml`](#per-checkout-overrides-splashdownlocaltoml)
+- [Shell completion](#shell-completion)
+- [Running and managing devices](#running-and-managing-devices)
+- [Framework wiring (`splash doctor`)](#framework-wiring-splash-doctor)
+- [Profiles and loaders](#profiles-and-loaders)
+- [CLI summary](#cli-summary)
+- [Global port coordination](#global-port-coordination)
+- [Development](#development)
+
 ## Install
 
 ```sh
