@@ -13,7 +13,8 @@ from .recipe import Recipe
 
 # ---------- framework wiring (doctor) ----------
 #
-# WIRING is the per-framework spec shipped with the tool. Each WiringCheck names
+# The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
+# per-framework spec shipped with the tool. Each WiringCheck names
 # a small fact about the project (e.g. "metro.config.js consumes RCT_METRO_PORT")
 # that splashdown can inspect and, where safely mechanical, repair.
 

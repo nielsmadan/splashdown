@@ -187,7 +187,9 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         help="apply safe autofixes; print manual instructions for the rest",
     )
     p.add_argument(
-        "--framework", default=None, help="override framework detection (react-native|flutter|expo)"
+        "--framework",
+        default=None,
+        help="override framework detection (any profile name, e.g. react-native|flutter|expo|vite|springboot)",
     )
 
     for verb in ("run", "start", "stop", "destroy"):

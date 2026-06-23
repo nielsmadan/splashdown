@@ -5,7 +5,7 @@ expands templates, and writes resolved values to `splashdown.env`. Per-checkout
 device config lives in `splashdown.local.toml`. Maintains a machine-local
 registry so concurrent checkouts don't collide.
 
-Python 3.11+ (reads TOML via stdlib tomllib). Two runtime dependencies: argcomplete
+Python 3.13+ (reads TOML via stdlib tomllib). Two runtime dependencies: argcomplete
 (shell completion) and tomlkit (comment-preserving TOML writing). tomlkit is
 lazy-imported by writer functions only (see tomlio.py), so the git-hook hot path —
 which only reads TOML — never loads it.

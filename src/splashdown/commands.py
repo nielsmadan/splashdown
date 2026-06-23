@@ -1218,7 +1218,7 @@ def cmd_init(
     cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None
 ) -> None:
     """Scaffold splashdown.toml from a project scan (default) or from a named
-    preset (legacy path: `splash init --preset NAME`)."""
+    preset (legacy path: `splash init <preset>`)."""
 
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:

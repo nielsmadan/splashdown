@@ -142,7 +142,7 @@ def _ios_runtime_identifier(version: str) -> str:
 
 
 def _ios_device_type_identifier(model: str | None) -> str:
-    """Match the .devrc behaviour: prefer the user's named device, else latest iPhone Pro."""
+    """Prefer the user's named device, else the latest iPhone Pro."""
     data = _xcrun_json(["simctl", "list", "devicetypes", "-j"])
     types = data.get("devicetypes") or []
     if model:
