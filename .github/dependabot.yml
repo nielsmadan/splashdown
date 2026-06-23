@@ -1,0 +1,35 @@
+version: 2
+updates:
+  # Python dependencies (uv-managed; uv.lock + pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    assignees:
+      - "nielsmadan"
+    groups:
+      # Group non-breaking updates (patch + minor) into one PR.
+      # Major updates get separate PRs for manual review.
+      non-breaking:
+        update-types:
+          - "patch"
+          - "minor"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    assignees:
+      - "nielsmadan"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
