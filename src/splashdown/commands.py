@@ -689,6 +689,24 @@ def cmd_status(
         if stale:
             print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
 
+        # Unfilled `set` resources never reach the registry, so they don't appear
+        # above — point the user at the command that fills them.
+        recipe = _load_recipe_or_empty(cwd)
+        resolved_keys = registry.all_for(target)
+        unfilled = [
+            name
+            for name, spec in recipe.resources.items()
+            if spec.get("type") == "set"
+            and spec.get("default") is None
+            and name not in resolved_keys
+        ]
+        if unfilled:
+            print(
+                f"{len(unfilled)} resource(s) need a value "
+                f"({', '.join(unfilled)}): run `splash env set NAME=VALUE`",
+                file=sys.stderr,
+            )
+
     return 0
 
 
@@ -1003,11 +1021,9 @@ def cmd_target_prune(
     if dry_run:
         print("target prune: --dry-run, nothing destroyed", file=sys.stderr)
         return 0
-    if not yes:
-        print("Continue? [y/N] ", end="", file=sys.stderr, flush=True)
-        if input().strip().lower() not in ("y", "yes"):
-            print("target prune: aborted", file=sys.stderr)
-            return 1
+    if not _confirm("Continue?", yes=yes):
+        print("target prune: aborted", file=sys.stderr)
+        return 1
 
     done = 0
     for udid, _name, _runtime in foreign_ios:
@@ -1082,7 +1098,15 @@ def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
     return 0
 
 
-def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
+def _confirm(prompt: str, *, yes: bool) -> bool:
+    """Interactive [y/N] gate for destructive ops. `yes=True` skips the prompt."""
+    if yes:
+        return True
+    print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
+    return input().strip().lower() in ("y", "yes")
+
+
+def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None, *, yes: bool = False) -> int:
     """Delete the sim/emulator and its registry entry."""
     _dev_destroy = device_destroy
     dtype = _infer_dtype(cwd, dtype)
@@ -1093,6 +1117,9 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
             file=sys.stderr,
         )
         return 0
+    if not _confirm(f"Destroy {dtype}.{variant}?", yes=yes):
+        print(f"destroy {dtype}.{variant}: aborted", file=sys.stderr)
+        return 1
     resolved = _resolve_device_name(spec, cwd, variant, dtype)
     _dev_destroy(dtype, resolved)
     Registry().remove_device(str(cwd.resolve()), dtype, variant)
@@ -1222,7 +1249,7 @@ def cmd_init(
 
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
-        print(f"refusing to overwrite existing {RECIPE_NAME} (use --force)", file=sys.stderr)
+        print(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)", file=sys.stderr)
         sys.exit(2)
 
     # Legacy path: an explicit preset bypasses the Scanner entirely.
@@ -1514,10 +1541,10 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
         return 0
     # Normalize the same way provision() keys the registry (str(cwd.resolve())),
     # or get/set/release silently miss each other on symlinked/relative invocations.
-    target = str(cwd.resolve())
+    # --checkout targets another checkout's entries (default: this one).
+    target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd.resolve())
     if args.env_cmd == "get":
-        lookup = str(Path(args.checkout).resolve()) if args.checkout else target
-        value = registry.all_for(lookup).get(args.key)
+        value = registry.all_for(target).get(args.key)
         if value is None:
             return 1
         print(value)
@@ -1540,7 +1567,7 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
             print(f"released {args.key}", file=sys.stderr)
         else:
             n = registry.release(target)
-            print(f"released {n} entries for {cwd}", file=sys.stderr)
+            print(f"released {n} entries for {target}", file=sys.stderr)
         return 0
     print(f"splash env {args.env_cmd}: unknown action", file=sys.stderr)
     return 2

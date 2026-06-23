@@ -807,6 +807,20 @@ def test_cli_env_set_rejects_invalid_key(tmp_path, monkeypatch, capsys):
     assert "invalid env name" in capsys.readouterr().err
 
 
+def test_cli_env_set_release_honor_checkout(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    other = tmp_path / "other"
+    other.mkdir()
+    # set/release can target another checkout, the same way get already can.
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1", "--checkout", str(other)]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 0
+    assert capsys.readouterr().out.strip() == "v1"
+    # ...and it's scoped: this checkout doesn't see it.
+    assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 1
+    assert sd.main(["--cwd", str(tmp_path), "env", "release", "K", "--checkout", str(other)]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 1
+
+
 def test_resolve_device_name_rejects_leading_dash(tmp_path):
     with pytest.raises(sd.DeviceError):
         sd._resolve_device_name({"name": "-rf"}, tmp_path, "default")

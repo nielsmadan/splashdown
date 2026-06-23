@@ -294,6 +294,20 @@ def test_cli_init_runs_first_sync(tmp_path, monkeypatch):
     assert str(tmp_path.resolve()) in ports
 
 
+def test_cli_init_overwrite_flag(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 0
+    # A second init without --overwrite refuses and names the flag (not --force).
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--overwrite" in err and "--force" not in err
+    # --overwrite replaces the recipe.
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise", "--overwrite"]) == 0
+
+
 def test_cli_init_no_sync_skips_provision(tmp_path, monkeypatch):
     # `--no-sync` scaffolds the files but allocates nothing: no splashdown.env,
     # no registry entry for this checkout.

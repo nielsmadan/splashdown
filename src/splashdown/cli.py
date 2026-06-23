@@ -155,7 +155,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         choices=("mise", "direnv", "devbox", "none"),
         help="override loader auto-detection (none = write a dotenv file, wire nothing)",
     )
-    p.add_argument("--force", action="store_true")
+    p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
     p.add_argument(
         "--rescan",
         action="store_true",
@@ -175,8 +175,10 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     eg.add_argument("--checkout", default=None)
     es = envsub.add_parser("set", help='set a manual value (for type="set" resources)')
     es.add_argument("assignment", metavar="KEY=VALUE")
+    es.add_argument("--checkout", default=None)
     er = envsub.add_parser("release", help="free this checkout's allocations (all, or one KEY)")
     er.add_argument("key", nargs="?")
+    er.add_argument("--checkout", default=None)
 
     sub.add_parser("gc", help=argparse.SUPPRESS)
 
@@ -209,6 +211,8 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
             "variant", nargs="?", help="variant name (defaults to `default`)"
         )
         variant_arg.completer = variant_completer  # type: ignore[attr-defined]
+        if verb == "destroy":
+            p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     dev = sub.add_parser("target", help=argparse.SUPPRESS)
     devsub = dev.add_subparsers(dest="target_cmd", metavar="ACTION")
@@ -343,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
         if args.cmd == "init":
             if args.rescan:
                 return cmd_refresh_inventory(cwd)
-            cmd_init(cwd, preset=args.preset, force=args.force, loader_override=args.loader)
+            cmd_init(cwd, preset=args.preset, force=args.overwrite, loader_override=args.loader)
             if args.no_sync:
                 return 0
             return _cmd_provision_inner(cwd, registry)
@@ -364,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
             return cmd_stop(cwd, args.dtype, args.variant)
 
         if args.cmd == "destroy":
-            return cmd_destroy(cwd, args.dtype, args.variant)
+            return cmd_destroy(cwd, args.dtype, args.variant, yes=args.yes)
 
         if args.cmd == "status":
             return cmd_status(
@@ -387,5 +391,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
     except (DeviceError, ValueError) as e:
         # DeviceError: device/target lifecycle failures. ValueError: recipe
         # validation (unknown target type, the [devices.*]→[targets.*] rename, …).
+        # (Missing-recipe FileNotFoundError is handled gracefully in the sync path.)
         print(f"error: {e}", file=sys.stderr)
         return 1

@@ -32,7 +32,7 @@ def provision(  # noqa: PLR0912 — one branch per resource type; this is the di
 ) -> dict[str, str]:
     recipe_path = cwd / RECIPE_NAME
     if not recipe_path.exists():
-        raise FileNotFoundError(f"no {RECIPE_NAME} found in {cwd}")
+        raise FileNotFoundError(f"no {RECIPE_NAME} in {cwd}; run `splash init`")
     recipe = Recipe.load(recipe_path)
     abspath = str(cwd.resolve())
     branch = _current_branch(cwd)
@@ -78,7 +78,7 @@ def provision(  # noqa: PLR0912 — one branch per resource type; this is the di
                 if default is None:
                     raise ValueError(
                         f"`{name}` is a set-type resource with no value yet; "
-                        f"run `mise run set {name}=VALUE` or set a `default = ...`"
+                        f"run `splash env set {name}=VALUE` or set a `default = ...`"
                     )
                 value = str(default)
                 registry.set_kv(abspath, name, value)

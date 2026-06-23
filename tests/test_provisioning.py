@@ -265,7 +265,7 @@ def test_cwd_slug_resource_type(registry, tmp_path):
 
 def test_set_resource_without_default_errors(registry, checkout):
     _write_recipe(checkout, '[resources.MODE]\ntype = "set"\n')
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"splash env set"):
         sd.provision(checkout, registry=registry)
 
 
@@ -273,6 +273,15 @@ def test_invalid_port_range_errors(registry, checkout):
     _write_recipe(checkout, '[resources.P]\ntype = "port"\nrange = 8000\n')
     with pytest.raises(ValueError):
         sd.provision(checkout, registry=registry)
+
+
+def test_cli_sync_without_recipe_hints_init(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # The git hook fires `splash` in every repo, so a missing recipe is a graceful
+    # no-op (rc 0) — but it must still point the user at `splash init`, not stay silent.
+    rc = sd.main(["--cwd", str(tmp_path), "sync"])
+    assert rc == 0
+    assert "splash init" in capsys.readouterr().err
 
 
 def test_run_setup_runs_commands_and_reports(tmp_path):

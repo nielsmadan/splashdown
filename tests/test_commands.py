@@ -75,6 +75,31 @@ def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
     assert rc == 0
 
 
+def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 15"\n')
+    destroyed: list = []
+    monkeypatch.setattr(sd.commands, "device_destroy", lambda dt, name: destroyed.append(name))
+    monkeypatch.setattr(sd.commands, "_resolve_device_name", lambda *a, **k: "SIM-NAME")
+
+    # Declining at the prompt aborts without touching the device.
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    assert sd.main(["--cwd", str(tmp_path), "destroy", "simulator"]) == 1
+    assert destroyed == []
+
+    # --yes skips the prompt and destroys.
+    assert sd.main(["--cwd", str(tmp_path), "destroy", "simulator", "--yes"]) == 0
+    assert destroyed == ["SIM-NAME"]
+
+
+def test_cli_status_hints_unfilled_set_resource(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text('[resources.MODE]\ntype = "set"\n')
+    assert sd.main(["--cwd", str(tmp_path), "status"]) == 0
+    err = capsys.readouterr().err
+    assert "MODE" in err and "splash env set" in err
+
+
 def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
