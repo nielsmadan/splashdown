@@ -1221,7 +1221,7 @@ def test_cli_status_all_json_shape(tmp_path, monkeypatch, capsys):
     assert data["summary"]["defunct_checkouts"] == 0
 
 
-def test_cli_sync_reallocates_squatted_port(tmp_path, monkeypatch, capsys):
+def test_cli_sync_keeps_pinned_port_when_bound(tmp_path, monkeypatch, capsys):
     (tmp_path / "splashdown.toml").write_text("""
 [resources.HOT_PORT]
 type  = "port"
@@ -1232,7 +1232,7 @@ range = [19500, 19510]
     assert rc == 0
     first = (tmp_path / "splashdown.env").read_text().strip()
     capsys.readouterr()
-    # Squat the assigned port from a different socket.
+    # Bind the assigned port — simulating this checkout's own dev server running.
     port_str = first.split("=", 1)[1]
     import socket as _sock
 
@@ -1241,12 +1241,29 @@ range = [19500, 19510]
     squatter.bind(("127.0.0.1", int(port_str)))
     squatter.listen(1)
     try:
+        # Plain sync must KEEP the pin even though the port is bound — otherwise
+        # it would move the port out from under the running dev server.
         rc = sd.main(["--cwd", str(tmp_path), "sync"])
+        assert rc == 0
+        kept = (tmp_path / "splashdown.env").read_text().strip()
+        assert kept == first
+        # `sync --force` is the explicit reallocation path: it drops the pin
+        # first, so the now-bound port is skipped and a fresh one is chosen.
+        rc = sd.main(["--cwd", str(tmp_path), "sync", "--force"])
         assert rc == 0
     finally:
         squatter.close()
-    second = (tmp_path / "splashdown.env").read_text().strip()
-    assert second != first  # reallocated to a new port
+    forced = (tmp_path / "splashdown.env").read_text().strip()
+    assert forced != first
+
+
+def test_allocate_port_keeps_existing_pin_when_in_use(registry, checkout, monkeypatch):
+    first = registry.allocate_port(str(checkout), "PORT", 18600, 18610)
+    # Force the bind probe to report every port busy: a plain re-allocation must
+    # still return the existing in-range pin rather than trying to move it.
+    monkeypatch.setattr(sd.registry, "_port_in_use", lambda port: True)
+    again = registry.allocate_port(str(checkout), "PORT", 18600, 18610)
+    assert again == first
 
 
 def test_cli_release_clears_one_key(tmp_path, monkeypatch, capsys):

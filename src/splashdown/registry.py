@@ -133,10 +133,13 @@ class Registry:
         with self._lock(self.port_file):
             existing = self.get_port(abspath, key)
             if existing is not None and lo <= existing <= hi:
-                if not _port_in_use(existing):
-                    return existing
-                # Someone else grabbed it — fall through and reallocate.
-                self._remove_port_unlocked(abspath, key)
+                # Keep an existing in-range pin as-is, even if the port is
+                # currently bound — a bound pin is almost always this checkout's
+                # own dev server, and reallocating would move the port out from
+                # under the running process. Deliberate reallocation goes through
+                # `splash sync --force`, which drops the pin via remove_port
+                # before getting here (so `existing` is None on that path).
+                return existing
             busy = self.busy_ports(gc=True)
             for candidate in range(lo, hi + 1):
                 if candidate in busy:
