@@ -3,6 +3,7 @@
 > PRD for **UC5** — make the allocated port actually reach the running app.
 > See `docs/product/use-cases.md` (UC5) and `docs/product/persona.md`. `README.md`
 > ("Framework wiring") is the authoritative spec.
+> **Implemented by:** [wiring](../tech/wiring.md).
 
 ## Table of contents
 

@@ -4,6 +4,7 @@
 > reserved ports/sims freed, so the machine doesn't leak resources." Audience: the
 > parallel-agent developer and the mobile/web secondary personas (`docs/product/persona.md`)
 > who create and destroy worktrees rapidly. `README.md` is the authoritative spec.
+> **Implemented by:** [registry](../tech/registry.md), [devices](../tech/devices.md).
 
 ## Table of contents
 

@@ -24,3 +24,19 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   and `env` (list/get/set/release); the machine-readable surface. *(UC8)*
 - [per-checkout-overrides.md](per-checkout-overrides.md) — `splashdown.local.toml` add-only target
   variants; `target add`/`remove`. *(UC9)*
+
+## Traceability: problem → requirement → implementation
+
+The chain from the user's problem (the [product](../product/overview.md) layer) through the
+requirement (this layer) to the implementation (the [tech](../tech/overview.md) layer). Each PRD
+doc's header repeats its own up/down links.
+
+| Problem ([use case](../product/use-cases.md)) | Requirement (PRD) | Implementation ([tech](../tech/overview.md)) |
+|---|---|---|
+| UC1 — ports / env / templated values | [ports-and-env](ports-and-env.md) | [provisioning](../tech/provisioning.md), [registry](../tech/registry.md), [recipe-and-templates](../tech/recipe-and-templates.md) |
+| UC2, UC4, UC10 — device targets | [device-targets](device-targets.md) | [devices](../tech/devices.md), [registry](../tech/registry.md) |
+| UC3, UC6 — init & onboarding | [init-and-onboarding](init-and-onboarding.md) | [scanning-and-extension](../tech/scanning-and-extension.md), [cli-and-commands](../tech/cli-and-commands.md) |
+| UC5 — framework wiring | [framework-wiring](framework-wiring.md) | [wiring](../tech/wiring.md) |
+| UC7 — resource cleanup | [resource-cleanup](resource-cleanup.md) | [registry](../tech/registry.md), [devices](../tech/devices.md) |
+| UC8 — status & inspect | [status-and-inspect](status-and-inspect.md) | [cli-and-commands](../tech/cli-and-commands.md) |
+| UC9 — per-checkout overrides | [per-checkout-overrides](per-checkout-overrides.md) | [recipe-and-templates](../tech/recipe-and-templates.md), [devices](../tech/devices.md) |

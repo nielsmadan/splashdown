@@ -1,5 +1,10 @@
 # See this checkout's resolved values, devices, and what's free
 
+> **Problem:** UC8 — read a checkout's state (ports, devices, leaked cruft) without re-deriving it.
+> See [use-cases](../product/use-cases.md), [persona](../product/persona.md).
+> **Implemented by:** [cli-and-commands](../tech/cli-and-commands.md). `README.md` is the
+> authoritative spec.
+
 ## Overview
 
 When a worktree's state is unclear — which ports it holds, whether those ports are bound right now, which device variants it declares and whether they're booted, how much registry cruft it has leaked — the developer (or the agent driving the worktree) needs to *read* the picture without re-deriving it from config files (UC8). `splash status` answers "what does this checkout have right now?": resolved env vars tagged `[in use]`/`[free]` for port-typed resources, declared device variants with boot state, and a stale-row count, with a hint at the unfilled `set` resources that still need a value. `splash status all` widens to a one-row-per-checkout fleet table; `--check` revalidates liveness and routes per-issue cleanup hints; `--format json` emits the same data machine-readably for agent/tooling consumers. `splash env` is the scriptable companion — list/get/set/release this checkout's values, with `--checkout` to reach another checkout. The audience is the parallel-agent / worktree-heavy developer who supervises many sandboxes and needs a predictable, parseable read of any one of them.

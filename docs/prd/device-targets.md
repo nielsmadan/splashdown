@@ -6,6 +6,7 @@
 > Audience: the **mobile-app developer on worktrees** persona (`docs/product/persona.md`) — and,
 > through them, the **parallel-agent developer** who needs each agent's worktree to own its own
 > device. `README.md` is the authoritative spec.
+> **Implemented by:** [devices](../tech/devices.md), [registry](../tech/registry.md).
 
 ## Contents
 
@@ -69,8 +70,8 @@ no-ops with an explanatory message because splashdown owns no hardware.
 the list when there are zero or several. `_resolve_variant_for_cli` (`:1148`) loads recipe + local,
 merges them, and picks the variant (`resolve_variant`): an explicit arg, else `default`, else the
 sole declared variant. The CLI parser additionally reinterprets a lone non-type token as the
-variant (`splash run lowest-supported`) in `cli.py` (the `_normalize_device_args` shim around the
-parser loop at `src/splashdown/cli.py:197`).
+variant (`splash run lowest-supported`) in `cli.py` (validated post-parse by
+`_normalize_device_args` (`src/splashdown/cli.py:284`)).
 
 **Framework launcher (UC2 build/launch).** `detect_framework` (`src/splashdown/devices.py:758`)
 picks the launcher from filesystem signals, overridable via `[project] framework`. `device_run`

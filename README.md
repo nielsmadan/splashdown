@@ -353,7 +353,7 @@ splash                              # sync this checkout (the post-checkout hook
 splash --version
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [all]                 # resources + targets + which ports are bound right now
-splash init [preset] [--rescan] [--no-sync] [--loader=…] [--force]   # scaffold + first sync
+splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]   # scaffold + first sync
 splash doctor [--fix] [--framework=…]
 
 splash run     [type] [variant]     # boot target + build + launch

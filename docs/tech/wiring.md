@@ -133,7 +133,7 @@ Exit code is 0 only when nothing is left in the `problem` state (`wiring.py:112`
   strips any static literal export, strips any prior sentinel block, then appends a
   sentinel-wrapped managed block (`_XCODE_BLOCK`, `wiring.py:358`): honor a value
   already set by `run-ios`, else read `splashdown.env`, else fall back to 8083.
-- **`vite-config-process-env`** (defined inline in `VitePreactProfile.wiring_checks`,
+- **`vite-config-process-env`** (defined inline in `ViteProfile.wiring_checks`,
   `profiles.py:317`; the check tuple at `:321`, detect/autofix at `:332`/`:342`) —
   rewrites the `loadEnv` idiom `env.X` to `process.env.X` in `vite.config.{ts,js,mjs}`
   so values loaded into the shell by mise/direnv/devbox reach Vite. The matcher
@@ -240,5 +240,3 @@ hand-authored files:
 - [`docs/tech/scanning-and-extension.md`](./scanning-and-extension.md) — how
   Profiles are detected and registered, and how `Profile.wiring_checks` ties a
   framework to its check list (the registry side of this engine).
-</content>
-</invoke>

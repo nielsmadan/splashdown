@@ -3,6 +3,8 @@
 > Feature PRD · Use case **UC9** (see `docs/product/use-cases.md`) ·
 > Personas: parallel-agent / mobile developer (see `docs/product/persona.md`) ·
 > Authoritative spec: `README.md` ("Per-checkout overrides: `splashdown.local.toml`").
+> **Implemented by:** [recipe-and-templates](../tech/recipe-and-templates.md),
+> [devices](../tech/devices.md).
 
 ## Overview
 

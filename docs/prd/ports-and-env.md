@@ -1,5 +1,10 @@
 # Per-checkout dev ports, env vars, and templated values
 
+> **Problem:** UC1 — give each checkout free dev ports / env / templated values that "just work"
+> on `cd`. See [use-cases](../product/use-cases.md), [persona](../product/persona.md).
+> **Implemented by:** [provisioning](../tech/provisioning.md), [registry](../tech/registry.md),
+> [recipe-and-templates](../tech/recipe-and-templates.md). `README.md` is the authoritative spec.
+
 ## Overview
 
 When a worktree or checkout syncs, splashdown allocates free dev ports machine-wide, mints UUIDs, expands templates, and writes the concrete values to `splashdown.env` (or per-resource `writer` destinations). Every process in the checkout then sees the right `PORT`, `DATABASE_URL`, etc. with no hand-editing — this is what bare `splash` and the post-checkout hook run (UC1). The audience is the parallel-agent / worktree-heavy developer who needs each checkout to be a hermetic sandbox that "just works" on `cd`/checkout.

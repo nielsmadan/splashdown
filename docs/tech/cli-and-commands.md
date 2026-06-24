@@ -117,10 +117,10 @@ The shared `POST_CHECKOUT_HOOK` script (`commands.py:73`) is defensive: `cd` to 
 
 `cmd_status` (`commands.py:618`) is the entry; the rendering is spread across several helpers. The branching:
 
-- **`--all` without `--verbose` (text)** → `_cmd_status_table` (`commands.py:507`): a compact one-row-per-checkout table (PATH / SUMMARY / optional ISSUE column, where ISSUE only appears if at least one row flags something — `commands.py:551`).
+- **`all` (positional scope) without `--verbose` (text)** → `_cmd_status_table` (`commands.py:507`): a compact one-row-per-checkout table (PATH / SUMMARY / optional ISSUE column, where ISSUE only appears if at least one row flags something — `commands.py:551`).
 - **everything else** → per-checkout blocks built by `_gather_status_for_checkout` (`commands.py:425`) and emitted by `_emit_status_block_text` (`commands.py:468`). JSON output uses the same block structure (`commands.py:665`).
 
-The block builder splits device sourcing two ways: `--all` reads devices straight from the registry (`_gather_devices_all`, `commands.py:328`); default mode reads the recipe+local catalog (`_gather_targets_declared`, `commands.py:370`). `--check` revalidates liveness, accumulating defunct/orphan/stale/missing counts into a shared `summary` dict, and `_print_check_summary` (`commands.py:570`) prints the footer routing each issue class to the command that fixes it (`gc` for defunct, `target refresh` for orphan/stale, `run` for missing). The default-mode footer (no `--check`) instead does a lightweight stale-row count and points out unfilled `set` resources (`commands.py:677`–`708`).
+The block builder splits device sourcing two ways: `all` mode reads devices straight from the registry (`_gather_devices_all`, `commands.py:328`); default mode reads the recipe+local catalog (`_gather_targets_declared`, `commands.py:370`). `--check` revalidates liveness, accumulating defunct/orphan/stale/missing counts into a shared `summary` dict, and `_print_check_summary` (`commands.py:570`) prints the footer routing each issue class to the command that fixes it (`gc` for defunct, `target refresh` for orphan/stale, `run` for missing). The default-mode footer (no `--check`) instead does a lightweight stale-row count and points out unfilled `set` resources (`commands.py:677`–`708`).
 
 #### The no-loader delivery fallback
 

@@ -73,7 +73,7 @@ GC is **lazy** — it piggybacks on reads rather than running on a timer. `busy_
 - `gc()` (`registry.py:392-408`) — drop port/kv rows whose `abspath` no longer exists, then fold in `gc_devices()` and `reconcile_with_recipes()`. Returns total removed.
 - `gc_devices()` (`registry.py:312-322`) — drop device rows whose checkout dir is gone **or** whose sim/AVD has been deleted out from under us, via `_is_orphan_device` (lazy-imported from `devices` to break the `registry ← devices ← registry` cycle).
 - `reconcile_with_recipes()` (`registry.py:352-390`) — for each live checkout, load its `splashdown.toml` and drop port/kv rows for keys the current recipe no longer declares (e.g. a leftover `DART_PORT`). Crucially, a recipe that is **missing or won't parse yields `None`, which means skip pruning that checkout** (`registry.py:365-377`) — an unloadable recipe must never be read as "declares nothing" and nuke live entries. Results are cached per path within the call.
-- `release(abspath)` (`registry.py:168-186`) — remove *all* rows for one checkout across all three files; returns count removed. Used by `splash destroy`/full cleanup.
+- `release(abspath)` (`registry.py:168-186`) — remove *all* rows for one checkout across all three files; returns count removed. Used by `splash env release` (no key) — *not* by `splash destroy`, which drops a single device row via `remove_device`.
 
 `all_checkouts` (`registry.py:324-334`) and `summary_for` (`registry.py:336-350`) are read-only inspection helpers backing `splash status`.
 

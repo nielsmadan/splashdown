@@ -4,6 +4,8 @@
 > Audience: senior devs extending splashdown. Persona: the parallel-agent developer and the
 > two work-flavor personas (mobile, web/backend) in `docs/product/persona.md`.
 > `README.md` is the authoritative spec.
+> **Implemented by:** [scanning-and-extension](../tech/scanning-and-extension.md),
+> [cli-and-commands](../tech/cli-and-commands.md).
 
 ## Contents
 
@@ -155,7 +157,7 @@ newly-added monorepo app or upgrade a legacy recipe shape.
 - **`--no-sync`** — scaffold + wire only; skip port allocation and `splashdown.env`. The opt-out
   for CI / scaffold-only runs: generate the committable files without touching the machine registry.
 - **`--rescan`** — re-detect `[project]`/`[apps.*]` in an existing recipe; preserves
-  `[resources.*]`. Does not scaffold; mutually the rescan path returns before `cmd_init`.
+  `[resources.*]`. Does not scaffold; the rescan path is dispatched before `cmd_init` and returns early (`cli.py:348`).
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), and the hook target
