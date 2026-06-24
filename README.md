@@ -27,6 +27,7 @@ Splashdown solves them. Pin system resources to your checkouts, keep track of th
 - [Profiles and loaders](#profiles-and-loaders)
 - [CLI summary](#cli-summary)
 - [Global port coordination](#global-port-coordination)
+- [CI integration](#ci-integration)
 - [Development](#development)
 
 ## Install
@@ -94,9 +95,7 @@ Variants pinned to a fixed version (`ios = "17.0"`) are never touched by `refres
 
 ## How it works
 
-Splashdown is the glue between your env loader (mise, direnv, devbox) and git. It hooks into XYZ git hooks via lefthook. When you create a new worktree or checkout, the hook calls on splash to find free ports and set them for your env loader to use.
-
-
+Splashdown is the glue between git and your env loader (mise, direnv, devbox). It installs a `post-checkout` git hook, coexisting with lefthook/husky if you already use a hook manager, that fires `splash` whenever you check out a branch or add a worktree, so each checkout's free ports (and other resources) are allocated and handed to your loader automatically.
 
 Run `splash init` once in your project. Splashdown walks the filesystem, identifies your apps and their frameworks, and writes a recipe (`splashdown.toml`) declaring per-checkout resources (ports, db urls, UUIDs, sim/emulator variants). On every `git checkout` or `git worktree add`, a post-checkout hook fires `splash`, which allocates concrete values into a gitignored `splashdown.env`. Your shell-env loader (mise / direnv / devbox) sources that file automatically, so every process in the checkout sees the right `PORT`, `DATABASE_URL`, etc.
 
@@ -110,6 +109,14 @@ Four files end up in the project:
 | `mise.toml` (or `.envrc` / `devbox.json`) | Yes | Your shell-env loader's config; gains a line that sources `splashdown.env` |
 
 The registry at `~/.local/state/splashdown/` is machine-wide, so when two checkouts both want port 8081 splashdown gives one of them 8082, even across unrelated repos.
+
+**Provision output** is change-aware: the first run (or any run that allocates a new port or rewrites a file) prints only the changed vars and writer lines. A no-op run — `git pull --rebase` on a checkout already provisioned — collapses to one line:
+
+```
+splashdown: up to date (3 vars, 2 files)
+```
+
+This is what you see through lefthook or other hook managers when nothing actually changed.
 
 ## The recipe: `splashdown.toml`
 
@@ -147,6 +154,15 @@ template = "{{ PORT }}"        # Vite's /api proxy must hit the api's actual por
 
 Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
+
+A common pattern for consumers that need a stable short identifier (e.g. Docker Compose project names have a practical length limit):
+
+```toml
+[resources.COMPOSE_PROJECT_NAME]
+type     = "template"
+template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
+# → "myapp-test-352e9e09" — stable per checkout path, 8-char truncated SHA256
+```
 
 **For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands; pin an explicit version like `ios = "18.5"` for fixed coverage.
 
@@ -368,6 +384,31 @@ The registry at `~/.local/state/splashdown/{ports.tsv,kv.tsv}` is **machine-wide
 So three unrelated projects can each declare `range = [3000, 3100]` and never collide. Splashdown hands them 3000, 3001, 3002 (or whatever's free at allocation time).
 
 Lazy GC: entries for checkouts whose directory no longer exists are dropped on next allocation. That's how `git worktree remove` cleanup works without a hook.
+
+## CI integration
+
+CI runners are ephemeral and have no global registry — `splash` is not installed there, and there's nothing to allocate from. The pattern is to **write `splashdown.env` directly** in the CI job with the fixed ports your service containers expose, so the rest of the job sees the same env-file shape that local dev uses:
+
+```yaml
+# GitHub Actions example
+- name: Write splashdown.env with fixed CI ports
+  run: |
+    cat > splashdown.env << 'EOF'
+    POSTGRES_PORT=5432
+    REDIS_PORT=6379
+    DATABASE_URL=postgresql://user:pass@localhost:5432/testdb
+    REDIS_URL=redis://localhost:6379
+    COMPOSE_PROJECT_NAME=myapp-test-ci
+    EOF
+
+- name: Run integration tests
+  run: bun --env-file=.env.test --env-file=splashdown.env test tests/
+```
+
+Key points:
+- **`splash` is never installed or run in CI.** The heredoc produces the same `KEY=VALUE` format splashdown emits locally.
+- **Each CI step runs in a fresh shell.** Any step that needs values from `splashdown.env` must load it explicitly — either via `--env-file` flags, `source splashdown.env`, or by exporting the vars as job-level `env:`. A step that writes the file does not automatically export its contents into subsequent steps.
+- **`splashdown.local.toml` must be in `.gitignore`.** Its first line says "Gitignored, not committed" — the file contains per-checkout device declarations that vary between machines. Once committed, every fresh clone starts with a tracked file that `splash target add` will mutate, polluting `git status` permanently.
 
 ## Development
 
