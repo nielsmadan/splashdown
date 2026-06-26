@@ -17,6 +17,14 @@ _IPHONE = {"id": "00008-PHONE", "name": "Niels's iPhone", "platform": "ios"}
 _PIXEL = {"id": "PXL1234", "name": "Pixel_7", "platform": "android"}
 
 
+@pytest.fixture(autouse=True)
+def _isolate_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point XDG_CONFIG_HOME at an empty per-test dir so `load_settings` never reads
+    the real `~/.config/splashdown/config.toml`. Tests that want a global config write
+    one under this dir (or re-monkeypatch XDG_CONFIG_HOME themselves)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
 @pytest.fixture
 def registry(tmp_path: Path) -> sd.Registry:
     return sd.Registry(

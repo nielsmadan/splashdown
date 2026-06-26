@@ -51,6 +51,7 @@ from .recipe import (
     LocalConfig,
     Recipe,
     TemplateError,
+    load_settings,
     merged_targets,
     resolve_variant,
 )
@@ -1128,14 +1129,21 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None, *, yes: b
     return 0
 
 
+def _declared_target_types(cwd: Path) -> list[str]:
+    """The target types this checkout actually declares (recipe + local), i.e. those
+    with at least one variant. Used to infer an omitted TYPE and to scope type-prefix
+    matching to types the project really uses."""
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
+    return [t for t, variants in merged_targets(recipe, local).items() if variants]
+
+
 def _infer_dtype(cwd: Path, dtype: str | None) -> str:
     """Resolve an unspecified TYPE arg to the only declared device type for
     this checkout, or error if there's not exactly one."""
     if dtype:
         return dtype
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-    declared = [t for t, variants in merged_targets(recipe, local).items() if variants]
+    declared = _declared_target_types(cwd)
     if len(declared) == 1:
         return declared[0]
     if not declared:
@@ -1154,7 +1162,8 @@ def _resolve_variant_for_cli(
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
     catalog = merged_targets(recipe, local).get(dtype, {})
-    variant, spec = resolve_variant(catalog, variant_arg)
+    prefix_match = load_settings(cwd).prefix_match
+    variant, spec = resolve_variant(catalog, variant_arg, prefix_match=prefix_match)
     return variant, spec, recipe
 
 

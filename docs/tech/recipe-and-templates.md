@@ -71,10 +71,24 @@ overriding. This is the mechanism behind the "local adds, never overrides" model
 
 `resolve_variant` (`recipe.py:305`) picks one variant out of a *single type's*
 catalog by these rules, in order: explicit name wins → else the variant literally
-named `default` → else the sole variant if exactly one exists → else error. It
-lazy-imports `DeviceError` from `devices.py` to dodge the `devices → recipe`
-import cycle, and raises that type so device commands get a consistent error
-class.
+named `default` → else the sole variant if exactly one exists → else error. When
+its `prefix_match` arg is set (the CLI passes `load_settings(cwd).prefix_match`),
+an explicit arg that isn't an exact key expands to a unique-prefix match; 2+
+matches raise an "ambiguous variant" error. It lazy-imports `DeviceError` from
+`devices.py` to dodge the `devices → recipe` import cycle, and raises that type so
+device commands get a consistent error class.
+
+### Settings (load_settings)
+
+`Settings` (`recipe.py`) is a small dataclass of behavior toggles —
+`prefix_match: bool = True` for now. `load_settings(cwd)` merges two `[settings]`
+tables, highest priority first: the checkout's `splashdown.local.toml`, then the
+machine-wide `~/.config/splashdown/config.toml`. The global path is recomputed from
+`XDG_CONFIG_HOME` at call time (mirroring `Registry`) so tests can monkeypatch the
+env; both files are read with stdlib `tomllib`, keeping the provisioning read-path
+dependency-free. `_parse_settings` strictly validates against the `_SETTINGS_SCHEMA`
+whitelist — unknown keys and wrong value types raise, so a typo never silently
+no-ops. Add a new toggle by extending both `_SETTINGS_SCHEMA` and `Settings`.
 
 ### The template engine
 

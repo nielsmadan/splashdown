@@ -34,6 +34,65 @@ def test_localconfig_missing_file_is_empty(tmp_path):
     assert lc.targets == {}
 
 
+def _device_args(tmp_path, dtype, variant=None):
+    import argparse
+
+    return argparse.Namespace(dtype=dtype, variant=variant, cwd=str(tmp_path))
+
+
+# A recipe declaring all three target types, so type-prefix matching (scoped to
+# *declared* types) has every type available to expand against.
+_ALL_TYPES_RECIPE = (
+    '[targets.simulator.default]\nmodel = "iPhone 17"\n'
+    '[targets.emulator.default]\ndevice = "pixel_9"\n'
+    "[targets.device.default]\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [("sim", "simulator"), ("em", "emulator"), ("d", "device"), ("simulator", "simulator")],
+)
+def test_normalize_device_args_expands_type_prefix(tmp_path, token, expected):
+    (tmp_path / sd.RECIPE_NAME).write_text(_ALL_TYPES_RECIPE)
+    args = _device_args(tmp_path, token)
+    sd.cli._normalize_device_args(args)
+    assert args.dtype == expected
+    assert args.variant is None
+
+
+def test_normalize_device_args_non_type_demotes_to_variant(tmp_path):
+    (tmp_path / sd.RECIPE_NAME).write_text(_ALL_TYPES_RECIPE)
+    args = _device_args(tmp_path, "large-screen")
+    sd.cli._normalize_device_args(args)
+    assert args.dtype is None
+    assert args.variant == "large-screen"
+
+
+def test_normalize_device_args_short_token_not_shadowed_by_undeclared_type(tmp_path):
+    # sim-only project: `d` must NOT expand to the undeclared `device` type — it
+    # stays in the variant slot so variant-prefix matching can resolve it.
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    args = _device_args(tmp_path, "d")
+    sd.cli._normalize_device_args(args)
+    assert args.dtype is None
+    assert args.variant == "d"
+
+
+def test_normalize_device_args_prefix_disabled_demotes_type_token(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg" / "splashdown"
+    cfg.mkdir(parents=True)
+    (cfg / "config.toml").write_text("[settings]\nprefix_match = false\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    (tmp_path / sd.RECIPE_NAME).write_text(_ALL_TYPES_RECIPE)
+    # With prefix matching off, `sim` is no longer a type — it falls back to the
+    # variant slot (today's behavior).
+    args = _device_args(tmp_path, "sim")
+    sd.cli._normalize_device_args(args)
+    assert args.dtype is None
+    assert args.variant == "sim"
+
+
 def test_localconfig_rejects_bad_variant_name(tmp_path):
     p = tmp_path / "splashdown.local.toml"
     p.write_text('[targets.simulator."has spaces"]\nmodel = "iPhone"\n')

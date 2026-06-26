@@ -3,10 +3,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import operator
+import os
 import re
 import subprocess
 import tomllib
 import uuid as uuid_mod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -261,6 +263,12 @@ LOCAL_SKELETON = """\
 # Or, equivalently, via CLI:
 #
 #   splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
+#
+# Per-checkout settings (optional) — overrides the global config
+# (~/.config/splashdown/config.toml):
+#
+# [settings]
+# prefix_match = false
 """
 
 
@@ -284,6 +292,58 @@ class LocalConfig:
         return cls(data, path)
 
 
+@dataclass
+class Settings:
+    """Resolved splashdown settings. Precedence (highest first): per-checkout
+    `[settings]` in splashdown.local.toml, then the global config, then defaults."""
+
+    prefix_match: bool = True
+
+
+# Recognized keys in a `[settings]` table, mapped to their expected Python type.
+_SETTINGS_SCHEMA: dict[str, type] = {"prefix_match": bool}
+
+
+def _parse_settings(data: dict[str, Any], source: str) -> dict[str, Any]:
+    """Read and strictly validate a `[settings]` table. Unknown keys and wrong
+    value types are errors (a silently-ignored typo'd toggle is worse than loud)."""
+    raw = data.get("settings", {})
+    if not isinstance(raw, dict):
+        raise ValueError(f"[settings] in {source} must be a table")
+    parsed: dict[str, Any] = {}
+    for key, value in raw.items():
+        expected = _SETTINGS_SCHEMA.get(key)
+        if expected is None:
+            known = ", ".join(sorted(_SETTINGS_SCHEMA))
+            raise ValueError(f"unknown setting `{key}` in {source} [settings]; known: {known}")
+        # bool is a subclass of int, so a plain isinstance check would let `1` pass
+        # for a bool key and `true` pass for a (future) int key. The second clause
+        # rejects a bool wherever a non-bool type is expected.
+        if not isinstance(value, expected) or (expected is not bool and isinstance(value, bool)):
+            raise ValueError(f"setting `{key}` in {source} [settings] must be {expected.__name__}")
+        parsed[key] = value
+    return parsed
+
+
+def load_settings(cwd: Path) -> Settings:
+    """Merge global config + per-checkout `[settings]` into a `Settings`. The global
+    path is resolved from XDG_CONFIG_HOME at call time (like Registry) so tests can
+    monkeypatch the env. Both files are read with stdlib tomllib — the read path
+    stays dependency-free."""
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    global_path = config_home / "splashdown" / "config.toml"
+    merged: dict[str, Any] = {}
+    for path in (global_path, cwd / LOCAL_NAME):
+        if not path.exists():
+            continue
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        merged.update(_parse_settings(data, source=path.name or str(path)))
+    # _parse_settings only ever returns validated, whitelisted keys, so they map
+    # 1:1 onto Settings fields; absent keys fall back to the dataclass defaults.
+    return Settings(**merged)
+
+
 def merged_targets(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, dict[str, Any]]]:
     """Union recipe + local target catalogs. (type, variant) name collisions
     between the two files are an error — pick a different name in local."""
@@ -303,10 +363,10 @@ def merged_targets(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, di
 
 
 def resolve_variant(
-    catalog: dict[str, dict[str, Any]], requested: str | None
+    catalog: dict[str, dict[str, Any]], requested: str | None, prefix_match: bool = False
 ) -> tuple[str, dict[str, Any]]:
     """Pick a variant from a single type's catalog. Rules:
-    - explicit name wins
+    - explicit name wins (exact, or a unique prefix when `prefix_match`)
     - else `default` if declared
     - else the only variant if exactly one is declared
     - else error
@@ -317,9 +377,19 @@ def resolve_variant(
     if not catalog:
         raise DeviceError("no variants declared for this type")
     if requested is not None:
-        if requested not in catalog:
-            raise DeviceError(f"no variant `{requested}`; declared: {', '.join(sorted(catalog))}")
-        return requested, catalog[requested]
+        if requested in catalog:
+            return requested, catalog[requested]
+        # `requested` must be truthy: "".startswith() matches every variant, which
+        # would spuriously report "ambiguous" (or silently pick the sole variant).
+        if prefix_match and requested:
+            matches = [name for name in catalog if name.startswith(requested)]
+            if len(matches) == 1:
+                return matches[0], catalog[matches[0]]
+            if len(matches) > 1:
+                raise DeviceError(
+                    f"ambiguous variant `{requested}`; matches: {', '.join(sorted(matches))}"
+                )
+        raise DeviceError(f"no variant `{requested}`; declared: {', '.join(sorted(catalog))}")
     if "default" in catalog:
         return "default", catalog["default"]
     if len(catalog) == 1:

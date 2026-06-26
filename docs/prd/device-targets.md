@@ -73,6 +73,18 @@ sole declared variant. The CLI parser additionally reinterprets a lone non-type 
 variant (`splash run lowest-supported`) in `cli.py` (validated post-parse by
 `_normalize_device_args` (`src/splashdown/cli.py:284`)).
 
+**Prefix matching.** When the `prefix_match` setting is on (the default — see
+[per-checkout-overrides](per-checkout-overrides.md#settings)), both `TYPE` and `VARIANT` accept
+any unambiguous prefix. `_normalize_device_args` expands an abbreviated type token against the types
+the checkout *declares* (via `_declared_target_types`) — `sim` → `simulator` — and
+`resolve_variant`'s `prefix_match` arg expands a variant prefix against the merged catalog (unique
+hit wins; 2+ matches error with the candidate list). Scoping the type match to declared types is
+deliberate: a short token like `d` in a simulator-only project is *not* claimed by the undeclared
+`device` type — it stays in the variant slot and resolves e.g. `default`. A type prefix wins over an
+identically-prefixed variant of a declared type. With the setting off, both slots require exact names
+(today's behavior). `load_settings` (`src/splashdown/recipe.py`) resolves the flag from the global
+config + local file.
+
 **Framework launcher (UC2 build/launch).** `detect_framework` (`src/splashdown/devices.py:758`)
 picks the launcher from filesystem signals, overridable via `[project] framework`. `device_run`
 (`src/splashdown/devices.py:774`) dispatches to that profile's `run`. Launchers:

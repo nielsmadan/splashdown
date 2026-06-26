@@ -432,3 +432,42 @@ def test_mise_loader_wire_is_idempotent(tmp_path):
     first = (tmp_path / "mise.toml").read_text()
     sd.LOADERS["mise"].wire(tmp_path)
     assert (tmp_path / "mise.toml").read_text() == first
+
+
+_TWO_VARIANT_RECIPE = (
+    '[targets.simulator.default]\nmodel = "iPhone 17"\n'
+    '[targets.simulator.large-screen]\nmodel = "iPhone 17 Pro Max"\n'
+)
+
+
+def test_resolve_variant_for_cli_prefix_resolves(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    (tmp_path / sd.RECIPE_NAME).write_text(_TWO_VARIANT_RECIPE)
+    variant, spec, _ = sd.commands._resolve_variant_for_cli(tmp_path, "simulator", "lar")
+    assert variant == "large-screen"
+    assert spec["model"] == "iPhone 17 Pro Max"
+
+
+def test_resolve_variant_for_cli_prefix_disabled_errors(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg" / "splashdown"
+    cfg.mkdir(parents=True)
+    (cfg / "config.toml").write_text("[settings]\nprefix_match = false\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    (tmp_path / sd.RECIPE_NAME).write_text(_TWO_VARIANT_RECIPE)
+    with pytest.raises(sd.DeviceError, match="no variant `lar`"):
+        sd.commands._resolve_variant_for_cli(tmp_path, "simulator", "lar")
+
+
+def test_resolve_variant_for_cli_short_variant_prefix_resolves(tmp_path):
+    # `splash run d` in a sim-only project: `d` stays a variant token (not the
+    # `device` type) and resolves the `default` variant by prefix.
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    variant, _, _ = sd.commands._resolve_variant_for_cli(tmp_path, "simulator", "d")
+    assert variant == "default"
+
+
+def test_declared_target_types_lists_declared(tmp_path):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.simulator.default]\nmodel = "iPhone 17"\n[targets.emulator.default]\n'
+    )
+    assert sorted(sd.commands._declared_target_types(tmp_path)) == ["emulator", "simulator"]

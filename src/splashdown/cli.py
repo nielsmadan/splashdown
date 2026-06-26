@@ -10,6 +10,7 @@ from . import TARGET_TYPES
 from .commands import (
     _cmd_provision,
     _cmd_provision_inner,
+    _declared_target_types,
     _env_dispatch,
     _target_dispatch,
     cmd_destroy,
@@ -22,6 +23,7 @@ from .commands import (
     cmd_stop,
 )
 from .devices import DeviceError
+from .recipe import load_settings
 from .registry import Registry
 from .wiring import cmd_doctor
 
@@ -281,11 +283,36 @@ def _resolve_cwd(args: object) -> Path:
     return Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
 
 
+def _match_type_prefix(token: str, candidates: list[str]) -> str | None:
+    """Expand an abbreviated type token to a unique match among `candidates`
+    (the types the checkout actually declares). Returns the match, or None when
+    zero or more than one candidate shares the prefix."""
+    matches = [t for t in candidates if t.startswith(token)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _normalize_device_args(args: argparse.Namespace) -> None:
     """For run/start/stop/destroy: the `dtype` slot no longer uses argparse
     `choices`, so a lone non-type token (`splash run small-screen`) lands in
     `dtype`. Reinterpret it as the variant, and validate anything left in the
-    type slot. Type names win over equally-named variants."""
+    type slot. Type names win over equally-named variants.
+
+    When prefix matching is enabled (the default — settings resolved from the
+    global config + this checkout's local file), an abbreviated type token like
+    `sim` is expanded to its canonical name (`simulator`) before that demotion,
+    so `splash run sim` selects the simulator type. The prefix is matched only
+    against types the checkout *declares*, so a short token never gets claimed by
+    an undeclared type (`splash run d` in a sim-only project stays a variant
+    prefix, resolving e.g. `default`, rather than expanding to `device`). A type
+    prefix wins over an identically-prefixed variant name."""
+    if (
+        args.dtype
+        and args.dtype not in TARGET_TYPES
+        and load_settings(cwd := _resolve_cwd(args)).prefix_match
+    ):
+        expanded = _match_type_prefix(args.dtype, _declared_target_types(cwd))
+        if expanded is not None:
+            args.dtype = expanded
     if args.dtype is not None and args.dtype not in TARGET_TYPES and args.variant is None:
         args.dtype, args.variant = None, args.dtype
     if args.dtype is not None and args.dtype not in TARGET_TYPES:

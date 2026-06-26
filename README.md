@@ -21,6 +21,7 @@ Splashdown solves them. Pin system resources to your checkouts, keep track of th
 - [How it works](#how-it-works)
 - [The recipe: `splashdown.toml`](#the-recipe-splashdowntoml)
 - [Per-checkout overrides: `splashdown.local.toml`](#per-checkout-overrides-splashdownlocaltoml)
+- [Settings](#settings)
 - [Shell completion](#shell-completion)
 - [Running and managing devices](#running-and-managing-devices)
 - [Framework wiring (`splash doctor`)](#framework-wiring-splash-doctor)
@@ -206,6 +207,29 @@ Name collisions with a recipe-declared variant are an error (pick a different va
 splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
 ```
 
+The local file can also carry a `[settings]` block — see [Settings](#settings).
+
+## Settings
+
+Behavior toggles live in a `[settings]` table. Two places can set them, highest priority first:
+
+1. **Per-checkout** — `[settings]` in this checkout's `splashdown.local.toml` (gitignored).
+2. **Machine-wide** — `~/.config/splashdown/config.toml` (honors `$XDG_CONFIG_HOME`).
+
+A per-checkout value wins over the global one, which wins over the built-in default.
+
+```toml
+# ~/.config/splashdown/config.toml — applies to every checkout on this machine
+[settings]
+prefix_match = false   # default true
+```
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `prefix_match` | `true` | Resolve abbreviated `type`/`variant` args for `splash run`/`start`/`stop`/`destroy` by unique prefix (`splash run sim` → `simulator`). Off = exact names only. |
+
+Unknown keys or wrong value types in a `[settings]` table are a hard error, so a typo never silently no-ops.
+
 ## Shell completion
 
 `splash` ships bash/zsh tab-completion (subcommands, device types, and dynamic device-variant names).
@@ -239,9 +263,13 @@ splash destroy [type] [variant]    # delete the device + its registry entry
 
 Both `type` and `variant` are optional. `type` is inferred when exactly one target type is declared; otherwise pass `simulator`, `emulator`, or `device`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
+**Prefix matching** (on by default): you can abbreviate both `type` and `variant` to any unambiguous prefix — `splash run sim` resolves the simulator type, `splash run sim low` the `lowest-supported` variant. A prefix that matches more than one variant errors with the candidates. A type prefix wins over an identically-prefixed variant name. Toggle it off in [settings](#settings).
+
 ```sh
 splash run                            # one type, one variant, no args needed
 splash run simulator                  # picks `default`
+splash run sim                        # prefix → simulator
+splash run sim low                    # prefix → simulator / lowest-supported
 splash run simulator lowest-supported
 
 splash target                         # show every declared variant + its live sim state

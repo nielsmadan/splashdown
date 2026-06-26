@@ -83,8 +83,9 @@ The CLI side:
 
 ## Configuration
 
-The file lives at `splashdown.local.toml` in the checkout root. Its shape is identical to
-the recipe's `[targets.*]` section — only target tables are read from it:
+The file lives at `splashdown.local.toml` in the checkout root. It carries `[targets.*]`
+tables (shape identical to the recipe's) plus an optional `[settings]` table (see
+[Settings](#settings)):
 
 ```toml
 # Reproduce a bug only this checkout sees:
@@ -110,6 +111,29 @@ written verbatim as the table's string fields:
 (`src/splashdown/cli.py:269`): edit the TOML only, leaving the sim/emulator alive. Without
 it, the instance is destroyed (no effect for physical `device` targets, which have no
 instance to destroy).
+
+## Settings
+
+Behavior toggles live in a `[settings]` table, resolved by `load_settings`
+(`src/splashdown/recipe.py`). Two sources, highest priority first: this checkout's
+`splashdown.local.toml`, then the machine-wide `~/.config/splashdown/config.toml`
+(honoring `$XDG_CONFIG_HOME`, resolved at call time so tests can monkeypatch it). A
+per-checkout value wins over the global one, which wins over the built-in default. Both
+files are read with stdlib `tomllib`, keeping the provisioning read-path dependency-free.
+
+```toml
+# splashdown.local.toml (or ~/.config/splashdown/config.toml)
+[settings]
+prefix_match = false   # default true
+```
+
+| Setting | Default | Effect |
+|---|---|---|
+| `prefix_match` | `true` | `splash run`/`start`/`stop`/`destroy` accept unique-prefix `TYPE`/`VARIANT` args (see [device-targets](device-targets.md)). |
+
+`_parse_settings` strictly validates the table — unknown keys and wrong value types raise,
+so a typo'd toggle never silently no-ops. Recognized keys are whitelisted in
+`_SETTINGS_SCHEMA`; add new toggles there and to the `Settings` dataclass.
 
 ## Gotchas
 

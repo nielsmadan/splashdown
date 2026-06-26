@@ -249,6 +249,83 @@ def test_resolve_variant_errors_when_empty_catalog():
         sd.resolve_variant({}, None)
 
 
+def test_resolve_variant_prefix_unique_hit():
+    catalog = {"large-screen": {"model": "B"}, "default": {"model": "A"}}
+    name, spec = sd.resolve_variant(catalog, "lar", prefix_match=True)
+    assert name == "large-screen"
+    assert spec["model"] == "B"
+
+
+def test_resolve_variant_prefix_exact_still_wins():
+    # An exact key match short-circuits before prefix expansion.
+    catalog = {"de": {"model": "X"}, "default": {"model": "Y"}}
+    name, _ = sd.resolve_variant(catalog, "de", prefix_match=True)
+    assert name == "de"
+
+
+def test_resolve_variant_prefix_ambiguous_errors():
+    catalog = {"small-a": {}, "small-b": {}}
+    with pytest.raises(sd.DeviceError, match="ambiguous variant `small`"):
+        sd.resolve_variant(catalog, "small", prefix_match=True)
+
+
+def test_resolve_variant_prefix_no_match_falls_through():
+    with pytest.raises(sd.DeviceError, match="no variant `ghost`"):
+        sd.resolve_variant({"default": {}}, "ghost", prefix_match=True)
+
+
+def test_resolve_variant_prefix_disabled_requires_exact():
+    with pytest.raises(sd.DeviceError, match="no variant `lar`"):
+        sd.resolve_variant({"large-screen": {}}, "lar", prefix_match=False)
+
+
+def test_resolve_variant_empty_prefix_is_not_ambiguous():
+    # "" prefixes every variant; the guard must not let it raise "ambiguous".
+    with pytest.raises(sd.DeviceError, match="no variant"):
+        sd.resolve_variant({"default": {}, "large-screen": {}}, "", prefix_match=True)
+
+
+def test_parse_settings_rejects_non_table():
+    with pytest.raises(ValueError, match="must be a table"):
+        sd.recipe._parse_settings({"settings": "nope"}, source="x.toml")
+
+
+def test_parse_settings_rejects_unknown_key():
+    with pytest.raises(ValueError, match="unknown setting `prefix_mtach`"):
+        sd.recipe._parse_settings({"settings": {"prefix_mtach": False}}, source="x.toml")
+
+
+def test_parse_settings_rejects_wrong_type():
+    with pytest.raises(ValueError, match="must be bool"):
+        sd.recipe._parse_settings({"settings": {"prefix_match": 1}}, source="x.toml")
+
+
+def test_load_settings_defaults_on(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    assert sd.load_settings(tmp_path).prefix_match is True
+
+
+def test_load_settings_global_override(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg" / "splashdown"
+    cfg.mkdir(parents=True)
+    (cfg / "config.toml").write_text("[settings]\nprefix_match = false\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    co = tmp_path / "co"
+    co.mkdir()
+    assert sd.load_settings(co).prefix_match is False
+
+
+def test_load_settings_local_overrides_global(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg" / "splashdown"
+    cfg.mkdir(parents=True)
+    (cfg / "config.toml").write_text("[settings]\nprefix_match = false\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / sd.LOCAL_NAME).write_text("[settings]\nprefix_match = true\n")
+    assert sd.load_settings(co).prefix_match is True
+
+
 def test_merged_devices_unions_recipe_and_local(tmp_path):
     r = sd.Recipe(
         {"targets": {"simulator": {"default": {"model": "iPhone 17"}}}},
