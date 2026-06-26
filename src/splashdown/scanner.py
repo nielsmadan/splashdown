@@ -200,6 +200,22 @@ def _merge_app_resources(
     return merged
 
 
+def _merge_app_targets(
+    apps: list[AppInventory],
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Collect default device targets across apps into one [targets.*] map.
+    Targets aren't app-scoped, so the first app declaring a (dtype, variant)
+    wins — later mobile apps don't clobber it. `unknown` apps contribute none."""
+    merged: dict[str, dict[str, dict[str, str]]] = {}
+    for app in apps:
+        if app.profile == "unknown":
+            continue
+        for dtype, variants in PROFILES[app.profile].targets(app).items():
+            for variant, fields in variants.items():
+                merged.setdefault(dtype, {}).setdefault(variant, fields)
+    return merged
+
+
 def _app_resource_names(
     apps: list[AppInventory],
     res_by_app: dict[str, dict[str, dict[str, Any]]],

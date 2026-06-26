@@ -61,6 +61,7 @@ from .scanner import (
     _app_resource_names,
     _detect_loader,
     _merge_app_resources,
+    _merge_app_targets,
 )
 from .wiring import (
     _resolve_doctor_framework,
@@ -1279,16 +1280,18 @@ def cmd_init(
         if app.profile == "unknown":
             res_by_app[app.name] = {}
             continue
-        profile = PROFILES[app.profile]
-        res_by_app[app.name] = profile.resources(app)
+        res_by_app[app.name] = PROFILES[app.profile].resources(app)
     merged_resources = _merge_app_resources(inv.apps, res_by_app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
+    merged_targets = _merge_app_targets(inv.apps)
 
     no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
 
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
-    recipe_path.write_text(render_scanned_recipe(inv, merged_resources, app_resource_names, cwd))
+    recipe_path.write_text(
+        render_scanned_recipe(inv, merged_resources, app_resource_names, cwd, merged_targets)
+    )
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME

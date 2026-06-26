@@ -254,6 +254,17 @@ def test_cmd_init_no_loader_no_dotenv_file_omits_writer_and_prints_instructions(
     assert "nothing sources it" in capsys.readouterr().err
 
 
+def test_cmd_init_scanner_rn_emits_default_targets(tmp_path):
+    # Scanner-driven init (no preset) on a React Native project must emit default
+    # sim/emulator targets, at parity with the `rn` preset scaffold.
+    (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.74"}}')
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert "default" in recipe.targets.get("simulator", {})
+    assert "default" in recipe.targets.get("emulator", {})
+    assert recipe.targets["simulator"]["default"]["model"]
+
+
 def test_cmd_init_legacy_preset_path_still_works(tmp_path):
     sd.cmd_init(tmp_path, preset="minimal")
     recipe_text = (tmp_path / "splashdown.toml").read_text()

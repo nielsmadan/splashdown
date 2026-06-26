@@ -39,6 +39,44 @@ def test_expo_run_ios_and_android(tmp_path, monkeypatch):
     assert any("run:android" in c and "--device S1" in c for c in flat)
 
 
+def _app(tmp_path, profile):
+    return sd.AppInventory(name="main", path=tmp_path, profile=profile)
+
+
+def test_react_native_profile_declares_sim_and_emulator_targets(tmp_path):
+    targets = sd.PROFILES["react-native"].targets(_app(tmp_path, "react-native"))
+    assert targets["simulator"]["default"]["model"]
+    assert targets["emulator"]["default"]["device"]
+
+
+def test_flutter_profile_declares_sim_and_emulator_targets(tmp_path):
+    targets = sd.PROFILES["flutter"].targets(_app(tmp_path, "flutter"))
+    assert "default" in targets["simulator"]
+    assert "default" in targets["emulator"]
+
+
+def test_expo_profile_declares_sim_and_emulator_targets(tmp_path):
+    targets = sd.PROFILES["expo"].targets(_app(tmp_path, "expo"))
+    assert "default" in targets["simulator"]
+    assert "default" in targets["emulator"]
+
+
+def test_ios_native_profile_declares_only_simulator_target(tmp_path):
+    targets = sd.PROFILES["ios-native"].targets(_app(tmp_path, "ios-native"))
+    assert "default" in targets["simulator"]
+    assert "emulator" not in targets
+
+
+def test_android_native_profile_declares_only_emulator_target(tmp_path):
+    targets = sd.PROFILES["android-native"].targets(_app(tmp_path, "android-native"))
+    assert "default" in targets["emulator"]
+    assert "simulator" not in targets
+
+
+def test_non_mobile_profile_declares_no_targets(tmp_path):
+    assert sd.PROFILES["vite"].targets(_app(tmp_path, "vite")) == {}
+
+
 def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
     app = tmp_path / "Demo.app"
     app.mkdir()

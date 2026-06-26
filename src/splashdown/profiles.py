@@ -269,6 +269,12 @@ class Profile:
         same profile is present."""
         return {}
 
+    def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
+        """Return default device targets keyed {dtype: {variant: {field: value}}}
+        to emit as [targets.*] tables in a scanner-driven `splash init`. Mobile
+        profiles override this; non-device profiles return {} (no targets)."""
+        return {}
+
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         """Return WiringCheck instances for consumer-side config patches. The
         existing doctor flow runs these."""
@@ -507,6 +513,18 @@ def _springboot_app_props_manual(cwd: Path) -> str:
 PROFILES["springboot"] = SpringBootProfile()
 
 
+# Default device targets emitted by scanner-driven `splash init`, kept in sync
+# with the preset scaffolds (`_RN_SCAFFOLD` etc.). iOS sim left at implicit
+# `ios = "latest"` (auto-recreate on newer iOS); Android emulator on pixel_9.
+_DEFAULT_SIM_TARGET: dict[str, dict[str, dict[str, str]]] = {
+    "simulator": {"default": {"model": "iPhone 17"}}
+}
+_DEFAULT_EMULATOR_TARGET: dict[str, dict[str, dict[str, str]]] = {
+    "emulator": {"default": {"device": "pixel_9"}}
+}
+_DEFAULT_MOBILE_TARGETS = {**_DEFAULT_SIM_TARGET, **_DEFAULT_EMULATOR_TARGET}
+
+
 class ReactNativeProfile(Profile):
     name = "react-native"
 
@@ -515,6 +533,9 @@ class ReactNativeProfile(Profile):
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"RCT_METRO_PORT": {"type": "port", "range": [8081, 8200]}}
+
+    def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
+        return _DEFAULT_MOBILE_TARGETS
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return list(_RN_WIRING_CHECKS)
@@ -529,6 +550,9 @@ class ExpoProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         return _detect_expo(app_path)
 
+    def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
+        return _DEFAULT_MOBILE_TARGETS
+
     def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _expo_run(cwd, recipe, info)
 
@@ -539,6 +563,9 @@ class FlutterProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         return _detect_flutter(app_path)
 
+    def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
+        return _DEFAULT_MOBILE_TARGETS
+
     def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _flutter_run(cwd, recipe, info)
 
@@ -548,6 +575,9 @@ class IosNativeProfile(Profile):
 
     def detect(self, app_path: Path) -> bool:
         return _detect_ios_native(app_path)
+
+    def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
+        return _DEFAULT_SIM_TARGET
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
@@ -561,6 +591,9 @@ class AndroidNativeProfile(Profile):
 
     def detect(self, app_path: Path) -> bool:
         return _detect_android_native(app_path)
+
+    def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
+        return _DEFAULT_EMULATOR_TARGET
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]

@@ -25,6 +25,7 @@ from tomlkit.items import Table
 from . import ENV_FILE_NAME
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from .scanner import AppInventory, ProjectInventory
@@ -70,8 +71,10 @@ def render_scanned_recipe(
     merged_resources: dict[str, dict[str, Any]],
     app_resource_names: dict[str, list[str]],
     cwd: Path,
+    merged_targets: dict[str, dict[str, dict[str, str]]] | None = None,
 ) -> str:
-    """Render a fresh recipe (header comment, [project], [apps.*], [resources.*])."""
+    """Render a fresh recipe (header comment, [project], [apps.*], [resources.*],
+    [targets.*])."""
     doc = document()
     for line in _HEADER:
         doc.add(comment(line))
@@ -86,7 +89,25 @@ def render_scanned_recipe(
         for name, spec in merged_resources.items():
             res[name] = _resource_table(spec)
         doc["resources"] = res
+    for dtype, variants in (merged_targets or {}).items():
+        for variant, fields in variants.items():
+            _add_target(doc, dtype, variant, fields)
     return tomlkit.dumps(doc)
+
+
+def _add_target(doc: Any, dtype: str, variant: str, fields: Mapping[str, str | None]) -> None:
+    """Add a [targets.<dtype>.<variant>] table; `None`-valued fields are skipped."""
+    if "targets" not in doc:
+        doc["targets"] = table()
+    targets = cast(Table, doc["targets"])
+    if dtype not in targets:
+        targets[dtype] = table()
+    bucket = cast(Table, targets[dtype])
+    leaf = table()
+    for k, v in fields.items():
+        if v is not None:
+            leaf[k] = v
+    bucket[variant] = leaf
 
 
 def refresh_recipe(
@@ -154,17 +175,7 @@ def target_add_text(
 ) -> str:
     """Add a [targets.<dtype>.<variant>] table with the given string fields."""
     doc = tomlkit.parse(existing_text)
-    if "targets" not in doc:
-        doc["targets"] = table()
-    targets = cast(Table, doc["targets"])
-    if dtype not in targets:
-        targets[dtype] = table()
-    bucket = cast(Table, targets[dtype])
-    leaf = table()
-    for k, v in fields.items():
-        if v is not None:
-            leaf[k] = v
-    bucket[variant] = leaf
+    _add_target(doc, dtype, variant, fields)
     return tomlkit.dumps(doc)
 
 
