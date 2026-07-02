@@ -525,3 +525,21 @@ def test_scanner_gradle_skips_missing_module_dir(tmp_path):
     inv = sd.Scanner().scan(tmp_path)
     assert inv.workspace == "gradle"
     assert all(app.name != "ghost" for app in inv.apps)
+
+
+def test_scan_drops_unknown_members_in_workspace(tmp_path):
+    # pnpm workspace: apps/web (vite) + packages/ui (no framework).
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    (tmp_path / "apps" / "web").mkdir(parents=True)
+    (tmp_path / "apps" / "web" / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "packages" / "ui").mkdir(parents=True)
+    (tmp_path / "packages" / "ui" / "package.json").write_text('{"name": "ui"}')
+    inv = sd.Scanner().scan(tmp_path)
+    names = {a.name: a.profile for a in inv.apps}
+    assert names == {"web": "vite"}
+
+
+def test_scan_keeps_single_unknown_app(tmp_path):
+    # Bare directory → single workspace → one unknown app, still present.
+    inv = sd.Scanner().scan(tmp_path)
+    assert [(a.name, a.profile) for a in inv.apps] == [("main", "unknown")]

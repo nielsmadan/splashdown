@@ -166,6 +166,11 @@ class Scanner:
         apps: list[AppInventory] = []
         for name, path in _enumerate_apps(cwd, workspace):
             profile_name = self._match_profile(path)
+            # In a real workspace, members with no detected framework are shared
+            # libraries, not runnable apps — omit them. The single-app case keeps
+            # its lone app even when unmatched (a bare directory is still "the app").
+            if workspace != "single" and profile_name == "unknown":
+                continue
             apps.append(AppInventory(name=name, path=path, profile=profile_name))
         return ProjectInventory(workspace=workspace, apps=apps, loader=loader)
 

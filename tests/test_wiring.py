@@ -624,9 +624,11 @@ def test_scanner_pnpm_monorepo_enumerates_apps(tmp_path):
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
     (tmp_path / "apps").mkdir()
     (tmp_path / "apps" / "api").mkdir()
-    (tmp_path / "apps" / "api" / "package.json").write_text('{"name": "api"}')
+    # Give api a detectable framework so it isn't dropped as unknown.
+    (tmp_path / "apps" / "api" / "package.json").write_text('{"dependencies": {"hono": "^4.0.0"}}')
     (tmp_path / "apps" / "web").mkdir()
-    (tmp_path / "apps" / "web" / "package.json").write_text('{"name": "web"}')
+    # Give web a detectable framework so it isn't dropped as unknown.
+    (tmp_path / "apps" / "web" / "vite.config.ts").write_text("export default {}")
     inv = sd.Scanner().scan(tmp_path)
     assert inv.workspace == "pnpm"
     names = sorted(a.name for a in inv.apps)
