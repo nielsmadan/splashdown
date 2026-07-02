@@ -221,6 +221,47 @@ def _merge_app_targets(
     return merged
 
 
+def _has_resource_collision(res_by_app: dict[str, dict[str, dict[str, Any]]]) -> bool:
+    """True if any canonical resource name is emitted by more than one app —
+    the signal that scanner-driven init would mangle names the apps don't read."""
+    counts: dict[str, int] = {}
+    for res in res_by_app.values():
+        for name in res:
+            counts[name] = counts.get(name, 0) + 1
+    return any(c > 1 for c in counts.values())
+
+
+def _dir_has_native_project(p: Path) -> bool:
+    """True if `p` is the root of an Xcode or gradle project."""
+    if any(p.glob("*.xcworkspace")) or any(p.glob("*.xcodeproj")):
+        return True
+    has_build = (p / "build.gradle").exists() or (p / "build.gradle.kts").exists()
+    has_settings = (p / "settings.gradle").exists() or (p / "settings.gradle.kts").exists()
+    return has_build and has_settings
+
+
+def _unclaimed_native_dirs(cwd: Path, apps: list[AppInventory]) -> list[Path]:
+    """Immediate subdirs of `cwd` that look like native projects and are not
+    covered by any enumerated app. A native dir is 'claimed' if it equals an app
+    path or sits inside/outside the same chain (so an RN/Flutter app at the repo
+    root claims its own ios/ + android/). Returns [] for single-app repos, where
+    the lone app is at cwd and covers everything."""
+    app_paths = [a.path for a in apps]
+
+    def claimed(sub: Path) -> bool:
+        return any(sub == ap or ap in sub.parents or sub in ap.parents for ap in app_paths)
+
+    found: list[Path] = []
+    for sub in sorted(p for p in cwd.iterdir() if p.is_dir()):
+        if sub.name.startswith(".") or sub.name == "node_modules":
+            continue
+        if claimed(sub):
+            continue
+        if _dir_has_native_project(sub):
+            found.append(sub)
+    return found
+
+
 def _app_resource_names(
     apps: list[AppInventory],
     res_by_app: dict[str, dict[str, dict[str, Any]]],

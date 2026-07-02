@@ -543,3 +543,35 @@ def test_scan_keeps_single_unknown_app(tmp_path):
     # Bare directory → single workspace → one unknown app, still present.
     inv = sd.Scanner().scan(tmp_path)
     assert [(a.name, a.profile) for a in inv.apps] == [("main", "unknown")]
+
+
+def test_has_resource_collision_true_on_shared_name():
+    res_by_app = {"web": {"PORT": {}}, "api": {"PORT": {}}}
+    assert sd.scanner._has_resource_collision(res_by_app) is True
+
+
+def test_has_resource_collision_false_on_distinct_names():
+    res_by_app = {"web": {"WEB_DEV_PORT": {}}, "api": {"PORT": {}}}
+    assert sd.scanner._has_resource_collision(res_by_app) is False
+
+
+def test_unclaimed_native_dirs_finds_sibling_native(tmp_path):
+    # JS workspace app under apps/web, plus a sibling native ios/ at root.
+    web = tmp_path / "apps" / "web"
+    web.mkdir(parents=True)
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / "App.xcodeproj").mkdir()
+    apps = [sd.AppInventory(name="web", path=web, profile="vite")]
+    found = sd.scanner._unclaimed_native_dirs(tmp_path, apps)
+    assert [p.name for p in found] == ["ios"]
+
+
+def test_unclaimed_native_dirs_ignores_rn_subfolders(tmp_path):
+    # Single RN app at root: its own ios/ + android/ are inside the app → claimed.
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / "App.xcodeproj").mkdir()
+    (tmp_path / "android").mkdir()
+    (tmp_path / "android" / "build.gradle").write_text("")
+    (tmp_path / "android" / "settings.gradle").write_text("")
+    apps = [sd.AppInventory(name="main", path=tmp_path, profile="react-native")]
+    assert sd.scanner._unclaimed_native_dirs(tmp_path, apps) == []
