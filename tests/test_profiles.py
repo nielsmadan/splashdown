@@ -77,6 +77,12 @@ def test_non_mobile_profile_declares_no_targets(tmp_path):
     assert sd.PROFILES["vite"].targets(_app(tmp_path, "vite")) == {}
 
 
+def test_expo_profile_emits_metro_port(tmp_path):
+    res = sd.PROFILES["expo"].resources(_app(tmp_path, "expo"))
+    assert res["RCT_METRO_PORT"]["type"] == "port"
+    assert res["RCT_METRO_PORT"]["range"] == [8081, 8200]
+
+
 def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
     app = tmp_path / "Demo.app"
     app.mkdir()

@@ -550,6 +550,9 @@ class ExpoProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         return _detect_expo(app_path)
 
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"RCT_METRO_PORT": {"type": "port", "range": [8081, 8200]}}
+
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
 
