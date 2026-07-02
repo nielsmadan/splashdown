@@ -299,3 +299,7 @@ def test_init_writes_post_checkout_hook(tmp_path):
     assert hook.exists()
     assert os.access(hook, os.X_OK)
     assert POST_CHECKOUT_SENTINEL in hook.read_text()
+
+
+def test_deinit_in_known_cmds():
+    assert "deinit" in sd.KNOWN_CMDS

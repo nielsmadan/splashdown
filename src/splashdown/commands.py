@@ -29,6 +29,7 @@ from .devices import (
     android_destroy,
     android_shutdown,
     device_destroy,
+    device_destroy_row,
     device_run,
     device_shutdown,
     device_status,
@@ -122,6 +123,47 @@ def _ensure_mise_file_directive(cwd: Path) -> None:
     path.write_text(new_text)
     verb = "updated" if text is not None else "created"
     print(f"{verb} {path.name} (+{directive})", file=sys.stderr)
+
+
+def _remove_mise_file_directive(cwd: Path) -> None:
+    """Inverse of _ensure_mise_file_directive: drop `_.file = "splashdown.env"`.
+    If that empties the `[env]` table it's dropped too; if the whole file is left
+    empty it's deleted. Other keys/tables are preserved. Targets `.mise.toml`
+    when that's the only config present (mirrors _ensure_mise_file_directive)."""
+    from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
+
+    if (cwd / "mise.toml").exists():
+        path = cwd / "mise.toml"
+    elif (cwd / ".mise.toml").exists():
+        path = cwd / ".mise.toml"
+    else:
+        return
+    new_text = remove_mise_file_directive_text(path.read_text())
+    if new_text is None:
+        return  # nothing of ours to remove
+    if new_text.strip():
+        path.write_text(new_text)
+        print(f"updated {path.name} (-splashdown env directive)", file=sys.stderr)
+    else:
+        path.unlink()
+        print(f"removed {path.name}", file=sys.stderr)
+
+
+def _revert_gitignore(cwd: Path) -> None:
+    """Inverse of _ensure_gitignore: drop the two splashdown lines if present.
+    Matches the exact lines _ensure_gitignore writes (no strip), so a user's
+    differently-formatted line (padding, comment) is left alone. Never delete
+    .gitignore — we only ever appended to it."""
+    path = cwd / ".gitignore"
+    if not path.exists():
+        return
+    managed = {ENV_FILE_NAME, LOCAL_NAME}
+    lines = path.read_text().splitlines()
+    kept = [ln for ln in lines if ln not in managed]
+    if len(kept) == len(lines):
+        return
+    path.write_text("\n".join(kept) + ("\n" if kept else ""))
+    print(f"updated .gitignore (-{', '.join(sorted(managed))})", file=sys.stderr)
 
 
 def _detect_hook_manager(cwd: Path) -> str:
@@ -293,6 +335,142 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
         )
     else:
         _wire_post_checkout_corehookspath(cwd)
+
+
+def _remove_post_checkout_hook(cwd: Path) -> None:
+    """Inverse of _ensure_post_checkout_hook. Surgical: remove only the entry we
+    added, keeping unrelated hooks and leaving a user-modified hook in place.
+
+    Unlike `_ensure_*`, this does NOT dispatch on the currently-detected manager:
+    the manager can change between init and deinit (e.g. a project gains lefthook
+    after init wired `.githooks`), which would otherwise orphan the old hook. Each
+    removal is content/marker-guarded, so trying all three only ever touches
+    splashdown-owned content."""
+    _unwire_post_checkout_lefthook(cwd)
+    _unwire_post_checkout_husky(cwd)
+    _unwire_post_checkout_corehookspath(cwd)
+
+
+def _unwire_post_checkout_husky(cwd: Path) -> None:
+    hook = cwd / ".husky" / "post-checkout"
+    if not hook.exists():
+        return
+    if hook.read_text() == POST_CHECKOUT_HOOK:
+        hook.unlink()
+        print("removed .husky/post-checkout", file=sys.stderr)
+    else:
+        print("note: .husky/post-checkout was modified — left in place", file=sys.stderr)
+
+
+def _unwire_post_checkout_corehookspath(cwd: Path) -> None:
+    hooks_dir = cwd / ".githooks"
+    hook = hooks_dir / "post-checkout"
+    if hook.exists():
+        if hook.read_text() != POST_CHECKOUT_HOOK:
+            print("note: .githooks/post-checkout was modified — left in place", file=sys.stderr)
+            return
+        hook.unlink()
+        print("removed .githooks/post-checkout", file=sys.stderr)
+    # If .githooks is now empty and core.hooksPath still points at it, unset the
+    # config and drop the directory.
+    if hooks_dir.is_dir() and not any(hooks_dir.iterdir()):
+        try:
+            current = (
+                subprocess.check_output(
+                    ["git", "config", "--get", "core.hooksPath"],
+                    cwd=cwd,
+                    stderr=subprocess.DEVNULL,
+                )
+                .decode()
+                .strip()
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            current = ""
+        if current == ".githooks":
+            with contextlib.suppress(FileNotFoundError):
+                subprocess.run(
+                    ["git", "config", "--unset", "core.hooksPath"],
+                    cwd=cwd,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        with contextlib.suppress(OSError):
+            hooks_dir.rmdir()
+
+
+def _unwire_post_checkout_lefthook(cwd: Path) -> None:
+    path = _lefthook_config_path(cwd)
+    if not path.exists():
+        return
+    lines = path.read_text().splitlines()
+    # Operate ONLY within the top-level `post-checkout:` block — a job named
+    # `splashdown` under some other hook (e.g. pre-commit) must not be touched.
+    pc_idx = next((i for i, ln in enumerate(lines) if re.match(r"^post-checkout:\s*$", ln)), None)
+    if pc_idx is None:
+        return
+    end_idx = len(lines)
+    for j in range(pc_idx + 1, len(lines)):
+        ln = lines[j]
+        if ln and not ln[0].isspace() and not ln.startswith("#"):
+            end_idx = j
+            break
+    block = lines[pc_idx:end_idx]
+    if not any(ln.strip() == "splashdown:" for ln in block):
+        return
+    block = _remove_indented_block(block, "splashdown:")
+    block = _remove_empty_yaml_block(block, "commands:")
+    # If our removal emptied the post-checkout block (splashdown created it from
+    # scratch), drop the whole block; otherwise keep the user's other jobs.
+    if not any(ln.strip() for ln in block[1:]):
+        block = []
+    new_lines = lines[:pc_idx] + block + lines[end_idx:]
+    text = "\n".join(new_lines).rstrip()
+    path.write_text(text + "\n" if text else "")
+    _run_lefthook_install(cwd)
+    print("removed splashdown post-checkout (lefthook)", file=sys.stderr)
+
+
+def _remove_indented_block(lines: list[str], key: str) -> list[str]:
+    """Drop a `<indent>key` line and every following line indented deeper (plus
+    any blank lines between them)."""
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        if ln.strip() == key:
+            indent = len(ln) - len(ln.lstrip())
+            i += 1
+            while i < n and (
+                not lines[i].strip() or (len(lines[i]) - len(lines[i].lstrip())) > indent
+            ):
+                i += 1
+            continue
+        out.append(ln)
+        i += 1
+    return out
+
+
+def _remove_empty_yaml_block(lines: list[str], key: str) -> list[str]:
+    """Drop a `<indent>key` line that has no deeper-indented body following it."""
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        if ln.strip() == key:
+            indent = len(ln) - len(ln.lstrip())
+            has_body = False
+            for j in range(i + 1, n):
+                if not lines[j].strip():
+                    continue
+                has_body = (len(lines[j]) - len(lines[j].lstrip())) > indent
+                break
+            if not has_body:
+                i += 1
+                continue
+        out.append(ln)
+        i += 1
+    return out
 
 
 # ---------- status helpers ----------
@@ -1362,6 +1540,79 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
     if framework and _wiring_checks_for_framework(framework, cwd):
         print(f"running framework wiring for `{framework}`...", file=sys.stderr)
         cmd_doctor(cwd, fix=True)
+
+
+def cmd_deinit(cwd: Path, registry: Registry) -> int:
+    """Remove splashdown from this checkout: reverse `init`'s edits and clear the
+    machine-wide state that `sync`/`run` created. Surgical — user-modified files
+    are kept with a note rather than clobbered. Framework config patches from
+    `doctor --fix` are out of scope (no sentinels, originals not recoverable)."""
+    abspath = str(cwd.resolve())
+
+    # Loader name lives in the recipe; read it before we delete the recipe. A
+    # broken/legacy recipe must never abort the one command meant to clean it up,
+    # so a failed read just degrades to "loader unknown".
+    try:
+        loader_name = _load_recipe_or_empty(cwd).project.get("loader")
+    except Exception as e:  # noqa: BLE001 — a recipe we can't parse must not block teardown
+        print(
+            f"warning: could not read {RECIPE_NAME} ({e}); skipping loader un-wiring",
+            file=sys.stderr,
+        )
+        loader_name = None
+
+    # 1. Destroy this checkout's sims/AVDs. Iterate registry rows (not recipe
+    #    variants) so orphaned instances get cleaned up too, destroying each by
+    #    the identifier its row stores (UDID for sims, AVD name for emulators).
+    for row in registry.devices_for(abspath):
+        if row.dtype == "device":
+            continue  # hardware splashdown doesn't own
+        try:
+            device_destroy_row(row)
+            print(f"destroyed {row.dtype}.{row.variant} ({row.udid})", file=sys.stderr)
+        except DeviceError as e:
+            print(f"warning: could not destroy {row.dtype}.{row.variant}: {e}", file=sys.stderr)
+
+    # 2. Drop every registry row for this checkout (ports/kv/devices).
+    removed = registry.release(abspath)
+    if removed:
+        print(f"released {removed} registry entr{'y' if removed == 1 else 'ies'}", file=sys.stderr)
+
+    # 3. Delete the generated env file (splashdown owns it wholesale).
+    env_path = cwd / ENV_FILE_NAME
+    if env_path.exists():
+        env_path.unlink()
+        print(f"removed {ENV_FILE_NAME}", file=sys.stderr)
+
+    # 4. Un-wire the loader. `.get` guards an absent/unknown loader name; the
+    #    "none" loader resolves to a no-op unwire.
+    loader = LOADERS.get(loader_name) if loader_name else None
+    if loader is not None:
+        loader.unwire(cwd)
+
+    # 5. Remove the git post-checkout hook.
+    _remove_post_checkout_hook(cwd)
+
+    # 6. Revert the .gitignore additions.
+    _revert_gitignore(cwd)
+
+    # 7. Remove splashdown.local.toml — only when it's still the untouched skeleton.
+    local_path = cwd / LOCAL_NAME
+    if local_path.exists():
+        if local_path.read_text() == LOCAL_SKELETON:
+            local_path.unlink()
+            print(f"removed {LOCAL_NAME}", file=sys.stderr)
+        else:
+            print(f"note: {LOCAL_NAME} was modified — left in place", file=sys.stderr)
+
+    # 8. Remove the recipe.
+    recipe_path = cwd / RECIPE_NAME
+    if recipe_path.exists():
+        recipe_path.unlink()
+        print(f"removed {RECIPE_NAME}", file=sys.stderr)
+
+    print("splashdown removed from this checkout", file=sys.stderr)
+    return 0
 
 
 def cmd_refresh_inventory(cwd: Path) -> int:

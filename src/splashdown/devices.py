@@ -641,6 +641,20 @@ def device_destroy(dtype: str, resolved_name: str) -> None:
         android_destroy(resolved_name)
 
 
+def device_destroy_row(row: DeviceRow) -> None:
+    """Destroy the sim/AVD a registry row points at, using the identifier the
+    row actually stores: the real UDID for simulators (set_device stores the
+    UDID in the udid column), the AVD name for emulators. Unlike `device_destroy`
+    this needs no by-name lookup, so it also reaches orphaned instances whose
+    recipe variant is gone."""
+    if row.dtype == "simulator":
+        ios_shutdown(row.udid)
+        ios_destroy(row.udid)
+    elif row.dtype == "emulator":
+        android_shutdown(row.udid)
+        android_destroy(row.udid)
+
+
 def _ios_current_state(udid: str) -> str:
     """'Booted' / 'Shutdown' / 'Unknown' for the given UDID."""
     try:

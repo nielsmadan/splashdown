@@ -102,3 +102,75 @@ def test_react_native_profile_inherits_existing_wiring_checks(tmp_path):
     assert "rn-metro-config" in ids
     assert "rn-pkg-port" in ids
     assert "rn-xcode-env" in ids
+
+
+# ---------- loader un-wiring (deinit) ----------
+
+
+def test_mise_loader_unwire_deletes_solely_managed_file(tmp_path):
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert (tmp_path / "mise.toml").exists()
+    sd.LOADERS["mise"].unwire(tmp_path)
+    # File contained only our directive -> removed entirely.
+    assert not (tmp_path / "mise.toml").exists()
+
+
+def test_mise_loader_unwire_keeps_user_content(tmp_path):
+    (tmp_path / "mise.toml").write_text('[env]\nFOO = "bar"\n\n[tools]\nnode = "20"\n')
+    sd.LOADERS["mise"].wire(tmp_path)
+    sd.LOADERS["mise"].unwire(tmp_path)
+    text = (tmp_path / "mise.toml").read_text()
+    assert (tmp_path / "mise.toml").exists()
+    assert '_.file = "splashdown.env"' not in text
+    assert 'FOO = "bar"' in text
+    assert 'node = "20"' in text
+
+
+def test_mise_loader_unwire_drops_empty_env_table(tmp_path):
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
+    sd.LOADERS["mise"].wire(tmp_path)
+    sd.LOADERS["mise"].unwire(tmp_path)
+    text = (tmp_path / "mise.toml").read_text()
+    # Our directive went into a fresh [env] table; removing it empties that
+    # table, which should be dropped, leaving the user's [tools] intact.
+    assert "[env]" not in text
+    assert 'node = "20"' in text
+
+
+def test_mise_loader_unwire_noop_when_absent(tmp_path):
+    sd.LOADERS["mise"].unwire(tmp_path)  # must not raise
+    assert not (tmp_path / "mise.toml").exists()
+
+
+def test_direnv_loader_unwire_strips_block(tmp_path):
+    (tmp_path / ".envrc").write_text("use nix\nlayout python\n")
+    sd.LOADERS["direnv"].wire(tmp_path)
+    sd.LOADERS["direnv"].unwire(tmp_path)
+    text = (tmp_path / ".envrc").read_text()
+    assert "use nix" in text
+    assert "layout python" in text
+    assert "splashdown.env" not in text
+    assert "splashdown-managed" not in text
+
+
+def test_direnv_loader_unwire_deletes_solely_managed_file(tmp_path):
+    sd.LOADERS["direnv"].wire(tmp_path)
+    sd.LOADERS["direnv"].unwire(tmp_path)
+    assert not (tmp_path / ".envrc").exists()
+
+
+def test_devbox_loader_unwire_removes_hook(tmp_path):
+    (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22"]}')
+    sd.LOADERS["devbox"].wire(tmp_path)
+    sd.LOADERS["devbox"].unwire(tmp_path)
+    data = json.loads((tmp_path / "devbox.json").read_text())
+    hooks = data.get("shell", {}).get("init_hook", [])
+    assert not any("splashdown.env" in h for h in hooks)
+    assert data["packages"] == ["nodejs@22"]
+
+
+def test_devbox_loader_unwire_deletes_solely_managed_file(tmp_path):
+    (tmp_path / "devbox.json").write_text("{}")
+    sd.LOADERS["devbox"].wire(tmp_path)
+    sd.LOADERS["devbox"].unwire(tmp_path)
+    assert not (tmp_path / "devbox.json").exists()

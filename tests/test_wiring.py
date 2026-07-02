@@ -661,3 +661,112 @@ def test_scanner_loader_precedence_mise_over_direnv(tmp_path):
     (tmp_path / ".envrc").write_text("")
     inv = sd.Scanner().scan(tmp_path)
     assert inv.loader == "mise"
+
+
+# ---------- hook + gitignore reversal (deinit) ----------
+
+
+def test_revert_gitignore_removes_only_our_lines(tmp_path):
+    (tmp_path / ".gitignore").write_text(
+        "node_modules\nsplashdown.env\nsplashdown.local.toml\n*.log\n"
+    )
+    sd._revert_gitignore(tmp_path)
+    text = (tmp_path / ".gitignore").read_text()
+    assert "node_modules" in text
+    assert "*.log" in text
+    assert "splashdown.env" not in text
+    assert "splashdown.local.toml" not in text
+
+
+def test_revert_gitignore_keeps_file(tmp_path):
+    (tmp_path / ".gitignore").write_text("splashdown.env\nsplashdown.local.toml\n")
+    sd._revert_gitignore(tmp_path)
+    # File stays even when it ends up empty (we never own .gitignore wholesale).
+    assert (tmp_path / ".gitignore").exists()
+
+
+def test_revert_gitignore_noop_when_absent(tmp_path):
+    sd._revert_gitignore(tmp_path)  # must not raise
+    assert not (tmp_path / ".gitignore").exists()
+
+
+def test_remove_hook_githooks(tmp_path):
+    sd._wire_post_checkout_corehookspath(tmp_path)
+    assert (tmp_path / ".githooks" / "post-checkout").exists()
+    sd._remove_post_checkout_hook(tmp_path)
+    assert not (tmp_path / ".githooks" / "post-checkout").exists()
+
+
+def test_remove_hook_husky_unmodified(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    sd._wire_post_checkout_husky(tmp_path)
+    sd._remove_post_checkout_hook(tmp_path)
+    assert not (tmp_path / ".husky" / "post-checkout").exists()
+
+
+def test_remove_hook_husky_keeps_modified(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    sd._wire_post_checkout_husky(tmp_path)
+    hook = tmp_path / ".husky" / "post-checkout"
+    hook.write_text(hook.read_text() + "\necho custom\n")
+    sd._remove_post_checkout_hook(tmp_path)
+    # User edited it -> we leave it alone.
+    assert hook.exists()
+    assert "echo custom" in hook.read_text()
+
+
+def test_remove_hook_lefthook_strips_block(tmp_path):
+    (tmp_path / "lefthook.yml").write_text(
+        "post-checkout:\n  commands:\n    notify:\n      run: echo hi\n"
+    )
+    sd._wire_post_checkout_lefthook(tmp_path)
+    sd._remove_post_checkout_hook(tmp_path)
+    text = (tmp_path / "lefthook.yml").read_text()
+    assert "notify:" in text  # unrelated command preserved
+    assert "splashdown:" not in text
+
+
+def test_remove_hook_lefthook_collapses_created_block(tmp_path):
+    # A post-checkout block splashdown created from scratch (only our job) should
+    # collapse away entirely on removal.
+    (tmp_path / "lefthook.yml").write_text(
+        "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
+        "post-checkout:\n  commands:\n    splashdown:\n      run: splash\n"
+    )
+    sd._remove_post_checkout_hook(tmp_path)
+    text = (tmp_path / "lefthook.yml").read_text()
+    assert "pre-commit:" in text
+    assert "lint:" in text
+    assert "post-checkout:" not in text
+    assert "splashdown:" not in text
+
+
+def test_remove_hook_lefthook_preserves_other_hook_named_splashdown(tmp_path):
+    # A user job literally named `splashdown` under a different hook must survive.
+    (tmp_path / "lefthook.yml").write_text(
+        "pre-commit:\n  commands:\n    splashdown:\n      run: splash check\n"
+        "post-checkout:\n  commands:\n    splashdown:\n      run: splash\n"
+    )
+    sd._remove_post_checkout_hook(tmp_path)
+    text = (tmp_path / "lefthook.yml").read_text()
+    assert "pre-commit:" in text
+    assert "run: splash check" in text  # the pre-commit splashdown job is untouched
+    assert "post-checkout:" not in text  # only our hook removed
+
+
+def test_remove_hook_githooks_even_when_lefthook_now_present(tmp_path):
+    # init wired the .githooks hook; a lefthook config appeared afterwards.
+    # deinit must still remove splashdown's .githooks hook (it owns it).
+    sd._wire_post_checkout_corehookspath(tmp_path)
+    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands: {}\n")
+    sd._remove_post_checkout_hook(tmp_path)
+    assert not (tmp_path / ".githooks" / "post-checkout").exists()
+
+
+def test_revert_gitignore_exact_match_preserves_padded_line(tmp_path):
+    # Only the exact line splashdown writes is removed; a user's padded variant stays.
+    (tmp_path / ".gitignore").write_text("  splashdown.env  \nsplashdown.env\n")
+    sd._revert_gitignore(tmp_path)
+    text = (tmp_path / ".gitignore").read_text()
+    assert "  splashdown.env  " in text
+    assert "splashdown.env\n" not in text.replace("  splashdown.env  ", "")

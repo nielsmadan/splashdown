@@ -13,6 +13,7 @@ from .commands import (
     _declared_target_types,
     _env_dispatch,
     _target_dispatch,
+    cmd_deinit,
     cmd_destroy,
     cmd_gc,
     cmd_init,
@@ -81,6 +82,7 @@ This checkout
 
 Set up a project
   init     [preset] [--rescan]   scaffold splashdown.toml + first sync (--no-sync skips it)
+  deinit                     remove splashdown from this checkout (reverses init + sync)
   doctor   [--fix]            check & fix framework wiring
 
 More
@@ -92,6 +94,7 @@ More
 KNOWN_CMDS = {
     "sync",
     "init",
+    "deinit",
     "env",
     "gc",
     "doctor",
@@ -168,6 +171,8 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         action="store_true",
         help="scaffold only; skip the first sync (don't allocate ports / write splashdown.env)",
     )
+
+    sub.add_parser("deinit", help=argparse.SUPPRESS)
 
     env = sub.add_parser("env", help=argparse.SUPPRESS)
     env.add_argument("--checkout", default=None)  # for bare `splash env` (list)
@@ -352,7 +357,7 @@ def _resolve_format(args: object) -> str:
     return getattr(args, "format", None) or "text"
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return per subcommand; this is the dispatch table
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — one return/branch per subcommand; this is the dispatch table
     if argv is None:
         argv = sys.argv[1:]
     argv = _ensure_subcommand(list(argv))
@@ -378,6 +383,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 — one return 
             if args.no_sync:
                 return 0
             return _cmd_provision_inner(cwd, registry)
+
+        if args.cmd == "deinit":
+            return cmd_deinit(cwd, registry)
 
         if args.cmd == "gc":
             return cmd_gc(registry)

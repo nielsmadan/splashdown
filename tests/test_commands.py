@@ -471,3 +471,135 @@ def test_declared_target_types_lists_declared(tmp_path):
         '[targets.simulator.default]\nmodel = "iPhone 17"\n[targets.emulator.default]\n'
     )
     assert sorted(sd.commands._declared_target_types(tmp_path)) == ["emulator", "simulator"]
+
+
+# ---------- deinit ----------
+
+
+def test_deinit_round_trips_init(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    sd.cmd_init(tmp_path, preset="minimal")
+    assert (tmp_path / "splashdown.toml").exists()
+    rc = sd.main(["--cwd", str(tmp_path), "deinit"])
+    assert rc == 0
+    assert not (tmp_path / "splashdown.toml").exists()
+    assert not (tmp_path / "splashdown.local.toml").exists()
+    assert not (tmp_path / "mise.toml").exists()
+    assert not (tmp_path / ".githooks" / "post-checkout").exists()
+    # init (minimal preset) deterministically creates .gitignore with the two
+    # managed lines; deinit must strip them but keep the file.
+    gi = tmp_path / ".gitignore"
+    assert gi.exists()
+    assert "splashdown.env" not in gi.read_text()
+
+
+def test_deinit_deletes_generated_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    sd.cmd_init(tmp_path, preset="minimal")
+    (tmp_path / "splashdown.env").write_text("FOO=1\n")
+    sd.main(["--cwd", str(tmp_path), "deinit"])
+    assert not (tmp_path / "splashdown.env").exists()
+
+
+def test_deinit_clears_registry_rows(tmp_path, registry):
+    co = tmp_path / "co"
+    co.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    registry.allocate_port(str(co), "METRO", 18081, 18100)
+    registry.set_kv(str(co), "ID", "abc")
+    registry.allocate_port(str(other), "METRO", 18081, 18100)
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    sd.cmd_deinit(co, registry)
+    assert registry.all_for(str(co)) == {}
+    assert registry.all_for(str(other)) != {}  # untouched
+
+
+def test_deinit_destroys_simulator_by_udid(tmp_path, registry, monkeypatch):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    # The simulator row stores the real UDID in the udid column; teardown must
+    # destroy by that UDID, not pass it to a by-name lookup that finds nothing.
+    registry.set_device(str(co), "simulator", "default", "ABCD-UDID", "iPhone 17", "18.0")
+    destroyed = []
+    monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: destroyed.append(("shutdown", u)))
+    monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: destroyed.append(("destroy", u)))
+    sd.cmd_deinit(co, registry)
+    assert ("destroy", "ABCD-UDID") in destroyed
+    assert registry.devices_for(str(co)) == []
+
+
+def test_deinit_destroys_emulator_by_name(tmp_path, registry, monkeypatch):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    # The emulator row stores the AVD name in the udid column.
+    registry.set_device(str(co), "emulator", "default", "pixel_avd", "pixel_9", "android-34")
+    destroyed = []
+    monkeypatch.setattr(sd.devices, "android_shutdown", lambda n: destroyed.append(("shutdown", n)))
+    monkeypatch.setattr(sd.devices, "android_destroy", lambda n: destroyed.append(("destroy", n)))
+    sd.cmd_deinit(co, registry)
+    assert ("destroy", "pixel_avd") in destroyed
+    assert registry.devices_for(str(co)) == []
+
+
+def test_deinit_continues_when_device_destroy_fails(tmp_path, registry, monkeypatch):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    (co / "splashdown.env").write_text("X=1\n")
+    registry.set_device(str(co), "simulator", "default", "ABCD-UDID", "iPhone 17", "18.0")
+
+    def boom(_u):
+        raise sd.DeviceError("simctl exploded")
+
+    monkeypatch.setattr(sd.devices, "ios_shutdown", boom)
+    monkeypatch.setattr(sd.devices, "ios_destroy", boom)
+    rc = sd.cmd_deinit(co, registry)
+    # A failed device destroy must not abort the rest of the teardown.
+    assert rc == 0
+    assert not (co / "splashdown.env").exists()
+    assert registry.devices_for(str(co)) == []
+
+
+def test_deinit_proceeds_on_unparseable_recipe(tmp_path, registry):
+    co = tmp_path / "co"
+    co.mkdir()
+    # A broken/legacy recipe must not abort the one command meant to clean it up.
+    (co / "splashdown.toml").write_text("this is not = valid toml ===\n")
+    (co / "splashdown.env").write_text("X=1\n")
+    rc = sd.cmd_deinit(co, registry)
+    assert rc == 0
+    assert not (co / "splashdown.env").exists()
+    assert not (co / "splashdown.toml").exists()
+
+
+def test_deinit_destroys_devices(tmp_path, registry, monkeypatch):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    registry.set_device(str(co), "simulator", "default", "ABCD-UDID", "iPhone 17", "18.0")
+    monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: None)
+    monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: None)
+    sd.cmd_deinit(co, registry)
+    assert registry.devices_for(str(co)) == []
+
+
+def test_deinit_keeps_modified_local(tmp_path, registry):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    (co / "splashdown.local.toml").write_text('[targets.simulator.mine]\nmodel = "iPhone 16"\n')
+    sd.cmd_deinit(co, registry)
+    assert not (co / "splashdown.toml").exists()
+    # local was hand-edited (not the skeleton) -> kept.
+    assert (co / "splashdown.local.toml").exists()
+
+
+def test_deinit_loader_none_is_noop(tmp_path, registry):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    sd.cmd_deinit(co, registry)  # NoneLoader.unwire is a no-op; must not raise
+    assert not (co / "splashdown.toml").exists()

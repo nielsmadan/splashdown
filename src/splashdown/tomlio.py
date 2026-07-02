@@ -170,6 +170,29 @@ def ensure_mise_file_directive_text(existing_text: str | None) -> str | None:
     return tomlkit.dumps(doc)
 
 
+def remove_mise_file_directive_text(existing_text: str | None) -> str | None:
+    """Inverse of ensure_mise_file_directive_text: drop `_.file = "<env file>"`
+    from [env]. Empties the `_` and `[env]` tables that nothing else occupies.
+    Returns the new text to write; an empty string when removal leaves the
+    document empty (caller should delete the file); or `None` when there is
+    nothing of ours to remove (caller should not rewrite)."""
+    if existing_text is None:
+        return None
+    doc = tomlkit.parse(existing_text)
+    env_tbl = cast(Table, doc["env"]) if "env" in doc else None
+    if env_tbl is None:
+        return None
+    underscore: Any = env_tbl.get("_")
+    if not (isinstance(underscore, dict) and underscore.get("file") == ENV_FILE_NAME):
+        return None
+    del underscore["file"]
+    if not underscore:
+        del env_tbl["_"]
+    if not env_tbl:
+        del doc["env"]
+    return tomlkit.dumps(doc)
+
+
 def target_add_text(
     existing_text: str, dtype: str, variant: str, fields: dict[str, str | None]
 ) -> str:

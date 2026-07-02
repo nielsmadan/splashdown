@@ -23,6 +23,11 @@ class Loader:
         """Idempotently configure the loader to source splashdown.env."""
         raise NotImplementedError
 
+    def unwire(self, cwd: Path) -> None:
+        """Inverse of wire: remove splashdown's loading directive. Surgical —
+        leave unrelated content, and delete a file only when nothing but our
+        content remains. No-op by default so unknown loaders are harmless."""
+
 
 class MiseLoader(Loader):
     name = "mise"
@@ -36,6 +41,11 @@ class MiseLoader(Loader):
         from .commands import _ensure_mise_file_directive  # noqa: PLC0415
 
         _ensure_mise_file_directive(cwd)
+
+    def unwire(self, cwd: Path) -> None:
+        from .commands import _remove_mise_file_directive  # noqa: PLC0415
+
+        _remove_mise_file_directive(cwd)
 
 
 _DIRENV_BEGIN = "# >>> splashdown-managed dotenv >>>"
@@ -75,6 +85,19 @@ class DirenvLoader(Loader):
         # until the user re-approves the file.
         print("wired .envrc — run `direnv allow` to load splashdown.env", file=sys.stderr)
 
+    def unwire(self, cwd: Path) -> None:
+        path = cwd / ".envrc"
+        if not path.exists():
+            return
+        text = path.read_text()
+        new = _DIRENV_BLOCK_RE.sub("", text)
+        if new == text:
+            return
+        if new.strip():
+            path.write_text(new)
+        else:
+            path.unlink()
+
 
 # Marker baked into the init_hook string so we can find-and-replace idempotently
 # without parsing JSON ASTs.
@@ -104,6 +127,33 @@ class DevboxLoader(Loader):
             return
         shell["init_hook"] = new_hooks
         path.write_text(json.dumps(data, indent=2) + "\n")
+
+    def unwire(self, cwd: Path) -> None:
+        path = cwd / "devbox.json"
+        if not path.exists():
+            return
+        data = json.loads(path.read_text())
+        shell = data.get("shell")
+        if not isinstance(shell, dict):
+            return
+        hooks = shell.get("init_hook")
+        if isinstance(hooks, str):
+            hooks = [hooks]
+        if not isinstance(hooks, list):
+            return
+        new_hooks = [h for h in hooks if not (isinstance(h, str) and _DEVBOX_HOOK_MARKER in h)]
+        if new_hooks == hooks:
+            return
+        if new_hooks:
+            shell["init_hook"] = new_hooks
+        else:
+            del shell["init_hook"]
+            if not shell:
+                del data["shell"]
+        if data:
+            path.write_text(json.dumps(data, indent=2) + "\n")
+        else:
+            path.unlink()
 
 
 class NoneLoader(Loader):
