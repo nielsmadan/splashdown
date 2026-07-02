@@ -262,6 +262,14 @@ def _unclaimed_native_dirs(cwd: Path, apps: list[AppInventory]) -> list[Path]:
     return found
 
 
+def _should_defer_monorepo(
+    cwd: Path, res_by_app: dict[str, dict[str, dict[str, Any]]], apps: list[AppInventory]
+) -> bool:
+    """True when scanner-driven init should NOT auto-configure: a canonical-name
+    collision, or a native project sibling the workspace doesn't claim."""
+    return bool(_has_resource_collision(res_by_app) or _unclaimed_native_dirs(cwd, apps))
+
+
 def _app_resource_names(
     apps: list[AppInventory],
     res_by_app: dict[str, dict[str, dict[str, Any]]],

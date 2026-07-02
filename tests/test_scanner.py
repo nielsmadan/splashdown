@@ -575,3 +575,64 @@ def test_unclaimed_native_dirs_ignores_rn_subfolders(tmp_path):
     (tmp_path / "android" / "settings.gradle").write_text("")
     apps = [sd.AppInventory(name="main", path=tmp_path, profile="react-native")]
     assert sd.scanner._unclaimed_native_dirs(tmp_path, apps) == []
+
+
+def test_init_defers_on_port_collision(tmp_path, capsys):
+    # apps/web (Next) + apps/api (Nest) → both emit PORT → defer.
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
+    web = tmp_path / "apps" / "web"
+    web.mkdir(parents=True)
+    (web / "package.json").write_text('{"dependencies": {"next": "15"}}')
+    api = tmp_path / "apps" / "api"
+    api.mkdir(parents=True)
+    (api / "package.json").write_text('{"dependencies": {"@nestjs/core": "10"}}')
+    sd.cmd_init(tmp_path)
+    text = (tmp_path / "splashdown.toml").read_text()
+    assert "[apps.web]" in text and "[apps.api]" in text
+    assert "[resources." not in text and "[targets." not in text
+    assert "docs/prd/monorepos.md" in capsys.readouterr().err
+
+
+def test_init_defers_on_unclaimed_native_sibling(tmp_path, capsys):
+    # JS workspace + sibling native ios/ → defer.
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
+    web = tmp_path / "apps" / "web"
+    web.mkdir(parents=True)
+    (web / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / "App.xcodeproj").mkdir()
+    sd.cmd_init(tmp_path)
+    text = (tmp_path / "splashdown.toml").read_text()
+    assert "[apps.web]" in text
+    assert "[resources." not in text
+    assert "monorepo detected" in capsys.readouterr().err
+
+
+def test_init_does_not_defer_on_distinct_names(tmp_path):
+    # apps/web (Vite → WEB_DEV_PORT) + apps/api (Next → PORT): distinct names, no
+    # native siblings → normal scaffold with resources.
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
+    web = tmp_path / "apps" / "web"
+    web.mkdir(parents=True)
+    (web / "vite.config.ts").write_text("export default {}")
+    api = tmp_path / "apps" / "api"
+    api.mkdir(parents=True)
+    (api / "package.json").write_text('{"dependencies": {"next": "15"}}')
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert "WEB_DEV_PORT" in recipe.resources
+    assert "PORT" in recipe.resources
+
+
+def test_init_rn_single_app_still_scaffolds(tmp_path):
+    # Regression: a plain RN repo (own ios/+android/) must NOT defer.
+    (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.74"}}')
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / "App.xcodeproj").mkdir()
+    (tmp_path / "android").mkdir()
+    (tmp_path / "android" / "build.gradle").write_text("")
+    (tmp_path / "android" / "settings.gradle").write_text("")
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert "RCT_METRO_PORT" in recipe.resources
+    assert "default" in recipe.targets.get("simulator", {})

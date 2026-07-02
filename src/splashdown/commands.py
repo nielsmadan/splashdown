@@ -64,6 +64,7 @@ from .scanner import (
     _detect_loader,
     _merge_app_resources,
     _merge_app_targets,
+    _should_defer_monorepo,
 )
 from .wiring import (
     _resolve_doctor_framework,
@@ -1429,6 +1430,28 @@ def _apply_no_loader_fallback(
     return msg
 
 
+def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
+    """Defer path: write a structural-only recipe ([project] + [apps.*], no
+    resources/targets) plus loader/hook wiring, and tell the user where to look.
+    Used when init detects an ambiguous monorepo it should not auto-configure."""
+    from .tomlio import render_scanned_recipe  # noqa: PLC0415
+
+    (cwd / RECIPE_NAME).write_text(render_scanned_recipe(inv, {}, {}, cwd))
+    print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
+    print(
+        f"monorepo detected ({len(inv.apps)} apps) — resources not auto-configured; "
+        "see docs/prd/monorepos.md",
+        file=sys.stderr,
+    )
+    local_path = cwd / LOCAL_NAME
+    if not local_path.exists():
+        local_path.write_text(LOCAL_SKELETON)
+        print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
+    _ensure_gitignore(cwd)
+    LOADERS[inv.loader].wire(cwd)
+    _ensure_post_checkout_hook(cwd)
+
+
 def cmd_init(
     cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None
 ) -> None:
@@ -1468,6 +1491,9 @@ def cmd_init(
             res_by_app[app.name] = {}
             continue
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
+    if _should_defer_monorepo(cwd, res_by_app, inv.apps):
+        _write_minimal_monorepo_recipe(cwd, inv)
+        return
     merged_resources = _merge_app_resources(inv.apps, res_by_app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
     merged_targets = _merge_app_targets(inv.apps)
@@ -1493,19 +1519,26 @@ def cmd_init(
     _ensure_post_checkout_hook(cwd)
 
     if any(app.profile != "unknown" for app in inv.apps):
-        for app in inv.apps:
-            if app.profile == "unknown":
+        _apply_init_wiring_checks(inv)
+
+
+def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
+    """Apply autofix wiring checks for every known-profile app found during init."""
+    from .scanner import PROFILES  # noqa: PLC0415
+
+    for app in inv.apps:
+        if app.profile == "unknown":
+            continue
+        checks = PROFILES[app.profile].wiring_checks(app)
+        for check in checks:
+            if not check.applies(app.path):
                 continue
-            checks = PROFILES[app.profile].wiring_checks(app)
-            for check in checks:
-                if not check.applies(app.path):
-                    continue
-                status, _ = check.detect(app.path)
-                if status != "ok" and check.autofix is not None:
-                    try:
-                        check.autofix(app.path)
-                    except Exception as e:  # noqa: BLE001
-                        print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
+            status, _ = check.detect(app.path)
+            if status != "ok" and check.autofix is not None:
+                try:
+                    check.autofix(app.path)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
 
 
 def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
