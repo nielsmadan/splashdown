@@ -71,6 +71,8 @@ pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
 
 See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring later with `splash doctor` (and `splash doctor --fix` to re-apply).
 
+> Multi-app / monorepo setups: see [docs/prd/monorepos.md](docs/prd/monorepos.md).
+
 ### Mobile: simulators & emulators
 
 For a mobile app, the scan also declares the simulator/emulator variants in `[targets.*]`. Each checkout gets its own sim/emulator instance (named `<parent>/<cwd>/<variant>`), so worktrees never fight over one device. Boot, build, and launch in one command:

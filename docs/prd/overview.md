@@ -24,6 +24,7 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   and `env` (list/get/set/release); the machine-readable surface. *(UC8)*
 - [per-checkout-overrides.md](per-checkout-overrides.md) — `splashdown.local.toml` add-only target
   variants; `target add`/`remove`. *(UC9)*
+- [monorepos.md](monorepos.md) — **Monorepos**: canonical multi-app setups and how splash init defers on ambiguous ones.
 
 ## Traceability: problem → requirement → implementation
 
