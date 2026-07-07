@@ -794,7 +794,7 @@ device = "pixel_9"
 SCAFFOLDS: dict[str, str] = {
     "minimal": _MINIMAL_SCAFFOLD,
     "react-native": _RN_SCAFFOLD,
-    "rn": _RN_SCAFFOLD,  # short alias
+    "rn": _RN_SCAFFOLD,
     "flutter": _FLUTTER_SCAFFOLD,
     "ios-native": _IOS_NATIVE_SCAFFOLD,
     "android-native": _ANDROID_NATIVE_SCAFFOLD,

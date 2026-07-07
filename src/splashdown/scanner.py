@@ -30,7 +30,7 @@ class ProjectInventory:
     loader: str  # "mise" | "direnv" | "devbox" | "none"
 
 
-# Empty at module load time; profiles.py populates this at import time.
+# profiles.py populates this at import time.
 PROFILES: dict[str, Any] = {}
 
 

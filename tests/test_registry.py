@@ -241,7 +241,6 @@ def test_registry_gc_keeps_entries_when_recipe_unparseable(registry, tmp_path):
 def test_registry_summary_for_counts_by_source(registry, tmp_path):
     a = tmp_path / "co"
     a.mkdir()
-    # 2 ports, 1 kv, 1 sim, 1 emu
     registry.allocate_port(str(a), "P1", 19700, 19710)
     registry.allocate_port(str(a), "P2", 19711, 19720)
     registry.set_kv(str(a), "K", "v")
