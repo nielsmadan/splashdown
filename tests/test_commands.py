@@ -586,6 +586,59 @@ def test_deinit_destroys_devices(tmp_path, registry, monkeypatch):
     assert registry.devices_for(str(co)) == []
 
 
+_ENVFILE_RECIPE = (
+    '[project]\nloader = "none"\n\n'
+    '[resources.WEB_DEV_PORT]\ntype = "port"\nrange = [5174, 5200]\n'
+    'writer = "envfile=apps/web/.env"\n'
+)
+
+
+def test_deinit_strips_splashdown_keys_from_envfile_writer(tmp_path, registry):
+    # A monorepo app that receives its port via `writer = "envfile=apps/web/.env"`:
+    # deinit must remove splashdown's key but preserve the user's own lines.
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text(_ENVFILE_RECIPE)
+    envf = co / "apps" / "web" / ".env"
+    envf.parent.mkdir(parents=True)
+    envf.write_text("USER_KEY=keep\nWEB_DEV_PORT=5174\n")
+    sd.cmd_deinit(co, registry)
+    text = envf.read_text()
+    assert "WEB_DEV_PORT" not in text
+    assert "USER_KEY=keep" in text
+
+
+def test_deinit_removes_envfile_when_only_splashdown_keys(tmp_path, registry):
+    # If splashdown's key was the only content, the file is splashdown's footprint
+    # and deinit removes it entirely.
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text(_ENVFILE_RECIPE)
+    envf = co / "apps" / "web" / ".env"
+    envf.parent.mkdir(parents=True)
+    envf.write_text("WEB_DEV_PORT=5174\n")
+    sd.cmd_deinit(co, registry)
+    assert not envf.exists()
+
+
+def test_deinit_strips_splashdown_keys_from_envrc_writer(tmp_path, registry):
+    # The `envrc` writer routes into .envrc.local as `export KEY=`; deinit strips
+    # splashdown's export line and keeps the user's.
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text(
+        '[project]\nloader = "none"\n\n'
+        '[resources.API_PORT]\ntype = "port"\nrange = [9000, 9100]\n'
+        'writer = "envrc"\n'
+    )
+    envrc = co / ".envrc.local"
+    envrc.write_text("export USER_VAR=keep\nexport API_PORT=9000\n")
+    sd.cmd_deinit(co, registry)
+    text = envrc.read_text()
+    assert "API_PORT" not in text
+    assert "export USER_VAR=keep" in text
+
+
 def test_deinit_keeps_modified_local(tmp_path, registry):
     co = tmp_path / "co"
     co.mkdir()

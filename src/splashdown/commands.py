@@ -43,6 +43,7 @@ from .devices import (
 )
 from .loaders import LOADERS
 from .provisioning import (
+    clear_writer_destinations,
     provision,
     run_setup,
     write_outputs,
@@ -1586,12 +1587,14 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
     # broken/legacy recipe must never abort the one command meant to clean it up,
     # so a failed read just degrades to "loader unknown".
     try:
-        loader_name = _load_recipe_or_empty(cwd).project.get("loader")
+        recipe = _load_recipe_or_empty(cwd)
+        loader_name = recipe.project.get("loader")
     except Exception as e:  # noqa: BLE001 — a recipe we can't parse must not block teardown
         print(
             f"warning: could not read {RECIPE_NAME} ({e}); skipping loader un-wiring",
             file=sys.stderr,
         )
+        recipe = None
         loader_name = None
 
     # 1. Destroy this checkout's sims/AVDs. Iterate registry rows (not recipe
@@ -1616,6 +1619,14 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
     if env_path.exists():
         env_path.unlink()
         print(f"removed {ENV_FILE_NAME}", file=sys.stderr)
+
+    # 3b. Strip splashdown's keys from per-resource `envfile=`/`envrc` writer
+    #     destinations (e.g. per-app .env files in a monorepo). Unlike
+    #     splashdown.env, these are user-owned — we remove only our keys and delete
+    #     the file only if nothing else remains.
+    if recipe is not None:
+        for relpath, action in clear_writer_destinations(cwd, recipe):
+            print(f"{action} {relpath}", file=sys.stderr)
 
     # 4. Un-wire the loader. `.get` guards an absent/unknown loader name; the
     #    "none" loader resolves to a no-op unwire.

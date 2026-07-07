@@ -192,6 +192,52 @@ def write_envrc(path: Path, items: dict[str, str]) -> bool:
     return _write_if_changed(path, "\n".join(new) + "\n")
 
 
+def _strip_managed_keys(text: str, keys: set[str], *, export: bool) -> str | None:
+    """Drop `KEY=` (or `export KEY=`) lines for `keys` from `text`, the inverse of
+    `write_envfile`/`write_envrc`. Returns the remaining text, or `None` when only
+    blank lines remain (the caller then deletes the now-empty file)."""
+    prefix = r"\s*export\s+" if export else r"\s*"
+    pat = re.compile(prefix + r"([A-Za-z_][A-Za-z0-9_]*)\s*=")
+    kept = [ln for ln in text.splitlines() if not ((m := pat.match(ln)) and m.group(1) in keys)]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    if not any(ln.strip() for ln in kept):
+        return None
+    return "\n".join(kept) + "\n"
+
+
+def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]]:
+    """Remove splashdown's injected keys from every per-resource `envfile=`/`envrc`
+    writer destination (splashdown co-owns specific keys in these user files; it
+    does not own them wholesale like `splashdown.env`). Deletes a destination that
+    ends up empty. Returns `[(relpath, "cleaned" | "removed")]` for what changed."""
+    groups: dict[str, set[str]] = {}
+    for name, spec in recipe.resources.items():
+        writer = spec.get("writer", "splashdown-env")
+        if writer.startswith("envfile") or writer == "envrc":
+            groups.setdefault(writer, set()).add(name)
+
+    changed: list[tuple[str, str]] = []
+    for writer, keys in groups.items():
+        if writer == "envrc":
+            relpath, export = ".envrc.local", True
+        else:
+            relpath = writer.split("=", 1)[1] if "=" in writer else ".env.local"
+            export = False
+        target = cwd / relpath
+        # Mirror write_outputs' containment guard: never touch a path a committed
+        # recipe points outside the checkout.
+        if not target.exists() or not target.resolve().is_relative_to(cwd.resolve()):
+            continue
+        remaining = _strip_managed_keys(target.read_text(), keys, export=export)
+        if remaining is None:
+            target.unlink()
+            changed.append((relpath, "removed"))
+        elif _write_if_changed(target, remaining):
+            changed.append((relpath, "cleaned"))
+    return changed
+
+
 # ---------- lifecycle (setup hooks) ----------
 
 
