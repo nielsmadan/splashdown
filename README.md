@@ -284,7 +284,7 @@ splash target remove simulator repro-bug --keep-instance   # toml-only edit
 Framework auto-detected for `run`:
 
 - `pubspec.yaml` → `flutter run -d <id>`
-- `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`
+- `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`. Optional `[project.ios] scheme`/`mode` forward `--scheme`/`--mode` (pick the Xcode scheme, e.g. a `*Dev` scheme that copies `.env.development`); `[project.android] mode` forwards `--mode` (build variant). A pod that excludes arm64 for the simulator (e.g. Google ML Kit) can only build on an x86_64 sim — pin `[targets.simulator.default] ios = "18.5"`; splash prints this hint when such a run fails.
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
 - `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). Needs `[project.ios] scheme = "..."`.
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.

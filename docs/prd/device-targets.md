@@ -190,15 +190,22 @@ App build/launch is configured under `[project.*]`:
 
 ```toml
 [project.ios]
-scheme = "MyApp"               # required for ios-native run
-# configuration = "Debug"
+scheme = "MyApp"               # required for ios-native run; optional for react-native
+                               # (-> run-ios --scheme; picks the build env for scheme-driven apps)
+# mode = "Debug"               # react-native run-ios --mode (optional)
+# configuration = "Debug"      # ios-native only
 
 [project.android]
-# module          = "app"      # default "app"
-# variant         = "debug"    # default "debug"
+# module          = "app"      # ios-native/android-native: default "app"
+# variant         = "debug"    # android-native: default "debug"
+# mode            = "developmentDebug"    # react-native run-android --mode (optional)
 # application_id  = "com.example.myapp"   # else queried from Gradle
 # launch_activity = ".MainActivity"       # else uses the LAUNCHER intent
 ```
+
+For `react-native`, `[project.ios] scheme` is **optional** but often necessary: RN CLI otherwise
+builds the scheme named after the Xcode project (usually Release/prod). If the scheme selects the
+build environment (e.g. a `*Dev` scheme that copies `.env.development`), set it here.
 
 CLI surface:
 
@@ -241,8 +248,15 @@ splash target remove <type> <variant> [--keep-instance]
   `start` just confirms connectivity (`src/splashdown/commands.py:1073`, `:1089`, `:1114`); nothing
   is ever written to the registry.
 - **ios-native needs a scheme.** Without `[project.ios] scheme`, `run` errors
-  (`src/splashdown/profiles.py:114`). Android resolves `application_id` from Gradle if unset, but
+  (`src/splashdown/profiles.py`, `_ios_native_run`). For `react-native` the scheme is optional but
+  forwards to `run-ios --scheme` when set; Android resolves `application_id` from Gradle if unset, but
   that costs a Gradle round-trip — set it explicitly to skip it.
+- **Some apps need an x86_64 simulator.** A pod that excludes arm64 for the simulator
+  (`EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64`, e.g. Google ML Kit) can only build on an x86_64
+  sim — which only iOS ≤ 18.x provides. The default `ios = "latest"` picks the newest (arm64-only)
+  runtime and `xcodebuild` fails with an opaque "Unable to find a destination". Pin
+  `[targets.simulator.default] ios = "18.5"`; on a failed `react-native` iOS run splash detects the
+  exclusion and prints this hint (`_rn_ios_arch_hint`).
 - **No `[targets.*]` table means no device.** Sims/emulators come into existence only from declared
   `[targets.<type>.<variant>]` tables, created lazily by `splash run`/`start` (via
   `ensure_fresh_sim`). A checkout whose recipe declares only non-device resources (e.g. a port) gets

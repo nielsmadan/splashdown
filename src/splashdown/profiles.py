@@ -57,15 +57,87 @@ def _flutter_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
 
 
+def _rn_ios_flags(recipe: Recipe) -> list[str]:
+    """`react-native run-ios` scheme/mode from `[project.ios]`. The scheme selects
+    the build environment for scheme-driven apps (dev/staging/prod each copying a
+    different `.env`), so without it RN CLI silently builds the project-name
+    scheme — often the production one."""
+    cfg = recipe.project.get("ios") or {}
+    flags: list[str] = []
+    if scheme := cfg.get("scheme"):
+        flags += ["--scheme", _no_flag("ios scheme", scheme)]
+    if mode := cfg.get("mode"):
+        flags += ["--mode", _no_flag("ios mode", mode)]
+    return flags
+
+
+def _rn_android_flags(recipe: Recipe) -> list[str]:
+    """`react-native run-android` build variant from `[project.android] mode`
+    (RN 0.73+ `--mode`, e.g. `developmentDebug`)."""
+    cfg = recipe.project.get("android") or {}
+    if mode := cfg.get("mode"):
+        return ["--mode", _no_flag("android mode", mode)]
+    return []
+
+
+def _rn_ios_arch_hint(cwd: Path) -> str | None:
+    """Advisory hint when the app's CocoaPods exclude arm64 for the iOS simulator
+    (a vendored SDK like Google ML Kit ships no arm64-sim slice). Such an app can
+    only build against an x86_64 simulator — which only iOS <= 18.x provides — so
+    against splashdown's default (newest, arm64-only) sim `xcodebuild` fails with
+    an opaque "Unable to find a destination". Returns None unless the exclusion is
+    present, so the hint stays silent for apps that don't need x86_64.
+
+    Reads `EXCLUDED_ARCHS[sdk=iphonesimulator*]` from the generated Pods build
+    files rather than probing the sim's arch (simctl exposes no clean arch field)."""
+    pods = cwd / "ios" / "Pods"
+    if not pods.is_dir():
+        return None
+    needle = "EXCLUDED_ARCHS[sdk=iphonesimulator*]"
+    candidates = list(pods.rglob("*.xcconfig"))
+    pbxproj = pods / "Pods.xcodeproj" / "project.pbxproj"
+    if pbxproj.exists():
+        candidates.append(pbxproj)
+    for path in candidates:
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        if any(needle in ln and "arm64" in ln for ln in text.splitlines()):
+            return (
+                "splashdown: this app excludes arm64 for the iOS simulator (a vendored SDK "
+                "like Google ML Kit ships no arm64-sim slice), so it needs an x86_64 "
+                "simulator — only iOS <= 18.x provides one.\n"
+                '  If the build failed with "Unable to find a destination...", pin an '
+                "x86_64-capable runtime in splashdown.toml:\n"
+                "      [targets.simulator.default]\n"
+                '      ios = "18.5"\n'
+                "  then re-run `splash sync`."
+            )
+    return None
+
+
 def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if info["kind"] == "ios":
-        return subprocess.call(["npx", "react-native", "run-ios", "--udid", info["udid"]], cwd=cwd)
-    return subprocess.call(
-        ["npx", "react-native", "run-android", "--deviceId", info["serial"]], cwd=cwd
-    )
+        cmd = ["npx", "react-native", "run-ios", "--udid", info["udid"], *_rn_ios_flags(recipe)]
+        rc = subprocess.call(cmd, cwd=cwd)
+        if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
+            print(hint, file=sys.stderr)
+        return rc
+    cmd = [
+        "npx",
+        "react-native",
+        "run-android",
+        "--deviceId",
+        info["serial"],
+        *_rn_android_flags(recipe),
+    ]
+    return subprocess.call(cmd, cwd=cwd)
 
 
 def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    # No scheme/mode forwarding: `expo run:ios --scheme` means a URL scheme, not
+    # an Xcode scheme, so `[project.ios] scheme` can't be mapped cleanly here.
     if info["kind"] == "ios":
         return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
     return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
@@ -647,10 +719,21 @@ resources = ["RCT_METRO_PORT"]
 type  = "port"
 range = [8081, 8200]
 
+# Uncomment to pick the Xcode scheme / build mode `splash run simulator` builds.
+# Needed when your dev environment is scheme-selected (e.g. a *Dev scheme that
+# copies .env.development); without it RN CLI builds the project-name scheme.
+# [project.ios]
+# scheme = "MyAppDev"    # -> react-native run-ios --scheme
+# mode   = "Debug"       # -> react-native run-ios --mode (optional)
+# [project.android]
+# mode   = "developmentDebug"  # -> react-native run-android --mode (optional)
+
 [targets.simulator.default]
 model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
-                   # "18.5" if you want a fixed version that never upgrades.
+                   # "18.5" if you want a fixed version that never upgrades. Some
+                   # apps (a pod excluding arm64 for the simulator, e.g. Google ML
+                   # Kit) can only build on an x86_64 sim — pin ios = "18.5".
 
 [targets.emulator.default]
 device = "pixel_9"

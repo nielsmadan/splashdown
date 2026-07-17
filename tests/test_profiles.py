@@ -27,6 +27,68 @@ def test_rn_run_ios_and_android(tmp_path, monkeypatch):
     flat = [" ".join(c) for c in calls]
     assert any("run-ios" in c and "--udid U1" in c for c in flat)
     assert any("run-android" in c and "--deviceId S1" in c for c in flat)
+    # Bare recipe forwards no scheme/mode.
+    assert not any("--scheme" in c or "--mode" in c for c in flat)
+
+
+def test_rn_run_forwards_scheme_and_mode(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    r = sd.Recipe(
+        {
+            "project": {
+                "ios": {"scheme": "DreamHackDev", "mode": "Debug"},
+                "android": {"mode": "developmentDebug"},
+            }
+        },
+        tmp_path / "x.toml",
+    )
+    sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.profiles._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    flat = [" ".join(c) for c in calls]
+    assert any(
+        "run-ios" in c and "--scheme DreamHackDev" in c and "--mode Debug" in c for c in flat
+    )
+    assert any("run-android" in c and "--mode developmentDebug" in c for c in flat)
+
+
+def test_rn_run_rejects_flaglike_scheme(tmp_path, monkeypatch):
+    _capture_profile_calls(monkeypatch)
+    r = sd.Recipe({"project": {"ios": {"scheme": "-evil"}}}, tmp_path / "x.toml")
+    try:
+        sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    except sd.DeviceError:
+        return
+    raise AssertionError("expected DeviceError for flag-like scheme")
+
+
+def _write_pods_excluded_arch(tmp_path):
+    cfg = tmp_path / "ios" / "Pods" / "Target Support Files" / "MLKit" / "MLKit.debug.xcconfig"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64\n")
+
+
+def test_rn_run_prints_arch_hint_on_failure(tmp_path, monkeypatch, capsys):
+    _write_pods_excluded_arch(tmp_path)
+    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: 70)
+    rc = sd.profiles._rn_run(
+        tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"}
+    )
+    assert rc == 70
+    assert 'ios = "18.5"' in capsys.readouterr().err
+
+
+def test_rn_run_no_arch_hint_on_success_or_missing_pods(tmp_path, monkeypatch, capsys):
+    # Success → no hint even when the exclusion is present.
+    _write_pods_excluded_arch(tmp_path)
+    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: 0)
+    sd.profiles._rn_run(tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"})
+    assert "18.5" not in capsys.readouterr().err
+    # Failure but no Pods → no hint.
+    other = tmp_path / "no_pods"
+    other.mkdir()
+    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: 70)
+    sd.profiles._rn_run(other, sd.Recipe({}, other / "x.toml"), {"kind": "ios", "udid": "U1"})
+    assert "18.5" not in capsys.readouterr().err
 
 
 def test_expo_run_ios_and_android(tmp_path, monkeypatch):
