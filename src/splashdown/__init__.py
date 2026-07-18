@@ -68,16 +68,8 @@ from . import profiles as _profiles_module
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .commands import (
     _cmd_init_legacy_preset,
-    _detect_hook_manager,
-    _ensure_post_checkout_hook,
     _env_dispatch,
-    _remove_mise_file_directive,
-    _remove_post_checkout_hook,
     _resolve_no_loader_delivery,
-    _revert_gitignore,
-    _wire_post_checkout_corehookspath,
-    _wire_post_checkout_husky,
-    _wire_post_checkout_lefthook,
     cmd_deinit,
     cmd_gc,
     cmd_init,
@@ -128,6 +120,16 @@ from .devices import (
     physical_status,
     target_add,
     target_remove,
+)
+from .hooks import (
+    _detect_hook_manager,
+    _ensure_post_checkout_hook,
+    _remove_mise_file_directive,
+    _remove_post_checkout_hook,
+    _revert_gitignore,
+    _wire_post_checkout_corehookspath,
+    _wire_post_checkout_husky,
+    _wire_post_checkout_lefthook,
 )
 from .loaders import LOADERS, Loader
 from .profiles import SCAFFOLDS, Profile

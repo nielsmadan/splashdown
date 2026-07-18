@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 
 from . import RECIPE_NAME
 from .devices import DeviceError, detect_framework
+from .hooks import _detect_hook_manager, _ensure_post_checkout_hook, _lefthook_config_path
 from .recipe import Recipe
 
 # ---------- framework wiring (doctor) ----------
@@ -116,8 +117,6 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
 
 
 def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
-    from .commands import _detect_hook_manager, _lefthook_config_path  # noqa: PLC0415
-
     manager = _detect_hook_manager(cwd)
     if manager == "lefthook":
         path = _lefthook_config_path(cwd)
@@ -165,8 +164,6 @@ def _rn_hook_manual(cwd: Path) -> str:
 
 
 def _autofix_ensure_post_checkout_hook(cwd: Path) -> None:
-    from .commands import _ensure_post_checkout_hook  # noqa: PLC0415
-
     _ensure_post_checkout_hook(cwd)
 
 

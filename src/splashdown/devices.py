@@ -16,6 +16,12 @@ from . import (
     TARGET_TYPES,
     TARGET_VARIANT_RE,
 )
+
+# DeviceError is defined in errors.py (dependency-free) and re-exported here for
+# the many `from .devices import DeviceError` call sites; recipe.py imports it
+# straight from errors so it needn't depend on this module. The `as DeviceError`
+# marks it an explicit re-export for mypy strict.
+from .errors import DeviceError as DeviceError  # noqa: PLC0414 — explicit re-export for mypy
 from .recipe import (
     LOCAL_SKELETON,
     LocalConfig,
@@ -27,10 +33,6 @@ from .recipe import (
 from .registry import DeviceRow, Registry
 
 # ---------- devices: iOS sims + Android emulators ----------
-
-
-class DeviceError(RuntimeError):
-    pass
 
 
 def _default_sim_name(cwd: Path, variant: str) -> str:

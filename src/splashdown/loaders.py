@@ -5,6 +5,8 @@ import re
 import sys
 from pathlib import Path
 
+from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive
+
 # ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
@@ -38,13 +40,9 @@ class MiseLoader(Loader):
     def wire(self, cwd: Path) -> None:
         # Reuses the existing helper that already handles new-file creation,
         # existing [env] table append, and idempotent re-runs.
-        from .commands import _ensure_mise_file_directive  # noqa: PLC0415
-
         _ensure_mise_file_directive(cwd)
 
     def unwire(self, cwd: Path) -> None:
-        from .commands import _remove_mise_file_directive  # noqa: PLC0415
-
         _remove_mise_file_directive(cwd)
 
 

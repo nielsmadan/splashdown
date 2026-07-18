@@ -19,6 +19,7 @@ from . import (
     TARGET_TYPES,
     TARGET_VARIANT_RE,
 )
+from .errors import DeviceError
 
 # ---------- template engine ----------
 
@@ -389,9 +390,6 @@ def resolve_variant(
     - else the only variant if exactly one is declared
     - else error
     """
-    # Lazy import to avoid circular — devices.py imports recipe.py
-    from .devices import DeviceError  # noqa: PLC0415
-
     if not catalog:
         raise DeviceError("no variants declared for this type")
     if requested is not None:
