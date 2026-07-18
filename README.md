@@ -71,7 +71,7 @@ pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
 
 See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring later with `splash doctor` (and `splash doctor --fix` to re-apply).
 
-> Multi-app / monorepo setups: see [docs/prd/monorepos.md](docs/prd/monorepos.md).
+> Multi-app / monorepo setups: see [docs/user/monorepos.md](docs/user/monorepos.md).
 
 ### Mobile: simulators & emulators
 
@@ -284,7 +284,7 @@ splash target remove simulator repro-bug --keep-instance   # toml-only edit
 Framework auto-detected for `run`:
 
 - `pubspec.yaml` → `flutter run -d <id>`
-- `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`. Optional `[project.ios] scheme`/`mode` forward `--scheme`/`--mode` (pick the Xcode scheme, e.g. a `*Dev` scheme that copies `.env.development`); `[project.android] mode` forwards `--mode` (build variant). A pod that excludes arm64 for the simulator (e.g. Google ML Kit) can only build on an x86_64 sim — pin `[targets.simulator.default] ios = "18.5"`; splash prints this hint when such a run fails.
+- `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`. Optional `[project.ios] scheme`/`mode` and `[project.android] mode` forward `--scheme`/`--mode` to select the Xcode scheme / build variant (e.g. a `*Dev` scheme that copies `.env.development`).
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
 - `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). Needs `[project.ios] scheme = "..."`.
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
@@ -293,6 +293,8 @@ Framework auto-detected for `run`:
 ### Auto-upgrade: no more manual `mksim`/`simctl delete` after Xcode updates
 
 Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever; they're explicit version coverage.
+
+Some apps *require* a pinned older runtime: a pod that excludes arm64 for the simulator (e.g. Google ML Kit) only builds on an x86_64 sim, which only iOS ≤ 18.x provides. Against the default (newest, arm64-only) sim, `xcodebuild` fails with an opaque "Unable to find a destination" — pin `ios = "18.5"`. On a failed `react-native` iOS run, splash detects the exclusion and prints this hint.
 
 ```sh
 splash gc                           # drop dead-checkout entries (ports, vars, sims)

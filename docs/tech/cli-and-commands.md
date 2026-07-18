@@ -184,6 +184,6 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Related
 
-- [init-and-onboarding.md](../prd/init-and-onboarding.md) — user-facing `splash init` behavior, the loader/hook wiring, and the onboarding promise.
-- [status-and-inspect.md](../prd/status-and-inspect.md) — what `splash status` (and `--all`/`--check`/`--verbose`) reports.
-- [device-targets.md](../prd/device-targets.md) — the device-target model behind `run`/`start`/`stop`/`destroy`/`target`.
+- [init-and-onboarding.md](../features/init-and-onboarding.md) — user-facing `splash init` behavior, the loader/hook wiring, and the onboarding promise.
+- [status-and-inspect.md](../features/status-and-inspect.md) — what `splash status` (and `--all`/`--check`/`--verbose`) reports.
+- [device-targets.md](../features/device-targets.md) — the device-target model behind `run`/`start`/`stop`/`destroy`/`target`.

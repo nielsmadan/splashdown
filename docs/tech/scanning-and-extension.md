@@ -284,7 +284,7 @@ instructions instead.
 
 ## Related
 
-- `docs/prd/init-and-onboarding.md` — user-facing model for `splash init`, preset
+- `docs/features/init-and-onboarding.md` — user-facing model for `splash init`, preset
   selection, and what gets written.
 - `docs/tech/wiring.md` — the doctor / `WiringCheck` internals that `wiring_checks()`
-  feeds (see also `docs/prd/framework-wiring.md` for the user-facing wiring behavior).
+  feeds (see also `docs/features/framework-wiring.md` for the user-facing wiring behavior).

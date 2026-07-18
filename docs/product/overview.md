@@ -2,7 +2,7 @@
 
 User-centric view of splashdown: who it's for, the jobs they come to do, and how well
 the product serves them. This is the high-level "why / for whom / what's missing" layer
-(upstream of any `docs/prd/`). Start here.
+(upstream of any `docs/features/`). Start here.
 
 ## Current-state artifacts (refined in place)
 - [persona.md](persona.md) — **primary: the parallel-agent developer** (many LLM agents, each in

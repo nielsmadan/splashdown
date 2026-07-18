@@ -1,10 +1,10 @@
-# Product Requirements (PRD)
+# Features
 
-Product-behavior docs: **what each splashdown feature does for the user**, kept in sync with
-the implementation. This is the middle layer of the three-layer model — it sits below
-`docs/product/` (user/why, owned by `review-product`) and above the source. Each doc references
-the code by `file:line` rather than restating it; run `doc --update` after feature work to keep
-these current.
+**What each splashdown feature does**, kept in sync with the implementation. This is the
+behavior reference for contributors and coding agents *building* splashdown: terse, pointer-first
+(`file:line`), not a usage tutorial. For human how-to walkthroughs see
+[`../user/`](../user/overview.md); for internals see [`../tech/`](../tech/overview.md). Owned by
+the `doc` skill; run `doc --update` after feature work to keep it current.
 
 Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](../product/use-cases.md).
 
@@ -24,15 +24,17 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   and `env` (list/get/set/release); the machine-readable surface. *(UC8)*
 - [per-checkout-overrides.md](per-checkout-overrides.md) — `splashdown.local.toml` add-only target
   variants; `target add`/`remove`. *(UC9)*
-- [monorepos.md](monorepos.md) — **Monorepos**: canonical multi-app setups and how splash init defers on ambiguous ones.
+
+> Monorepo setup is a user how-to (a walkthrough with worked examples), not a feature spec, so
+> it lives in [`../user/monorepos.md`](../user/monorepos.md), not here.
 
 ## Traceability: problem → requirement → implementation
 
 The chain from the user's problem (the [product](../product/overview.md) layer) through the
-requirement (this layer) to the implementation (the [tech](../tech/overview.md) layer). Each PRD
-doc's header repeats its own up/down links.
+requirement (this layer) to the implementation (the [tech](../tech/overview.md) layer). Each
+feature doc's header repeats its own up/down links.
 
-| Problem ([use case](../product/use-cases.md)) | Requirement (PRD) | Implementation ([tech](../tech/overview.md)) |
+| Problem ([use case](../product/use-cases.md)) | Requirement (feature) | Implementation ([tech](../tech/overview.md)) |
 |---|---|---|
 | UC1 — ports / env / templated values | [ports-and-env](ports-and-env.md) | [provisioning](../tech/provisioning.md), [registry](../tech/registry.md), [recipe-and-templates](../tech/recipe-and-templates.md) |
 | UC2, UC4, UC10 — device targets | [device-targets](device-targets.md) | [devices](../tech/devices.md), [registry](../tech/registry.md) |

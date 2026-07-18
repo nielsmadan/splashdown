@@ -230,9 +230,9 @@ file I/O.
 
 ## Related
 
-- [docs/prd/ports-and-env.md](../prd/ports-and-env.md) — user-facing model for
+- [docs/features/ports-and-env.md](../features/ports-and-env.md) — user-facing model for
   resources, ports, and the env file.
-- [docs/prd/per-checkout-overrides.md](../prd/per-checkout-overrides.md) — the
+- [docs/features/per-checkout-overrides.md](../features/per-checkout-overrides.md) — the
   recipe vs local-config story and the add-only contract.
 - [docs/tech/provisioning.md](./provisioning.md) — `provision()`, which consumes
   `topo_sort` + `render_template` + `_make_scope` and feeds the env writers that

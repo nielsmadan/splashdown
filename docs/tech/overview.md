@@ -2,7 +2,7 @@
 
 How splashdown is built — module internals, the data flow, and the cross-cutting patterns
 that constrain the whole package. This is the implementation layer; for what each feature
-does for the user, see [`../prd/overview.md`](../prd/overview.md). `CLAUDE.md` (repo root)
+does for the user, see [`../features/overview.md`](../features/overview.md). `CLAUDE.md` (repo root)
 carries the short contributor summary; these docs go deeper, per subsystem.
 
 ## Module docs

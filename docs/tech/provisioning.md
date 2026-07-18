@@ -2,7 +2,7 @@
 
 How `provisioning.py` turns a parsed recipe into resolved values and writes them to disk. This is the engine behind `splash sync` and the post-checkout git hook.
 
-For the *user-facing* contract (what gets pinned, what `splashdown.env` looks like), see [ports-and-env.md](../prd/ports-and-env.md). This doc covers the internals.
+For the *user-facing* contract (what gets pinned, what `splashdown.env` looks like), see [ports-and-env.md](../features/ports-and-env.md). This doc covers the internals.
 
 ## Purpose
 
@@ -93,6 +93,6 @@ The split between "resolve" (`provision`) and "emit" (`write_outputs`) keeps the
 
 ## Related
 
-- [ports-and-env.md](../prd/ports-and-env.md) — user-facing model for ports, env vars, and `splashdown.env`.
+- [ports-and-env.md](../features/ports-and-env.md) — user-facing model for ports, env vars, and `splashdown.env`.
 - [registry.md](./registry.md) — the machine-wide port/kv/device coordinator that `provision()` allocates against.
 - [recipe-and-templates.md](./recipe-and-templates.md) — `Recipe` parsing, `topo_sort`, the template engine, and scope functions.

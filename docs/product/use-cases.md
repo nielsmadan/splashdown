@@ -7,7 +7,7 @@
 > brainstormed around the new primary persona (the parallel-agent developer). Candidates are
 > labelled by how much the product covers today; they are *not* commitments.
 >
-> **Downstream:** each job below is broken into requirements in [`docs/prd/`](../prd/overview.md)
+> **Downstream:** each job below is broken into requirements in [`docs/features/`](../features/overview.md)
 > (see its traceability matrix), which link on to the implementation in [`docs/tech/`](../tech/overview.md).
 
 Ordered by centrality to the two co-primary personas. Paths cite the CLI surface in

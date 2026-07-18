@@ -24,7 +24,7 @@ example, two apps that both want a resource named `PORT` — writing a structure
 (`[project]` + `[apps.*]` with empty `resources = []` per app) and printing:
 
 ```
-monorepo detected (N apps) — resources not auto-configured; see docs/prd/monorepos.md
+monorepo detected (N apps) — resources not auto-configured; see docs/user/monorepos.md
 ```
 
 That message points here. The patterns below are the copy-pasteable recipes to reach for

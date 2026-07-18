@@ -1,7 +1,7 @@
 # devices.py — sim / emulator / physical-device lifecycle
 
 > Tech doc: how the code works. For the user-facing model (TOML schema, `splash run`, the
-> `latest` vs pinned distinction), see `docs/prd/device-targets.md` — that and `README.md` are
+> `latest` vs pinned distinction), see `docs/features/device-targets.md` — that and `README.md` are
 > authoritative for *behavior*; this file documents *internals*.
 
 ## Contents
@@ -211,7 +211,7 @@ to the launcher, never persisted.
 
 ## Related
 
-- `docs/prd/device-targets.md` — user-facing device-target model and TOML schema (authoritative
+- `docs/features/device-targets.md` — user-facing device-target model and TOML schema (authoritative
   for behavior).
 - `docs/tech/registry.md` — the machine-wide TSV coordinator; `DeviceRow`, `get_device`,
   `set_device`, and the `devices.tsv` schema that `ensure_fresh_sim` reads and writes.

@@ -110,4 +110,4 @@ The `HOMEBREW_TAP_TOKEN` secret (in this repo's GitHub secrets) must have write 
 
 ## Documentation
 
-Project docs live in `docs/` (start at `docs/overview.md`). Product-behavior docs are in `docs/prd/`. After completing a feature, run `doc --update` to keep them current.
+Project docs live in `docs/` (start at `docs/overview.md`). Feature behavior lives in `docs/features/`, implementation in `docs/tech/` (both for contributors/agents); user how-tos in `docs/user/` (README links there). After completing a feature, run `doc --update` to keep them current.

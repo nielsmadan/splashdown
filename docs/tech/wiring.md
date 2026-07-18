@@ -2,7 +2,7 @@
 
 > Tech doc for `src/splashdown/wiring.py` — the `splash doctor` framework-wiring
 > engine. HOW the code works (internals). For the user-facing model (what each
-> check does, why wiring matters), see [`docs/prd/framework-wiring.md`](../prd/framework-wiring.md).
+> check does, why wiring matters), see [`docs/features/framework-wiring.md`](../features/framework-wiring.md).
 
 ## Table of contents
 
@@ -97,7 +97,7 @@ The run loop (`wiring.py:82`) walks each check:
 Exit code is 0 only when nothing is left in the `problem` state (`wiring.py:112`).
 `init` reuses this fixing pass after scaffolding; the loop is driven from
 `cmd_init` and the legacy preset path calls `cmd_doctor(cwd, fix=True)` directly
-(see `docs/prd/framework-wiring.md`).
+(see `docs/features/framework-wiring.md`).
 
 ### The individual checks
 
@@ -235,7 +235,7 @@ hand-authored files:
 
 ## Related
 
-- [`docs/prd/framework-wiring.md`](../prd/framework-wiring.md) — user-facing model
+- [`docs/features/framework-wiring.md`](../features/framework-wiring.md) — user-facing model
   for `splash doctor` and each check (the authoritative behavior spec).
 - [`docs/tech/scanning-and-extension.md`](./scanning-and-extension.md) — how
   Profiles are detected and registered, and how `Profile.wiring_checks` ties a

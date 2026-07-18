@@ -110,5 +110,5 @@ GC is **lazy** — it piggybacks on reads rather than running on a timer. `busy_
 
 ## Related
 
-- [Ports and env](../prd/ports-and-env.md) — user-facing model for port allocation and `splashdown.env`.
-- [Resource cleanup](../prd/resource-cleanup.md) — user-facing behavior of `gc`, `release`, and orphan reclamation.
+- [Ports and env](../features/ports-and-env.md) — user-facing model for port allocation and `splashdown.env`.
+- [Resource cleanup](../features/resource-cleanup.md) — user-facing behavior of `gc`, `release`, and orphan reclamation.
