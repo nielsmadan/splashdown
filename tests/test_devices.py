@@ -111,6 +111,28 @@ def test_ensure_fresh_recreates_when_model_changed(registry, checkout, monkeypat
     assert destroyed == ["UDID-OLD"]
 
 
+def test_ensure_fresh_emulator_destroys_old_avd_on_rename(registry, checkout, monkeypatch):
+    """When the resolved AVD name changes, the old AVD (row.udid) must be destroyed,
+    not the new name — otherwise the old one is orphaned on disk. Mirrors iOS."""
+    abspath = str(checkout.resolve())
+    # Emulator rows store the AVD name in the udid column.
+    registry.set_device(abspath, "emulator", "default", "old-avd", "pixel_9", "android-34")
+    destroyed: list[str] = []
+    # Only the OLD avd exists on disk; the freshly-resolved name does not (→ stale).
+    monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: n == "old-avd")
+    monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: n == "old-avd")
+    monkeypatch.setattr(sd.devices, "_android_latest_image", lambda: "android-34")
+    monkeypatch.setattr(sd.commands, "_android_latest_image", lambda: "android-34")
+    monkeypatch.setattr(sd.devices, "android_destroy", destroyed.append)
+    monkeypatch.setattr(sd.commands, "android_destroy", destroyed.append)
+    monkeypatch.setattr(sd.devices, "android_ensure", lambda n, d, i: n)
+    sd.ensure_fresh_sim(
+        registry, checkout, "emulator", "default", {"device": "pixel_9", "name": "new-avd"}
+    )
+    assert destroyed == ["old-avd"]
+    assert registry.get_device(abspath, "emulator", "default").udid == "new-avd"
+
+
 def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-X", "iPhone 17", "18.5")
@@ -915,43 +937,26 @@ def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
-    destroyed_count, pruned_count = sd.cmd_target_gc(registry, all_=False)
+    destroyed_count = sd.cmd_target_gc(registry)
     assert destroyed_count == 1
-    assert pruned_count == 0
     assert destroyed == ["UDID-A"]
     assert {r.udid for r in registry.all_devices()} == {"UDID-B"}
 
 
-def test_device_gc_all_drops_stale_latest_but_keeps_pinned(registry, tmp_path, monkeypatch):
-    checkout = tmp_path / "co"
-    checkout.mkdir()
-    (checkout / "splashdown.toml").write_text("""
-[targets.simulator.default]
-model = "iPhone 17"
-
-[targets.simulator.legacy]
-model = "iPhone 12"
-ios   = "17.0"
-""")
-    abspath = str(checkout.resolve())
-    registry.set_device(
-        abspath, "simulator", "default", "UDID-DEFAULT", "iPhone 17", "17.5"
-    )  # stale latest
-    registry.set_device(
-        abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0"
-    )  # pinned, current
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
-    destroyed = []
-    monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
-    destroyed_count, pruned_count = sd.cmd_target_gc(registry, all_=True)
-    assert destroyed_count == 0  # no defunct checkouts
-    assert pruned_count == 1  # one stale "latest" variant pruned
-    assert destroyed == ["UDID-DEFAULT"]
-    assert {r.udid for r in registry.all_devices()} == {"UDID-LEGACY"}
+def test_device_gc_drops_defunct_emulator_and_destroys_avd(registry, tmp_path, monkeypatch):
+    """gc destroys the AVD (not just the sim) of a dead checkout's emulator row."""
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    registry.set_device(str(gone), "emulator", "default", "AVD-GONE", "pixel_9", "android-34")
+    gone.rmdir()
+    destroyed: list[str] = []
+    monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: True)
+    monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: True)
+    monkeypatch.setattr(sd.devices, "android_destroy", destroyed.append)
+    monkeypatch.setattr(sd.commands, "android_destroy", destroyed.append)
+    assert sd.cmd_target_gc(registry) == 1
+    assert destroyed == ["AVD-GONE"]
+    assert list(registry.all_devices()) == []
 
 
 def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, capsys):
@@ -998,6 +1003,43 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     assert rc == 0
     assert destroyed == ["UDID-OLD"]
     assert registry.get_device(abspath, "simulator", "default").udid == "UDID-NEW"
+
+
+def test_device_refresh_resolves_latest_os_once_across_rows(registry, tmp_path, monkeypatch):
+    """The latest-OS lookup shells out; with a shared cache it must fire at most
+    once per platform even across many rows (perf: no per-row subprocess)."""
+    checkout = tmp_path / "co"
+    checkout.mkdir()
+    (checkout / "splashdown.toml").write_text(
+        '[targets.simulator.a]\nmodel = "iPhone 17"\n[targets.simulator.b]\nmodel = "iPhone 17"\n'
+    )
+    abspath = str(checkout.resolve())
+    registry.set_device(abspath, "simulator", "a", "UDID-A", "iPhone 17", "18.5")
+    registry.set_device(abspath, "simulator", "b", "UDID-B", "iPhone 17", "18.5")
+    calls = {"n": 0}
+
+    def counting_latest() -> str:
+        calls["n"] += 1
+        return "18.5"
+
+    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", counting_latest)
+    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", counting_latest)
+    sd.cmd_target_refresh(registry, platforms=("ios",))
+    assert calls["n"] == 1, f"latest-OS resolved {calls['n']}x; cache not shared"
+
+
+def test_device_needs_recreate_agrees_with_actuator_on_emulator_rename(
+    registry, checkout, monkeypatch
+):
+    """Counter and actuator must agree: a renamed emulator is a recreate, not
+    'unchanged' (the count-divergence bug)."""
+    abspath = str(checkout.resolve())
+    registry.set_device(abspath, "emulator", "default", "old-avd", "pixel_9", "android-34")
+    monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: n == "old-avd")
+    monkeypatch.setattr(sd.devices, "_android_latest_image", lambda: "android-34")
+    spec = {"device": "pixel_9", "name": "new-avd"}
+    assert sd.device_needs_recreate(registry, checkout, "emulator", "default", spec) is True
 
 
 def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, monkeypatch):

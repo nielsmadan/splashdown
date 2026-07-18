@@ -536,12 +536,63 @@ def physical_status(spec: dict[str, Any]) -> str:
 # --- reconciliation (auto-upgrade on latest, pin on explicit) ---
 
 
+def _latest_os_for(dtype: str, cache: dict[str, str] | None) -> str:
+    """Latest iOS runtime version / Android system image. Each shells out, so a
+    shared `cache` (keyed by platform) resolves it at most once per command run."""
+    key = "ios" if dtype == "simulator" else "android"
+    if cache is not None and key in cache:
+        return cache[key]
+    value = _ios_latest_runtime_version() if dtype == "simulator" else _android_latest_image()
+    if cache is not None:
+        cache[key] = value
+    return value
+
+
+def _target_os_for(dtype: str, spec: dict[str, Any], cache: dict[str, str] | None) -> str:
+    """The OS the variant should be on: its pinned value, or the current latest."""
+    requested = spec.get("ios" if dtype == "simulator" else "image", "latest")
+    return _latest_os_for(dtype, cache) if requested == "latest" else requested
+
+
+def device_needs_recreate(
+    registry: Registry,
+    cwd: Path,
+    dtype: str,
+    variant: str,
+    spec: dict[str, Any],
+    *,
+    cache: dict[str, str] | None = None,
+) -> bool:
+    """Whether `ensure_fresh_sim` would destroy+recreate this device: no registry
+    row, the sim/AVD is gone, or its OS/model has drifted from the variant spec.
+    The single source of truth for staleness — the actuator (`ensure_fresh_sim`)
+    and the `target refresh` counter both call it, so they can never disagree."""
+    if dtype == "device":
+        return False
+    row = registry.get_device(str(cwd.resolve()), dtype, variant)
+    if row is None:
+        return True
+    target = _target_os_for(dtype, spec, cache)
+    if dtype == "simulator":
+        if not _ios_udid_exists(row.udid):
+            return True
+        return row.ios != target or row.model != spec.get("model", "")
+    if dtype == "emulator":
+        sim_name = _resolve_device_name(spec, cwd, variant, dtype)
+        if not _android_avd_exists(sim_name):
+            return True
+        return row.ios != target or row.model != spec.get("device", "")
+    return False
+
+
 def ensure_fresh_sim(
     registry: Registry,
     cwd: Path,
     dtype: str,
     variant: str,
     spec: dict[str, Any],
+    *,
+    cache: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Reconcile a sim/AVD instance against the variant spec. Destroys + recreates
     if the OS image (or model) has drifted from what's in the registry. Pinned
@@ -551,54 +602,33 @@ def ensure_fresh_sim(
 
     checkout = str(cwd.resolve())
     sim_name = _resolve_device_name(spec, cwd, variant, dtype)
+    stale = device_needs_recreate(registry, cwd, dtype, variant, spec, cache=cache)
+    row = registry.get_device(checkout, dtype, variant)
 
     if dtype == "simulator":
-        requested = spec.get("ios", "latest")
-        _get_latest = _ios_latest_runtime_version
-        _udid_exists = _ios_udid_exists
-        _ensure = ios_ensure
-        _destroy = ios_destroy
-        target_ios = _get_latest() if requested == "latest" else requested
+        target_ios = _target_os_for(dtype, spec, cache)
         model_spec = spec.get("model", "")
-        row = registry.get_device(checkout, dtype, variant)
-        stale = (
-            row is None
-            or not _udid_exists(row.udid)
-            or row.ios != target_ios
-            or row.model != model_spec
-        )
         if not stale:
-            # `stale` is True whenever row is None, so this never fires; it
-            # narrows the optional for the type-checker.
-            if row is None:
+            if row is None:  # unreachable (stale is True when row is None); narrows the type
                 raise DeviceError("internal: simulator row vanished mid-check")
             return {"kind": "ios", "udid": row.udid, "name": sim_name}
-        if row is not None and _udid_exists(row.udid):
-            _destroy(row.udid)
-        udid, _state = _ensure(sim_name, model_spec or None, target_ios)
+        if row is not None and _ios_udid_exists(row.udid):
+            ios_destroy(row.udid)
+        udid, _state = ios_ensure(sim_name, model_spec or None, target_ios)
         registry.set_device(checkout, dtype, variant, udid, model_spec, target_ios)
         return {"kind": "ios", "udid": udid, "name": sim_name}
 
     if dtype == "emulator":
-        requested = spec.get("image", "latest")
-        _get_latest_image = _android_latest_image
-        _avd_exists = _android_avd_exists
-        _avd_ensure = android_ensure
-        _avd_destroy = android_destroy
-        target_image = _get_latest_image() if requested == "latest" else requested
+        target_image = _target_os_for(dtype, spec, cache)
         device_spec = spec.get("device", "")
-        row = registry.get_device(checkout, dtype, variant)
-        stale = (
-            row is None
-            or not _avd_exists(sim_name)
-            or row.ios != target_image
-            or row.model != device_spec
-        )
         if not stale:
             return {"kind": "android", "serial": "", "name": sim_name}
-        if row is not None and _avd_exists(sim_name):
-            _avd_destroy(sim_name)
-        _avd_ensure(sim_name, device_spec or None, target_image)
+        if row is not None and _android_avd_exists(row.udid):
+            # Destroy the AVD the registry actually points at (row.udid), not the
+            # freshly-resolved sim_name — if the name changed between runs, the old
+            # AVD would otherwise be orphaned on disk. Mirrors the iOS branch.
+            android_destroy(row.udid)
+        android_ensure(sim_name, device_spec or None, target_image)
         registry.set_device(checkout, dtype, variant, sim_name, device_spec, target_image)
         return {"kind": "android", "serial": "", "name": sim_name}
 

@@ -30,6 +30,7 @@ from .devices import (
     android_shutdown,
     device_destroy,
     device_destroy_row,
+    device_needs_recreate,
     device_run,
     device_shutdown,
     device_status,
@@ -965,64 +966,36 @@ def _finish_progress() -> None:
         sys.stderr.flush()
 
 
-def cmd_target_gc(registry: Registry, *, all_: bool = False) -> tuple[int, int]:
-    """Splashdown-managed sim cleanup.
-
-    Default: drop registry entries whose checkout dir is gone, destroy their sims.
-    --all: additionally destroy sims whose recipe variant uses `ios = "latest"`
-    and whose registered iOS is older than the current latest. Pinned variants
-    are always preserved."""
+def cmd_target_gc(registry: Registry) -> int:
+    """Destroy the sims/AVDs of dead checkouts (whose dir is gone) and drop their
+    rows. Returns the number of device rows removed. Reconciling *live* checkouts
+    against their recipes — recreating stale/missing devices — is
+    `cmd_target_refresh`'s job, not gc's."""
     _udid_exists = _ios_udid_exists
     _avd_exists = _android_avd_exists
     _destroy_ios = ios_destroy
     _destroy_avd = android_destroy
-    _get_latest_ios = _ios_latest_runtime_version
     destroyed_count = 0
-    pruned_count = 0
-    latest_ios: str | None = None
     rows = list(registry.all_devices())
     total = len(rows)
     for i, row in enumerate(rows, 1):
         _emit_progress("gc", i, total)
-        cwd = Path(row.checkout)
-        if not cwd.exists():
-            if row.dtype == "simulator" and _udid_exists(row.udid):
-                _destroy_ios(row.udid)
-            elif row.dtype == "emulator" and _avd_exists(row.udid):
-                _destroy_avd(row.udid)
-            registry.remove_device(row.checkout, row.dtype, row.variant)
-            destroyed_count += 1
+        if Path(row.checkout).exists():
             continue
-        if not all_:
-            continue
-        # `--all`: prune stale "latest" variants.
-        spec = _load_variant_spec(cwd, row.dtype, row.variant)
-        if spec is None:
-            # Variant was removed from recipe + local — also destroy.
-            if row.dtype == "simulator" and _udid_exists(row.udid):
-                _destroy_ios(row.udid)
-            registry.remove_device(row.checkout, row.dtype, row.variant)
-            pruned_count += 1
-            continue
-        if row.dtype == "simulator":
-            if spec.get("ios", "latest") != "latest":
-                continue
-            if latest_ios is None:
-                latest_ios = _get_latest_ios()
-            if row.ios == latest_ios:
-                continue
-            if _udid_exists(row.udid):
-                _destroy_ios(row.udid)
-            registry.remove_device(row.checkout, row.dtype, row.variant)
-            pruned_count += 1
+        if row.dtype == "simulator" and _udid_exists(row.udid):
+            _destroy_ios(row.udid)
+        elif row.dtype == "emulator" and _avd_exists(row.udid):
+            _destroy_avd(row.udid)
+        registry.remove_device(row.checkout, row.dtype, row.variant)
+        destroyed_count += 1
     _finish_progress()
-    return destroyed_count, pruned_count
+    return destroyed_count
 
 
 def cmd_gc(registry: Registry) -> int:
     """Drop every dead-checkout entry machine-wide: destroy orphaned sims/AVDs,
     then prune port/kv/device rows and reconcile live checkouts to their recipes."""
-    destroyed, _stale = cmd_target_gc(registry)  # destroys orphaned sims + removes their rows
+    destroyed = cmd_target_gc(registry)  # destroys orphaned sims + removes their rows
     n = registry.gc()  # ports/kv/remaining devices + reconcile
     print(
         f"gc: removed {n} registry entries, destroyed {destroyed} orphaned device(s)",
@@ -1044,28 +1017,6 @@ def _latest_os(dtype: str, cache: dict[str, str]) -> str:
         else:
             cache[key] = _android_latest_image()
     return cache[key]
-
-
-def _target_os(dtype: str, spec: dict[str, Any], cache: dict[str, str]) -> str:
-    """The OS version/image a variant should be on: its pinned value, or the
-    current latest when declared `latest`."""
-    requested = spec.get("ios" if dtype == "simulator" else "image", "latest")
-    return _latest_os(dtype, cache) if requested == "latest" else requested
-
-
-def _device_needs_recreate(row: DeviceRow, spec: dict[str, Any], cache: dict[str, str]) -> bool:
-    """Mirror of ensure_fresh_sim's stale check (devices.py): the sim/AVD is
-    gone, or its OS/model has drifted from the variant spec."""
-    target = _target_os(row.dtype, spec, cache)
-    if row.dtype == "simulator":
-        if not _ios_udid_exists(row.udid):
-            return True
-        return row.ios != target or row.model != spec.get("model", "")
-    if row.dtype == "emulator":
-        if not _android_avd_exists(row.udid):
-            return True
-        return row.ios != target or row.model != spec.get("device", "")
-    return False
 
 
 def _device_stale(row: DeviceRow, spec: dict[str, Any], cache: dict[str, str]) -> bool:
@@ -1115,9 +1066,12 @@ def cmd_target_refresh(
             continue
         # Decide before the call — ensure_fresh_sim is a no-op for fresh devices,
         # and the AVD name (Android's udid) is stable across recreation, so we
-        # can't infer it from the return value.
-        will_recreate = _device_needs_recreate(row, spec, cache)
-        _fresh_sim(registry, cwd, row.dtype, row.variant, spec)
+        # can't infer it from the return value. Same predicate the actuator uses,
+        # sharing `cache` so the latest-OS lookup shells out at most once per run.
+        will_recreate = device_needs_recreate(
+            registry, cwd, row.dtype, row.variant, spec, cache=cache
+        )
+        _fresh_sim(registry, cwd, row.dtype, row.variant, spec, cache=cache)
         if will_recreate:
             recreated += 1
         else:
