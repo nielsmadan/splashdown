@@ -288,6 +288,17 @@ def _wire_post_checkout_husky(cwd: Path) -> None:
     husky_dir = cwd / ".husky"
     husky_dir.mkdir(exist_ok=True)
     hook = husky_dir / "post-checkout"
+    if hook.exists():
+        existing = hook.read_text()
+        # `.husky/post-checkout` is the user's file (unlike our own `.githooks/`).
+        # Never clobber a real hook — only (re)write one that's already ours.
+        if existing != POST_CHECKOUT_HOOK and "splash sync" not in existing:
+            print(
+                "existing .husky/post-checkout is not splashdown's — leaving it "
+                "untouched; add `splash sync >&2 || true` to it to enable provisioning",
+                file=sys.stderr,
+            )
+            return
     hook.write_text(POST_CHECKOUT_HOOK)
     hook.chmod(0o755)
     print("wrote .husky/post-checkout (husky)", file=sys.stderr)
@@ -583,7 +594,12 @@ def _gather_targets_declared(
                 if reg_row is None:
                     if status == "absent":
                         missing = True
-                        summary["missing_devices"] += 1
+                        # A missing sim/emulator is provisioned by `splash run`; a
+                        # missing physical `device` is just unplugged — count it
+                        # separately so the footer doesn't tell the user to run a
+                        # command that can't conjure hardware.
+                        key = "missing_hardware" if dtype == "device" else "missing_devices"
+                        summary[key] += 1
                 elif _is_orphan_device(reg_row):
                     orphan = True
                     summary["orphan_devices"] += 1
@@ -696,6 +712,7 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
         "orphan_devices": 0,
         "stale_devices": 0,
         "missing_devices": 0,
+        "missing_hardware": 0,
     }
     os_cache: dict[str, str] = {}
 
@@ -758,7 +775,8 @@ def _print_check_summary(summary: dict[str, int]) -> None:
     orphan = summary.get("orphan_devices", 0)
     stale = summary.get("stale_devices", 0)
     missing = summary.get("missing_devices", 0)
-    if not (defunct or orphan or stale or missing):
+    missing_hw = summary.get("missing_hardware", 0)
+    if not (defunct or orphan or stale or missing or missing_hw):
         print("Summary: all entries verified.", file=sys.stderr)
         return
     print("Summary:", file=sys.stderr)
@@ -785,6 +803,12 @@ def _print_check_summary(summary: dict[str, int]) -> None:
             f"(declared but not yet created).",
             file=sys.stderr,
         )
+    if missing_hw:
+        print(
+            f"  {missing_hw} unplugged physical device{'s' if missing_hw != 1 else ''} "
+            f"(declared but not connected).",
+            file=sys.stderr,
+        )
     # Route each hint to the command that actually fixes it. `splash gc` does NOT
     # recreate an orphan whose checkout still exists — `target refresh` does.
     if defunct:
@@ -793,6 +817,11 @@ def _print_check_summary(summary: dict[str, int]) -> None:
         print("  Run `splash target refresh` to recreate.", file=sys.stderr)
     if missing:
         print("  Run `splash run` to provision.", file=sys.stderr)
+    if missing_hw:
+        print(
+            "  Connect the device (check pairing/USB) — splashdown can't create hardware.",
+            file=sys.stderr,
+        )
 
 
 # ---------- command functions ----------
@@ -831,6 +860,7 @@ def cmd_status(
         "orphan_devices": 0,
         "stale_devices": 0,
         "missing_devices": 0,
+        "missing_hardware": 0,
     }
     os_cache: dict[str, str] = {}
     blocks = [
@@ -1786,6 +1816,37 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
     return 2
 
 
+def _env_set(assignment: str, target: str, registry: Registry) -> int:
+    """`splash env set KEY=VALUE` — persist a value into the registry kv store."""
+    if "=" not in assignment:
+        print("usage: splash env set KEY=VALUE", file=sys.stderr)
+        return 2
+    key, value = assignment.split("=", 1)
+    if not ENV_NAME_RE.match(key):
+        print(f"invalid env name `{key}` (must match {ENV_NAME_RE.pattern})", file=sys.stderr)
+        return 2
+    # Reject keys the target's recipe doesn't declare: `splash gc` reconciles
+    # kv.tsv against the recipe and prunes anything undeclared, so an undeclared
+    # value set here would be silently lost on the next gc. Only validate when the
+    # recipe actually loads (mirrors reconcile, which skips absent/unparseable ones).
+    recipe_path = Path(target) / RECIPE_NAME
+    if recipe_path.exists():
+        try:
+            declared: dict[str, Any] | None = Recipe.load(recipe_path).resources
+        except Exception:  # noqa: BLE001 — unloadable recipe: don't block, like reconcile
+            declared = None
+        if declared is not None and key not in declared:
+            print(
+                f"`{key}` is not a resource in {RECIPE_NAME}; declare it (e.g. "
+                f'`[resources.{key}]` type = "set"`) before setting it',
+                file=sys.stderr,
+            )
+            return 2
+    registry.set_kv(target, key, value)
+    print(f"set {key}={value}", file=sys.stderr)
+    return 0
+
+
 def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     """`splash env …` — this checkout's resolved values. Bare = list."""
     fmt = _resolve_format_arg(args)
@@ -1811,16 +1872,7 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
         print(value)
         return 0
     if args.env_cmd == "set":
-        if "=" not in args.assignment:
-            print("usage: splash env set KEY=VALUE", file=sys.stderr)
-            return 2
-        key, value = args.assignment.split("=", 1)
-        if not ENV_NAME_RE.match(key):
-            print(f"invalid env name `{key}` (must match {ENV_NAME_RE.pattern})", file=sys.stderr)
-            return 2
-        registry.set_kv(target, key, value)
-        print(f"set {key}={value}", file=sys.stderr)
-        return 0
+        return _env_set(args.assignment, target, registry)
     if args.env_cmd == "release":
         if args.key:
             registry.remove_kv(target, args.key)

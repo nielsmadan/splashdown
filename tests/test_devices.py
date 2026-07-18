@@ -822,6 +822,17 @@ def test_cli_env_set(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "v1"
 
 
+def test_cli_env_set_rejects_undeclared_key_when_recipe_present(tmp_path, monkeypatch, capsys):
+    """A key the recipe doesn't declare would be silently dropped by the next
+    `splash gc` reconcile — reject it up front instead of losing the value."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / sd.RECIPE_NAME).write_text('[resources.KNOWN]\ntype = "set"\n')
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "UNKNOWN=x"]) == 2
+    assert "not a resource" in capsys.readouterr().err
+    # A declared key still works.
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "KNOWN=y"]) == 0
+
+
 def test_cli_env_set_rejects_invalid_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # A key that isn't a valid env name would write a malformed dotenv line.
