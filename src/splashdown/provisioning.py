@@ -155,7 +155,14 @@ def _write_if_changed(path: Path, text: str) -> bool:
 def write_splashdown_env(path: Path, items: dict[str, str]) -> bool:
     """Write the generated env file wholesale. Splashdown owns this file."""
     lines = [f"{k}={_env_quote(v)}" for k, v in items.items()]
-    return _write_if_changed(path, "\n".join(lines) + ("\n" if lines else ""))
+    changed = _write_if_changed(path, "\n".join(lines) + ("\n" if lines else ""))
+    # Resolved values can include secrets (set-type resources, templated
+    # DATABASE_URLs). Keep the file owner-only rather than umask-default 0644 so
+    # other local users on a shared host can't read it. Applied every write in
+    # case an older 0644 file predates this.
+    if path.exists():
+        path.chmod(0o600)
+    return changed
 
 
 def write_envfile(path: Path, items: dict[str, str]) -> bool:

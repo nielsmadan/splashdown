@@ -65,9 +65,12 @@ class Registry:
         self.kv_file = kv_file or (registry_dir / "kv.tsv")
         self.device_file = device_file or (registry_dir / "devices.tsv")
         self.port_file.parent.mkdir(parents=True, exist_ok=True)
-        self.port_file.touch(exist_ok=True)
-        self.kv_file.touch(exist_ok=True)
-        self.device_file.touch(exist_ok=True)
+        for f in (self.port_file, self.kv_file, self.device_file):
+            f.touch(exist_ok=True)
+            # kv.tsv can hold secret set-type/template values, and the registry
+            # is machine-wide — keep it owner-only rather than umask-default 0644
+            # so co-tenants on a shared host can't read other checkouts' values.
+            f.chmod(0o600)
 
     @contextmanager
     def _lock(self, path: Path) -> Iterator[None]:
@@ -140,6 +143,13 @@ class Registry:
                 # `splash sync --force`, which drops the pin via remove_port
                 # before getting here (so `existing` is None on that path).
                 return existing
+            if existing is not None:
+                # An out-of-range pin (the recipe's range changed under a live
+                # allocation): drop the stale row before allocating a new one, or
+                # it lingers forever — `get_port` returns the first match, so the
+                # stale out-of-range value would keep shadowing the new one and a
+                # fresh duplicate row would accrue on every run.
+                self._remove_port_unlocked(abspath, key)
             busy = self.busy_ports(gc=True)
             for candidate in range(lo, hi + 1):
                 if candidate in busy:

@@ -16,6 +16,59 @@ def test_port_allocate_persists(registry, checkout):
     assert p1 == p2
 
 
+def test_allocate_port_replaces_out_of_range_pin_without_leaking_row(
+    registry, checkout, monkeypatch
+):
+    """When a recipe's range changes under a live pin, the stale out-of-range row
+    must be dropped, not left to shadow the new value and accrue duplicates."""
+    monkeypatch.setattr(sd.registry, "_port_in_use", lambda port: False)
+    old = registry.allocate_port(str(checkout), "PORT", 3000, 3100)
+    assert 3000 <= old <= 3100
+    new = registry.allocate_port(str(checkout), "PORT", 4000, 4100)
+    assert 4000 <= new <= 4100
+    # Exactly one row for (checkout, PORT), and get_port returns the new value.
+    rows = [r for r in registry._read_ports() if r[1] == str(checkout) and r[2] == "PORT"]
+    assert len(rows) == 1
+    assert registry.get_port(str(checkout), "PORT") == new
+
+
+def test_registry_files_are_owner_only(registry):
+    """kv/ports/devices TSVs can hold secrets — they must not be world-readable."""
+    for f in (registry.port_file, registry.kv_file, registry.device_file):
+        assert (f.stat().st_mode & 0o077) == 0, f"{f} is group/other-accessible"
+
+
+def test_allocate_port_is_lock_serialized_under_thread_contention(registry, tmp_path, monkeypatch):
+    """Many checkouts racing for the same range must each get a distinct port with
+    no lost/duplicated rows — the flock is the module's whole reason to exist."""
+    import threading
+
+    monkeypatch.setattr(sd.registry, "_port_in_use", lambda port: False)
+    n = 16
+    checkouts = []
+    for i in range(n):
+        d = tmp_path / f"co{i}"
+        d.mkdir()
+        checkouts.append(str(d))
+    results: dict[str, int] = {}
+    barrier = threading.Barrier(n)
+
+    def worker(path: str) -> None:
+        barrier.wait()  # maximize the race
+        results[path] = registry.allocate_port(path, "PORT", 9000, 9000 + n - 1)
+
+    threads = [threading.Thread(target=worker, args=(c,)) for c in checkouts]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    ports = sorted(results.values())
+    assert len(set(ports)) == n, "two checkouts double-allocated the same port"
+    assert ports == list(range(9000, 9000 + n))
+    # One row per checkout, no corruption/duplication.
+    assert len(registry._read_ports()) == n
+
+
 def test_two_checkouts_get_different_ports(registry, tmp_path):
     a = tmp_path / "a"
     b = tmp_path / "b"
