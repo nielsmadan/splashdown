@@ -101,6 +101,24 @@ _UNARYOPS: dict[type[ast.unaryop], Any] = {
     ast.USub: operator.neg,
 }
 
+# Cap sequence-repetition (`"x" * n`, `[0] * n`) size. render_template runs
+# automatically from the post-checkout hook against a *cloned, untrusted* recipe,
+# so an unbounded `{{ "x" * 999999999 }}` would OOM/hang the machine on checkout.
+# Env-var values are tiny; this ceiling is orders of magnitude above any real use.
+_MAX_SEQ_REPEAT = 100_000
+
+
+def _apply_binop(op_type: type[ast.operator], left: Any, right: Any, expr: str) -> Any:
+    if op_type is ast.Mult:
+        for seq, n in ((left, right), (right, left)):
+            if isinstance(seq, (str, bytes, list, tuple)) and isinstance(n, int):
+                if n > 0 and len(seq) * n > _MAX_SEQ_REPEAT:
+                    raise TemplateError(
+                        f"sequence repetition in `{expr}` exceeds {_MAX_SEQ_REPEAT} elements"
+                    )
+                break
+    return _BINOPS[op_type](left, right)
+
 
 def _eval_node(node: ast.AST, scope: dict[str, Any], expr: str) -> Any:
     if isinstance(node, ast.Constant):
@@ -112,7 +130,7 @@ def _eval_node(node: ast.AST, scope: dict[str, Any], expr: str) -> Any:
     if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
         left = _eval_node(node.left, scope, expr)
         right = _eval_node(node.right, scope, expr)
-        return _BINOPS[type(node.op)](left, right)
+        return _apply_binop(type(node.op), left, right, expr)
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARYOPS:
         return _UNARYOPS[type(node.op)](_eval_node(node.operand, scope, expr))
     if isinstance(node, ast.Call):

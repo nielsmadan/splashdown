@@ -69,6 +69,31 @@ def test_template_rejects_sandbox_escapes(tmp_path, payload):
         sd.render_template(payload, scope)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{{ 'x' * 999999999 }}",
+        "{{ 999999999 * 'x' }}",
+        "{{ ('ab' * 100000) * 100000 }}",
+    ],
+)
+def test_template_rejects_huge_sequence_repetition(tmp_path, payload):
+    # render_template runs automatically from the post-checkout hook on an untrusted
+    # clone; an unbounded `"x" * N` would OOM/hang the machine on checkout.
+    cwd = tmp_path / "x"
+    cwd.mkdir()
+    scope = sd._make_scope(cwd, "main", {})
+    with pytest.raises(sd.TemplateError):
+        sd.render_template(payload, scope)
+
+
+def test_template_allows_small_repetition(tmp_path):
+    cwd = tmp_path / "x"
+    cwd.mkdir()
+    scope = sd._make_scope(cwd, "main", {})
+    assert sd.render_template("{{ '-' * 3 }}", scope) == "---"
+
+
 def test_template_allows_slicing_and_nested_calls(tmp_path):
     cwd = tmp_path / "foo" / "bar"
     cwd.mkdir(parents=True)

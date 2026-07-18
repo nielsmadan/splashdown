@@ -28,6 +28,19 @@ def _no_flag(label: str, value: str) -> str:
     return value
 
 
+# Android package / activity names are restricted to identifiers, dots, and (for
+# inner classes) `$`. `adb shell am start` re-parses its argv through the device's
+# /bin/sh, so a recipe value like `.Main; rm -rf /sdcard` would be a shell injection
+# on the device — validate against the legal charset rather than trusting argv.
+_ANDROID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.$]+$")
+
+
+def _android_component(label: str, value: str) -> str:
+    if not _ANDROID_COMPONENT_RE.match(value):
+        raise DeviceError(f"{label} may only contain letters, digits, `_`, `.`, `$`: {value!r}")
+    return value
+
+
 def _detect_flutter(cwd: Path) -> bool:
     return (cwd / "pubspec.yaml").exists()
 
@@ -284,10 +297,10 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
             "android-native: couldn't resolve applicationId; set "
             '`[project.android] application_id = "..."` in splashdown.toml'
         )
-    app_id = _no_flag("android application_id", app_id)
+    app_id = _android_component("android application_id", app_id)
 
     if activity := cfg.get("launch_activity"):
-        activity = _no_flag("android launch_activity", activity)
+        activity = _android_component("android launch_activity", activity)
         return subprocess.call(
             ["adb", "-s", serial, "shell", "am", "start", "-n", f"{app_id}/{activity}"],
         )

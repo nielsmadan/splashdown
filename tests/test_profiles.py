@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import splashdown as sd
 from conftest import (
     _capture_profile_calls,
@@ -197,3 +199,21 @@ def test_android_native_run_launch_activity(tmp_path, monkeypatch):
     assert rc == 0
     flat = [" ".join(c) for c in calls]
     assert any("am start -n com.x/.Main" in c for c in flat)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("launch_activity", ".Main; rm -rf /sdcard"),
+        ("launch_activity", ".Main$(reboot)"),
+        ("application_id", "com.x`id`"),
+    ],
+)
+def test_android_native_run_rejects_shell_injection(tmp_path, monkeypatch, field, value):
+    """`adb shell` re-parses argv through the device sh, so recipe-supplied package
+    /activity names with shell metacharacters must be rejected, not passed through."""
+    android = {"application_id": "com.x", "launch_activity": ".Main", field: value}
+    recipe = sd.Recipe({"project": {"android": android}}, tmp_path / "splashdown.toml")
+    _capture_profile_calls(monkeypatch)
+    with pytest.raises(sd.DeviceError):
+        sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
