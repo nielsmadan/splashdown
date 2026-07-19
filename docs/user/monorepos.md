@@ -147,6 +147,21 @@ splash run simulator      # iOS sim — per-checkout instance, never collides wi
 splash run emulator       # Android AVD
 ```
 
+`splash run` executes at the **repo root** and detects the framework there. In a
+monorepo where the mobile app lives in a subdir (`apps/mobile`) and uses yarn/pnpm
+rather than `npx`, set a custom run command so the launch happens in the right
+place with the right tool (see the "Custom run command" section in `README.md`):
+
+```toml
+[project.run]
+ios     = "yarn --cwd apps/mobile react-native run-ios --udid {device_id}"
+android = "yarn --cwd apps/mobile react-native run-android --deviceId {device_id}"
+```
+
+This overrides the built-in launcher; splashdown still reconciles and boots the
+declared `[targets.*]` first, then runs your command with the booted device id
+injected.
+
 Web and API are launched from the root orchestrator as in the previous pattern.
 
 ---

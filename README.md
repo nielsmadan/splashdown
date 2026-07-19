@@ -290,6 +290,35 @@ Framework auto-detected for `run`:
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
 - Override via `[project] framework = "..."`
 
+#### Custom run command
+
+When the built-in launcher isn't what you want — a different package manager (`yarn`/`pnpm` instead of `npx`), a monorepo subdir, `expo start --dev-client`, or any custom wrapper — set `[project] run`. It **replaces** the framework launcher (and skips framework detection), so it also works on a project splashdown doesn't recognize. splashdown still reconciles and boots the declared `[targets.*]` first; your command is the launch step, run in a shell at the repo root.
+
+`run` is either a single string (shared) or a `[project.run]` table with `ios`/`android` keys when they differ:
+
+```toml
+# Flutter — one command for both platforms:
+[project]
+run = "flutter run -d {device_id}"
+
+# React Native with yarn — per platform:
+[project.run]
+ios     = "yarn react-native run-ios --udid {device_id}"
+android = "yarn react-native run-android --deviceId {device_id}"
+```
+
+A `[project.run]` table may set only one platform — the other falls back to auto-detection. So `[project.run] ios = "..."` alone customizes iOS and leaves `splash run android` on the built-in launcher.
+
+Placeholders substituted before the command runs (device values are shell-quoted; unknown `{...}` are left untouched):
+
+| Placeholder | Value |
+| --- | --- |
+| `{device_id}` | the booted device's UDID (iOS) or adb serial (Android) |
+| `{device_name}` | the sim / AVD / device name |
+| `{platform}` | `ios` or `android` |
+
+The command runs via a shell, so pipes, `&&`, `$ENV`, and `cd` work — in a monorepo, point it at the app: `[project.run] ios = "yarn --cwd apps/mobile react-native run-ios --udid {device_id}"`.
+
 ### Auto-upgrade: no more manual `mksim`/`simctl delete` after Xcode updates
 
 Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever; they're explicit version coverage.

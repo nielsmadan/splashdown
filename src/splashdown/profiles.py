@@ -4,6 +4,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -154,6 +155,65 @@ def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if info["kind"] == "ios":
         return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
     return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
+
+
+# ---------- custom run command ----------
+# `[project] run` (or a `[project.run]` table) overrides the framework's built-in
+# launcher — the escape hatch for a specific package manager (yarn/pnpm), a
+# monorepo subdir, or any non-standard invocation. Mobile-only (that's the only
+# place `splash run` exists). See _resolve_custom_run / run_custom_command.
+
+_RUN_PLACEHOLDER = re.compile(r"\{(device_id|device_name|platform)\}")
+
+
+def _resolve_custom_run(recipe: Recipe, kind: str) -> str | None:
+    """The user's custom run command for this platform, or None if unset (or the
+    platform is unset in a `[project.run]` table — the other platform stays on
+    auto-detection). `[project] run` is either a single string (shared across
+    platforms) or a `[project.run]` table with `ios`/`android` keys."""
+    run = recipe.project.get("run")
+    if run is None:
+        return None
+    if isinstance(run, dict):
+        cmd = run.get(kind)
+        if cmd is None:
+            return None  # this platform isn't customized → fall back to detection
+    elif isinstance(run, str):
+        cmd = run
+    else:
+        raise DeviceError("`[project] run` must be a string or a [project.run] table")
+    if not isinstance(cmd, str):
+        raise DeviceError(f"`[project] run` command must be a string, got {type(cmd).__name__}")
+    if not cmd.strip():
+        raise DeviceError("`[project] run` command is empty")
+    return cmd
+
+
+def _substitute_run_placeholders(cmd: str, info: dict[str, str]) -> str:
+    """Substitute {device_id}/{device_name}/{platform} in a custom run command.
+    Device values are shell-quoted so spaces/quotes can't break the command;
+    unknown `{...}` sequences are left untouched (shell brace-expansion survives)."""
+    device_id = info.get("udid") or info.get("serial") or ""
+    if "{device_id}" in cmd and not device_id:
+        raise DeviceError("run command uses {device_id} but no device id is available")
+    values = {
+        "device_id": shlex.quote(device_id),
+        "device_name": shlex.quote(info.get("name", "")),
+        "platform": info.get("kind", ""),
+    }
+    return _RUN_PLACEHOLDER.sub(lambda m: values[m.group(1)], cmd)
+
+
+def run_custom_command(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int | None:
+    """Run the user's custom command with the booted device identifier injected.
+    Returns the exit code, or None when no custom command is configured (caller
+    falls back to framework detection). Runs via a shell (like `[setup.*]`) so
+    pipes / `&&` / `$ENV` / `cd` work."""
+    cmd = _resolve_custom_run(recipe, info["kind"])
+    if cmd is None:
+        return None
+    cmd = _substitute_run_placeholders(cmd, info)
+    return subprocess.call(cmd, shell=True, cwd=cwd)  # noqa: S602 — user-authored run command by design
 
 
 def _has_js_or_flutter(cwd: Path) -> bool:

@@ -1406,3 +1406,37 @@ def test_detect_framework_override_and_autodetect(tmp_path):
 def test_detect_framework_unknown_raises(tmp_path):
     with pytest.raises(sd.DeviceError):
         sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path))
+
+
+def test_device_run_custom_command_bypasses_framework_detection(tmp_path, monkeypatch):
+    # No framework markers in the dir — detect_framework would raise. A custom
+    # run command must run instead, never reaching detection.
+    captured = {}
+
+    def _fake_call(cmd, **k):
+        captured["cmd"] = cmd
+        return 7
+
+    monkeypatch.setattr(sd.profiles.subprocess, "call", _fake_call)
+    recipe = sd.Recipe({"project": {"run": "echo ran {device_id}"}}, tmp_path / "splashdown.toml")
+    rc = sd.device_run(tmp_path, recipe, {"kind": "ios", "udid": "ABCD"})
+    assert rc == 7  # returns the custom command's exit code
+    assert captured["cmd"] == "echo ran ABCD"
+
+
+def test_device_run_no_custom_command_uses_framework(tmp_path, monkeypatch):
+    # With no [project] run, device_run must fall through to framework detection
+    # and launch via the profile — a regression that returned 0/"" instead of
+    # None from run_custom_command would silently break every normal run.
+    recipe = sd.Recipe({}, tmp_path / "splashdown.toml")
+    monkeypatch.setattr(sd.devices, "detect_framework", lambda cwd, r: "flutter")
+    called = {}
+
+    def _fw_run(cwd, r, info):
+        called["fw"] = True
+        return 3
+
+    monkeypatch.setattr(sd.PROFILES["flutter"], "run", _fw_run)
+    rc = sd.device_run(tmp_path, recipe, {"kind": "ios", "udid": "U"})
+    assert called.get("fw") is True
+    assert rc == 3

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 
 import pytest
 
@@ -217,3 +218,117 @@ def test_android_native_run_rejects_shell_injection(tmp_path, monkeypatch, field
     _capture_profile_calls(monkeypatch)
     with pytest.raises(sd.DeviceError):
         sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
+
+
+# ---------- custom run command ([project] run / [project.run]) ----------
+
+
+def _recipe(tmp_path, project):
+    return sd.Recipe({"project": project}, tmp_path / "splashdown.toml")
+
+
+def test_resolve_custom_run_string_is_shared(tmp_path):
+    r = _recipe(tmp_path, {"run": "flutter run -d {device_id}"})
+    assert sd.profiles._resolve_custom_run(r, "ios") == "flutter run -d {device_id}"
+    assert sd.profiles._resolve_custom_run(r, "android") == "flutter run -d {device_id}"
+
+
+def test_resolve_custom_run_table_per_platform(tmp_path):
+    r = _recipe(tmp_path, {"run": {"ios": "run-ios", "android": "run-android"}})
+    assert sd.profiles._resolve_custom_run(r, "ios") == "run-ios"
+    assert sd.profiles._resolve_custom_run(r, "android") == "run-android"
+
+
+def test_resolve_custom_run_none_when_absent(tmp_path):
+    assert sd.profiles._resolve_custom_run(_recipe(tmp_path, {}), "ios") is None
+
+
+def test_resolve_custom_run_missing_platform_falls_back(tmp_path):
+    # A table that customizes only one platform leaves the other on auto-detection.
+    r = _recipe(tmp_path, {"run": {"ios": "run-ios"}})
+    assert sd.profiles._resolve_custom_run(r, "android") is None
+
+
+def test_resolve_custom_run_bad_type_raises(tmp_path):
+    r = _recipe(tmp_path, {"run": 123})
+    with pytest.raises(sd.DeviceError):
+        sd.profiles._resolve_custom_run(r, "ios")
+
+
+def test_resolve_custom_run_empty_string_raises(tmp_path):
+    with pytest.raises(sd.DeviceError, match="empty"):
+        sd.profiles._resolve_custom_run(_recipe(tmp_path, {"run": ""}), "ios")
+
+
+def test_resolve_custom_run_empty_table_value_raises(tmp_path):
+    with pytest.raises(sd.DeviceError, match="empty"):
+        sd.profiles._resolve_custom_run(_recipe(tmp_path, {"run": {"ios": "  "}}), "ios")
+
+
+def test_resolve_custom_run_non_string_table_value_raises(tmp_path):
+    # A mistyped value (int/array/bool) is a config error, not runnable text.
+    r = _recipe(tmp_path, {"run": {"ios": 123}})
+    with pytest.raises(sd.DeviceError):
+        sd.profiles._resolve_custom_run(r, "ios")
+
+
+def test_substitute_missing_device_id_raises():
+    # {device_id} present but neither udid nor serial available -> loud error,
+    # not a silent `-d ''`.
+    with pytest.raises(sd.DeviceError, match="device_id"):
+        sd.profiles._substitute_run_placeholders("run -d {device_id}", {"kind": "ios"})
+
+
+def test_substitute_device_id_ios_and_android():
+    tpl = "launch --device {device_id}"
+    assert sd.profiles._substitute_run_placeholders(tpl, {"kind": "ios", "udid": "ABCD"}) == (
+        "launch --device ABCD"
+    )
+    assert (
+        sd.profiles._substitute_run_placeholders(
+            tpl, {"kind": "android", "serial": "emulator-5554"}
+        )
+        == "launch --device emulator-5554"
+    )
+
+
+def test_substitute_name_is_shell_quoted_and_platform(monkeypatch):
+    out = sd.profiles._substitute_run_placeholders(
+        "run {platform} {device_name}",
+        {"kind": "ios", "udid": "U", "name": "Alice's iPhone"},
+    )
+    # {platform} substituted raw; {device_name} shell-quoted so the apostrophe/space
+    # can't break the command.
+    assert out.startswith("run ios ")
+    assert shlex.split(out)[-1] == "Alice's iPhone"
+
+
+def test_substitute_leaves_unknown_braces_untouched():
+    out = sd.profiles._substitute_run_placeholders(
+        "echo {device_id} {foo}", {"kind": "ios", "udid": "U"}
+    )
+    assert out == "echo U {foo}"
+
+
+def test_run_custom_command_executes_with_shell(tmp_path, monkeypatch):
+    captured = {}
+
+    def _fake_call(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return 0
+
+    monkeypatch.setattr(sd.profiles.subprocess, "call", _fake_call)
+    r = _recipe(tmp_path, {"run": {"ios": "yarn rn run-ios --udid {device_id}"}})
+    rc = sd.profiles.run_custom_command(tmp_path, r, {"kind": "ios", "udid": "ABCD"})
+    assert rc == 0
+    assert captured["cmd"] == "yarn rn run-ios --udid ABCD"
+    assert captured["kwargs"].get("shell") is True
+    assert captured["kwargs"].get("cwd") == tmp_path
+
+
+def test_run_custom_command_none_when_no_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        sd.profiles.subprocess, "call", lambda *a, **k: pytest.fail("should not run")
+    )
+    assert sd.profiles.run_custom_command(tmp_path, _recipe(tmp_path, {}), {"kind": "ios"}) is None

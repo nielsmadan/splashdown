@@ -819,7 +819,14 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
 
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
+    from .profiles import run_custom_command  # noqa: PLC0415
     from .scanner import PROFILES  # noqa: PLC0415
+
+    # A custom `[project] run` command overrides the framework launcher (and
+    # bypasses detection), so it works even on a project with no matching profile.
+    rc = run_custom_command(cwd, recipe, info)
+    if rc is not None:
+        return rc
 
     fw = detect_framework(cwd, recipe)
     if fw not in PROFILES:
