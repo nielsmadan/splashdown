@@ -27,6 +27,10 @@ Local install of the source as the real `splash` binary: `just install-local` / 
 
 Release: `just tag-release-patch|minor|major` bumps `version` in `pyproject.toml`, commits, tags, pushes; `release.yml` then builds, publishes a GitHub release, and updates the Homebrew tap formula. Do not tag releases unless explicitly asked. See **Dev tooling → Release flow** before editing the recipe.
 
+## Before declaring done
+
+Run the full gate, not just `pytest`: `just check` (ruff check + ruff format --check + mypy + pytest). Work has twice been called verified after `pytest` alone and then failed CI on lint/type errors. For anything touching deps or the release recipe, also simulate the release Test step in a clean venv (`pip install build pytest .`) so runtime deps like `argcomplete`/`tomlkit` are present.
+
 ## Dev tooling
 
 How the local checks, hooks, and release flow fit together (the recipe list is under Commands; this is the behavior and gotchas behind them).
@@ -53,8 +57,10 @@ The data flow, end to end:
 6. **`loaders.py`** — `Loader` subclasses (mise/direnv/devbox) idempotently wire `splashdown.env` to be sourced on `cd`. `LOADERS` registry.
 7. **`devices.py`** — all sim/emulator/physical-device lifecycle. iOS via `xcrun simctl`/`devicectl`, Android via `avdmanager`/`sdkmanager`/`emulator`/`adb` from `$ANDROID_HOME`. `ensure_fresh_sim` implements the auto-recreate-on-newer-iOS behavior for `ios = "latest"` variants — it destroys the stale sim and recreates it, leaving the result **Shutdown** (never booted). `detect_framework` picks the launcher (flutter/react-native/expo/xcodebuild/gradle).
 8. **`wiring.py`** — `splash doctor`. `WiringCheck`s detect framework config files that hardcode ports/override the env var, and (where safe) auto-patch them (RN metro config, RN package.json scripts, RN `ios/.xcode.env`, Vite config). Risky rewrites (Spring Boot) are report-only.
-9. **`cli.py`** — argparse setup, `KNOWN_CMDS`, custom help formatter. `commands.py` holds the `cmd_*` handlers that orchestrate the modules above (init, sync, status, run/start/stop/destroy, target subcommands, gc), including git post-checkout hook installation that coexists with lefthook/husky. `target refresh` (`cmd_target_refresh`) eagerly reconciles every managed device by calling `ensure_fresh_sim` per registry row — recreating stale/missing sims, dropping defunct/undeclared rows. `status --check` (`_print_check_summary`) now reports `missing_devices` and `stale_devices` counters alongside orphan/defunct, and routes hints to the correct fix command.
+9. **`cli.py`** — argparse setup, `KNOWN_CMDS`, custom help formatter. `commands.py` holds the `cmd_*` handlers that orchestrate the modules above (init, sync, status, run/start/stop/destroy, target subcommands, gc), delegating git post-checkout hook installation (now in `hooks.py`) that coexists with lefthook/husky. `target refresh` (`cmd_target_refresh`) eagerly reconciles every managed device by calling `ensure_fresh_sim` per registry row — recreating stale/missing sims, dropping defunct/undeclared rows. `status --check` (`_print_check_summary`) now reports `missing_devices` and `stale_devices` counters alongside orphan/defunct, and routes hints to the correct fix command.
 10. **`completion.py`** — argcomplete completers; must be fail-silent (run on every `<Tab>`, never raise/print).
+11. **`hooks.py`** — git-hook and env-loader wiring extracted from `commands.py`: installs/removes the managed post-checkout hook (coexisting with lefthook/husky/`core.hooksPath`), edits mise's `_.file` directive, and manages project `.gitignore` entries. `wiring.py`/`loaders.py` depend on it directly instead of reaching back into `commands.py` via function-local imports.
+12. **`errors.py`** — shared exception types with no intra-package deps. `DeviceError` lives here (not `devices.py`) so lower-level modules like `recipe.py` can raise/catch it without importing the device layer, which would be a cycle (`devices.py` imports `recipe.py`).
 
 ## Distribution
 
@@ -106,6 +112,8 @@ The `HOMEBREW_TAP_TOKEN` secret (in this repo's GitHub secrets) must have write 
 - Shelling out to PATH tools (`xcrun`, `simctl`, `adb`, `git`) is by design — `S603`/`S607` are globally ignored.
 - Tests are plain pytest, split into per-module files under `tests/`, fixture-driven (`registry`, `checkout`, `tmp_path`), heavy on monkeypatching the re-exported symbols. New behavior gets a test in the matching `tests/test_<module>.py` (shared fixtures/helpers in `tests/conftest.py`).
 - The four project files splashdown manages: `splashdown.toml` (committed recipe), `splashdown.local.toml` (gitignored, per-checkout add-only target variants), `splashdown.env` (gitignored, generated — never hand-edit), and the loader config. splashdown owns `splashdown.env` wholesale.
+- **No backward-compat code.** splashdown is pre-release and single-user (the user is the only one running it). When a change alters a file format, the recipe/`.env` layout, or the CLI surface, just make the breaking change — no migration helpers, no legacy-format readers, no code paths or tests preserving the old shape. Tell the user what to update in their own projects (`splash init --force`, one-off edits) and move on. Only add compat handling if explicitly asked.
+- **Monorepo-honest, not monorepo-smart.** Don't build clever auto-configuration that guesses a whole monorepo layout. Instead: (1) make setups *possible* via an expressive schema, (2) *document* the canonical layouts, (3) keep `splash init` *fail-safe* — when it can't produce a correct recipe, write a minimal safe one and point to docs rather than scaffolding something the user must undo. Prefer detection that gates *whether* to auto-scaffold over detection that auto-produces complex config. See `docs/superpowers/specs/2026-06-28-monorepo-support-design.md`.
 
 ## Documentation
 
