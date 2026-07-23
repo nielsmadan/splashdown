@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{#- SEO: descriptive homepage title + Open Graph / Twitter / JSON-LD, which the
+    base theme doesn't emit. Other pages keep "<Page> - <site_name>". -#}
+{#- Zensical doesn't expose page.is_homepage; detect via canonical URL. -#}
+{% set is_home = page and page.canonical_url == (config.site_url ~ "/") %}
+{% set home_title = "splashdown — per-checkout simulators, emulators & dev ports" %}
+{% set meta_title = home_title if is_home else ((page.title ~ " - " ~ config.site_name) if page and page.title else config.site_name) %}
+{% set meta_desc = (page.meta.description if page and page.meta and page.meta.description else config.site_description) %}
+{% set og_image = config.site_url ~ "/assets/logo.svg" %}
+
+{% block htmltitle %}
+  <title>{{ meta_title }}</title>
+{% endblock %}
+
+{% block extrahead %}
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{ meta_title }}">
+  <meta property="og:description" content="{{ meta_desc }}">
+  <meta property="og:site_name" content="{{ config.site_name }}">
+  {% if page and page.canonical_url %}<meta property="og:url" content="{{ page.canonical_url }}">{% endif %}
+  <meta property="og:image" content="{{ og_image }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ meta_title }}">
+  <meta name="twitter:description" content="{{ meta_desc }}">
+  <meta name="twitter:image" content="{{ og_image }}">
+  {% if is_home %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "splashdown",
+    "description": "{{ config.site_description }}",
+    "url": "{{ config.site_url }}",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Linux",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "license": "https://opensource.org/licenses/MIT",
+    "codeRepository": "{{ config.repo_url }}"
+  }
+  </script>
+  {% endif %}
+{% endblock %}

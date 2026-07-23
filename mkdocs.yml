@@ -1,6 +1,6 @@
 site_name: splashdown
 site_url: https://splashdown.dev
-site_description: Per-checkout iOS simulators, Android emulators, and dev ports for git worktrees.
+site_description: splashdown pins per-checkout dev ports, env vars, iOS simulators, and Android emulators, coordinated machine-wide so concurrent git worktrees never collide.
 repo_url: https://github.com/nielsmadan/splashdown
 repo_name: nielsmadan/splashdown
 
@@ -10,6 +10,7 @@ docs_dir: docs/user
 
 theme:
   name: material
+  custom_dir: overrides
   logo: assets/logo.svg
   favicon: assets/logo.svg
   palette:
