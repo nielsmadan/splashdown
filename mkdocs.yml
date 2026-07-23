@@ -1,0 +1,67 @@
+site_name: splashdown
+site_url: https://splashdown.dev
+site_description: Per-checkout iOS simulators, Android emulators, and dev ports for git worktrees.
+repo_url: https://github.com/nielsmadan/splashdown
+repo_name: nielsmadan/splashdown
+
+# Publish the USER docs only. Developer/LLM docs (features/, tech/, product/,
+# superpowers/) live outside this dir and are never part of the site build.
+docs_dir: docs/user
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  palette:
+    # Dark first (baby blue on dark), with a toggle to light.
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+
+extra_css:
+  - assets/extra.css
+
+nav:
+  - Home: index.md
+  - How it works: how-it-works.md
+  - Guides:
+      - The recipe: recipe.md
+      - Per-checkout overrides: overrides.md
+      - Settings: settings.md
+      - Shell completion: shell-completion.md
+      - Running & managing devices: devices.md
+      - Framework wiring: framework-wiring.md
+      - Profiles & loaders: profiles-and-loaders.md
+      - Monorepos: monorepos.md
+  - Reference:
+      - CLI: cli.md
+      - Global port coordination: port-coordination.md
+      - CI integration: ci.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.inlinehilite

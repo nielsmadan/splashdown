@@ -1,0 +1,27 @@
+# CLI reference
+
+```
+splash                              # sync this checkout (the post-checkout hook runs this)
+splash --version
+splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
+splash status [all]                 # resources + targets + which ports are bound right now
+splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]   # scaffold + first sync
+splash doctor [--fix] [--framework=…]
+
+splash run     [type] [variant]     # boot target + build + launch
+splash start   [type] [variant]     # boot target (no build/launch)
+splash stop    [type] [variant]     # shut down
+splash destroy [type] [variant]     # delete this checkout's target instance
+
+splash target                       # list declared targets + live state
+splash target add/remove <type> <variant> …
+splash target refresh [ios|android] # recreate stale sims/emulators
+splash target prune   [ios|android] # destroy sims/emulators splashdown didn't create
+
+splash env                          # list this checkout's resolved values
+splash env get KEY | set KEY=VALUE | release [KEY]
+
+splash gc                           # drop dead-checkout entries (ports, vars, sims)
+```
+
+`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash sync --force` reallocates ports. The auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash init` scaffolds the project files and then runs the first sync so the current checkout has values immediately (`--no-sync` scaffolds only). `splash init --rescan` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.

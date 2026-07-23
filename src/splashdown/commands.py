@@ -1017,7 +1017,7 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
     print(
         f"monorepo detected ({len(inv.apps)} apps) — resources not auto-configured; "
-        "see docs/prd/monorepos.md",
+        "see https://splashdown.dev/monorepos/",
         file=sys.stderr,
     )
     local_path = cwd / LOCAL_NAME

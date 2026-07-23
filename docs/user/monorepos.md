@@ -1,35 +1,23 @@
 # Monorepos
 
-> Covers **UC1** (per-checkout ports / env) and **UC3** (init & onboarding) in a multi-app
-> workspace. Audience: engineers setting up splashdown in a monorepo. Persona: the
-> parallel-agent developer in `docs/product/persona.md`.
-> `README.md` is the authoritative schema reference.
-
-## Contents
-
-- [How splash init handles monorepos](#how-splash-init-handles-monorepos)
-- [JS workspace: web + backend](#js-workspace-web--backend)
-- [RN/Expo + web + backend](#rnexpo--web--backend)
-- [Polyglot: JS workspace + native iOS + Android](#polyglot-js-workspace--native-ios--android)
-- [docker-compose services](#docker-compose-services)
-- [Gotchas](#gotchas)
-
----
+Setting up splashdown in a multi-app workspace (JS workspaces, React Native / Expo, polyglot
+native + web, and docker-compose services) and how `splash init` handles each. See
+[The recipe](recipe.md) for the full schema.
 
 ## How splash init handles monorepos
 
 `splash init` is *honest*, not *smart*. It auto-scaffolds simple repos where every app maps
-unambiguously to a distinct resource name. It *defers* when it detects a collision — for
-example, two apps that both want a resource named `PORT` — writing a structure-only recipe
+unambiguously to a distinct resource name. It *defers* when it detects a collision (for
+example, two apps that both want a resource named `PORT`), writing a structure-only recipe
 (`[project]` + `[apps.*]` with empty `resources = []` per app) and printing:
 
 ```
-monorepo detected (N apps) — resources not auto-configured; see docs/user/monorepos.md
+monorepo detected (N apps) — resources not auto-configured; see https://splashdown.dev/monorepos/
 ```
 
 That message points here. The patterns below are the copy-pasteable recipes to reach for
-when init defers. Hand-author the `[resources.*]` section with distinct env names per app;
-the scanner-produced `[project]` and `[apps.*]` sections are already correct.
+when init defers. Hand-author the `[resources.*]` section with distinct env names per app.
+The scanner-produced `[project]` and `[apps.*]` sections are already correct.
 
 ---
 
@@ -68,7 +56,7 @@ type = "port"
 range = [9000, 9100]
 ```
 
-**Root orchestrator wiring.** `next dev` reads `PORT`; `nest start` also reads `PORT`.
+**Root orchestrator wiring.** `next dev` reads `PORT`. `nest start` also reads `PORT`.
 Neither reads `WEB_PORT` or `API_PORT` out of the box, so translate in the root dev script:
 
 ```json
@@ -242,7 +230,7 @@ splash run emulator     # ./gradlew :app:installDebug → adb shell am start
 ```
 
 See the `ios-native` and `android-native` preset scaffolds (`splash init ios-native` /
-`splash init android-native`) for the standalone-project recipes; the entries above are the
+`splash init android-native`) for the standalone-project recipes. The entries above are the
 same fields, merged into a monorepo recipe.
 
 ---
@@ -262,7 +250,7 @@ manages. The right pattern is:
        ports: ["5433:5432"]   # host 5433 → container 5432
    ```
 
-2. Reference that fixed port in `splashdown.toml` as a template — so worktrees still get
+2. Reference that fixed port in `splashdown.toml` as a template, so worktrees still get
    distinct values if you run multiple stacks simultaneously:
 
    ```toml
@@ -272,7 +260,7 @@ manages. The right pattern is:
    ```
 
    Or, if you do need compose's host port to vary per worktree, generate it yourself and
-   pass it into compose via an env file — but compose reads `.env` at the project level, not
+   pass it into compose via an env file, but compose reads `.env` at the project level, not
    `splashdown.env`, so you'd need a `writer = "envfile=.env"` resource and care about
    variable name collisions with the rest of your `.env`.
 
@@ -293,7 +281,7 @@ automatically. See [framework-wiring.md](framework-wiring.md) for details.
 `writer = "envfile=apps/web/.env"` routes a value directly into an app-level `.env` file
 instead of `splashdown.env`. This is the right escape hatch when a build tool can only read
 dotenv files (legacy Gradle setup, vendor tooling), but it means mise/direnv/devbox never
-see that value in the parent shell — any process that needs it must read the `.env` file
+see that value in the parent shell. Any process that needs it must read the `.env` file
 directly. Prefer patching the consumer to read `process.env` so all values stay in
 `splashdown.env` and the full suite (`status`, `env get`, templated cross-references)
 works as expected.
@@ -304,7 +292,7 @@ the existing `[resources.*]` section verbatim, so your hand-authored resource na
 the rescan.
 
 **`apps.*` with empty `resources = []` is intentional.** Native apps (`ios-native`,
-`android-native`) allocate no port resources — they use simulator/emulator targets, not
-ports. An `[apps.ios]` entry with `resources = []` is correct and expected; it tells
+`android-native`) allocate no port resources, they use simulator/emulator targets, not
+ports. An `[apps.ios]` entry with `resources = []` is correct and expected. It tells
 `splash run` which framework to use for the build and launch, even though no env vars are
 managed for it.

@@ -590,7 +590,7 @@ def test_init_defers_on_port_collision(tmp_path, capsys):
     text = (tmp_path / "splashdown.toml").read_text()
     assert "[apps.web]" in text and "[apps.api]" in text
     assert "[resources." not in text and "[targets." not in text
-    assert "docs/prd/monorepos.md" in capsys.readouterr().err
+    assert "https://splashdown.dev/monorepos/" in capsys.readouterr().err
 
 
 def test_init_defers_on_unclaimed_native_sibling(tmp_path, capsys):

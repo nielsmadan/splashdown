@@ -1,0 +1,47 @@
+/* splashdown docs theme — "sky/navy" palette (analogous blues, hue ~195-200deg).
+   Baby blue #8ecae6 on a deep-navy brand bar; medium blue #219ebc for light mode.
+
+   Zensical uses the same --md-* palette variables as Material, but sets its own
+   per-scheme defaults under the [data-md-color-scheme=...] selector, which
+   outranks a plain :root override. So we override at the same scheme-selector
+   level and force it, since stylesheet load order isn't guaranteed. */
+
+/* Navy brand bar (header/footer) in both schemes, so the baby-blue logo always
+   reads against it. */
+[data-md-color-scheme="slate"],
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #023047 !important;
+  --md-primary-fg-color--light: #124b6b !important;
+  --md-primary-fg-color--dark: #01212f !important;
+  --md-primary-bg-color: #ffffff !important;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* Dark mode: baby blue accents/links on the dark ground. */
+[data-md-color-scheme="slate"] {
+  --md-accent-fg-color: #8ecae6 !important;
+  --md-typeset-a-color: #8ecae6 !important;
+}
+
+/* Light mode: baby blue is too pale on white — drop to medium blue for links. */
+[data-md-color-scheme="default"] {
+  --md-accent-fg-color: #219ebc !important;
+  --md-typeset-a-color: #219ebc !important;
+}
+
+/* Zensical's default "modern" header uses --md-default-bg-color (a translucent
+   blurred bar), NOT --md-primary-fg-color, so the palette override above can't
+   reach it. Color the brand bar navy directly; a touch of transparency keeps
+   the modern backdrop-blur. */
+.md-header,
+.md-tabs {
+  background-color: rgba(2, 48, 71, 0.92) !important;
+  color: #ffffff !important;
+}
+
+/* Bigger header logo (default is ~1.2rem). */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.6rem;
+  width: 1.6rem;
+}

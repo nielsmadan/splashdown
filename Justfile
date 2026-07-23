@@ -61,7 +61,20 @@ reset-local:
     @uv tool uninstall splashdown
 
 clean:
-    @rm -rf dist build *.egg-info .pytest_cache htmlcov .coverage coverage.xml
+    @rm -rf dist build *.egg-info .pytest_cache htmlcov .coverage coverage.xml site
+
+# --- Docs ---
+#
+# User docs site (Zensical), published to splashdown.dev. Config in mkdocs.yml,
+# pages in docs/user/. Zensical is a dev-only dependency (the `docs` group).
+
+# Build the docs site into ./site (strict: fails on broken links/nav).
+docs-build:
+    @uv run --group docs zensical build -f mkdocs.yml --strict
+
+# Serve the docs locally with live reload (http://localhost:8000).
+docs:
+    @uv run --group docs zensical serve -f mkdocs.yml
 
 # --- Release ---
 #
