@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -612,6 +613,36 @@ def cmd_target_gc(registry: Registry) -> int:
         destroyed_count += 1
     _finish_progress()
     return destroyed_count
+
+
+_COMPLETION_SHELLS = ("bash", "zsh")
+
+
+def _detect_shell() -> str:
+    """Shell basename from $SHELL, for `splash completion` with no argument."""
+    return Path(os.environ.get("SHELL", "")).name or "bash"
+
+
+def cmd_completion(shell: str | None) -> int:
+    """Print shell-completion registration for `eval "$(splash completion)"`.
+
+    splash bundles argcomplete, so this emits the full shellcode itself: no
+    separately-installed `register-python-argcomplete`, and for zsh no
+    `bashcompinit`. Autodetects the shell from $SHELL when not given."""
+    shell = shell or _detect_shell()
+    if shell not in _COMPLETION_SHELLS:
+        print(
+            f"splash completion: unsupported shell {shell!r} "
+            f"(supported: {', '.join(_COMPLETION_SHELLS)})",
+            file=sys.stderr,
+        )
+        return 2
+    import argcomplete  # noqa: PLC0415
+
+    # argcomplete doesn't export shellcode in its typed surface (autocomplete is).
+    code = argcomplete.shellcode(["splash"], shell=shell)  # type: ignore[attr-defined,no-untyped-call]
+    print(code)
+    return 0
 
 
 def cmd_gc(registry: Registry) -> int:

@@ -2,20 +2,18 @@
 
 `splash` ships bash/zsh tab-completion (subcommands, device types, and dynamic device-variant names).
 
-| Install method | Setup |
-|---|---|
-| Homebrew | Zero-touch, the formula installs completion files. |
-| mise | `mise use -g pipx:argcomplete`, then add the line below. |
+With **Homebrew** it is zero-touch, the formula installs the completion files. With any other install (mise, pipx, uv), add one line to your shell rc. `splash` bundles everything it needs, so there is no separate package to install and no `bashcompinit` step.
 
-For **zsh**, load bash-compat completion first:
+For **zsh** (`~/.zshrc`):
 
 ```zsh
-autoload -U +X bashcompinit && bashcompinit
-eval "$(register-python-argcomplete splash)"
+eval "$(splash completion zsh)"
 ```
 
-For **bash**:
+For **bash** (`~/.bashrc`):
 
 ```bash
-eval "$(register-python-argcomplete splash)"
+eval "$(splash completion bash)"
 ```
+
+`splash completion` with no argument autodetects your shell from `$SHELL`.

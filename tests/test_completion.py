@@ -223,3 +223,62 @@ def test_install_is_noop_without_argcomplete_env(monkeypatch):
     # No _ARGCOMPLETE in env -> returns without importing/inspecting.
     monkeypatch.delenv("_ARGCOMPLETE", raising=False)
     assert install(sd._build_parser()) is None
+
+
+# --- `splash completion` subcommand (shell registration shellcode) ---
+
+
+def test_completion_zsh_outputs_native_zsh(capsys):
+    rc = sd.cmd_completion("zsh")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "#compdef splash" in out  # native zsh, no bashcompinit needed
+
+
+def test_completion_bash_outputs_shellcode(capsys):
+    rc = sd.cmd_completion("bash")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "splash" in out
+    assert "complete" in out
+
+
+def test_completion_autodetects_shell_from_env(monkeypatch, capsys):
+    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+    rc = sd.cmd_completion(None)
+    assert rc == 0
+    assert "#compdef splash" in capsys.readouterr().out
+
+
+def test_completion_rejects_unsupported_shell(capsys):
+    rc = sd.cmd_completion("notashell")
+    assert rc != 0
+    assert "notashell" in capsys.readouterr().err
+
+
+def test_completion_via_main_registers_subcommand(capsys):
+    rc = sd.main(["completion", "zsh"])
+    assert rc == 0
+    assert "#compdef splash" in capsys.readouterr().out
+
+
+def test_completion_autodetect_falls_back_to_bash_when_shell_unset(monkeypatch, capsys):
+    monkeypatch.delenv("SHELL", raising=False)
+    rc = sd.cmd_completion(None)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "complete" in out  # bash shellcode, not zsh
+
+
+def test_completion_autodetect_empty_shell_falls_back_to_bash(monkeypatch, capsys):
+    monkeypatch.setenv("SHELL", "")
+    rc = sd.cmd_completion(None)
+    assert rc == 0
+    assert "complete" in capsys.readouterr().out
+
+
+def test_completion_via_main_autodetects_from_env(monkeypatch, capsys):
+    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+    rc = sd.main(["completion"])
+    assert rc == 0
+    assert "#compdef splash" in capsys.readouterr().out

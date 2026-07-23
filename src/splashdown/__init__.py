@@ -70,6 +70,7 @@ from .commands import (
     _cmd_init_legacy_preset,
     _env_dispatch,
     _resolve_no_loader_delivery,
+    cmd_completion,
     cmd_deinit,
     cmd_gc,
     cmd_init,

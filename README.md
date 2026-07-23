@@ -32,23 +32,21 @@ This puts `splash` on your `PATH`. The resource registry at `$XDG_STATE_HOME/spl
 
 ### Shell completion
 
-`splash` ships bash/zsh tab-completion for subcommands, device types, and device-variant names. With Homebrew it is zero-touch, the formula installs the completion files. With mise, install `argcomplete` and add the eval line for your shell.
+`splash` ships bash/zsh tab-completion for subcommands, device types, and device-variant names. With Homebrew it is zero-touch, the formula installs the completion files. With any other install (mise, pipx, uv), add one line to your shell rc. `splash` bundles everything it needs, so there is no separate package to install and no `bashcompinit` step.
 
-zsh (load bash-compat completion first):
+zsh (`~/.zshrc`):
 
 ```zsh
-mise use -g pipx:argcomplete
-autoload -U +X bashcompinit && bashcompinit
-eval "$(register-python-argcomplete splash)"
+eval "$(splash completion zsh)"
 ```
 
-bash:
+bash (`~/.bashrc`):
 
 ```bash
-eval "$(register-python-argcomplete splash)"
+eval "$(splash completion bash)"
 ```
 
-More detail at [splashdown.dev/shell-completion](https://splashdown.dev/shell-completion/).
+`splash completion` with no argument autodetects your shell. More detail at [splashdown.dev/shell-completion](https://splashdown.dev/shell-completion/).
 
 ## Quick start
 

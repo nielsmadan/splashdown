@@ -13,6 +13,7 @@ from .commands import (
     _declared_target_types,
     _env_dispatch,
     _target_dispatch,
+    cmd_completion,
     cmd_deinit,
     cmd_destroy,
     cmd_gc,
@@ -104,6 +105,7 @@ KNOWN_CMDS = {
     "stop",
     "destroy",
     "target",
+    "completion",
 }
 
 
@@ -188,6 +190,13 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     er.add_argument("--checkout", default=None)
 
     sub.add_parser("gc", help=argparse.SUPPRESS)
+
+    p = sub.add_parser("completion", help=argparse.SUPPRESS)
+    p.add_argument(
+        "shell",
+        nargs="?",
+        help="bash | zsh (default: autodetect from $SHELL)",
+    )
 
     p = sub.add_parser("doctor", help=argparse.SUPPRESS)
     p.add_argument(
@@ -369,6 +378,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
 
     _install_completion(parser)
     args = parser.parse_args(argv)
+
+    # Needs no checkout or registry — dispatch before touching either.
+    if args.cmd == "completion":
+        return cmd_completion(args.shell)
 
     cwd = _resolve_cwd(args)
     registry = Registry()
