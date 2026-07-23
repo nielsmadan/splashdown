@@ -10,7 +10,7 @@ docs_dir: docs/user
 
 theme:
   name: material
-  custom_dir: overrides
+  custom_dir: docs/overrides
   logo: assets/logo.svg
   favicon: assets/logo.svg
   palette:

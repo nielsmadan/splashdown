@@ -3,10 +3,13 @@ name: Docs
 on:
   push:
     branches: [main]
+    # The complete set of inputs to `zensical build`: published pages/assets,
+    # the theme overrides, the config, and this workflow. (README.md is NOT an
+    # input — the site's home is docs/user/index.md, not the README.)
     paths:
       - "docs/user/**"
+      - "docs/overrides/**"
       - "mkdocs.yml"
-      - "README.md"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
