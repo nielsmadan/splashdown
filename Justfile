@@ -156,7 +156,7 @@ tag-release bump="":
     fi
 
     echo "Tagging v$VERSION..."
-    git tag "v$VERSION"
+    git tag -m "splashdown $VERSION" "v$VERSION"   # -m avoids the editor prompt for signed/annotated tags
     git push origin "$(git rev-parse --abbrev-ref HEAD)" "v$VERSION"
     echo "Tagged and pushed v$VERSION — release workflow triggered."
 
@@ -183,6 +183,6 @@ release:
     git add pyproject.toml uv.lock CHANGELOG.md
     git commit -m "chore: bump version to $VERSION"
 
-    git tag "$NEXT"
+    git tag -m "splashdown $VERSION" "$NEXT"   # -m avoids the editor prompt for signed/annotated tags
     git push origin "$(git rev-parse --abbrev-ref HEAD)" "$NEXT"
     echo "Tagged and pushed $NEXT — release workflow triggered."
