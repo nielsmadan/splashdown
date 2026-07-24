@@ -44,22 +44,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Release notes = this tag's changelog section (same feat/fix grouping as
+          # CHANGELOG.md, via cliff.toml). Strip header/footer and the redundant
+          # `## [version]` heading (the release title already carries it).
+          pip install --quiet git-cliff==2.13.1
+          git-cliff --current --strip all -o /tmp/release-notes.md || true
+          sed -i '/^## \[/d' /tmp/release-notes.md
           PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
           if [ -n "$PREV_TAG" ]; then
-            NOTES=$(git log --pretty=format:"- %s" "${PREV_TAG}..${GITHUB_REF_NAME}" \
-              | grep -v "^- chore:" | grep -v "^- Merge " || true)
-            CHANGELOG_LINK="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${GITHUB_REF_NAME}"
-          else
-            NOTES="- Initial release"
-            CHANGELOG_LINK=""
+            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+              "${GITHUB_REPOSITORY}" "${PREV_TAG}" "${GITHUB_REF_NAME}" >> /tmp/release-notes.md
           fi
-          {
-            echo "## What's Changed"
-            echo ""
-            echo "$NOTES"
-            echo ""
-            echo "$CHANGELOG_LINK"
-          } > /tmp/release-notes.md
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "splashdown $VERSION" \
             --notes-file /tmp/release-notes.md

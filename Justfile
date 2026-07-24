@@ -1,6 +1,9 @@
 # Splashdown — per-checkout resource provisioner.
 # `just` task runner: https://github.com/casey/just
 
+# git-cliff for CHANGELOG.md generation; pinned, run via uvx (no separate install).
+git_cliff := "git-cliff@2.13.1"
+
 [private]
 default:
     @just --list
@@ -76,6 +79,15 @@ docs-build:
 docs:
     @uv run --group docs zensical serve -f mkdocs.yml
 
+# --- Changelog ---
+#
+# CHANGELOG.md is generated from feat/fix commits by git-cliff (config in cliff.toml);
+# chore/docs/deps are skipped. `tag-release` regenerates it automatically.
+
+# Regenerate CHANGELOG.md from conventional commits.
+changelog:
+    @uvx {{git_cliff}} -o CHANGELOG.md
+
 # --- Release ---
 #
 # Usage:
@@ -119,7 +131,8 @@ tag-release bump="":
         echo "Bumping version: ${LATEST_TAG:-(none)} -> $VERSION"
         sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
         uv lock  # keep uv.lock's splashdown version in sync (else the pre-commit hook regenerates it post-commit, leaving it uncommitted)
-        git add pyproject.toml uv.lock
+        uvx {{git_cliff}} --tag "v$VERSION" -o CHANGELOG.md
+        git add pyproject.toml uv.lock CHANGELOG.md
         git commit -m "chore: bump version to $VERSION"
     else
         VERSION="$PY_VERSION"
@@ -134,9 +147,42 @@ tag-release bump="":
                 exit 1
             fi
         fi
+
+        uvx {{git_cliff}} --tag "v$VERSION" -o CHANGELOG.md
+        if ! git diff --quiet -- CHANGELOG.md 2>/dev/null || ! git ls-files --error-unmatch CHANGELOG.md >/dev/null 2>&1; then
+            git add CHANGELOG.md
+            git commit -m "chore: update changelog for v$VERSION"
+        fi
     fi
 
     echo "Tagging v$VERSION..."
     git tag "v$VERSION"
     git push origin "$(git rev-parse --abbrev-ref HEAD)" "v$VERSION"
     echo "Tagged and pushed v$VERSION — release workflow triggered."
+
+# git-cliff picks the next version from commits since the last tag (feat -> minor,
+# fix -> patch, breaking -> minor on 0.x); tag-release-* forces a specific bump instead.
+# Auto-bump pyproject + CHANGELOG.md, then commit, tag, and push a release.
+release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    NEXT=$(uvx {{git_cliff}} --bumped-version)          # e.g. v0.12.0
+    VERSION="${NEXT#v}"
+    LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]' | head -1 || true)
+
+    if [ "$NEXT" = "$LATEST_TAG" ]; then
+        echo "Nothing to release: no feat/fix commits since ${LATEST_TAG:-the last tag}."
+        exit 1
+    fi
+    echo "Auto-release: ${LATEST_TAG:-(none)} -> $NEXT"
+
+    sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+    uv lock  # keep uv.lock in sync (see Dev tooling -> Release flow in AGENTS.md)
+    uvx {{git_cliff}} --tag "$NEXT" -o CHANGELOG.md
+    git add pyproject.toml uv.lock CHANGELOG.md
+    git commit -m "chore: bump version to $VERSION"
+
+    git tag "$NEXT"
+    git push origin "$(git rev-parse --abbrev-ref HEAD)" "$NEXT"
+    echo "Tagged and pushed $NEXT — release workflow triggered."
