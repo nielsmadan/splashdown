@@ -7,6 +7,7 @@
 [![CI](https://github.com/nielsmadan/splashdown/actions/workflows/ci.yml/badge.svg)](https://github.com/nielsmadan/splashdown/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nielsmadan/splashdown/branch/main/graph/badge.svg)](https://codecov.io/gh/nielsmadan/splashdown)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
 **Per-checkout or per-worktree simulators, emulators, and dev ports for development.**
 
@@ -19,6 +20,10 @@ Do you have any of these problems?
 Splashdown solves them. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
 
 📖 **Full documentation: [splashdown.dev](https://splashdown.dev)**
+
+## Status
+
+splashdown is **alpha** (pre-1.0). It is actively used and works well, but the CLI surface and the `splashdown.toml` schema may still shift between minor releases while the design settles. Expect incremental changes, nothing drastic. Any breaking change is called out in the [changelog](CHANGELOG.md), and while on `0.x` it can land in a minor version, so pin a version if you need strict stability.
 
 ## Install
 
@@ -125,4 +130,4 @@ just reset-local                # uninstall the local `splash`
 just tag-release-patch          # bump patch, commit, tag, push (triggers release.yml)
 ```
 
-See `Justfile` and `.github/workflows/release.yml` for the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`.
+See `Justfile` and `.github/workflows/release.yml` for the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and commit conventions.
