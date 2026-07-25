@@ -859,6 +859,26 @@ def test_resolve_device_name_rejects_leading_dash(tmp_path):
         sd._resolve_device_name({"name": "-rf"}, tmp_path, "default")
 
 
+@pytest.mark.parametrize(
+    ("destroy", "destroy_args", "message"),
+    [
+        (sd.devices.ios_destroy, ("UDID",), "simctl delete failed"),
+        (sd.devices.android_destroy, ("avd",), "avdmanager delete failed"),
+    ],
+)
+def test_device_destroy_reports_command_failure(monkeypatch, destroy, destroy_args, message):
+    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: name)
+    monkeypatch.setattr(
+        sd.devices.subprocess,
+        "run",
+        lambda *call_args, **kwargs: subprocess.CompletedProcess(
+            call_args[0], 1, "", "delete failed"
+        ),
+    )
+    with pytest.raises(sd.DeviceError, match=message):
+        destroy(*destroy_args)
+
+
 def test_cli_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         sd.main(["--version"])
@@ -933,6 +953,75 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
     assert rc == 0
     assert destroyed == []
     assert "[targets.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
+
+
+def test_cli_device_remove_recipe_variant_does_not_destroy(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    destroyed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sd.commands, "device_destroy", lambda dtype, name: destroyed.append((dtype, name))
+    )
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "default"])
+    assert rc == 1
+    assert destroyed == []
+    assert "[targets.simulator.default]" in (tmp_path / "splashdown.toml").read_text()
+
+
+def test_cli_device_remove_failure_keeps_local_variant(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text("")
+    local = tmp_path / "splashdown.local.toml"
+    local.write_text('[targets.simulator.repro]\nmodel = "iPhone 17"\n')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    registry = sd.Registry()
+    registry.set_device(
+        str(tmp_path.resolve()),
+        "simulator",
+        "repro",
+        "UDID",
+        "iPhone 17",
+        "18.5",
+    )
+
+    def fail_destroy(row):
+        raise sd.DeviceError(f"could not destroy {row.dtype} {row.udid}")
+
+    monkeypatch.setattr(sd.commands, "device_destroy_row", fail_destroy)
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
+    assert rc == 1
+    assert "[targets.simulator.repro]" in local.read_text()
+    assert registry.get_device(str(tmp_path.resolve()), "simulator", "repro") is not None
+    assert "and destroyed the instance" not in capsys.readouterr().err
+
+
+def test_cli_device_remove_destroys_registered_instance(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text("")
+    local = tmp_path / "splashdown.local.toml"
+    local.write_text('[targets.simulator.repro]\nname = "new-name"\n')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    registry = sd.Registry()
+    registry.set_device(
+        str(tmp_path.resolve()),
+        "simulator",
+        "repro",
+        "UDID-OLD",
+        "iPhone 17",
+        "18.5",
+    )
+    destroyed = []
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(
+        sd.commands,
+        "device_destroy",
+        lambda *args: pytest.fail(f"resolved-name fallback used: {args}"),
+    )
+
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
+
+    assert rc == 0
+    assert destroyed[0].udid == "UDID-OLD"
+    assert registry.get_device(str(tmp_path.resolve()), "simulator", "repro") is None
+    assert "[targets.simulator.repro]" not in local.read_text()
 
 
 def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):

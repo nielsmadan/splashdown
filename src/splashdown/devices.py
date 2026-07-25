@@ -207,7 +207,16 @@ def ios_shutdown(udid: str) -> None:
 
 
 def ios_destroy(udid: str) -> None:
-    subprocess.run(["xcrun", "simctl", "delete", udid], check=False)
+    proc = subprocess.run(
+        ["xcrun", "simctl", "delete", udid],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise DeviceError(
+            f"simctl delete failed for {udid}: {proc.stderr.strip() or proc.returncode}"
+        )
 
 
 # --- Android emulator ---
@@ -375,7 +384,16 @@ def android_shutdown(avd_name: str) -> None:
 
 
 def android_destroy(avd_name: str) -> None:
-    subprocess.run([_android_bin("avdmanager"), "delete", "avd", "-n", avd_name], check=False)
+    proc = subprocess.run(
+        [_android_bin("avdmanager"), "delete", "avd", "-n", avd_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise DeviceError(
+            f"avdmanager delete failed for {avd_name}: {proc.stderr.strip() or proc.returncode}"
+        )
 
 
 # --- physical devices (discovered, not created) ---
@@ -669,6 +687,8 @@ def device_destroy(dtype: str, resolved_name: str) -> None:
             ios_shutdown(found[0])
             ios_destroy(found[0])
     elif dtype == "emulator":
+        if not _android_avd_exists(resolved_name):
+            return
         android_shutdown(resolved_name)
         android_destroy(resolved_name)
 
@@ -680,9 +700,13 @@ def device_destroy_row(row: DeviceRow) -> None:
     this needs no by-name lookup, so it also reaches orphaned instances whose
     recipe variant is gone."""
     if row.dtype == "simulator":
+        if not _ios_udid_exists(row.udid):
+            return
         ios_shutdown(row.udid)
         ios_destroy(row.udid)
     elif row.dtype == "emulator":
+        if not _android_avd_exists(row.udid):
+            return
         android_shutdown(row.udid)
         android_destroy(row.udid)
 
@@ -782,22 +806,30 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
     path.write_text(target_add_text(existing_text, dtype, variant, fields))
 
 
-def target_remove(cwd: Path, dtype: str, variant: str) -> None:
-    """Delete the [targets.<type>.<variant>] table from splashdown.local.toml.
-    Refuses to touch recipe-declared variants (those you remove by editing the recipe)."""
+def _prepare_target_remove(cwd: Path, dtype: str, variant: str) -> tuple[dict[str, Any], Path, str]:
     recipe = _load_recipe_or_empty(cwd)
     if variant in recipe.targets.get(dtype, {}):
         raise DeviceError(
             f"`{dtype}.{variant}` is declared in the recipe; edit {RECIPE_NAME} to remove it"
         )
+    path = cwd / LOCAL_NAME
+    if not path.exists():
+        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
+    spec = LocalConfig.load(path).targets.get(dtype, {}).get(variant)
+    if spec is None:
+        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
     from .tomlio import target_remove_text  # noqa: PLC0415
 
-    path = cwd / LOCAL_NAME
-    if not path.exists() or variant not in LocalConfig.load(path).targets.get(dtype, {}):
-        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
     new_text = target_remove_text(path.read_text(), dtype, variant)
     if new_text is None:
         raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
+    return spec, path, new_text
+
+
+def target_remove(cwd: Path, dtype: str, variant: str) -> None:
+    """Delete the [targets.<type>.<variant>] table from splashdown.local.toml.
+    Refuses to touch recipe-declared variants (those you remove by editing the recipe)."""
+    _spec, path, new_text = _prepare_target_remove(cwd, dtype, variant)
     path.write_text(new_text)
 
 

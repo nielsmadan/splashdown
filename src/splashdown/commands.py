@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
@@ -21,6 +20,7 @@ from .devices import (
     _ios_udid_exists,
     _is_orphan_device,
     _load_recipe_or_empty,
+    _prepare_target_remove,
     _resolve_device_name,
     _short_path,
     _summary_string,
@@ -40,7 +40,6 @@ from .devices import (
     ios_shutdown,
     physical_status,
     target_add,
-    target_remove,
 )
 from .hooks import (
     _ensure_gitignore,
@@ -1411,22 +1410,25 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
         return 0
 
     if args.target_cmd == "remove":
-        # Default: also destroy the instance — most users want both. Opt out
-        # of state destruction with --keep-instance.
         _dev_destroy = device_destroy
+        _dev_destroy_row = device_destroy_row
         variant_arg = args.variant
-        # Physical hardware has no instance to destroy — only sims/emulators do.
+        spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant_arg)
         destroyed = False
         if not args.keep_instance and args.dtype != "device":
-            spec = _load_variant_spec(cwd, args.dtype, variant_arg)
-            if spec is not None:
+            registry = Registry()
+            checkout = str(cwd.resolve())
+            row = registry.get_device(checkout, args.dtype, variant_arg)
+            if row is not None:
+                _dev_destroy_row(row)
+            else:
                 resolved = _resolve_device_name(spec, cwd, variant_arg, args.dtype)
-                # sim may not exist yet; the toml edit still proceeds
-                with contextlib.suppress(DeviceError):
-                    _dev_destroy(args.dtype, resolved)
-                Registry().remove_device(str(cwd.resolve()), args.dtype, variant_arg)
-                destroyed = True
-        target_remove(cwd, args.dtype, variant_arg)
+                _dev_destroy(args.dtype, resolved)
+            local_path.write_text(new_local_text)
+            registry.remove_device(checkout, args.dtype, variant_arg)
+            destroyed = True
+        else:
+            local_path.write_text(new_local_text)
         suffix = " (and destroyed the instance)" if destroyed else ""
         print(
             f"removed target `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}",

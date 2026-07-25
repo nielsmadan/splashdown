@@ -523,6 +523,7 @@ def test_deinit_destroys_simulator_by_udid(tmp_path, registry, monkeypatch):
     # destroy by that UDID, not pass it to a by-name lookup that finds nothing.
     registry.set_device(str(co), "simulator", "default", "ABCD-UDID", "iPhone 17", "18.0")
     destroyed = []
+    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: destroyed.append(("shutdown", u)))
     monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: destroyed.append(("destroy", u)))
     sd.cmd_deinit(co, registry)
@@ -537,6 +538,7 @@ def test_deinit_destroys_emulator_by_name(tmp_path, registry, monkeypatch):
     # The emulator row stores the AVD name in the udid column.
     registry.set_device(str(co), "emulator", "default", "pixel_avd", "pixel_9", "android-34")
     destroyed = []
+    monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: True)
     monkeypatch.setattr(sd.devices, "android_shutdown", lambda n: destroyed.append(("shutdown", n)))
     monkeypatch.setattr(sd.devices, "android_destroy", lambda n: destroyed.append(("destroy", n)))
     sd.cmd_deinit(co, registry)
