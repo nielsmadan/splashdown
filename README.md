@@ -11,6 +11,8 @@
 
 **Per-checkout or per-worktree simulators, emulators, and dev ports for development.**
 
+<p align="center"><img src="docs/user/assets/demo.gif" alt="splashdown demo: two git worktrees automatically get different, non-colliding ports" width="750"></p>
+
 Do you have any of these problems?
 
 * You installed an app on a simulator / emulator but you forgot which one.

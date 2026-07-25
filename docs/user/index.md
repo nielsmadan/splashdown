@@ -7,6 +7,8 @@
 
 splashdown pins system resources (dev ports, env vars, iOS simulators, Android emulators) to each git checkout and coordinates them machine-wide, so concurrent worktrees of the same (or different) projects never collide.
 
+<p align="center"><img src="assets/demo.gif" alt="splashdown demo: two git worktrees automatically get different, non-colliding ports" width="760"></p>
+
 !!! tip "New here?"
     Install and the one-minute quick start live in the
     [README](https://github.com/nielsmadan/splashdown#readme). These pages go deeper on the

@@ -79,6 +79,16 @@ docs-build:
 docs:
     @uv run --group docs zensical serve -f mkdocs.yml
 
+# Needs `vhs` (brew install vhs) + `splash` on PATH; runs in a throwaway temp
+# project with an isolated registry, so your real state is untouched.
+# Record docs/demo.gif from docs/demo.tape, then overlay captions + arrows
+# (pillow/numpy pulled ephemerally via uv, so no project dep is added).
+demo:
+    @command -v vhs >/dev/null || { echo "install vhs first: brew install vhs"; exit 1; }
+    @vhs docs/demo.tape
+    @uv run --with pillow --with numpy python docs/annotate_demo.py
+    @echo "→ wrote docs/user/assets/demo.gif"
+
 # --- Changelog ---
 #
 # CHANGELOG.md is generated from feat/fix commits by git-cliff (config in cliff.toml);
