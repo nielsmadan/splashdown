@@ -45,11 +45,16 @@ def _ensure_gitignore(cwd: Path) -> None:
     print(f"updated .gitignore (+{', '.join(additions)})", file=sys.stderr)
 
 
-def _ensure_mise_file_directive(cwd: Path) -> None:
+def _ensure_mise_file_directive(cwd: Path) -> bool:
     """Ensure mise's config has `_.file = "splashdown.env"` under [env].
 
     Targets an existing `.mise.toml` when that is the only config present, so we
     edit the file the user already has instead of scaffolding a second one.
+
+    Returns True only when this call created the config file from nothing — the
+    signal callers use to decide whether to auto-`mise trust` it. A pre-existing
+    (even untrusted) file returns False so we never auto-trust config that may
+    carry the user's own unreviewed `[tools]`/`[tasks]`.
     """
     from .tomlio import ensure_mise_file_directive_text  # noqa: PLC0415
 
@@ -63,10 +68,11 @@ def _ensure_mise_file_directive(cwd: Path) -> None:
     text = path.read_text() if path.exists() else None
     new_text = ensure_mise_file_directive_text(text)
     if new_text is None:
-        return  # directive already present
+        return False  # directive already present
     path.write_text(new_text)
     verb = "updated" if text is not None else "created"
     print(f"{verb} {path.name} (+{directive})", file=sys.stderr)
+    return text is None
 
 
 def _remove_mise_file_directive(cwd: Path) -> None:

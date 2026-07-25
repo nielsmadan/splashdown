@@ -25,6 +25,17 @@ def _isolate_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
 
 
+@pytest.fixture(autouse=True)
+def _stub_loader_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let loader `approve` shell out to a real `mise`/`direnv` on the dev
+    machine's PATH (it would mutate the developer's global trust store against
+    throwaway tmp paths). Stubs the `_run_ok` helper (not `subprocess.run`, which
+    is the shared module object other code — e.g. git in the e2e tests — relies
+    on) to a no-op returning False. Tests that assert approval argv re-monkeypatch
+    `sd.loaders._run_ok` locally to record it."""
+    monkeypatch.setattr(sd.loaders, "_run_ok", lambda *_a, **_k: False)
+
+
 @pytest.fixture
 def registry(tmp_path: Path) -> sd.Registry:
     return sd.Registry(

@@ -293,6 +293,97 @@ def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, exist
     assert data["env"]["_"]["file"] == "splashdown.env"
 
 
+def _record_approvals(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(sd.loaders, "_run_ok", lambda argv, cwd: calls.append(list(argv)) or True)
+    return calls
+
+
+def test_cmd_init_auto_approves_freshly_created_mise_toml(tmp_path, monkeypatch):
+    calls = _record_approvals(monkeypatch)
+    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    assert ["mise", "trust", str(tmp_path / "mise.toml")] in calls
+
+
+def test_cmd_init_does_not_auto_approve_pre_existing_mise_toml(tmp_path, monkeypatch):
+    # Scaffold-only (`cmd_init`, i.e. the `--no-sync` path): a pre-existing
+    # (possibly untrusted) mise.toml may carry the user's own unreviewed
+    # [tools]/[tasks], so the wiring step never auto-trusts it. The follow-on
+    # provision (full `splash init`) is what trusts — see the two tests below.
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
+    calls = _record_approvals(monkeypatch)
+    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    assert calls == []
+
+
+def test_full_init_trusts_pre_existing_mise_via_provision(tmp_path, monkeypatch):
+    # Full `splash init` = scaffold + first sync; the provision step trusts the
+    # loader config unconditionally, so even a pre-existing mise.toml ends up
+    # trusted and the main checkout loads splashdown.env with no manual step.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "mise.toml").write_text("[env]\n")
+    calls = _record_approvals(monkeypatch)
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader", "mise"]) == 0
+    assert ["mise", "trust", str(tmp_path / "mise.toml")] in calls
+
+
+def test_init_no_sync_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
+    # The review-first escape hatch: `--no-sync` scaffolds without provisioning,
+    # so a pre-existing untrusted mise.toml is left untrusted for the user to vet.
+    (tmp_path / "mise.toml").write_text("[env]\n")
+    calls = _record_approvals(monkeypatch)
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader", "mise", "--no-sync"]) == 0
+    assert calls == []
+
+
+def test_cmd_init_auto_approves_freshly_created_envrc(tmp_path, monkeypatch):
+    calls = _record_approvals(monkeypatch)
+    sd.cmd_init(tmp_path, preset="minimal", loader_override="direnv")
+    assert ["direnv", "allow", str(tmp_path)] in calls
+
+
+def test_cmd_init_does_not_auto_approve_pre_existing_envrc(tmp_path, monkeypatch):
+    (tmp_path / ".envrc").write_text("use nix\n")
+    calls = _record_approvals(monkeypatch)
+    sd.cmd_init(tmp_path, preset="minimal", loader_override="direnv")
+    assert calls == []
+
+
+def test_sync_auto_approves_mise_toml_on_every_provision(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "mise.toml").write_text("[env]\n")
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nloader = "mise"\n\n[resources.PORT]\ntype = "port"\nrange = [18940, 18950]\n'
+    )
+    calls = _record_approvals(monkeypatch)
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    assert sd.main(["--cwd", str(tmp_path)]) == 0  # re-approved on every checkout/sync
+    trust = [c for c in calls if c[:2] == ["mise", "trust"]]
+    assert trust == [["mise", "trust", str(tmp_path / "mise.toml")]] * 2
+
+
+def test_sync_approves_silently(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "mise.toml").write_text("[env]\n")
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nloader = "mise"\n\n[resources.PORT]\ntype = "port"\nrange = [18951, 18960]\n'
+    )
+    _record_approvals(monkeypatch)
+    sd.main(["--cwd", str(tmp_path)])
+    assert "trusted" not in capsys.readouterr().err  # only `init` announces
+
+
+def test_sync_survives_failing_loader_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "mise.toml").write_text("[env]\n")
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nloader = "mise"\n\n[resources.PORT]\ntype = "port"\nrange = [18961, 18970]\n'
+    )
+    # autouse stub already makes approval fail; sync must still succeed + write env.
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    assert (tmp_path / "splashdown.env").exists()
+
+
 def test_init_writes_post_checkout_hook(tmp_path):
     sd.cmd_init(tmp_path, preset="minimal")
     hook = tmp_path / ".githooks" / "post-checkout"

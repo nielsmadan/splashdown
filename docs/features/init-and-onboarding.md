@@ -77,8 +77,10 @@ absent (`commands.py:1291`–`1297`). `_ensure_gitignore` (`commands.py:89`) add
 `LOADERS[inv.loader].wire(cwd)` (`commands.py:1300`) — every loader's `wire` is idempotent
 (`loaders.py`): mise sets `_.file = "splashdown.env"` under `[env]` (editing an existing
 `.mise.toml`/`mise.toml` rather than scaffolding a second), direnv appends a sentinel-wrapped
-`dotenv_if_exists splashdown.env` block to `.envrc` (then tells the user to run
-`direnv allow`), devbox adds a marker-tagged `init_hook`, and `none` wires nothing.
+`dotenv_if_exists splashdown.env` block to `.envrc`, devbox adds a marker-tagged `init_hook`,
+and `none` wires nothing. `wire()` returns whether it created the config from nothing; if so,
+init calls the loader's `approve()` (`mise trust` / `direnv allow`) so the freshly-wired
+config actually loads — see the trust-approval note below.
 
 **Git hook.** `_ensure_post_checkout_hook` (`commands.py:267`) installs a `post-checkout`
 hook that fires `splash sync` on checkout/clone/worktree-add. `_detect_hook_manager`
@@ -202,9 +204,14 @@ newly-added monorepo app or upgrade a legacy recipe shape.
   `npx`/`yarn` can run it, the hook entry is written but **not registered** until the user runs
   `lefthook install` (a note is printed, `commands.py:232`).
 
-- **direnv requires a manual re-approval.** Editing `.envrc` invalidates direnv's trust hash;
-  values stay unloaded until the user runs `direnv allow` (`loaders.py:76`). init prints this,
-  but an unattended/agent run will silently lack the env until approval.
+- **Loader trust is auto-approved.** mise and direnv only load a config after `mise trust` /
+  `direnv allow`. splashdown runs that itself via `Loader.approve()`: on the init path for a
+  config `wire()` just created, and unconditionally in `_cmd_provision_inner` on every
+  `sync`/hook — so a new worktree (whose inherited config is untrusted at its new path) just
+  works. A *pre-existing* `.envrc`/`mise.toml` edited during `init --no-sync` is left for the
+  user to vet (it may carry their own unreviewed content); the following `sync` approves it.
+  `approve()` never fails the run — a missing `mise`/`direnv` binary, non-zero exit, or timeout
+  is swallowed (`loaders.py`, `_run_ok`).
 
 - **No-loader + process-only apps = silent no-op risk.** If no loader is detected and the only
   apps read env from the process (Vite, Spring Boot, mobile) rather than a dotenv file,

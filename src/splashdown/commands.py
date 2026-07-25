@@ -1056,7 +1056,9 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
         local_path.write_text(LOCAL_SKELETON)
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
     _ensure_gitignore(cwd)
-    LOADERS[inv.loader].wire(cwd)
+    loader = LOADERS[inv.loader]
+    if loader.wire(cwd):
+        loader.approve(cwd, announce=True)
     _ensure_post_checkout_hook(cwd)
 
 
@@ -1121,7 +1123,9 @@ def cmd_init(
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
-    LOADERS[inv.loader].wire(cwd)
+    loader = LOADERS[inv.loader]
+    if loader.wire(cwd):
+        loader.approve(cwd, announce=True)
     if no_loader_msg:
         print(f"  {no_loader_msg}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
@@ -1170,7 +1174,9 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
-    LOADERS[loader_name].wire(cwd)
+    loader = LOADERS[loader_name]
+    if loader.wire(cwd):
+        loader.approve(cwd, announce=True)
     if loader_name == "none":
         # Preset scaffolds are written verbatim, so we can't re-route resources to
         # a dotenv file here — but we must not leave the user with a silent no-op.
@@ -1333,6 +1339,16 @@ def _cmd_provision_inner(
         return 1
 
     recipe = Recipe.load(cwd / RECIPE_NAME)
+    # Trust/allow the loader config for this checkout so it actually loads
+    # splashdown.env. Unconditional (not gated on `wire` creating it) because a
+    # fresh worktree inherits the committed config at a NEW path — untrusted
+    # there even though the main checkout was trusted; a committed recipe means
+    # the repo was already accepted once. Silent (announce defaults False) so
+    # routine re-approval of an already-trusted config adds no per-sync noise.
+    loader_name = recipe.project.get("loader")
+    loader = LOADERS.get(loader_name) if loader_name else None
+    if loader is not None:
+        loader.approve(cwd)
     local_path = cwd / LOCAL_NAME
     if not local_path.exists():
         local_path.write_text(LOCAL_SKELETON)

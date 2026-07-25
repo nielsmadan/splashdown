@@ -187,8 +187,11 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
   regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py:41-52`) a
   block containing `dotenv_if_exists splashdown.env`. It uses `dotenv_if_exists` rather
   than `dotenv` so a fresh checkout doesn't hard-error before `splashdown.env` exists
-  (`loaders.py:43`). Because editing `.envrc` invalidates direnv's trust hash, it prints a
-  reminder to run `direnv allow` (`loaders.py:76`).
+  (`loaders.py:43`). `wire()` returns whether it created `.envrc`; `approve()` runs
+  `direnv allow` (mise's runs `mise trust`) so the config actually loads. Editing a
+  *pre-existing* `.envrc` invalidates direnv's trust hash but is not auto-approved — `wire()`
+  prints the `direnv allow` reminder instead (a freshly-created file skips the reminder because
+  `approve()` handles it).
 - **DevboxLoader** (`loaders.py:85`) detects `devbox.json`; `wire()` parses the JSON, finds
   or appends a `shell.init_hook` entry carrying the `# splashdown-managed` marker
   (`loaders.py:81`), and the hook does `set -a; source splashdown.env; set +a`. It
