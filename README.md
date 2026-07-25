@@ -21,6 +21,10 @@ Do you have any of these problems?
 
 Splashdown solves them. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
 
+- **Automatic.** A `post-checkout` git hook allocates this checkout's free ports and env vars on every branch switch or `git worktree add`, with no manual editing.
+- **Machine-wide.** A global registry coordinates resources across every repo and worktree, so two checkouts never grab the same port.
+- **Framework-aware.** It detects your stack and wires the env loader, the git hook, and per-checkout iOS simulators and Android emulators.
+
 📖 **Full documentation: [splashdown.dev](https://splashdown.dev)**
 
 ## Status
