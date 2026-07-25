@@ -1466,23 +1466,37 @@ def _env_set(assignment: str, target: str, registry: Registry) -> int:
     if not ENV_NAME_RE.match(key):
         print(f"invalid env name `{key}` (must match {ENV_NAME_RE.pattern})", file=sys.stderr)
         return 2
-    # Reject keys the target's recipe doesn't declare: `splash gc` reconciles
-    # kv.tsv against the recipe and prunes anything undeclared, so an undeclared
-    # value set here would be silently lost on the next gc. Only validate when the
-    # recipe actually loads (mirrors reconcile, which skips absent/unparseable ones).
     recipe_path = Path(target) / RECIPE_NAME
-    if recipe_path.exists():
-        try:
-            declared: dict[str, Any] | None = Recipe.load(recipe_path).resources
-        except Exception:  # noqa: BLE001 — unloadable recipe: don't block, like reconcile
-            declared = None
-        if declared is not None and key not in declared:
-            print(
-                f"`{key}` is not a resource in {RECIPE_NAME}; declare it (e.g. "
-                f'`[resources.{key}]` type = "set"`) before setting it',
-                file=sys.stderr,
-            )
-            return 2
+    if not recipe_path.exists():
+        print(
+            f'no {RECIPE_NAME} in {target}; declare `{key}` as a type="set" resource',
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        resources = Recipe.load(recipe_path).resources
+    except (OSError, ValueError) as e:
+        print(f"could not read {recipe_path}: {e}", file=sys.stderr)
+        return 2
+    spec = resources.get(key)
+    if spec is None:
+        print(
+            f"`{key}` is not a resource in {RECIPE_NAME}; declare it as "
+            f'`[resources.{key}]` with type = "set" before setting it',
+            file=sys.stderr,
+        )
+        return 2
+    if not isinstance(spec, dict):
+        print(f"`{key}` in {RECIPE_NAME} must be a resource table", file=sys.stderr)
+        return 2
+    rtype = spec.get("type")
+    if rtype != "set":
+        print(
+            f'`{key}` is type `{rtype}`; only type="set" resources accept manual values',
+            file=sys.stderr,
+        )
+        return 2
+    registry.remove_port(target, key)
     registry.set_kv(target, key, value)
     print(f"set {key}={value}", file=sys.stderr)
     return 0

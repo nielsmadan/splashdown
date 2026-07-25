@@ -817,6 +817,7 @@ def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
 
 def test_cli_env_set(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / sd.RECIPE_NAME).write_text('[resources.K]\ntype = "set"\n')
     assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1"]) == 0
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 0
     assert capsys.readouterr().out.strip() == "v1"
@@ -840,10 +841,28 @@ def test_cli_env_set_rejects_invalid_key(tmp_path, monkeypatch, capsys):
     assert "invalid env name" in capsys.readouterr().err
 
 
+def test_cli_env_set_rejects_non_set_resource(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[resources.PORT]\ntype = "port"\nrange = [19700, 19710]\n'
+    )
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "PORT=garbage"]) == 2
+    assert 'only type="set"' in capsys.readouterr().err
+    registry = sd.Registry()
+    assert registry.get_kv(str(tmp_path.resolve()), "PORT") is None
+
+
+def test_cli_env_set_requires_recipe(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1"]) == 2
+    assert sd.RECIPE_NAME in capsys.readouterr().err
+
+
 def test_cli_env_set_release_honor_checkout(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     other = tmp_path / "other"
     other.mkdir()
+    (other / sd.RECIPE_NAME).write_text('[resources.K]\ntype = "set"\n')
     # set/release can target another checkout, the same way get already can.
     assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1", "--checkout", str(other)]) == 0
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 0
