@@ -23,10 +23,13 @@ from . import (
 # marks it an explicit re-export for mypy strict.
 from .errors import DeviceError as DeviceError  # noqa: PLC0414 — explicit re-export for mypy
 from .recipe import (
+    GLOBAL_SKELETON,
     LOCAL_SKELETON,
+    GlobalConfig,
     LocalConfig,
     Recipe,
     _current_branch,
+    _global_config_path,
     _make_scope,
     render_template,
 )
@@ -831,6 +834,43 @@ def target_remove(cwd: Path, dtype: str, variant: str) -> None:
     Refuses to touch recipe-declared variants (those you remove by editing the recipe)."""
     _spec, path, new_text = _prepare_target_remove(cwd, dtype, variant)
     path.write_text(new_text)
+
+
+def global_target_add(dtype: str, variant: str, fields: dict[str, str | None]) -> Path:
+    """Append a [targets.<type>.<variant>] table to the machine-wide config
+    (~/.config/splashdown/config.toml), making the variant available to every
+    project. Errors if the (type, variant) pair already exists there. Returns the
+    config path so the caller can name it in a message."""
+    if dtype not in TARGET_TYPES:
+        raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
+    if not TARGET_VARIANT_RE.match(variant):
+        raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
+
+    path = _global_config_path()
+    existing_text = path.read_text() if path.exists() else GLOBAL_SKELETON
+    if variant in GlobalConfig.load(path).targets.get(dtype, {}):
+        raise DeviceError(f"target `{dtype}.{variant}` already exists in {path}; remove it first")
+
+    from .tomlio import target_add_text  # noqa: PLC0415
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(target_add_text(existing_text, dtype, variant, fields))
+    return path
+
+
+def global_target_remove(dtype: str, variant: str) -> Path:
+    """Delete the [targets.<type>.<variant>] table from the machine-wide config.
+    Returns the config path."""
+    from .tomlio import target_remove_text  # noqa: PLC0415
+
+    path = _global_config_path()
+    if not path.exists() or variant not in GlobalConfig.load(path).targets.get(dtype, {}):
+        raise DeviceError(f"no target `{dtype}.{variant}` in {path}")
+    new_text = target_remove_text(path.read_text(), dtype, variant)
+    if new_text is None:
+        raise DeviceError(f"no target `{dtype}.{variant}` in {path}")
+    path.write_text(new_text)
+    return path
 
 
 def detect_framework(cwd: Path, recipe: Recipe) -> str:

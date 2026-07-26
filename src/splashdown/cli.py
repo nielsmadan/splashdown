@@ -275,6 +275,13 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         choices=("ios", "android"),
         help="device: scope auto-pick to one platform",
     )
+    add.add_argument(
+        "--global",
+        action="store_true",
+        dest="global_scope",
+        help="add to the machine-wide config (~/.config/splashdown/config.toml), "
+        "available in every project",
+    )
 
     rm = devsub.add_parser(
         "remove", help="remove a variant from splashdown.local.toml (and destroy its sim)"
@@ -287,6 +294,12 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         action="store_true",
         dest="keep_instance",
         help="leave the simulator/emulator alive; only edit the local toml",
+    )
+    rm.add_argument(
+        "--global",
+        action="store_true",
+        dest="global_scope",
+        help="remove from the machine-wide config instead of splashdown.local.toml",
     )
 
     return parser
@@ -324,7 +337,7 @@ def _normalize_device_args(args: argparse.Namespace) -> None:
         and args.dtype not in TARGET_TYPES
         and load_settings(cwd := _resolve_cwd(args)).prefix_match
     ):
-        expanded = _match_type_prefix(args.dtype, _declared_target_types(cwd))
+        expanded = _match_type_prefix(args.dtype, _declared_target_types(cwd, include_global=False))
         if expanded is not None:
             args.dtype = expanded
     if args.dtype is not None and args.dtype not in TARGET_TYPES and args.variant is None:

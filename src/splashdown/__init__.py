@@ -58,6 +58,7 @@ TARGET_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 TARGET_TYPES = ("simulator", "emulator", "device")
 RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
+GLOBAL_CONFIG_NAME = "config.toml"
 ENV_FILE_NAME = "splashdown.env"
 
 # Re-export Path so tests can do `sd.Path` and monkeypatch it.
@@ -113,6 +114,8 @@ from .devices import (
     device_status,
     ensure_fresh_sim,
     ensure_physical,
+    global_target_add,
+    global_target_remove,
     ios_boot,
     ios_destroy,
     ios_ensure,
@@ -143,11 +146,14 @@ from .provisioning import (
     write_splashdown_env,
 )
 from .recipe import (
+    GLOBAL_SKELETON,
     LOCAL_SKELETON,
+    GlobalConfig,
     LocalConfig,
     Recipe,
     Settings,
     TemplateError,
+    _global_config_path,
     _make_scope,
     load_settings,
     merged_targets,

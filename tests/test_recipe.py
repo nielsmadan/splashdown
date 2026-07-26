@@ -377,6 +377,92 @@ def test_merged_devices_collision_errors(tmp_path):
         sd.merged_targets(r, lc)
 
 
+def test_global_config_absent_is_empty(tmp_path):
+    assert sd.GlobalConfig.load(tmp_path / "config.toml").targets == {}
+
+
+def test_global_config_malformed_raises(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text("[targets.bogus.x]\n")
+    with pytest.raises(ValueError, match="unknown target type"):
+        sd.GlobalConfig.load(p)
+
+
+def test_merged_targets_global_device_available_everywhere(tmp_path):
+    # a project with no targets at all still gets global physical devices
+    r = sd.Recipe({}, tmp_path / "splashdown.toml")
+    lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
+    gc = sd.GlobalConfig(
+        {"targets": {"device": {"my-iphone": {"platform": "ios"}}}},
+        tmp_path / "config.toml",
+    )
+    assert sd.merged_targets(r, lc, gc)["device"]["my-iphone"] == {"platform": "ios"}
+
+
+def test_merged_targets_global_sim_gated_by_declared_type(tmp_path):
+    # project declares no simulator type -> global simulator variant is NOT folded in
+    r = sd.Recipe({}, tmp_path / "splashdown.toml")
+    lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
+    gc = sd.GlobalConfig(
+        {"targets": {"simulator": {"g": {"model": "iPhone 17"}}}},
+        tmp_path / "config.toml",
+    )
+    assert "simulator" not in sd.merged_targets(r, lc, gc)
+
+
+def test_merged_targets_global_sim_appears_when_type_declared(tmp_path):
+    r = sd.Recipe(
+        {"targets": {"simulator": {"default": {"model": "iPhone 17"}}}},
+        tmp_path / "splashdown.toml",
+    )
+    lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
+    gc = sd.GlobalConfig(
+        {"targets": {"simulator": {"g": {"model": "iPhone 12"}}}},
+        tmp_path / "config.toml",
+    )
+    assert set(sd.merged_targets(r, lc, gc)["simulator"]) == {"default", "g"}
+
+
+def test_merged_targets_project_silently_shadows_global(tmp_path):
+    r = sd.Recipe(
+        {"targets": {"device": {"main": {"platform": "ios", "name": "recipe-phone"}}}},
+        tmp_path / "splashdown.toml",
+    )
+    lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
+    gc = sd.GlobalConfig(
+        {"targets": {"device": {"main": {"platform": "android"}}}},
+        tmp_path / "config.toml",
+    )
+    merged = sd.merged_targets(r, lc, gc)  # no error, unlike recipe-vs-local
+    assert merged["device"]["main"]["name"] == "recipe-phone"
+
+
+def test_merged_targets_local_silently_shadows_global(tmp_path):
+    r = sd.Recipe({}, tmp_path / "splashdown.toml")
+    lc = sd.LocalConfig(
+        {"targets": {"device": {"main": {"platform": "ios", "name": "local-phone"}}}},
+        tmp_path / "splashdown.local.toml",
+    )
+    gc = sd.GlobalConfig(
+        {"targets": {"device": {"main": {"platform": "android"}}}},
+        tmp_path / "config.toml",
+    )
+    assert sd.merged_targets(r, lc, gc)["device"]["main"]["name"] == "local-phone"
+
+
+def test_merged_targets_global_emulator_gated_by_declared_type(tmp_path):
+    lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
+    gc = sd.GlobalConfig(
+        {"targets": {"emulator": {"g": {"device": "pixel_9"}}}},
+        tmp_path / "config.toml",
+    )
+    # no emulator declared -> global emulator does not appear
+    assert "emulator" not in sd.merged_targets(sd.Recipe({}, tmp_path / "splashdown.toml"), lc, gc)
+    # ...but once the project declares an emulator, the global one folds in
+    r = sd.Recipe({"targets": {"emulator": {"default": {}}}}, tmp_path / "splashdown.toml")
+    assert set(sd.merged_targets(r, lc, gc)["emulator"]) == {"default", "g"}
+
+
 def test_recipe_accepts_nested_device_variants(tmp_path):
     p = tmp_path / "splashdown.toml"
     p.write_text("""

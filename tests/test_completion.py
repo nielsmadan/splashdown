@@ -282,3 +282,37 @@ def test_completion_via_main_autodetects_from_env(monkeypatch, capsys):
     rc = sd.main(["completion"])
     assert rc == 0
     assert "#compdef splash" in capsys.readouterr().out
+
+
+def test_device_arg_completer_includes_global_device(checkout):
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    args = Namespace(cwd=str(checkout), dtype=None)
+    assert "my-iphone" in device_arg_completer("", args)
+
+
+def test_completer_silent_on_malformed_global(checkout):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("[targets.bogus.x]\n")
+    args = Namespace(cwd=str(checkout), dtype="simulator")
+    assert variant_completer("", args) == []
+
+
+def test_device_arg_completer_offers_project_variants_despite_global_device(checkout):
+    (checkout / sd.RECIPE_NAME).write_text(
+        '[targets.simulator.default]\nmodel = "iPhone 17"\n'
+        '[targets.simulator.tablet]\nmodel = "iPad"\n'
+    )
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    args = Namespace(cwd=str(checkout), dtype=None)
+    out = device_arg_completer("", args)
+    # project has exactly one type (simulator) -> its variants are still offered,
+    # and the always-available global device type name is offered too
+    assert "default" in out
+    assert "tablet" in out
+    assert "device" in out

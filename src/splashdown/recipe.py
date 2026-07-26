@@ -14,6 +14,7 @@ from typing import Any
 
 from . import (
     ENV_NAME_RE,
+    GLOBAL_CONFIG_NAME,
     LOCAL_NAME,
     RECIPE_NAME,
     TARGET_TYPES,
@@ -311,6 +312,65 @@ class LocalConfig:
         return cls(data, path)
 
 
+GLOBAL_SKELETON = """\
+# splashdown config.toml — machine-wide config (~/.config/splashdown/config.toml).
+# Shared across every project on this machine.
+#
+# [targets.*] variants here are available in every checkout without re-declaring
+# them per repo:
+#   - physical `device` targets show up everywhere (they match connected hardware);
+#   - `simulator`/`emulator` variants only surface in projects that already declare
+#     that target type.
+# A project's own recipe/local variant of the same name always wins.
+#
+# Example: your usual test phones, available in every project.
+#
+# [targets.device.my-iphone]
+# platform = "ios"
+# name     = "Niels's iPhone"
+#
+# [targets.device.my-pixel]
+# platform = "android"
+#
+# Or via CLI:
+#
+#   splash target add device my-iphone --platform=ios --name="Niels's iPhone" --global
+#
+# Machine-wide settings (optional):
+#
+# [settings]
+# prefix_match = false
+"""
+
+
+class GlobalConfig:
+    """Machine-wide config from ~/.config/splashdown/config.toml. Holds
+    [targets.<type>.<variant>] variants shared across every project (the
+    [settings] table in the same file is read separately by load_settings)."""
+
+    def __init__(self, data: dict[str, Any], path: Path):
+        self.path = path
+        self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
+            data,
+            source=path.name or GLOBAL_CONFIG_NAME,
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> GlobalConfig:
+        if not path.exists():
+            return cls({}, path)
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        return cls(data, path)
+
+
+def _global_config_path() -> Path:
+    """Path to the machine-wide config.toml. Resolved from XDG_CONFIG_HOME at call
+    time (like Registry) so tests can monkeypatch the env."""
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return config_home / "splashdown" / GLOBAL_CONFIG_NAME
+
+
 @dataclass
 class Settings:
     """Resolved splashdown settings. Precedence (highest first): per-checkout
@@ -349,10 +409,8 @@ def load_settings(cwd: Path) -> Settings:
     path is resolved from XDG_CONFIG_HOME at call time (like Registry) so tests can
     monkeypatch the env. Both files are read with stdlib tomllib — the read path
     stays dependency-free."""
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    global_path = config_home / "splashdown" / "config.toml"
     merged: dict[str, Any] = {}
-    for path in (global_path, cwd / LOCAL_NAME):
+    for path in (_global_config_path(), cwd / LOCAL_NAME):
         if not path.exists():
             continue
         with path.open("rb") as f:
@@ -363,9 +421,24 @@ def load_settings(cwd: Path) -> Settings:
     return Settings(**merged)
 
 
-def merged_targets(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, dict[str, Any]]]:
-    """Union recipe + local target catalogs. (type, variant) name collisions
-    between the two files are an error — pick a different name in local."""
+def merged_targets(
+    recipe: Recipe,
+    local: LocalConfig,
+    global_config: GlobalConfig | None = None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Union the recipe + local + global target catalogs.
+
+    recipe vs local: a (type, variant) collision between the two is an error —
+    pick a different name in local.
+
+    Global variants (from ~/.config/splashdown/config.toml) then fold in on top:
+    - `device` (physical) targets are added to *every* project — they create
+      nothing and just match connected hardware.
+    - `simulator`/`emulator` targets only surface for types the project already
+      declares; a global sim never conjures device support into a backend repo.
+    On a name collision the project's own variant wins *silently* — a shared
+    global file must never break unrelated repos on a coincidental clash (the
+    winning variant's `source` surfaces the shadow; see _target_source)."""
     merged: dict[str, dict[str, dict[str, Any]]] = {
         type_key: dict(variants) for type_key, variants in recipe.targets.items()
     }
@@ -378,6 +451,13 @@ def merged_targets(recipe: Recipe, local: LocalConfig) -> dict[str, dict[str, di
                     f"pick a different name in {LOCAL_NAME}"
                 )
             bucket[variant_name] = spec
+    if global_config is not None:
+        for type_key, variants in global_config.targets.items():
+            if type_key != "device" and type_key not in merged:
+                continue  # sims/emulators only for types the project already declares
+            bucket = merged.setdefault(type_key, {})
+            for variant_name, spec in variants.items():
+                bucket.setdefault(variant_name, spec)  # project wins on a name clash
     return merged
 
 

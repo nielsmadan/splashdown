@@ -35,6 +35,8 @@ from .devices import (
     device_shutdown,
     device_status,
     ensure_fresh_sim,
+    global_target_add,
+    global_target_remove,
     ios_boot,
     ios_destroy,
     ios_shutdown,
@@ -56,9 +58,11 @@ from .provisioning import (
 )
 from .recipe import (
     LOCAL_SKELETON,
+    GlobalConfig,
     LocalConfig,
     Recipe,
     TemplateError,
+    _global_config_path,
     load_settings,
     merged_targets,
     resolve_variant,
@@ -153,6 +157,20 @@ def _gather_devices_all(
     return entries
 
 
+def _target_source(
+    dtype: str, variant: str, recipe: Recipe, local: LocalConfig, glob: GlobalConfig
+) -> str:
+    """Which scope a merged variant came from, annotating a project variant that
+    shadows a same-named global one (the project always wins the collision)."""
+    if variant in recipe.targets.get(dtype, {}):
+        base = "recipe"
+    elif variant in local.targets.get(dtype, {}):
+        base = "local"
+    else:
+        return "global"
+    return f"{base} (shadows global)" if variant in glob.targets.get(dtype, {}) else base
+
+
 def _gather_targets_declared(
     registry: Registry,
     co: str,
@@ -162,13 +180,14 @@ def _gather_targets_declared(
     summary: dict[str, int],
     cache: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Device rows sourced from recipe + local catalog (default mode)."""
+    """Device rows sourced from recipe + local + global catalog (default mode)."""
     recipe = _load_recipe_or_empty(co_path)
     local = LocalConfig.load(co_path / LOCAL_NAME)
+    glob = GlobalConfig.load(_global_config_path())
     entries: list[dict[str, Any]] = []
-    for dtype, variants in merged_targets(recipe, local).items():
+    for dtype, variants in merged_targets(recipe, local, glob).items():
         for variant, spec in variants.items():
-            source = "recipe" if variant in recipe.targets.get(dtype, {}) else "local"
+            source = _target_source(dtype, variant, recipe, local, glob)
             if dtype == "device":
                 # Hardware has no created instance; show its selector + live state.
                 resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
@@ -520,7 +539,8 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
     _dev_status = device_status
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    catalog = merged_targets(recipe, local)
+    glob = GlobalConfig.load(_global_config_path())
+    catalog = merged_targets(recipe, local, glob)
     if not catalog:
         print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
         return 0
@@ -528,7 +548,7 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
     _phys_status = physical_status
     for dtype, variants in catalog.items():
         for variant, spec in variants.items():
-            source = "recipe" if variant in recipe.targets.get(dtype, {}) else "local"
+            source = _target_source(dtype, variant, recipe, local, glob)
             if dtype == "device":
                 # Hardware has no created instance name; show its selector
                 # (id/name/platform or "auto") and live connection state.
@@ -558,15 +578,24 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
     return 0
 
 
-def _load_variant_spec(cwd: Path, dtype: str, variant: str) -> dict[str, Any] | None:
-    """Look up a variant's current spec from a checkout's recipe + local config.
-    Returns None if the variant has been removed from both."""
+def _load_variant_spec(
+    cwd: Path, dtype: str, variant: str, glob: GlobalConfig | None = None
+) -> dict[str, Any] | None:
+    """Look up a variant's current spec from a checkout's recipe + local + global
+    config. Returns None if the variant is declared nowhere. A malformed local
+    file degrades to empty (per-checkout, best-effort). The global config is loaded
+    strictly (a malformed one raises, surfaced as a clean `error:` by the CLI) so a
+    typo is caught loudly and consistently across every command — unless a caller
+    passes an already-loaded `glob` (cmd_target_refresh loads it once, up front, so
+    a bad global aborts the whole sweep instead of reaping devices)."""
     recipe = _load_recipe_or_empty(cwd)
     try:
         local = LocalConfig.load(cwd / LOCAL_NAME)
     except ValueError:
         local = LocalConfig({}, cwd / LOCAL_NAME)
-    return merged_targets(recipe, local).get(dtype, {}).get(variant)
+    if glob is None:
+        glob = GlobalConfig.load(_global_config_path())
+    return merged_targets(recipe, local, glob).get(dtype, {}).get(variant)
 
 
 def _emit_progress(label: str, current: int, total: int) -> None:
@@ -701,12 +730,16 @@ def cmd_target_refresh(
     _fresh_sim = ensure_fresh_sim
     recreated = unchanged = dropped = 0
     cache: dict[str, str] = {}
+    # Load the global config ONCE, up front and unguarded: a malformed global
+    # config must abort the whole sweep here, not make every globally-sourced
+    # device look undeclared and get destroyed row-by-row below.
+    glob = GlobalConfig.load(_global_config_path())
     rows = [r for r in registry.all_devices() if _PLATFORM_OF_DTYPE.get(r.dtype) in platforms]
     total = len(rows)
     for i, row in enumerate(rows, 1):
         _emit_progress("target refresh", i, total)
         cwd = Path(row.checkout)
-        spec = _load_variant_spec(cwd, row.dtype, row.variant) if cwd.exists() else None
+        spec = _load_variant_spec(cwd, row.dtype, row.variant, glob=glob) if cwd.exists() else None
         if spec is None:
             # Defunct checkout or undeclared variant: drop it, destroy its sim.
             if row.dtype == "simulator" and _udid_exists(row.udid):
@@ -915,21 +948,28 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None, *, yes: b
     return 0
 
 
-def _declared_target_types(cwd: Path) -> list[str]:
-    """The target types this checkout actually declares (recipe + local), i.e. those
-    with at least one variant. Used to infer an omitted TYPE and to scope type-prefix
-    matching to types the project really uses."""
+def _declared_target_types(cwd: Path, *, include_global: bool = True) -> list[str]:
+    """The target types this checkout has variants for. With `include_global` (the
+    default) global config folds in — used where a global device should be
+    resolvable. Pass `include_global=False` for TYPE inference and type-prefix
+    matching, which must stay scoped to the project's *own* types: an
+    always-available global `device` must not make bare `splash run` ambiguous in
+    every mobile project, nor claim a short token (`splash run d`) in a sim-only
+    repo."""
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    return [t for t, variants in merged_targets(recipe, local).items() if variants]
+    glob = GlobalConfig.load(_global_config_path()) if include_global else None
+    return [t for t, variants in merged_targets(recipe, local, glob).items() if variants]
 
 
 def _infer_dtype(cwd: Path, dtype: str | None) -> str:
-    """Resolve an unspecified TYPE arg to the only declared device type for
-    this checkout, or error if there's not exactly one."""
+    """Resolve an unspecified TYPE arg to the single device type to act on. Scoped
+    to the project's own declared types first; only when the project declares none
+    do globally-available types count (so bare `splash run` still resolves a lone
+    global physical device in an otherwise target-less repo)."""
     if dtype:
         return dtype
-    declared = _declared_target_types(cwd)
+    declared = _declared_target_types(cwd, include_global=False) or _declared_target_types(cwd)
     if len(declared) == 1:
         return declared[0]
     if not declared:
@@ -947,7 +987,8 @@ def _resolve_variant_for_cli(
     merge, pick variant."""
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    catalog = merged_targets(recipe, local).get(dtype, {})
+    glob = GlobalConfig.load(_global_config_path())
+    catalog = merged_targets(recipe, local, glob).get(dtype, {})
     prefix_match = load_settings(cwd).prefix_match
     variant, spec = resolve_variant(catalog, variant_arg, prefix_match=prefix_match)
     return variant, spec, recipe
@@ -1404,14 +1445,45 @@ def _target_dispatch(args: Any, cwd: Path) -> int:
             "id": args.device_id,
             "platform": args.platform,
         }
+        if getattr(args, "global_scope", False):
+            path = global_target_add(args.dtype, args.variant, fields)
+            print(f"added target `{args.dtype}.{args.variant}` to {path}", file=sys.stderr)
+            return 0
         target_add(cwd, args.dtype, args.variant, fields)
         print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
         return 0
 
     if args.target_cmd == "remove":
+        if getattr(args, "global_scope", False):
+            path = global_target_remove(args.dtype, args.variant)
+            print(
+                f"removed target `{args.dtype}.{args.variant}` from {path}; run "
+                "`splash target refresh` to reap any now-undeclared instances",
+                file=sys.stderr,
+            )
+            return 0
+        # Default: also destroy the instance — most users want both. Opt out
+        # of state destruction with --keep-instance.
         _dev_destroy = device_destroy
         _dev_destroy_row = device_destroy_row
         variant_arg = args.variant
+        # A variant that lives only in the machine-wide config isn't in the local
+        # file; point at --global rather than the generic "no target" error.
+        recipe = _load_recipe_or_empty(cwd)
+        try:
+            local = LocalConfig.load(cwd / LOCAL_NAME)
+        except ValueError:
+            local = LocalConfig({}, cwd / LOCAL_NAME)
+        in_project = variant_arg in recipe.targets.get(
+            args.dtype, {}
+        ) or variant_arg in local.targets.get(args.dtype, {})
+        if not in_project and variant_arg in GlobalConfig.load(_global_config_path()).targets.get(
+            args.dtype, {}
+        ):
+            raise DeviceError(
+                f"`{args.dtype}.{variant_arg}` is a global variant; "
+                "remove it with `splash target remove … --global`"
+            )
         spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant_arg)
         destroyed = False
         if not args.keep_instance and args.dtype != "device":

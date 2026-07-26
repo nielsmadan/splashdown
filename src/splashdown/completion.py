@@ -15,19 +15,25 @@ from typing import Any
 
 from . import LOCAL_NAME
 from .devices import _load_recipe_or_empty
-from .recipe import LocalConfig, merged_targets
+from .recipe import GlobalConfig, LocalConfig, _global_config_path, merged_targets
 
 
-def _catalog(parsed_args: argparse.Namespace) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load the merged recipe+local target catalog for the completion cwd.
+def _catalog(
+    parsed_args: argparse.Namespace, *, include_global: bool = True
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load the merged target catalog for the completion cwd. With `include_global`
+    (default) global config folds in; pass False for a project-only view.
 
     Mirrors cli._resolve_cwd: honour the top-level --cwd flag if already typed,
     else $PWD, and resolve() so the key matches what the command will act on.
+    A malformed global config raises here but both callers swallow it (a completer
+    must never raise), so completion just yields nothing.
     """
     cwd = Path(getattr(parsed_args, "cwd", None) or os.getcwd()).resolve()
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
-    return merged_targets(recipe, local)
+    glob = GlobalConfig.load(_global_config_path()) if include_global else None
+    return merged_targets(recipe, local, glob)
 
 
 def variant_completer(prefix: str, parsed_args: argparse.Namespace, **kwargs: object) -> list[str]:
@@ -58,8 +64,14 @@ def device_arg_completer(
         catalog = _catalog(parsed_args)
         declared = [t for t, v in catalog.items() if v]
         cands = set(declared)
-        if len(declared) == 1:
-            cands |= set(catalog[declared[0]])
+        # Offer variants only when there's effectively one type to run — scoped to
+        # the project's own types (fall back to the merged set only if the project
+        # declares none) so an always-available global device doesn't suppress a
+        # sim-only project's variant completions.
+        project = [t for t, v in _catalog(parsed_args, include_global=False).items() if v]
+        effective = project or declared
+        if len(effective) == 1:
+            cands |= set(catalog.get(effective[0], {}))
         return sorted(c for c in cands if c.startswith(prefix))
     except Exception:  # noqa: BLE001 — a completer must never raise on <Tab>
         return []

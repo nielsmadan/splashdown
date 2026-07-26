@@ -201,6 +201,144 @@ def test_device_remove_errors_when_missing(tmp_path):
         sd.target_remove(tmp_path, "simulator", "ghost")
 
 
+def test_target_add_global_writes_config(tmp_path):
+    rc = sd.main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "target",
+            "add",
+            "device",
+            "my-iphone",
+            "--platform=ios",
+            "--name=Niels iPhone",
+            "--global",
+        ]
+    )
+    assert rc == 0
+    gc = sd.GlobalConfig.load(sd._global_config_path())
+    assert gc.targets["device"]["my-iphone"]["platform"] == "ios"
+    # nothing was written to the local file
+    assert not (tmp_path / sd.LOCAL_NAME).exists()
+
+
+def test_target_remove_global(tmp_path):
+    sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "device", "my-iphone", "--global"])
+    assert rc == 0
+    assert "my-iphone" not in sd.GlobalConfig.load(sd._global_config_path()).targets.get(
+        "device", {}
+    )
+
+
+def test_target_list_marks_global_source(tmp_path, monkeypatch, capsys):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+    assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
+    assert line.split("\t")[2] == "global"
+
+
+def test_target_list_annotates_shadowed_global(tmp_path, monkeypatch, capsys):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    sd.global_target_add("device", "my-iphone", {"platform": "android"})
+    assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
+    assert "shadows global" in line
+
+
+def test_global_device_resolves_in_repo_with_no_targets(tmp_path):
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    # a repo declaring no targets at all still sees the global physical device
+    assert sd.commands._declared_target_types(tmp_path) == ["device"]
+    variant, spec, _ = sd.commands._resolve_variant_for_cli(tmp_path, "device", None)
+    assert variant == "my-iphone"
+    assert spec["platform"] == "ios"
+
+
+def test_target_refresh_aborts_on_malformed_global(tmp_path, registry):
+    registry.set_device(str(tmp_path), "simulator", "default", "UDID1", "iPhone 17", "18.0")
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("[targets.bogus.x]\n")  # unknown type -> raises on load
+    with pytest.raises(ValueError, match="unknown target type"):
+        sd.cmd_target_refresh(registry)
+    # the row must survive — a malformed global config must never reap devices
+    assert registry.get_device(str(tmp_path), "simulator", "default") is not None
+
+
+def test_global_device_does_not_break_inference_in_mobile_project(tmp_path):
+    # regression: a global physical device must not make bare `splash run` ambiguous
+    # in a project that declares its own simulator.
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    assert sd.commands._infer_dtype(tmp_path, None) == "simulator"
+
+
+def test_global_device_type_prefix_stays_project_scoped(tmp_path):
+    # `splash run d` in a sim-only project stays a variant prefix, not the global `device` type
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    from argparse import Namespace
+
+    args = Namespace(cwd=str(tmp_path), dtype="d", variant=None)
+    sd.cli._normalize_device_args(args)
+    assert args.dtype is None
+    assert args.variant == "d"
+
+
+def test_remove_global_sourced_sim_without_global_flag_does_not_destroy(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    sd.global_target_add("simulator", "gsim", {"model": "iPhone 15"})
+    destroyed: list = []
+    monkeypatch.setattr(sd.commands, "device_destroy", lambda dt, name: destroyed.append(name))
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "gsim"])
+    assert rc == 1
+    assert destroyed == []  # the global-only variant's instance is NOT torn down
+    assert "global variant" in capsys.readouterr().err
+
+
+def test_load_variant_spec_loud_on_malformed_global(tmp_path):
+    # malformed global config surfaces loudly (no silent degrade), consistent with
+    # how every other read path treats it
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("[targets.bogus.x]\n")
+    with pytest.raises(ValueError, match="unknown target type"):
+        sd.commands._load_variant_spec(tmp_path, "simulator", "default")
+
+
+def test_target_list_annotates_local_shadowing_global(tmp_path, monkeypatch, capsys):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    sd.target_add(tmp_path, "device", "my-iphone", {"platform": "ios"})
+    sd.global_target_add("device", "my-iphone", {"platform": "android"})
+    assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
+    assert line.split("\t")[2] == "local (shadows global)"
+
+
+def test_target_refresh_keeps_global_sourced_sim(tmp_path, registry, monkeypatch):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.simulator.gsim]\nmodel = "iPhone 15"\n')
+    registry.set_device(str(tmp_path), "simulator", "gsim", "UDID-G", "iPhone 15", "18.0")
+    for mod in (sd.commands, sd.devices):
+        monkeypatch.setattr(mod, "_ios_udid_exists", lambda u: True)
+        monkeypatch.setattr(mod, "_ios_latest_runtime_version", lambda: "18.0")
+    assert sd.cmd_target_refresh(registry) == 0
+    assert registry.get_device(str(tmp_path), "simulator", "gsim") is not None
+
+
 def test_rn_preset_declares_default_ios_variant(tmp_path):
     sd.cmd_init(tmp_path, preset="rn")
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")

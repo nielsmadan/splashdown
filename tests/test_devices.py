@@ -1548,3 +1548,23 @@ def test_device_run_no_custom_command_uses_framework(tmp_path, monkeypatch):
     rc = sd.device_run(tmp_path, recipe, {"kind": "ios", "udid": "U"})
     assert called.get("fw") is True
     assert rc == 3
+
+
+def test_global_target_add_and_remove(tmp_path):
+    path = sd.global_target_add("device", "my-iphone", {"platform": "ios", "name": "Niels iPhone"})
+    assert path == sd._global_config_path()
+    gc = sd.GlobalConfig.load(path)
+    assert gc.targets["device"]["my-iphone"]["platform"] == "ios"
+    sd.global_target_remove("device", "my-iphone")
+    assert "my-iphone" not in sd.GlobalConfig.load(path).targets.get("device", {})
+
+
+def test_global_target_add_rejects_duplicate(tmp_path):
+    sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+    with pytest.raises(sd.DeviceError, match="already exists"):
+        sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+
+
+def test_global_target_remove_errors_when_missing(tmp_path):
+    with pytest.raises(sd.DeviceError, match="no target"):
+        sd.global_target_remove("device", "ghost")

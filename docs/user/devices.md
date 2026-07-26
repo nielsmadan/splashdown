@@ -106,3 +106,5 @@ splash target                       # device rows show: connected / absent / amb
 With exactly one device plugged in, no config is needed, auto-pick resolves it. When both an iPhone and an Android phone are connected, or several of one platform, narrow with the variant's `platform`, `id`, or `name` (or `splash target add device <variant> --platform ios` / `--id ...` / `--name "..."`).
 
 Because splashdown doesn't own the hardware, the lifecycle verbs differ: `start` just confirms the device is connected, and `stop`/`destroy` are no-ops (nothing is created, so nothing is torn down). Physical devices are never written to the registry.
+
+Declare your test phones once, machine-wide, and they're available in every project without re-adding them per repo: `splash target add device my-iphone --platform ios --name "..." --global`. See [machine-wide test devices](overrides.md#machine-wide-test-devices).

@@ -158,8 +158,20 @@ Adding a variant that already exists in the recipe is an error.
 ## Configuration
 
 Target variants live under `[targets.<type>.<variant>]` in the committed `splashdown.toml`
-(team-shared, version control) or the gitignored `splashdown.local.toml` (per-checkout, add-only).
+(team-shared, version control), the gitignored `splashdown.local.toml` (per-checkout, add-only), or
+the machine-wide `~/.config/splashdown/config.toml` (`GlobalConfig`, shared across every project).
 Three types: `simulator`, `emulator`, `device`.
+
+`merged_targets(recipe, local, global_config=None)` (`src/splashdown/recipe.py`) folds the three
+scopes together. Recipe-vs-local collisions are a hard error; global variants then fold in on top:
+physical `device` variants unconditionally (they create nothing — see below), `simulator`/`emulator`
+only for types the project already declares, and a project variant silently wins any name collision
+with a global one. `_target_source` (`src/splashdown/commands.py`) labels the winner
+`recipe (shadows global)` so the shadow is visible in `splash target`. `cmd_target_refresh` loads the
+global config once, up front and unguarded, so a malformed global file aborts the whole sweep instead
+of making every globally-sourced sim/emulator look undeclared and get reaped. `--global` on
+`target add`/`remove` (`global_target_add`/`global_target_remove` in `devices.py`) edits the machine
+file instead of the local one.
 
 ```toml
 # splashdown.toml — the team's supported device matrix
@@ -265,11 +277,13 @@ splash target remove <type> <variant> [--keep-instance]
   runtime and `xcodebuild` fails with an opaque "Unable to find a destination". Pin
   `[targets.simulator.default] ios = "18.5"`; on a failed `react-native` iOS run splash detects the
   exclusion and prints this hint (`_rn_ios_arch_hint`).
-- **No `[targets.*]` table means no device.** Sims/emulators come into existence only from declared
-  `[targets.<type>.<variant>]` tables, created lazily by `splash run`/`start` (via
-  `ensure_fresh_sim`). A checkout whose recipe declares only non-device resources (e.g. a port) gets
-  **zero** device rows and nothing to boot — there is no implicit "default simulator" behind the
-  scenes.
+- **No `[targets.*]` table means no device — with one deliberate exception.** Sims/emulators come
+  into existence only from declared `[targets.<type>.<variant>]` tables, created lazily by
+  `splash run`/`start` (via `ensure_fresh_sim`). A checkout whose recipe declares only non-device
+  resources (e.g. a port) gets **zero** sim/emulator rows. The exception: a **global** `device`
+  variant is available in every project regardless, because it creates nothing (`ensure_physical` just
+  matches connected hardware, `device_needs_recreate` returns `False`, no registry row). So bare
+  `splash run` in an otherwise-target-less repo *does* resolve a lone global physical device.
 - **`splash init` scaffolds target tables only on first generation.** It writes the `[targets.*]`
   tables when it creates `splashdown.toml`, but on re-run it preserves existing comments/keys and
   does **not** backfill tables the scaffold gained later. A checkout generated before the
