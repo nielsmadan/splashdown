@@ -67,6 +67,39 @@ type = "uuid"
     assert r1["RUN_ID"] != r2["RUN_ID"]
 
 
+def test_template_rerenders_when_dependency_changes(registry, checkout):
+    _write_recipe(
+        checkout,
+        """
+[resources.BASE]
+type = "set"
+default = "one"
+
+[resources.DERIVED]
+type = "template"
+template = "{{ BASE }}"
+""",
+    )
+    first = sd.provision(checkout, registry=registry)
+    registry.set_kv(str(checkout.resolve()), "BASE", "two")
+    second = sd.provision(checkout, registry=registry)
+    assert first["DERIVED"] == "one"
+    assert second["DERIVED"] == "two"
+
+
+def test_template_rerenders_when_expression_changes(registry, checkout):
+    _write_recipe(
+        checkout,
+        '[resources.VALUE]\ntype = "template"\ntemplate = "one"\n',
+    )
+    assert sd.provision(checkout, registry=registry)["VALUE"] == "one"
+    _write_recipe(
+        checkout,
+        '[resources.VALUE]\ntype = "template"\ntemplate = "two"\n',
+    )
+    assert sd.provision(checkout, registry=registry)["VALUE"] == "two"
+
+
 def test_splashdown_env_writer_basic(tmp_path):
     target = tmp_path / "splashdown.env"
     sd.write_splashdown_env(target, {"PORT": "8082", "RUN_ID": "abc-def"})

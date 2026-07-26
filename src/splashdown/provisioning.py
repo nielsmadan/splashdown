@@ -24,7 +24,7 @@ from .registry import Registry
 _PORT_RANGE_LEN = 2
 
 
-def provision(  # noqa: PLR0912 — one branch per resource type; this is the dispatch
+def provision(
     cwd: Path,
     *,
     registry: Registry,
@@ -63,14 +63,9 @@ def provision(  # noqa: PLR0912 — one branch per resource type; this is the di
             tpl = spec.get("template")
             if not isinstance(tpl, str):
                 raise ValueError(f"`{name}` template resource needs `template = ...`")
-            existing = registry.get_kv(abspath, name) if not reprovision else None
-            # A persisted template value stays stable until `--reprovision`.
-            if existing is not None:
-                value = existing
-            else:
-                scope = _make_scope(cwd, branch, resolved)
-                value = render_template(tpl, scope)
-                registry.set_kv(abspath, name, value)
+            scope = _make_scope(cwd, branch, resolved)
+            value = render_template(tpl, scope)
+            registry.set_kv(abspath, name, value)
         elif rtype == "set":
             existing = registry.get_kv(abspath, name)
             if existing is None:
