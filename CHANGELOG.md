@@ -4,6 +4,20 @@ All notable user-facing changes to splashdown. While the project is on `0.x` it 
 [Semantic Versioning](https://semver.org) loosely: breaking changes may land in a minor
 release and are called out under **Breaking Changes**.
 
+## [0.13.0] - 2026-07-26
+
+### Features
+
+- Global device / targets
+
+### Bug Fixes
+
+- Auto-trust mise/direnv config so it loads without a manual step
+- Make target removal safe
+- Restrict manual environment overrides
+- Refresh derived template resources
+- Fail fast on setup errors
+
 ## [0.12.0] - 2026-07-24
 
 ### Features
@@ -126,6 +140,7 @@ release and are called out under **Breaking Changes**.
 
 - --cwd/--format no longer clobbered when set before a subcommand
 
+[0.13.0]: https://github.com/nielsmadan/splashdown/compare/v0.12.0..v0.13.0
 [0.12.0]: https://github.com/nielsmadan/splashdown/compare/v0.11.0..v0.12.0
 [0.11.0]: https://github.com/nielsmadan/splashdown/compare/v0.10.2..v0.11.0
 [0.10.2]: https://github.com/nielsmadan/splashdown/compare/v0.10.1..v0.10.2
