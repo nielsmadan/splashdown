@@ -25,6 +25,16 @@ splash target remove simulator repro-bug      # strip a local variant (and destr
 splash target remove simulator repro-bug --keep-instance   # toml-only edit
 ```
 
+`target remove` only accepts variants declared in `splashdown.local.toml`. Recipe-owned or missing
+variants and malformed config are rejected before any simulator or emulator is touched. If the
+lifecycle step reports an error, the local declaration and registry row remain intact. If the
+configured name changed after provisioning, removal still deletes the instance recorded in the
+registry; an instance that is already absent does not block config cleanup.
+
+Use `--keep-instance` when the SDK is unavailable or you intentionally want a config-only removal.
+It removes the local declaration but leaves any instance and registry row untouched. If a row
+exists, a later `splash target refresh` sees it as undeclared and destroys the retained instance.
+
 Framework auto-detected for `run`:
 
 - `pubspec.yaml` → `flutter run -d <id>`

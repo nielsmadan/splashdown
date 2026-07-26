@@ -45,22 +45,23 @@ merged into the recipe on disk:
 
 The CLI side:
 
-- `add` writes the variant. `_target_dispatch` (`src/splashdown/commands.py:1464`) collects
+- `add` writes the variant. `_target_dispatch` (`src/splashdown/commands.py:1377`) collects
   the `--model/--ios/--device/--image/--name/--id/--platform` flags into a field dict and
-  calls `target_add` (`src/splashdown/devices.py:710`), which re-checks for collisions
+  calls `target_add` (`src/splashdown/devices.py:756`), which re-checks for collisions
   against *both* the recipe and any existing local variant before appending the table via
-  the tomlkit writer `target_add_text` (`src/splashdown/tomlio.py:152`). tomlkit is used so
+  the tomlkit writer `target_add_text` (`src/splashdown/tomlio.py:196`). tomlkit is used so
   comments and unrelated tables in the local file survive the edit.
-- `remove` strips the variant. In `_target_dispatch`
-  (`src/splashdown/commands.py:1483`), unless `--keep-instance` is set and the type is not a
-  physical `device`, it resolves the instance name, destroys the sim/emulator
-  (`device_destroy`, suppressing "already gone" errors), drops the registry device row, then
-  edits the TOML via `target_remove` (`src/splashdown/devices.py:739`) →
-  `target_remove_text` (`src/splashdown/tomlio.py:171`), which prunes now-empty parent
-  tables. `target_remove` refuses recipe-declared variants outright.
+- `remove` preflights the variant and computes the edited TOML through
+  `_prepare_target_remove` before any lifecycle action. Unless `--keep-instance` is set or the
+  type is a physical `device`, it destroys the registry row's actual simulator UDID/AVD name when
+  one exists, falling back to the currently resolved name only for an unprovisioned target. It
+  then writes the prepared TOML and drops the registry row. `target_remove_text`
+  (`src/splashdown/tomlio.py`) prunes now-empty parent tables. Recipe-owned or missing variants
+  and malformed config fail before destruction; if the lifecycle step raises, the registry row
+  and local declaration remain intact. An already-absent registered instance is accepted.
 - Consumers read the union the same way everywhere: `cmd_targets_list` and
-  `_load_variant_spec` (`src/splashdown/commands.py:756`) both go through
-  `merged_targets`, and `_resolve_variant_for_cli` (`src/splashdown/commands.py:1148`)
+  `_load_variant_spec` (`src/splashdown/commands.py:562`) both go through
+  `merged_targets`, and `_resolve_variant_for_cli` (`src/splashdown/commands.py:944`)
   feeds it into `resolve_variant`.
 
 ## Key entry points
@@ -71,15 +72,15 @@ The CLI side:
   file is first created.
 - `src/splashdown/recipe.py:287` — `merged_targets` (the union + collision error).
 - `src/splashdown/recipe.py:305` — `resolve_variant`.
-- `src/splashdown/commands.py:1464` — `_target_dispatch` (`add`/`remove` orchestration).
-- `src/splashdown/commands.py:756` — `_load_variant_spec` (used by `remove` to find the
-  instance to destroy).
-- `src/splashdown/devices.py:710` — `target_add` (collision re-check + write).
-- `src/splashdown/devices.py:739` — `target_remove` (refuses recipe variants).
-- `src/splashdown/tomlio.py:152` / `src/splashdown/tomlio.py:171` — tomlkit writers.
-- `src/splashdown/cli.py:244` — `target add` parser and its
+- `src/splashdown/commands.py:1377` — `_target_dispatch` (`add`/`remove` orchestration).
+- `src/splashdown/commands.py:562` — `_load_variant_spec` (union lookup used by target refresh).
+- `src/splashdown/devices.py:756` — `target_add` (collision re-check + write).
+- `src/splashdown/devices.py` — `_prepare_target_remove` (removal ownership and TOML preflight).
+- `src/splashdown/devices.py:800` — `target_remove` (local-file edit).
+- `src/splashdown/tomlio.py:196` / `src/splashdown/tomlio.py:205` — tomlkit writers.
+- `src/splashdown/cli.py:260` — `target add` parser and its
   `--model/--ios/--device/--image/--name/--id/--platform` flags.
-- `src/splashdown/cli.py:263` — `target remove` parser and `--keep-instance`.
+- `src/splashdown/cli.py:279` — `target remove` parser and `--keep-instance`.
 
 ## Configuration
 
@@ -94,7 +95,7 @@ model = "iPhone 16"
 ios   = "17.5"
 ```
 
-`splash target add <type> <variant>` flags (`src/splashdown/cli.py:244`), all optional and
+`splash target add <type> <variant>` flags (`src/splashdown/cli.py:260`), all optional and
 written verbatim as the table's string fields:
 
 | Flag | Field | Used by |
@@ -108,9 +109,10 @@ written verbatim as the table's string fields:
 | `--platform` | `platform` | device: narrow auto-pick to `ios`/`android` |
 
 `splash target remove <type> <variant>` takes `--keep-instance`
-(`src/splashdown/cli.py:269`): edit the TOML only, leaving the sim/emulator alive. Without
-it, the instance is destroyed (no effect for physical `device` targets, which have no
-instance to destroy).
+(`src/splashdown/cli.py:279`): edit the TOML only, leaving the sim/emulator and registry row
+intact. Without it, the prepared TOML is written after successful instance deletion and before
+the registry row is removed (no lifecycle effect for physical `device` targets, which have no
+instance or registry row).
 
 ## Settings
 
@@ -146,17 +148,18 @@ so a typo'd toggle never silently no-ops. Recognized keys are whitelisted in
   the entry exists. (Matches README "Gotchas".)
 - **Add-only, by hard rule.** A local variant whose name duplicates a recipe variant is an
   error in three places — at write time in `target_add`
-  (`src/splashdown/devices.py:710`), at read time in `merged_targets`
-  (`src/splashdown/recipe.py:287`), and `target_remove` refuses to delete a recipe variant
-  (`src/splashdown/devices.py:739`). To change a shared target, edit `splashdown.toml`; to
-  shadow one locally, pick a different variant name.
+  (`src/splashdown/devices.py:756`), at read time in `merged_targets`
+  (`src/splashdown/recipe.py:366`), and `_prepare_target_remove` refuses to select a recipe
+  variant for removal. To change a shared target, edit `splashdown.toml`; to shadow one locally,
+  pick a different variant name.
 - **Default `remove` destroys state.** `splash target remove` is destructive by default — it
-  deletes the sim/emulator and the registry row, not just the TOML table. Pass
-  `--keep-instance` for a config-only edit.
-- **The recipe-empty path is silent.** When the recipe can't be loaded, `_load_variant_spec`
-  swallows the `ValueError` and proceeds with an empty recipe
-  (`src/splashdown/commands.py:762`); a removal can still find and destroy the local
-  variant's instance even if the recipe is malformed.
+  deletes the sim/emulator and the registry row, not just the TOML table. Pass `--keep-instance`
+  for a config-only edit. Ownership and both config files are validated first, and a lifecycle
+  error aborts the edit. `--keep-instance` leaves any registry row untouched; the next
+  `splash target refresh` drops that now-undeclared row and destroys the retained instance.
+- **Malformed config blocks removal.** A missing committed recipe is treated as an empty one, but
+  an existing recipe or local file that cannot be parsed aborts the ownership preflight before
+  any device or registry operation.
 
 ## Why
 

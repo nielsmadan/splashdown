@@ -27,3 +27,7 @@ splash completion [bash|zsh]        # print shell-completion script (eval it in 
 ```
 
 `splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash sync --force` reallocates ports. The auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash init` scaffolds the project files and then runs the first sync so the current checkout has values immediately (`--no-sync` scaffolds only). `splash init --rescan` re-scans the filesystem, useful after adding a new app to a monorepo. Available presets for `splash init`: `rn`, `flutter`, `server` (alias `nextjs`), `electron`, `ios-native`, `android-native`, `minimal`.
+
+`splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Unknown names, empty command lists, and failed commands exit 1. Earlier resource allocation, output-file writes, and successful setup commands are not rolled back.
+
+`splash env set KEY=VALUE` only accepts keys declared with `type = "set"` in the target checkout's recipe. It rejects invalid assignments, missing or malformed recipes, undeclared keys, and generated or allocated resources with exit 2.

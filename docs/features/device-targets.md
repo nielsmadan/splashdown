@@ -127,9 +127,13 @@ launcher (`src/splashdown/commands.py:1056`). Physical devices are never written
 
 **Declaring variants programmatically.** `splash target add` writes an add-only
 `[targets.<type>.<variant>]` table into the gitignored local file (`target_add`,
-`src/splashdown/devices.py:710`); `splash target remove` strips it and (by default) destroys the
-instance, unless `--keep-instance` (`_target_dispatch`, `src/splashdown/commands.py:1483`). Adding
-a variant that already exists in the recipe is an error.
+`src/splashdown/devices.py:756`); `splash target remove` first verifies that the variant belongs to
+the local file and computes the edited TOML, then destroys the instance, writes the declaration
+change, and removes its registry row unless `--keep-instance`. When a registry row exists,
+deletion uses its actual simulator UDID or AVD name rather than a newly resolved config name.
+A recipe-owned or missing variant, or malformed recipe/local file, is rejected before any device
+operation. If the lifecycle step raises, the local declaration and registry row remain intact.
+Adding a variant that already exists in the recipe is an error.
 
 ## Key entry points
 
@@ -144,7 +148,7 @@ a variant that already exists in the recipe is an error.
 | TYPE / variant inference | `src/splashdown/commands.py:1130` (`_infer_dtype`), `:1148` (`_resolve_variant_for_cli`) |
 | Fleet refresh (eager auto-upgrade) | `src/splashdown/commands.py:899` (`cmd_target_refresh`); recreate decision `:874` |
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/commands.py:985` (`cmd_target_prune`) |
-| `target add` / `remove` (local variants) | `src/splashdown/devices.py:710` / `:739`; dispatch `src/splashdown/commands.py:1464` |
+| `target add` / `remove` (local variants) | `src/splashdown/devices.py:756` / `:800`; preflight `:785`; dispatch `src/splashdown/commands.py:1377` |
 | Framework launcher selection | `src/splashdown/devices.py:758` (`detect_framework`), `:774` (`device_run`) |
 | iOS-native / Android-native launch | `src/splashdown/profiles.py:111` / `:181` |
 | Physical-device discovery | `src/splashdown/devices.py:493` (`ensure_physical`), `:480` (`_physical_match`) |
@@ -239,11 +243,15 @@ splash target remove <type> <variant> [--keep-instance]
   their orphaned sims; it does **not** recreate an orphan whose checkout still exists — `target
   refresh` does. The `status --check` footer routes each issue to the right command
   (`_print_check_summary`, `:570`).
-- **`target remove` destroys the instance by default.** Pass `--keep-instance` for a toml-only edit
-  (`src/splashdown/commands.py:1490`). It refuses to touch recipe-declared variants — those you
-  remove by editing the committed recipe.
+- **`target remove` destroys the instance by default.** Pass `--keep-instance` for a toml-only edit.
+  It preflights local ownership before destruction, refuses recipe-declared variants, and leaves
+  both the declaration and registry row intact when the lifecycle step raises. A registered
+  instance is addressed by its stored identifier, so a later config rename cannot orphan it;
+  already-absent instances are accepted. `--keep-instance` also leaves any registry row untouched;
+  a later `splash target refresh` treats that now-undeclared row as defunct and destroys the
+  retained instance.
 - **`splashdown.local.toml` is add-only.** A variant name that collides with a recipe-declared one
-  is an error (`target_add`, `src/splashdown/devices.py:724`); pick a different name.
+  is an error (`target_add`, `src/splashdown/devices.py:756`); pick a different name.
 - **Physical-device verbs differ.** For `type = device`, `stop`/`destroy` are no-op messages and
   `start` just confirms connectivity (`src/splashdown/commands.py:1073`, `:1089`, `:1114`); nothing
   is ever written to the registry.

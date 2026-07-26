@@ -35,6 +35,18 @@ template = "{{ PORT }}"        # Vite's /api proxy must hit the api's actual por
 Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
 
+Templates are derived values and re-render on every sync. Referenced resource changes therefore propagate immediately. For a stable generated component, declare it separately as `type = "uuid"` and reference that resource from the template; calling `uuid()` directly in a template creates a new value on every sync.
+
+`set` resources hold manually supplied values:
+
+```toml
+[resources.API_TOKEN]
+type = "set"
+# default = "local-development-token"   # optional
+```
+
+Set one with `splash env set API_TOKEN=VALUE`. The command requires the resource to be declared as `type = "set"`; it rejects missing or malformed recipes, undeclared keys, and generated or allocated resource types. Without a default, sync exits 1 until a value is set. Manual values persist across syncs, including `--force`; `splash env release API_TOKEN` clears one.
+
 A common pattern for consumers that need a stable short identifier (e.g. Docker Compose project names have a practical length limit):
 
 ```toml
@@ -43,6 +55,18 @@ type     = "template"
 template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 # → "myapp-test-352e9e09" — stable per checkout path, 8-char truncated SHA256
 ```
+
+Optional setup blocks run explicitly through `splash sync --setup NAME`:
+
+```toml
+[setup.dev]
+run = [
+  "docker compose up -d",
+  "python manage.py migrate",
+]
+```
+
+`run` accepts one command string or a non-empty array of strings. Commands run sequentially from the checkout root with resolved resources added to their environment. The requested setup name must exist; an unknown name or malformed `run` value exits 1. Execution stops at the first failed command and also exits 1. Resource allocation and output-file writes happen before setup starts and are not rolled back if a command fails.
 
 **For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands. Pin an explicit version like `ios = "18.5"` for fixed coverage.
 

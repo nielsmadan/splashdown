@@ -39,14 +39,14 @@ When a worktree's state is unclear — which ports it holds, whether those ports
 
 **JSON output (machine-readable surface).** When `--format json`, the payload is the single block dict for `local` scope, or `{"checkouts": [...]}` for `all`; `--check` adds a top-level `"summary"` with the counter dict. It is printed to **stdout** (unlike the text blocks, which go to stderr) (`src/splashdown/commands.py:665-670`). Each block carries `checkout`, `exists`, `resources` (`{key, value, port_state}`), and `targets` (`{type, variant, source, device_name, status, orphan, stale, missing}`) — the stable contract agents/tooling consume to learn a worktree's allocation without parsing prose.
 
-**`splash env` (`_env_dispatch`, `src/splashdown/commands.py:1528`).** The scriptable value surface:
+**`splash env` (`_env_dispatch`, `src/splashdown/commands.py:1477`).** The scriptable value surface:
 
 - **bare `env`** — lists this checkout's resolved values as `KEY=value` on stdout (or a JSON object under `--format json`); empty prints `(empty) <path>` to stderr.
 - **`env get KEY`** — prints the value to stdout, or exits **1** if the key has no registry value (the agent-friendly "do I have this?" probe).
-- **`env set KEY=VALUE`** — validates `KEY` against `ENV_NAME_RE`, then persists to the kv store; this is how `type="set"` resources get filled (`src/splashdown/commands.py:1552-1562`).
-- **`env release [KEY]`** — frees one key (both kv and port rows) or, with no key, releases all of this checkout's entries (`src/splashdown/commands.py:1563-1571`).
+- **`env set KEY=VALUE`** — requires a loadable recipe and a declared `type="set"` resource, then persists the value to the kv store. Missing or malformed recipes, undeclared keys, non-`set` resources, and invalid assignments are rejected before registry mutation with exit 2.
+- **`env release [KEY]`** — frees one key (both kv and port rows) or, with no key, releases all of this checkout's entries (`src/splashdown/commands.py:1503-1511`).
 
-All four normalize the target via `str(Path(...).resolve())` so they key the registry exactly as `provision()` does; `get`/`set`/`release` (and bare list) accept `--checkout PATH` to operate on another checkout instead of the cwd (`src/splashdown/commands.py:1532`, `src/splashdown/commands.py:1545`).
+All four normalize the target via `str(Path(...).resolve())` so they key the registry exactly as `provision()` does; `get`/`set`/`release` (and bare list) accept `--checkout PATH` to operate on another checkout instead of the cwd (`src/splashdown/commands.py:1481`, `src/splashdown/commands.py:1494`).
 
 ## Key entry points
 
@@ -58,9 +58,9 @@ All four normalize the target via `str(Path(...).resolve())` so they key the reg
 - `src/splashdown/commands.py:507` — `_cmd_status_table`: compact fleet table (`all`, non-verbose, text).
 - `src/splashdown/commands.py:570` — `_print_check_summary`: defunct/orphan/stale/missing counts + routed cleanup hints.
 - `src/splashdown/commands.py:677-708` — default-mode footer: stale-row count + unfilled-`set` hint.
-- `src/splashdown/commands.py:1528` — `_env_dispatch`: `env` list/get/set/release with `--checkout`.
+- `src/splashdown/commands.py:1477` — `_env_dispatch`: `env` list/get/set/release with `--checkout`.
 - `src/splashdown/cli.py:128-143` — `status` parser: positional `scope` (`local`/`all`), `--check`, `--verbose`.
-- `src/splashdown/cli.py:170-181` — `env` parser: `--checkout` on bare/get/set/release; `get` key, `set` `KEY=VALUE`, `release` optional key.
+- `src/splashdown/cli.py:179-190` — `env` parser: `--checkout` on bare/get/set/release; `get` key, `set` `KEY=VALUE`, `release` optional key.
 - `src/splashdown/cli.py:116` — root `--format {text,json}`; `src/splashdown/cli.py:373-384` — dispatch into `cmd_status` / `_env_dispatch`.
 - `src/splashdown/registry.py:227` — `all_for` (resolved values per checkout); `src/splashdown/registry.py:336` — `summary_for` (per-source counts for the table); `src/splashdown/registry.py:324` — `all_checkouts`.
 
@@ -76,7 +76,7 @@ All four normalize the target via `str(Path(...).resolve())` so they key the reg
 
 - **`status` lists only resources that already have a registry value.** A `type="set"` resource with no `default` and no value yet never reaches the registry, so it does **not** appear as a resource row — it surfaces *only* via the default-mode footer hint pointing at `splash env set` (`src/splashdown/commands.py:692-708`). Don't read the absence of a row as "this resource doesn't exist."
 - **`status` text goes to stderr; `--format json` and bare `env` listings go to stdout.** Piping `splash status` expecting stdout gets nothing useful; agents should use `--format json` (or `env`/`env get`) for stdout-parseable output (`src/splashdown/commands.py:472`, `src/splashdown/commands.py:669`).
-- **`env get KEY` exits 1 when the key is absent** rather than printing an empty line — the intended "am I provisioned for this?" gate. Scripts must check the exit code, not just stdout (`src/splashdown/commands.py:1548-1549`).
+- **`env get KEY` exits 1 when the key is absent** rather than printing an empty line — the intended "am I provisioned for this?" gate. Scripts must check the exit code, not just stdout (`src/splashdown/commands.py:1495-1499`).
 - **`--check` cleanup hints are issue-specific.** `splash gc` drops *defunct-checkout* rows only; it will not recreate an orphan/stale device whose checkout still exists — that's `splash target refresh`. The footer routes each count to the right command so the user doesn't run the wrong one (`src/splashdown/commands.py:605-612`).
 - **The `ISSUE` column in the fleet table is conditional.** It appears only when `--check` flags at least one row; without it (or with everything clean) the table is two columns. Parsers keying on a fixed column count will break — prefer `--format json` for the fleet view (`src/splashdown/commands.py:549-561`).
 - **Default mode vs `all` mode source devices differently.** Default reads the recipe+local *declaration* (what this checkout *should* have); `all` reads the *registry* (what's actually pinned). A variant declared but never created shows in default mode but not in `all` (`src/splashdown/commands.py:447-458`).

@@ -96,9 +96,9 @@ This is a ~1570-line module that mixes three concerns (hook wiring, status rende
 
 #### Provision handlers (`sync` / `init`)
 
-`_cmd_provision` (`cli.py:390` → `commands.py:1388`) is a thin shim over `_cmd_provision_inner` (`commands.py:1402`), the shared engine for both `splash sync` and the tail of `splash init`.
+`_cmd_provision` (`cli.py:438` → `commands.py:1302`) is a thin shim over `_cmd_provision_inner` (`commands.py:1316`), the shared engine for both `splash sync` and the tail of `splash init`.
 
-`_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before* provisioning so it can report only what changed, calls `provision()` (`provisioning.py`), then `write_outputs()` and `run_setup()`. The key error handling: a missing `splashdown.toml` surfaces as `FileNotFoundError`, caught at `commands.py:1414` and turned into **exit 0** with the message printed — that is what makes the post-checkout hook a silent no-op outside splashdown projects. Recipe/template errors (`ValueError`, `TemplateError`, `RuntimeError`) become `error:` + exit 1 (`commands.py:1417`). The "up to date (N vars, M files)" vs. per-line change report is decided by `anything_changed` (`commands.py:1429`).
+`_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before* provisioning so it can report only what changed, calls `provision()` (`provisioning.py`), then `write_outputs()` and `run_setup()` inside the same failure boundary. A missing `splashdown.toml` becomes the hook-compatible no-op exit 0. Recipe/template validation, unknown or malformed setup blocks, and failed setup commands become `error:` + exit 1. The boundary normalizes error reporting, not transactionality: registry and writer changes happen before setup, and successful setup commands are not rolled back when a later command fails. The "up to date (N vars, M files)" vs. per-line change report is decided by `anything_changed`.
 
 `cmd_init` (`commands.py:1244`) is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → run framework wiring autofixes. An explicit preset short-circuits to `_cmd_init_legacy_preset` (`commands.py:1321`), which writes a `SCAFFOLDS` template verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync` (`cli.py:347`–`353`), and `--rescan` diverts entirely to `cmd_refresh_inventory` (`commands.py:1355`).
 
@@ -138,7 +138,7 @@ When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdo
 
 #### `target` and `env` dispatchers
 
-The `target` and `env` subcommands have their own nested subparser actions, so they get sub-dispatchers rather than a single handler: `_target_dispatch` (`commands.py:1464`) and `_env_dispatch` (`commands.py:1528`). Both treat a bare invocation (`splash target` / `splash env`) as "list" (mirroring bare `splash` → sync), and both normalize the checkout key to `str(Path(...).resolve())` so they hit the same registry key `provision()` wrote.
+The `target` and `env` subcommands have their own nested subparser actions, so they get sub-dispatchers rather than a single handler: `_target_dispatch` and `_env_dispatch`. Both treat a bare invocation (`splash target` / `splash env`) as "list" (mirroring bare `splash` → sync), and both normalize the checkout key to `str(Path(...).resolve())` so they hit the same registry key `provision()` wrote. The `env set` branch accepts only declared `type="set"` resources: assignment, recipe, declaration, and type failures return exit 2 without mutating the registry.
 
 ### `completion.py` — fail-silent completers
 
@@ -158,14 +158,14 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `_EpilogOnlyFormatter` — suppress argparse's command dump — `cli.py:31`
 - `_VersionAction` — lazy `--version` — `cli.py:41`
 - `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:284`
-- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1402`
+- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1316`
 - `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1244`
 - `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `commands.py:267` / `:125`
 - `POST_CHECKOUT_HOOK` — the shared hook script body — `commands.py:73`
 - `cmd_status` — status entry — `commands.py:618`
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1229` / `:1185`
 - `_confirm` — shared `[y/N]` gate — `commands.py:1101`
-- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1464` / `:1528`
+- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1378` / `:1477`
 - `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:33` / `:51` / `:68`
 
 ## Gotchas
