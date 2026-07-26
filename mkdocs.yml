@@ -45,6 +45,7 @@ nav:
       - Overview: getting-started.md
       - Mobile: getting-started-mobile.md
   - How it works: how-it-works.md
+  - How it compares: comparison.md
   - Guides:
       - The recipe: recipe.md
       - Per-checkout overrides: overrides.md
