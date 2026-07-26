@@ -41,6 +41,9 @@ extra_css:
 
 nav:
   - Home: index.md
+  - Getting started:
+      - Overview: getting-started.md
+      - Mobile: getting-started-mobile.md
   - How it works: how-it-works.md
   - Guides:
       - The recipe: recipe.md

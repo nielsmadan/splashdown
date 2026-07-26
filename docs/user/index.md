@@ -10,9 +10,14 @@ splashdown pins system resources (dev ports, env vars, iOS simulators, Android e
 <p align="center"><img src="assets/demo.gif" alt="splashdown demo: two git worktrees automatically get different, non-colliding ports" width="760"></p>
 
 !!! tip "New here?"
-    Install and the one-minute quick start live in the
-    [README](https://github.com/nielsmadan/splashdown#readme). These pages go deeper on the
-    parts that need a real walkthrough.
+    Start with [Getting started](getting-started.md) for a web or backend project, or
+    [Getting started with mobile](getting-started-mobile.md) for a mobile app. The
+    [README](https://github.com/nielsmadan/splashdown#readme) has the one-minute quick start.
+
+## Getting started
+
+- [Getting started](getting-started.md): install, `splash init`, and your first per-checkout ports.
+- [Getting started with mobile](getting-started-mobile.md): simulators, emulators, and machine-wide physical devices.
 
 ## Guides
 
