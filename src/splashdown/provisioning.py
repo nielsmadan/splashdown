@@ -244,20 +244,29 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
 
 
 def run_setup(cwd: Path, recipe: Recipe, preset: str | None, env: dict[str, str]) -> list[str]:
-    if not preset:
+    if preset is None:
         return []
-    spec = recipe.setup.get(preset)
-    if not spec:
-        return []
-    commands = spec.get("run") or []
+    if preset not in recipe.setup:
+        available = ", ".join(sorted(recipe.setup)) or "(none)"
+        raise ValueError(f"unknown setup `{preset}`; declared setups: {available}")
+    spec = recipe.setup[preset]
+    if not isinstance(spec, dict):
+        raise ValueError(f"[setup.{preset}] must be a table")
+    commands = spec.get("run")
     if isinstance(commands, str):
         commands = [commands]
-    messages = []
+    if (
+        not isinstance(commands, list)
+        or not commands
+        or any(not isinstance(cmd, str) or not cmd.strip() for cmd in commands)
+    ):
+        raise ValueError(f"[setup.{preset}] needs a non-empty `run` string or array of strings")
+    messages: list[str] = []
     proc_env = {**os.environ, **env}
     for cmd in commands:
         try:
             subprocess.run(cmd, shell=True, cwd=cwd, env=proc_env, check=True)  # noqa: S602 — runs user-authored [setup.*] commands by design
             messages.append(f"setup.{preset}: {cmd}")
         except subprocess.CalledProcessError as e:
-            messages.append(f"setup.{preset} FAILED ({cmd}): exit {e.returncode}")
+            raise RuntimeError(f"setup.{preset} failed ({cmd}): exit {e.returncode}") from e
     return messages

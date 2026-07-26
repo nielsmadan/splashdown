@@ -322,10 +322,41 @@ def test_run_setup_runs_commands_and_reports(tmp_path):
     assert sd.run_setup(tmp_path, recipe, "dev", {}) == ["setup.dev: echo hi"]
 
 
-def test_run_setup_reports_failure(tmp_path):
+def test_run_setup_raises_on_failure(tmp_path):
     recipe = sd.Recipe({"setup": {"dev": {"run": ["exit 3"]}}}, tmp_path / "splashdown.toml")
-    msgs = sd.run_setup(tmp_path, recipe, "dev", {})
-    assert len(msgs) == 1 and "FAILED" in msgs[0] and "exit 3" in msgs[0]
+    with pytest.raises(RuntimeError, match=r"setup\.dev failed.*exit 3"):
+        sd.run_setup(tmp_path, recipe, "dev", {})
+
+
+def test_run_setup_rejects_unknown_name(tmp_path):
+    recipe = sd.Recipe({"setup": {"dev": {"run": "echo hi"}}}, tmp_path / "splashdown.toml")
+    with pytest.raises(ValueError, match=r"unknown setup `dve`.*dev"):
+        sd.run_setup(tmp_path, recipe, "dve", {})
+
+
+@pytest.mark.parametrize("run", [None, "", [], [""]])
+def test_run_setup_rejects_empty_commands(tmp_path, run):
+    recipe = sd.Recipe({"setup": {"dev": {"run": run}}}, tmp_path / "splashdown.toml")
+    with pytest.raises(ValueError, match="non-empty"):
+        sd.run_setup(tmp_path, recipe, "dev", {})
+
+
+def test_cli_setup_failure_returns_nonzero(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / sd.RECIPE_NAME).write_text('[setup.dev]\nrun = "exit 3"\n')
+    rc = sd.main(["--cwd", str(tmp_path), "sync", "--setup", "dev"])
+    assert rc == 1
+    assert "setup.dev failed" in capsys.readouterr().err
+
+
+def test_cli_unknown_setup_returns_nonzero(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / sd.RECIPE_NAME).write_text('[setup.dev]\nrun = "echo hi"\n')
+    rc = sd.main(["--cwd", str(tmp_path), "sync", "--setup", "dve"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "unknown setup `dve`" in err
+    assert "dev" in err
 
 
 def test_write_envrc_preserves_unmanaged_and_replaces_managed(tmp_path):

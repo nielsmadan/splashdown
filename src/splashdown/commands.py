@@ -1330,29 +1330,28 @@ def _cmd_provision_inner(
     before = registry.all_for(abspath)
     try:
         resolved = provision(cwd, registry=registry, reprovision=reprovision)
+        recipe = Recipe.load(cwd / RECIPE_NAME)
+        # Trust/allow the loader config for this checkout so it actually loads
+        # splashdown.env. Unconditional (not gated on `wire` creating it) because a
+        # fresh worktree inherits the committed config at a NEW path — untrusted
+        # there even though the main checkout was trusted; a committed recipe means
+        # the repo was already accepted once. Silent (announce defaults False) so
+        # routine re-approval of an already-trusted config adds no per-sync noise.
+        loader_name = recipe.project.get("loader")
+        loader = LOADERS.get(loader_name) if loader_name else None
+        if loader is not None:
+            loader.approve(cwd)
+        local_path = cwd / LOCAL_NAME
+        if not local_path.exists():
+            local_path.write_text(LOCAL_SKELETON)
+        writer_results = write_outputs(cwd, recipe, resolved)
+        setup_msgs = run_setup(cwd, recipe, setup, resolved)
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 0
     except (ValueError, TemplateError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-
-    recipe = Recipe.load(cwd / RECIPE_NAME)
-    # Trust/allow the loader config for this checkout so it actually loads
-    # splashdown.env. Unconditional (not gated on `wire` creating it) because a
-    # fresh worktree inherits the committed config at a NEW path — untrusted
-    # there even though the main checkout was trusted; a committed recipe means
-    # the repo was already accepted once. Silent (announce defaults False) so
-    # routine re-approval of an already-trusted config adds no per-sync noise.
-    loader_name = recipe.project.get("loader")
-    loader = LOADERS.get(loader_name) if loader_name else None
-    if loader is not None:
-        loader.approve(cwd)
-    local_path = cwd / LOCAL_NAME
-    if not local_path.exists():
-        local_path.write_text(LOCAL_SKELETON)
-    writer_results = write_outputs(cwd, recipe, resolved)
-    setup_msgs = run_setup(cwd, recipe, setup, resolved)
 
     changed_vars = {k: v for k, v in resolved.items() if before.get(k) != v}
     anything_changed = bool(changed_vars) or any(c for _, c in writer_results) or bool(setup_msgs)
