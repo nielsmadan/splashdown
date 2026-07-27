@@ -138,10 +138,10 @@ def test_doctor_unknown_framework_no_checks_returns_0(tmp_path, capsys):
     assert "no wiring checks" in err.lower()
 
 
-def test_doctor_detects_framework_from_recipe(tmp_path):
+def test_doctor_rejects_unknown_framework_from_recipe(tmp_path):
     (tmp_path / "splashdown.toml").write_text('[project]\nframework = "nonesuch"\n')
-    # nonesuch has no WIRING entries → returns 0 without erroring.
-    assert sd.cmd_doctor(tmp_path) == 0
+    with pytest.raises(ValueError, match=r"\[project\.framework\]"):
+        sd.cmd_doctor(tmp_path)
 
 
 def test_doctor_uses_filesystem_when_no_recipe(tmp_path):

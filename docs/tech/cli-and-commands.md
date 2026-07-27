@@ -88,7 +88,15 @@ The four device verbs share one parser shape, built in a loop (`cli.py:197`–`2
 
 #### Top-level exception handler
 
-The dispatch `try` is wrapped by a single `except (DeviceError, ValueError)` (`cli.py:391`). It prints `error: <msg>` to stderr and returns exit 1 — the uniform failure path for device/target lifecycle errors (`DeviceError`) and recipe-validation errors (`ValueError`, e.g. an unknown target type). A missing recipe (`FileNotFoundError`) is deliberately *not* caught here: the sync path handles it gracefully as a no-op exit 0 (see [provision handlers](#provision-handlers-sync--init)), so the hook stays silent in non-splashdown repos.
+The dispatch `try` is wrapped by a single `except (DeviceError, ValueError)`
+(`cli.py:391`). It prints `error: <msg>` to stderr and returns exit 1 — the
+uniform failure path for device/target lifecycle errors and config validation.
+Schema errors arrive as
+`SOURCE: [qualified.path] problem; expected ...`, so representative commands
+fail cleanly without a traceback. A missing recipe (`FileNotFoundError`) is
+deliberately *not* caught here: the sync path handles it gracefully as a no-op
+exit 0 (see [provision handlers](#provision-handlers-sync--init)), so the hook
+stays silent in non-splashdown repos.
 
 ### `commands.py` — the orchestration layer
 
@@ -98,7 +106,29 @@ This is a ~1570-line module that mixes three concerns (hook wiring, status rende
 
 `_cmd_provision` (`cli.py:438` → `commands.py:1302`) is a thin shim over `_cmd_provision_inner` (`commands.py:1316`), the shared engine for both `splash sync` and the tail of `splash init`.
 
-`_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before* provisioning so it can report only what changed, calls `provision()` (`provisioning.py`), then `write_outputs()` and `run_setup()` inside the same failure boundary. A missing `splashdown.toml` becomes the hook-compatible no-op exit 0. Recipe/template validation, unknown or malformed setup blocks, and failed setup commands become `error:` + exit 1. The boundary normalizes error reporting, not transactionality: registry and writer changes happen before setup, and successful setup commands are not rolled back when a later command fails. The "up to date (N vars, M files)" vs. per-line change report is decided by `anything_changed`.
+`_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before*
+provisioning so it can report only what changed, calls `provision()`
+(`provisioning.py`), then `write_outputs()` and `run_setup()` inside the same
+failure boundary. A missing `splashdown.toml` becomes the hook-compatible no-op
+exit 0.
+
+`provision()` begins with `Recipe.load`, which validates the complete document
+and preflights templates before any registry allocation or writer mutation.
+Malformed recipe sections, apps, resources, setups, targets, writers, template
+syntax/references, and dependency cycles therefore become `error:` + exit 1
+without partial provisioning. Setup *execution* remains later: an unknown
+requested setup name or a failing command can occur after registry and writer
+changes and is not transactional. The "up to date (N vars, M files)" vs.
+per-line change report is decided by `anything_changed`.
+
+`cmd_init` applies the same contract to generated TOML. Scanner recipes,
+minimal-monorepo recipes, and built-in presets go through `Recipe.parse` before
+the recipe path is written. `cmd_refresh_inventory` first loads the existing
+recipe through `Recipe.load`, then validates the fully rebuilt document before
+replacing it. Invalid fields cannot be erased by the rewrite, and preserved
+stale fields abort the rescan instead of being blessed. This keeps
+generator/profile/loader drift from producing a file that the next sync cannot
+load.
 
 `cmd_init` (`commands.py:1244`) is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → run framework wiring autofixes. An explicit preset short-circuits to `_cmd_init_legacy_preset` (`commands.py:1321`), which writes a `SCAFFOLDS` template verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync` (`cli.py:347`–`353`), and `--rescan` diverts entirely to `cmd_refresh_inventory` (`commands.py:1355`).
 
@@ -138,7 +168,19 @@ When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdo
 
 #### `target` and `env` dispatchers
 
-The `target` and `env` subcommands have their own nested subparser actions, so they get sub-dispatchers rather than a single handler: `_target_dispatch` and `_env_dispatch`. Both treat a bare invocation (`splash target` / `splash env`) as "list" (mirroring bare `splash` → sync), and both normalize the checkout key to `str(Path(...).resolve())` so they hit the same registry key `provision()` wrote. The `env set` branch accepts only declared `type="set"` resources: assignment, recipe, declaration, and type failures return exit 2 without mutating the registry.
+The `target` and `env` subcommands have their own nested subparser actions, so
+they get sub-dispatchers rather than a single handler: `_target_dispatch` and
+`_env_dispatch`. Both treat a bare invocation (`splash target` / `splash env`)
+as "list" (mirroring bare `splash` → sync), and both normalize the checkout key
+to `str(Path(...).resolve())` so they hit the same registry key `provision()`
+wrote.
+
+`target add` validates its CLI field map with the same `validate_target_spec`
+used by recipe, local, and global loads. Flags incompatible with the chosen type
+fail before rendering; the complete edited `LocalConfig` or `GlobalConfig` is
+then parsed before writing. The `env set` branch accepts only declared
+`type="set"` resources: assignment, recipe, declaration, and type failures
+return exit 2 without mutating the registry.
 
 ### `completion.py` — fail-silent completers
 

@@ -19,7 +19,9 @@ When a worktree or checkout syncs, splashdown allocates free dev ports machine-w
 
 ## How it works (current state)
 
-Bare `splash` (and the post-checkout hook) routes to `_cmd_provision_inner`, which provisions resources, writes outputs, then optionally runs a requested setup (`src/splashdown/commands.py:1316-1333`). `provision()` loads `splashdown.toml`, computes the checkout's absolute path and git branch, then resolves every `[resources.*]` entry **in topological order** so a `template` that references another resource sees the referent's value (`src/splashdown/provisioning.py:36-41`, `topo_sort` at `src/splashdown/recipe.py:419`). Resolution dispatches on `type`:
+Bare `splash` (and the post-checkout hook) routes to `_cmd_provision_inner`, which provisions resources, writes outputs, then optionally runs a requested setup (`src/splashdown/commands.py:1316-1333`). `provision()` first loads and validates the complete `splashdown.toml`. Unknown sections or fields, wrong types, invalid enums, malformed app/resource/setup/target tables, unsafe writers, and statically invalid templates are hard errors. Validation finishes before any registry allocation or output-file mutation, and errors identify the source plus the qualified path (for example, `splashdown.toml: [resources.PORT.range] ...; expected ...`).
+
+After validation, provisioning computes the checkout's absolute path and git branch, then resolves every `[resources.*]` entry **in topological order** so a `template` that references another resource sees the referent's value (`src/splashdown/provisioning.py:36-41`, `topo_sort` in `src/splashdown/recipe.py`). Resolution dispatches on `type`:
 
 - **`port`** — reads a two-element `range = [lo, hi]` and calls `registry.allocate_port`, which returns the lowest free port in range, machine-wide (`src/splashdown/provisioning.py:44-51`, `src/splashdown/registry.py:135`). Allocation considers every other checkout's pinned ports from `ports.tsv` plus a live `bind()` probe on loopback (IPv4 and IPv6) so it also dodges ports held by non-splashdown processes (`src/splashdown/registry.py:146-151`, `_port_in_use` at `src/splashdown/registry.py:421`). An existing in-range pin for this checkout is kept as-is, even if currently bound — that bound port is almost always this checkout's own running dev server (`src/splashdown/registry.py:138-145`).
 - **`uuid`** — returns the persisted value from the kv store if present, else mints a fresh `uuid4` and persists it; stable until `splash sync --force` (`src/splashdown/provisioning.py:52-55`).
@@ -29,7 +31,7 @@ Bare `splash` (and the post-checkout hook) routes to `_cmd_provision_inner`, whi
 
 KV-backed (`uuid`/`template`/`set`/`cwd`/`cwd-slug`) values live in the machine-wide kv store via `set_kv`/`get_kv`; templates replace their row on every sync while the other types remain persisted. Ports live in `ports.tsv`. Both files are flat TSV under `$XDG_STATE_HOME/splashdown/`, `fcntl`-locked per operation.
 
-The template engine renders `{{ expr }}` placeholders through a **restricted AST evaluator** — not `eval()` — that permits only literals, scope-bound names, calls to scope helpers, indexing/slicing, and arithmetic, and forbids attribute access entirely (`render_template` at `src/splashdown/recipe.py:173`, `_eval_node` at `src/splashdown/recipe.py:124`). The scope (`_make_scope`, `src/splashdown/recipe.py:38`) exposes the values `cwd`, `cwd_abs`, `branch`, `repo`, `parent`; the helpers `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`; and every already-resolved resource by name. A template that resolves to a callable (forgot to call a helper) is a `TemplateError`.
+The template engine renders `{{ expr }}` placeholders through a **restricted AST evaluator** — not `eval()` — that permits only literals, scope-bound names, calls to scope helpers, indexing/slicing, and arithmetic, and forbids attribute access entirely (`render_template` at `src/splashdown/recipe.py:173`, `_eval_node` at `src/splashdown/recipe.py:124`). Recipe validation parses every expression, rejects disallowed syntax and unknown names, and detects dependency cycles before allocation. The runtime scope (`_make_scope`, `src/splashdown/recipe.py:38`) exposes the values `cwd`, `cwd_abs`, `branch`, `repo`, `parent`; the helpers `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`; and every already-resolved resource by name. Errors that depend on runtime values, such as a template resolving to a callable because a helper was not called, remain runtime `TemplateError`s.
 
 `write_outputs()` groups resolved values by each resource's `writer` field (default `splashdown-env`) and dispatches to a writer (`src/splashdown/provisioning.py:91-138`):
 
@@ -41,7 +43,7 @@ The template engine renders `{{ expr }}` placeholders through a **restricted AST
 
 All file writes go through `_write_if_changed`, so a no-op sync touches nothing and reports "up to date" (`src/splashdown/provisioning.py:141`). Dotenv values are single-quoted when not bare-safe (`_env_quote`, `src/splashdown/recipe.py:456`) — single quotes because the env file is `source`d by a shell in the devbox init-hook and the no-loader fallback, where double quotes would let `$(...)`/backticks execute.
 
-`splash sync --setup NAME` validates and runs the requested `[setup.NAME]` after provisioning and writer output. The block must contain a non-empty `run` string or array of non-empty strings. An unknown name, invalid block, or failing command exits nonzero; command execution stops at the first failure. Registry/file changes and earlier successful commands are not rolled back.
+Every `[setup.NAME]` is validated while the recipe loads, whether or not that setup was requested. The table accepts only `run`, containing either a non-empty string or a non-empty array of non-empty strings. This schema validation happens before provisioning. `splash sync --setup NAME` still executes the selected setup after provisioning and writer output; an unknown name or failing command exits nonzero, execution stops at the first failure, and registry/file changes plus earlier successful commands are not rolled back.
 
 ## Key entry points
 
@@ -55,17 +57,17 @@ All file writes go through `_write_if_changed`, so a no-op sync touches nothing 
 
 ## Configuration
 
-`[resources.NAME]` tables in `splashdown.toml`. The resource name must be a valid env-var identifier (`src/splashdown/recipe.py:258`). Each has a `type`:
+`[resources.NAME]` tables in `splashdown.toml` are discriminated by `type`. The resource name must be a valid env-var identifier. Unknown fields are rejected, including fields that belong to a different resource type:
 
-| type | required fields | value |
-|------|-----------------|-------|
-| `port` | `range = [lo, hi]` | lowest free port in range, machine-wide |
-| `uuid` | — | a stable `uuid4` |
-| `template` | `template = "..."` | derived `{{ expr }}` string, refreshed every sync |
-| `cwd` / `cwd-slug` | — | checkout dir name (raw / slugified) |
-| `set` | `default` (or `splash env set`) | externally supplied value |
+| type | type-specific fields | value |
+|------|----------------------|-------|
+| `port` | required `range = [lo, hi]`, exactly two integers with `1 <= lo <= hi <= 65535` | lowest free port in range, machine-wide |
+| `uuid` | none | a stable `uuid4` |
+| `template` | required string `template = "..."` | derived `{{ expr }}` string, refreshed every sync |
+| `cwd` / `cwd-slug` | none | checkout dir name (raw / slugified) |
+| `set` | optional string `default` | externally supplied value; without a default, use `splash env set` |
 
-Optional on any resource: `writer` ∈ `splashdown-env` (default), `envfile=PATH`, `envrc`, `stdout`, `none` (README "The `writer` field"). Most resources leave `writer` unset — the framework Profile routes them to `splashdown.env` implicitly; reach for `writer` only when no Profile covers the consumer.
+Optional on any resource: `writer` ∈ `splashdown-env` (default), `envfile=RELATIVE_PATH`, `envrc`, `stdout`, `none` (README "The `writer` field"). An `envfile=` path must be non-empty, relative, and remain inside the checkout; bare `envfile`, absolute paths, escaping `..`, and lookalike prefixes are rejected before allocation. Most resources leave `writer` unset — the framework Profile routes them to `splashdown.env` implicitly; reach for `writer` only when no Profile covers the consumer.
 
 Template scope values: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`. Helpers: `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`. Plus any prior resolved resource by name (e.g. `template = "{{ PORT }}"`).
 
@@ -82,11 +84,11 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 
 - **`set` with no value blocks the whole sync.** A `set` resource with neither a persisted value nor a `default` raises, aborting provision until the user runs `splash env set NAME=VALUE` or adds `default` (`src/splashdown/provisioning.py:69-81`).
 - **Templates re-render; uuids and set values are sticky.** Editing a template or any referenced resource updates the result on the next sync. A direct `{{ uuid() }}` call therefore changes every time; reference a separate `type = "uuid"` resource for a stable composed value. Ports remain pinned in range, and `--force` reallocates ports and regenerates uuid resources without resetting user-set values.
-- **`envfile=` paths are untrusted input and confined to the checkout.** Because the recipe auto-runs from the post-checkout hook on cloned repos, a committed `envfile=` that resolves to an absolute path or escapes the checkout via `..` is rejected — otherwise it's an arbitrary-file-write primitive (`src/splashdown/provisioning.py:119-123`).
+- **`envfile=` paths are untrusted input and confined to the checkout.** Because the recipe auto-runs from the post-checkout hook on cloned repos, a committed `envfile=` that is empty, absolute, or escapes the checkout via `..` is rejected during recipe validation, before any registry or file mutation — otherwise it would be an arbitrary-file-write primitive.
 - **Templates forbid attribute access by design.** `{{ x.foo }}` won't work; the evaluator only allows scope names, calls, indexing/slicing, and arithmetic (`src/splashdown/recipe.py:124-171`).
 - **TSV has no escaping.** Resolved values containing a tab, newline, or CR are rejected at write time to prevent row forgery in the registry (`_tsv_field`, `src/splashdown/registry.py:40`).
 - **No-op syncs are silent.** `_write_if_changed` means a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through lefthook/husky on `git pull --rebase` (`src/splashdown/provisioning.py:141`).
-- **Cyclic template references are a hard error.** `topo_sort` raises on a cycle among resource references (`src/splashdown/recipe.py:419-447`).
+- **Static template failures abort the whole sync before allocation.** Unknown names, disallowed expression syntax, unmatched delimiters, and cyclic resource references are rejected while the recipe loads. Runtime-only helper/value errors can still occur during rendering.
 
 ## Why
 

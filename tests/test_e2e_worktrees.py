@@ -39,6 +39,7 @@ loader = "none"
 [apps.web]
 path = "."
 profile = "nextjs"
+resources = ["PORT"]
 
 [resources.PORT]
 type  = "port"

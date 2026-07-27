@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .loaders import LOADERS
+from .recipe import _TEMPLATE_NAMES, template_refs
 
 # ---------- scanner & inventory ----------
 
@@ -203,6 +204,38 @@ def _merge_app_resources(
                 key = res_name
             merged[key] = spec
     return merged
+
+
+def _prune_unresolvable_templates(
+    resources: dict[str, dict[str, Any]],
+    app_resource_names: dict[str, list[str]],
+    extra_known: set[str] | None = None,
+) -> list[str]:
+    """Drop profile-emitted template resources whose references don't resolve in
+    the merged catalog, and un-list them from the apps that claimed them.
+
+    A Profile emits resources for one app and can't see its siblings, so a
+    cross-app reference may dangle: Vite emits `API_DEV_PORT = "{{ PORT }}"` for
+    any config mentioning a proxy, but `PORT` only exists when the repo also has
+    a backend app. Writing that would fail `Recipe` validation and abort init, so
+    prune it here instead. Loops to a fixed point — pruning one template can
+    strand another that referenced it. Returns the pruned names."""
+    pruned: list[str] = []
+    while True:
+        known = _TEMPLATE_NAMES | set(resources) | (extra_known or set())
+        dangling = {
+            name
+            for name, spec in resources.items()
+            if spec.get("type") == "template"
+            and not template_refs(str(spec.get("template", ""))) <= known
+        }
+        if not dangling:
+            return sorted(pruned)
+        pruned.extend(dangling)
+        for name in dangling:
+            del resources[name]
+        for names in app_resource_names.values():
+            names[:] = [n for n in names if n not in dangling]
 
 
 def _merge_app_targets(

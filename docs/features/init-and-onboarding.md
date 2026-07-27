@@ -70,9 +70,19 @@ at least one app actually reads dotenv files (`Profile.reads_dotenv`), it sets
 gitignored, and notes any apps that read only the process environment (Vite/Spring/mobile)
 and therefore won't pick up a dotenv file.
 
-**Write + wire.** The recipe is rendered by `render_scanned_recipe` (lazy-imported from
-`tomlio`) and written; a `splashdown.local.toml` skeleton (`LOCAL_SKELETON`) is written if
-absent (`commands.py:1291`–`1297`). `_ensure_gitignore` (`commands.py:89`) adds
+**Prune, validate, write + wire.** A Profile emits resources for one app and cannot see its
+siblings, so a cross-app template reference can dangle — Vite emits
+`API_DEV_PORT = "{{ PORT }}"` for any config mentioning a proxy, but `PORT` exists only when
+the repo also has a backend app. `_prune_unresolvable_templates` (`scanner.py`) runs after the
+cross-app merge and drops such templates (looping to a fixed point, since pruning one can
+strand another) and un-lists them from `[apps.*] resources`, printing one `skipped NAME:` line
+each. `--rescan` passes the existing recipe's resource names in as additionally-known, so a
+template the recipe already resolves is never pruned. The recipe is then rendered by
+`render_scanned_recipe` (lazy-imported from `tomlio`) and parsed in memory through the same
+strict `Recipe` validator used by provisioning before it is written. This catches scanner/profile
+drift, invalid app resource references, resource/writer/template/schema errors, and unknown
+fields before init mutates the recipe or proceeds to loader/hook wiring. A `splashdown.local.toml` skeleton (`LOCAL_SKELETON`)
+is written if absent after the recipe passes validation. `_ensure_gitignore` (`commands.py:89`) adds
 `splashdown.env` and `splashdown.local.toml` to `.gitignore`. The selected loader is wired by
 `LOADERS[inv.loader].wire(cwd)` (`commands.py:1300`) — every loader's `wire` is idempotent
 (`loaders.py`): mise sets `_.file = "splashdown.env"` under `[env]` (editing an existing
@@ -110,16 +120,17 @@ through the registry, expands templates, writes outputs, and prints the resolved
 
 **Legacy preset path.** `splash init <preset>` routes to `_cmd_init_legacy_preset`
 (`commands.py:1321`): it looks the name up in `SCAFFOLDS` (`profiles.py:758`; unknown name →
-`sys.exit(2)`), writes the scaffold verbatim (substituting `__SPLASH_LOADER__` with the
-detected/overridden loader), writes the local skeleton, ensures gitignore, wires the loader and
-hook, then runs `cmd_doctor(cwd, fix=True)` when the resolved framework has wiring checks. Note
-this path is **not** sync-driven by itself — the post-init sync still comes from the CLI layer.
+`sys.exit(2)`), substitutes `__SPLASH_LOADER__`, validates the complete scaffold in memory, then
+writes it. Only after validation does it write the local skeleton, ensure gitignore, wire the
+loader and hook, and run `cmd_doctor(cwd, fix=True)` when the resolved framework has wiring checks.
+Note this path is **not** sync-driven by itself — the post-init sync still comes from the CLI layer.
 
 **`--rescan`.** `cmd_refresh_inventory` (`commands.py:1355`) is dispatched *before* `cmd_init`
 (`cli.py:348`) and is a different operation: it requires an existing recipe (errors with
 "run `splash init` instead" otherwise), re-scans, and rewrites only `[project]` / `[apps.*]`
-via `refresh_recipe`, preserving every `[resources.*]` table verbatim. Use it to pick up a
-newly-added monorepo app or upgrade a legacy recipe shape.
+via `refresh_recipe`, preserving comments and valid existing `[resources.*]` tables. It validates
+both the source recipe and the rebuilt TOML, so an unknown key or invalid generated app/resource
+reference fails before the existing file is replaced. Use it to pick up a newly-added monorepo app.
 
 ## Key entry points
 
@@ -159,7 +170,9 @@ newly-added monorepo app or upgrade a legacy recipe shape.
 - **`--no-sync`** — scaffold + wire only; skip port allocation and `splashdown.env`. The opt-out
   for CI / scaffold-only runs: generate the committable files without touching the machine registry.
 - **`--rescan`** — re-detect `[project]`/`[apps.*]` in an existing recipe; preserves
-  `[resources.*]`. Does not scaffold; the rescan path is dispatched before `cmd_init` and returns early (`cli.py:348`).
+  valid `[resources.*]` tables and comments. Does not scaffold; the rescan path is dispatched
+  before `cmd_init` and returns early (`cli.py:348`). Unknown or invalid retained fields are
+  errors, not extension data.
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), and the hook target
@@ -221,6 +234,12 @@ newly-added monorepo app or upgrade a legacy recipe shape.
 - **`profile = "unknown"` apps are skipped, not failed.** An unrecognized framework gets no
   resources and no wiring; the rest of the project still scaffolds
   (`commands.py:1279`, `:1307`).
+
+- **Generated TOML is not trusted implicitly.** Scanner output, built-in preset output, the
+  minimal-monorepo fallback, and rescan output all pass through `Recipe` before writing. A
+  validation failure leaves the destination recipe absent or unchanged and prevents subsequent
+  init mutations. Unknown recipe keys are hard errors even though comments and valid tables are
+  preserved by rescan.
 
 ## Why
 

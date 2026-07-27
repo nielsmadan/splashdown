@@ -54,6 +54,36 @@ range = [18500, 18510]
     assert r1 == r2
 
 
+@pytest.mark.parametrize(
+    "invalid_tail",
+    [
+        '[resources.BROKEN]\ntype = "uuid"\nunknown = true\n',
+        '[resources.BROKEN]\ntype = "template"\ntemplate = "{{ MISSING }}"\n',
+        '[resources.BROKEN]\ntype = "uuid"\nwriter = "envfile=../outside"\n',
+        "[setup.dev]\nrun = []\n",
+    ],
+)
+def test_invalid_late_schema_causes_no_registry_or_output_mutation(
+    registry, checkout, invalid_tail
+):
+    env_path = checkout / "splashdown.env"
+    env_path.write_text("EXISTING=keep\n")
+    _write_recipe(
+        checkout,
+        """
+[resources.PORT]
+type = "port"
+range = [18520, 18530]
+
+"""
+        + invalid_tail,
+    )
+    with pytest.raises(ValueError):
+        sd.provision(checkout, registry=registry)
+    assert registry.all_for(str(checkout.resolve())) == {}
+    assert env_path.read_text() == "EXISTING=keep\n"
+
+
 def test_provision_reprovision_regenerates_uuid(registry, checkout):
     _write_recipe(
         checkout,
@@ -166,10 +196,9 @@ template = "hello"
 writer   = "envfile=../escape.env"
 """,
     )
-    resolved = sd.provision(checkout, registry=registry)
-    recipe = sd.Recipe.load(checkout / "splashdown.toml")
-    with pytest.raises(ValueError, match="outside the checkout"):
-        sd.write_outputs(checkout, recipe, resolved)
+    with pytest.raises(ValueError, match="stays inside the checkout"):
+        sd.provision(checkout, registry=registry)
+    assert registry.all_for(str(checkout.resolve())) == {}
     assert not (checkout.parent / "escape.env").exists()
 
 
@@ -184,10 +213,9 @@ template = "hello"
 writer   = "envfile={abs_target}"
 """,
     )
-    resolved = sd.provision(checkout, registry=registry)
-    recipe = sd.Recipe.load(checkout / "splashdown.toml")
-    with pytest.raises(ValueError, match="outside the checkout"):
-        sd.write_outputs(checkout, recipe, resolved)
+    with pytest.raises(ValueError, match="stays inside the checkout"):
+        sd.provision(checkout, registry=registry)
+    assert registry.all_for(str(checkout.resolve())) == {}
     assert not abs_target.exists()
 
 
@@ -336,9 +364,8 @@ def test_run_setup_rejects_unknown_name(tmp_path):
 
 @pytest.mark.parametrize("run", [None, "", [], [""]])
 def test_run_setup_rejects_empty_commands(tmp_path, run):
-    recipe = sd.Recipe({"setup": {"dev": {"run": run}}}, tmp_path / "splashdown.toml")
     with pytest.raises(ValueError, match="non-empty"):
-        sd.run_setup(tmp_path, recipe, "dev", {})
+        sd.Recipe({"setup": {"dev": {"run": run}}}, tmp_path / "splashdown.toml")
 
 
 def test_cli_setup_failure_returns_nonzero(tmp_path, monkeypatch, capsys):
@@ -397,3 +424,43 @@ def test_none_writer_creates_no_file(registry, checkout):
     msgs = sd.write_outputs(checkout, recipe, resolved)
     assert any("registry-only" in m for m, _ in msgs)
     assert not (checkout / sd.ENV_FILE_NAME).exists()
+
+
+# _RESOURCE_TYPES / _WRITERS are the load-time whitelists; provision() and
+# write_outputs() are the runtime dispatches. The two below drive every whitelisted
+# value through its dispatch, so a type or writer added to the schema without
+# runtime support (or dropped from the dispatch) fails here instead of at a user's
+# `splash sync`.
+_TYPE_BODIES = {
+    "port": "range = [18700, 18710]",
+    "template": 'template = "{{ cwd }}"',
+    "set": 'default = "v"',
+    "uuid": "",
+    "cwd": "",
+    "cwd-slug": "",
+}
+
+
+def test_every_whitelisted_resource_type_provisions(registry, checkout):
+    assert set(_TYPE_BODIES) == sd.recipe._RESOURCE_TYPES
+    body = "".join(
+        f'[resources.R{i}]\ntype = "{rtype}"\n{extra}\n\n'
+        for i, (rtype, extra) in enumerate(sorted(_TYPE_BODIES.items()))
+    )
+    _write_recipe(checkout, body)
+    resolved = sd.provision(checkout, registry=registry)
+    assert len(resolved) == len(_TYPE_BODIES)
+    assert all(v for v in resolved.values())
+
+
+def test_every_whitelisted_writer_dispatches(registry, checkout):
+    writers = [*sorted(sd.recipe._WRITERS), "envfile=.env"]
+    body = "".join(
+        f'[resources.W{i}]\ntype = "template"\ntemplate = "v"\nwriter = "{w}"\n\n'
+        for i, w in enumerate(writers)
+    )
+    _write_recipe(checkout, body)
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+    msgs = sd.write_outputs(checkout, recipe, resolved)
+    assert len(msgs) == len(writers)

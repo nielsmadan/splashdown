@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
@@ -154,6 +155,312 @@ template = "x-{{ A }}"
     assert "A" in r.resources and "B" in r.resources
 
 
+def test_recipe_accepts_complete_schema(tmp_path):
+    recipe = sd.Recipe.parse(
+        """
+[project]
+workspace = "single"
+loader = "none"
+framework = "flutter"
+
+[project.run]
+ios = "flutter run -d {device_id}"
+android = "flutter run -d {device_id}"
+
+[project.ios]
+scheme = "Demo"
+mode = "Debug"
+configuration = "Debug"
+workspace = "Demo.xcworkspace"
+project = "Demo.xcodeproj"
+
+[project.android]
+mode = "debug"
+module = "app"
+variant = "debug"
+application_id = "com.example.demo"
+launch_activity = ".MainActivity"
+
+[apps.main]
+path = "."
+profile = "flutter"
+resources = ["PORT", "ID", "URL", "ROOT", "SLUG", "TOKEN"]
+
+[resources.PORT]
+type = "port"
+range = [1, 65535]
+writer = "splashdown-env"
+
+[resources.ID]
+type = "uuid"
+writer = "none"
+
+[resources.URL]
+type = "template"
+template = "http://localhost:{{ PORT }}"
+writer = "stdout"
+
+[resources.ROOT]
+type = "cwd"
+writer = "envrc"
+
+[resources.SLUG]
+type = "cwd-slug"
+writer = "envfile=apps/demo/.env"
+
+[resources.TOKEN]
+type = "set"
+default = ""
+
+[setup.dev]
+run = ["echo one", "echo two"]
+
+[targets.simulator.default]
+model = "iPhone 17"
+ios = "latest"
+name = "Demo"
+
+[targets.emulator.default]
+device = "pixel_9"
+image = "system-images;android-36;google_apis;arm64-v8a"
+name = "Demo"
+
+[targets.device.iphone]
+id = "ABC"
+name = "Phone"
+platform = "ios"
+""",
+        tmp_path / "splashdown.toml",
+    )
+    assert set(recipe.resources) == {"PORT", "ID", "URL", "ROOT", "SLUG", "TOKEN"}
+    assert recipe.apps["main"]["profile"] == "flutter"
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        ("[unknown]\nvalue = 1\n", "document"),
+        ('project = "single"\n', "project"),
+        ('[project]\nunknown = "x"\n', "project"),
+        ('[project]\nworkspace = "bun"\n', "project.workspace"),
+        ('[project]\nloader = "dotenv"\n', "project.loader"),
+        ('[project]\nframework = "rails"\n', "project.framework"),
+        ('[project]\nrun = ""\n', "project.run"),
+        ('[project.run]\nwindows = "x"\n', "project.run"),
+        ("[project.run]\n", "project.run"),
+        ('[project.ios]\nscheme = ""\n', "project.ios.scheme"),
+        ('[project.android]\nunknown = "x"\n', "project.android"),
+    ],
+)
+def test_recipe_rejects_invalid_project_schema(tmp_path, text, path):
+    with pytest.raises(ValueError, match=rf"splashdown\.toml: \[{re.escape(path)}\]"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        ('[apps.main]\npath = "."\nprofile = "unknown"\n', "apps.main"),
+        (
+            '[apps.main]\npath = "."\nprofile = "bogus"\nresources = []\n',
+            "apps.main.profile",
+        ),
+        (
+            '[apps.main]\npath = "."\nprofile = "unknown"\nresources = ["MISSING"]\n',
+            "apps.main.resources",
+        ),
+        (
+            '[apps.main]\npath = "."\nprofile = "unknown"\nresources = ["A", "A"]\n'
+            '\n[resources.A]\ntype = "uuid"\n',
+            "apps.main.resources",
+        ),
+        (
+            '[apps.main]\npath = "."\nprofile = "unknown"\nresources = []\nextra = true\n',
+            "apps.main",
+        ),
+    ],
+)
+def test_recipe_rejects_invalid_app_schema(tmp_path, text, path):
+    with pytest.raises(ValueError, match=rf"\[{re.escape(path)}\]"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    ("body", "path"),
+    [
+        ('type = "port"\n', "resources.VALUE"),
+        ('type = "port"\nrange = [0, 2]\n', "resources.VALUE.range"),
+        ('type = "port"\nrange = [3, 2]\n', "resources.VALUE.range"),
+        ('type = "port"\nrange = [1, 65536]\n', "resources.VALUE.range"),
+        ('type = "port"\nrange = [true, 2]\n', "resources.VALUE.range"),
+        ('type = "template"\n', "resources.VALUE"),
+        ('type = "template"\ntemplate = 1\n', "resources.VALUE.template"),
+        ('type = "set"\ndefault = 1\n', "resources.VALUE.default"),
+        ('type = "uuid"\ndefault = "x"\n', "resources.VALUE"),
+        ('type = "unknown"\n', "resources.VALUE.type"),
+        ('writer = "none"\n', "resources.VALUE"),
+    ],
+)
+def test_recipe_rejects_invalid_resource_schema(tmp_path, body, path):
+    text = f"[resources.VALUE]\n{body}"
+    with pytest.raises(ValueError, match=rf"\[{re.escape(path)}\]"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "splashdown-env",
+        "envrc",
+        "stdout",
+        "none",
+        "envfile=.env",
+        "envfile=apps/web/.env.local",
+    ],
+)
+def test_recipe_accepts_valid_writers(tmp_path, writer):
+    text = f'[resources.VALUE]\ntype = "uuid"\nwriter = "{writer}"\n'
+    assert (
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml").resources["VALUE"]["writer"] == writer
+    )
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "",
+        "envfile",
+        "envfile=",
+        "envfile=/tmp/out",
+        "envfile=../out",
+        "envfile=apps/../../out",
+        "envfilefoo=.env",
+        "stdout=foo",
+    ],
+)
+def test_recipe_rejects_invalid_writers(tmp_path, writer):
+    text = f'[resources.VALUE]\ntype = "uuid"\nwriter = "{writer}"\n'
+    with pytest.raises(ValueError, match=r"\[resources\.VALUE\.writer\]"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+def test_recipe_rejects_envfile_path_through_escaping_symlink(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+    text = '[resources.VALUE]\ntype = "uuid"\nwriter = "envfile=linked/.env"\n'
+    with pytest.raises(ValueError, match="stays inside the checkout"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{{ MISSING }}",
+        "{{ cwd.__class__ }}",
+        "{{ lambda: 1 }}",
+        "{{ *cwd }}",
+        "{{ cwd",
+    ],
+)
+def test_recipe_preflights_template_expressions(tmp_path, template):
+    text = f'[resources.VALUE]\ntype = "template"\ntemplate = "{template}"\n'
+    with pytest.raises(ValueError, match=r"\[resources\.VALUE\.template\]"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[setup.dev]\n",
+        '[setup.dev]\nrun = ""\n',
+        "[setup.dev]\nrun = []\n",
+        '[setup.dev]\nrun = ["ok", ""]\n',
+        '[setup.dev]\nrun = "ok"\nunknown = true\n',
+    ],
+)
+def test_recipe_rejects_invalid_setup_schema(tmp_path, text):
+    with pytest.raises(ValueError, match=r"\[setup\.dev"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    ("dtype", "fields"),
+    [
+        ("simulator", {"model": "iPhone", "ios": "latest", "name": "Demo"}),
+        ("emulator", {"device": "pixel_9", "image": "image", "name": "Demo"}),
+        ("device", {"id": "ABC", "name": "Phone", "platform": "android"}),
+    ],
+)
+def test_target_schema_accepts_every_type(tmp_path, dtype, fields):
+    recipe = sd.Recipe(
+        {"targets": {dtype: {"default": fields}}},
+        tmp_path / "splashdown.toml",
+    )
+    local = sd.LocalConfig(
+        {"targets": {dtype: {"local": fields}}},
+        tmp_path / "splashdown.local.toml",
+    )
+    global_config = sd.GlobalConfig(
+        {"targets": {dtype: {"global": fields}}},
+        tmp_path / "config.toml",
+    )
+    assert recipe.targets[dtype]["default"] == fields
+    assert local.targets[dtype]["local"] == fields
+    assert global_config.targets[dtype]["global"] == fields
+
+
+@pytest.mark.parametrize(
+    ("dtype", "fields"),
+    [
+        ("simulator", {"device": "pixel"}),
+        ("emulator", {"ios": "latest"}),
+        ("device", {"model": "iPhone"}),
+        ("device", {"platform": "windows"}),
+        ("simulator", {"name": ""}),
+    ],
+)
+def test_target_schema_rejects_incompatible_or_invalid_fields(tmp_path, dtype, fields):
+    with pytest.raises(ValueError, match=rf"\[targets\.{dtype}\.default"):
+        sd.Recipe(
+            {"targets": {dtype: {"default": fields}}},
+            tmp_path / "splashdown.toml",
+        )
+
+
+@pytest.mark.parametrize("config_type", [sd.LocalConfig, sd.GlobalConfig])
+def test_auxiliary_configs_reject_unknown_top_level_sections(tmp_path, config_type):
+    with pytest.raises(ValueError, match=r"\[document\] unknown field `project`"):
+        config_type({"project": {}}, tmp_path / "config.toml")
+
+
+def test_schema_values_track_loader_and_profile_registries(tmp_path):
+    for loader in sd.LOADERS:
+        sd.Recipe({"project": {"loader": loader}}, tmp_path / "splashdown.toml")
+    for profile in sd.PROFILES:
+        sd.Recipe(
+            {"apps": {"main": {"path": ".", "profile": profile, "resources": []}}},
+            tmp_path / "splashdown.toml",
+        )
+
+
+def test_all_builtin_scaffolds_validate(tmp_path):
+    for name, scaffold in sd.SCAFFOLDS.items():
+        recipe = sd.Recipe.parse(
+            scaffold.replace("__SPLASH_LOADER__", "none"),
+            tmp_path / f"{name}.toml",
+        )
+        assert isinstance(recipe.resources, dict)
+
+
+def test_template_name_schema_tracks_the_render_scope(tmp_path):
+    """_TEMPLATE_NAMES is the load-time whitelist; _make_scope is what render
+    actually binds. Drift either way is silent: a helper added to the scope is
+    unusable, and a name dropped from the scope passes validation then fails at
+    render."""
+    assert set(sd.recipe._make_scope(tmp_path, "main", {})) == sd.recipe._TEMPLATE_NAMES
+
+
 def test_topo_sort_orders_refs(tmp_path):
     p = tmp_path / "splashdown.toml"
     p.write_text("""
@@ -179,9 +486,8 @@ template = "{{ B }}"
 type = "template"
 template = "{{ A }}"
 """)
-    r = sd.Recipe.load(p)
-    with pytest.raises(ValueError):
-        sd.topo_sort(r)
+    with pytest.raises(ValueError, match=r"\[resources\.A\.template\].*cycle"):
+        sd.Recipe.load(p)
 
 
 def test_recipe_rejects_bad_name(tmp_path):
@@ -311,17 +617,17 @@ def test_resolve_variant_empty_prefix_is_not_ambiguous():
 
 
 def test_parse_settings_rejects_non_table():
-    with pytest.raises(ValueError, match="must be a table"):
+    with pytest.raises(ValueError, match=r"x\.toml: \[settings\].*expected a table"):
         sd.recipe._parse_settings({"settings": "nope"}, source="x.toml")
 
 
 def test_parse_settings_rejects_unknown_key():
-    with pytest.raises(ValueError, match="unknown setting `prefix_mtach`"):
+    with pytest.raises(ValueError, match=r"\[settings\] unknown field `prefix_mtach`"):
         sd.recipe._parse_settings({"settings": {"prefix_mtach": False}}, source="x.toml")
 
 
 def test_parse_settings_rejects_wrong_type():
-    with pytest.raises(ValueError, match="must be bool"):
+    with pytest.raises(ValueError, match=r"\[settings\.prefix_match\].*expected bool"):
         sd.recipe._parse_settings({"settings": {"prefix_match": 1}}, source="x.toml")
 
 

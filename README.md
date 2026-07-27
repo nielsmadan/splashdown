@@ -77,6 +77,10 @@ splash init
 
 (Pass `--no-sync` to scaffold the files without reserving ports.)
 
+Splashdown validates the complete recipe before reserving anything or changing generated
+files. Unknown sections or fields, invalid resource writers, bad template references, and
+incompatible target fields are hard errors with the exact config path to fix.
+
 The recipe is on disk, the loader is wired, the hook fires on every checkout. Add a worktree and the second checkout allocates free ports automatically, no manual editing or syncing needed:
 
 ```sh

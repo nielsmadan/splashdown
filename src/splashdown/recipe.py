@@ -9,8 +9,8 @@ import subprocess
 import tomllib
 import uuid as uuid_mod
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PureWindowsPath
+from typing import Any, NoReturn
 
 from . import (
     ENV_NAME_RE,
@@ -214,34 +214,550 @@ def template_refs(tpl: str) -> set[str]:
 
 # ---------- recipe ----------
 
+_WORKSPACES = ("single", "pnpm", "yarn", "npm", "cargo", "gradle")
+_RECIPE_SECTIONS = {"project", "apps", "resources", "targets", "setup"}
+_CONFIG_SECTIONS = {"settings", "targets"}
+_PROJECT_FIELDS = {"workspace", "loader", "framework", "run", "ios", "android"}
+_PROJECT_IOS_FIELDS = {"scheme", "mode", "configuration", "workspace", "project"}
+_PROJECT_ANDROID_FIELDS = {
+    "mode",
+    "module",
+    "variant",
+    "application_id",
+    "launch_activity",
+}
+_APP_FIELDS = {"path", "profile", "resources"}
+_RESOURCE_TYPES = {"port", "template", "set", "uuid", "cwd", "cwd-slug"}
+_RESOURCE_FIELDS = {
+    "port": {"type", "range", "writer"},
+    "template": {"type", "template", "writer"},
+    "set": {"type", "default", "writer"},
+    "uuid": {"type", "writer"},
+    "cwd": {"type", "writer"},
+    "cwd-slug": {"type", "writer"},
+}
+_TARGET_FIELDS = {
+    "simulator": {"model", "ios", "name"},
+    "emulator": {"device", "image", "name"},
+    "device": {"id", "name", "platform"},
+}
+_TEMPLATE_NAMES = {
+    "cwd",
+    "cwd_abs",
+    "branch",
+    "repo",
+    "parent",
+    "basename",
+    "dirname",
+    "slug",
+    "lower",
+    "upper",
+    "truncate",
+    "uuid",
+    "hash",
+    "port_hash",
+}
+_WRITERS = {"splashdown-env", "envrc", "stdout", "none"}
+_PORT_RANGE_LENGTH = 2
+_MAX_PORT = 65535
+
+
+def _schema_error(source: str, path: str, problem: str, expected: str) -> NoReturn:
+    raise ValueError(f"{source}: [{path}] {problem}; expected {expected}")
+
+
+def _source(path: Path, fallback: str) -> str:
+    return path.name or fallback
+
+
+def _load_toml(path: Path, fallback: str) -> dict[str, Any]:
+    try:
+        with path.open("rb") as file:
+            return tomllib.load(file)
+    except tomllib.TOMLDecodeError as error:
+        _schema_error(
+            _source(path, fallback),
+            "document",
+            f"invalid TOML: {error}",
+            "valid TOML",
+        )
+
+
+def _parse_toml(text: str, path: Path, fallback: str) -> dict[str, Any]:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        _schema_error(
+            _source(path, fallback),
+            "document",
+            f"invalid TOML: {error}",
+            "valid TOML",
+        )
+
+
+def _table(
+    value: Any,
+    *,
+    source: str,
+    path: str,
+    expected: str = "a table",
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        _schema_error(source, path, f"got {type(value).__name__}", expected)
+    return value
+
+
+def _allowed_keys(value: dict[str, Any], allowed: set[str], *, source: str, path: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        _schema_error(
+            source,
+            path,
+            f"unknown field `{unknown[0]}`",
+            "only " + ", ".join(sorted(allowed)),
+        )
+
+
+def _non_empty_string(value: Any, *, source: str, path: str) -> str:
+    if type(value) is not str or not value.strip():
+        _schema_error(source, path, f"got {type(value).__name__}", "a non-empty string")
+    return value
+
+
+def _enum(value: Any, choices: set[str], *, source: str, path: str) -> str:
+    parsed = _non_empty_string(value, source=source, path=path)
+    if parsed not in choices:
+        _schema_error(
+            source,
+            path,
+            f"unknown value `{parsed}`",
+            "one of " + ", ".join(sorted(choices)),
+        )
+    return parsed
+
+
+def _known_profiles() -> set[str]:
+    from .scanner import PROFILES  # noqa: PLC0415
+
+    return set(PROFILES)
+
+
+def _known_loaders() -> set[str]:
+    from .loaders import LOADERS  # noqa: PLC0415
+
+    return set(LOADERS)
+
+
+def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
+    raw = data.get("project", {})
+    project = _table(raw, source=source, path="project")
+    _allowed_keys(project, _PROJECT_FIELDS, source=source, path="project")
+    if "workspace" in project:
+        _enum(
+            project["workspace"],
+            set(_WORKSPACES),
+            source=source,
+            path="project.workspace",
+        )
+    if "loader" in project:
+        _enum(project["loader"], _known_loaders(), source=source, path="project.loader")
+    if "framework" in project:
+        _enum(
+            project["framework"],
+            _known_profiles(),
+            source=source,
+            path="project.framework",
+        )
+    if "run" in project:
+        run = project["run"]
+        if isinstance(run, dict):
+            _allowed_keys(run, {"ios", "android"}, source=source, path="project.run")
+            if not run:
+                _schema_error(
+                    source,
+                    "project.run",
+                    "table is empty",
+                    "one or both of `ios` and `android`",
+                )
+            for platform, command in run.items():
+                _non_empty_string(command, source=source, path=f"project.run.{platform}")
+        else:
+            _non_empty_string(run, source=source, path="project.run")
+    for key, allowed in (("ios", _PROJECT_IOS_FIELDS), ("android", _PROJECT_ANDROID_FIELDS)):
+        if key not in project:
+            continue
+        nested = _table(project[key], source=source, path=f"project.{key}")
+        _allowed_keys(nested, allowed, source=source, path=f"project.{key}")
+        for field, value in nested.items():
+            _non_empty_string(value, source=source, path=f"project.{key}.{field}")
+    return dict(project)
+
+
+def _validate_writer(value: Any, *, source: str, path: str, base_dir: Path) -> str:
+    writer = _non_empty_string(value, source=source, path=path)
+    if writer in _WRITERS:
+        return writer
+    if not writer.startswith("envfile="):
+        _schema_error(
+            source,
+            path,
+            f"unknown writer `{writer}`",
+            "splashdown-env, envrc, stdout, none, or envfile=RELATIVE_PATH",
+        )
+    path_arg = writer.removeprefix("envfile=")
+    candidate = Path(path_arg)
+    if (
+        not path_arg
+        or candidate.is_absolute()
+        or PureWindowsPath(path_arg).is_absolute()
+        or candidate == Path(".")
+        or ".." in candidate.parts
+        or not (base_dir / candidate).resolve().is_relative_to(base_dir.resolve())
+    ):
+        _schema_error(
+            source,
+            path,
+            f"invalid envfile path `{path_arg}`",
+            "a non-empty relative path that stays inside the checkout",
+        )
+    return writer
+
+
+def _validate_template_node(
+    node: ast.AST, names: set[str], *, source: str, path: str, expr: str
+) -> None:
+    if isinstance(node, ast.Constant):
+        return
+    if isinstance(node, ast.Name):
+        if node.id not in names:
+            _schema_error(
+                source,
+                path,
+                f"unknown template name `{node.id}`",
+                "a context name, helper, or declared resource",
+            )
+        return
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        _validate_template_node(node.left, names, source=source, path=path, expr=expr)
+        _validate_template_node(node.right, names, source=source, path=path, expr=expr)
+        return
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARYOPS:
+        _validate_template_node(node.operand, names, source=source, path=path, expr=expr)
+        return
+    if isinstance(node, ast.Call):
+        if any(kw.arg is None for kw in node.keywords) or any(
+            isinstance(arg, ast.Starred) for arg in node.args
+        ):
+            _schema_error(source, path, "template uses argument unpacking", "explicit arguments")
+        _validate_template_node(node.func, names, source=source, path=path, expr=expr)
+        for arg in node.args:
+            _validate_template_node(arg, names, source=source, path=path, expr=expr)
+        for keyword in node.keywords:
+            _validate_template_node(keyword.value, names, source=source, path=path, expr=expr)
+        return
+    if isinstance(node, ast.Subscript):
+        _validate_template_node(node.value, names, source=source, path=path, expr=expr)
+        _validate_template_node(node.slice, names, source=source, path=path, expr=expr)
+        return
+    if isinstance(node, ast.Slice):
+        for bound in (node.lower, node.upper, node.step):
+            if bound is not None:
+                _validate_template_node(bound, names, source=source, path=path, expr=expr)
+        return
+    _schema_error(
+        source,
+        path,
+        f"disallowed template syntax `{type(node).__name__}` in `{expr}`",
+        "the documented restricted expression syntax",
+    )
+
+
+def _validate_template(template: str, resource_names: set[str], *, source: str, path: str) -> None:
+    names = _TEMPLATE_NAMES | resource_names
+    matches = list(_TEMPLATE_RE.finditer(template))
+    remainder = _TEMPLATE_RE.sub("", template)
+    if "{{" in remainder or "}}" in remainder:
+        _schema_error(
+            source,
+            path,
+            "unmatched template delimiter",
+            "balanced `{{ expression }}` placeholders",
+        )
+    for match in matches:
+        expr = match.group(1)
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            _schema_error(
+                source,
+                path,
+                f"invalid template expression `{expr}`",
+                "valid restricted expression syntax",
+            )
+        _validate_template_node(tree.body, names, source=source, path=path, expr=expr)
+
+
+def _validate_template_cycles(resources: dict[str, dict[str, Any]], *, source: str) -> None:
+    names = set(resources)
+    deps = {
+        name: template_refs(spec.get("template", "")) & names
+        for name, spec in resources.items()
+        if spec["type"] == "template"
+    }
+    seen: set[str] = set()
+    active: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in seen:
+            return
+        if name in active:
+            _schema_error(
+                source,
+                f"resources.{name}.template",
+                f"dependency cycle involving `{name}`",
+                "acyclic resource references",
+            )
+        active.add(name)
+        for dependency in deps.get(name, set()):
+            visit(dependency)
+        active.remove(name)
+        seen.add(name)
+
+    for name in resources:
+        visit(name)
+
+
+def _validate_resources(
+    data: dict[str, Any], *, source: str, base_dir: Path
+) -> dict[str, dict[str, Any]]:
+    raw = _table(data.get("resources", {}), source=source, path="resources")
+    resources: dict[str, dict[str, Any]] = {}
+    resource_names = set(raw)
+    for name, raw_spec in raw.items():
+        path = f"resources.{name}"
+        if not ENV_NAME_RE.match(name):
+            _schema_error(
+                source,
+                path,
+                f"invalid resource name `{name}`",
+                "an environment identifier matching [A-Za-z_][A-Za-z0-9_]*",
+            )
+        spec = _table(raw_spec, source=source, path=path)
+        if "type" not in spec:
+            _schema_error(source, path, "missing field `type`", "a resource type")
+        resource_type = _enum(spec["type"], _RESOURCE_TYPES, source=source, path=f"{path}.type")
+        _allowed_keys(spec, _RESOURCE_FIELDS[resource_type], source=source, path=path)
+        if "writer" in spec:
+            _validate_writer(
+                spec["writer"],
+                source=source,
+                path=f"{path}.writer",
+                base_dir=base_dir,
+            )
+        if resource_type == "port":
+            if "range" not in spec:
+                _schema_error(source, path, "missing field `range`", "range = [LO, HI]")
+            port_range = spec["range"]
+            if (
+                not isinstance(port_range, list)
+                or len(port_range) != _PORT_RANGE_LENGTH
+                or any(type(value) is not int for value in port_range)
+            ):
+                _schema_error(
+                    source,
+                    f"{path}.range",
+                    f"got {port_range!r}",
+                    "exactly two integers [LO, HI]",
+                )
+            lo, hi = port_range
+            if not (1 <= lo <= hi <= _MAX_PORT):
+                _schema_error(
+                    source,
+                    f"{path}.range",
+                    f"got [{lo}, {hi}]",
+                    "1 <= LO <= HI <= 65535",
+                )
+        elif resource_type == "template":
+            if "template" not in spec:
+                _schema_error(source, path, "missing field `template`", "a string template")
+            if type(spec["template"]) is not str:
+                _schema_error(
+                    source,
+                    f"{path}.template",
+                    f"got {type(spec['template']).__name__}",
+                    "a string",
+                )
+        elif resource_type == "set" and "default" in spec and type(spec["default"]) is not str:
+            _schema_error(
+                source,
+                f"{path}.default",
+                f"got {type(spec['default']).__name__}",
+                "a string",
+            )
+        resources[name] = dict(spec)
+    for name, spec in resources.items():
+        if spec["type"] == "template":
+            _validate_template(
+                spec["template"],
+                resource_names,
+                source=source,
+                path=f"resources.{name}.template",
+            )
+    _validate_template_cycles(resources, source=source)
+    return resources
+
+
+def _validate_apps(
+    data: dict[str, Any],
+    resources: dict[str, dict[str, Any]],
+    *,
+    source: str,
+) -> dict[str, dict[str, Any]]:
+    raw = _table(data.get("apps", {}), source=source, path="apps")
+    profiles = _known_profiles() | {"unknown"}
+    apps: dict[str, dict[str, Any]] = {}
+    for name, raw_spec in raw.items():
+        path = f"apps.{name}"
+        spec = _table(raw_spec, source=source, path=path)
+        _allowed_keys(spec, _APP_FIELDS, source=source, path=path)
+        for required in sorted(_APP_FIELDS):
+            if required not in spec:
+                _schema_error(
+                    source, path, f"missing field `{required}`", "path, profile, resources"
+                )
+        _non_empty_string(spec["path"], source=source, path=f"{path}.path")
+        _enum(spec["profile"], profiles, source=source, path=f"{path}.profile")
+        refs = spec["resources"]
+        if not isinstance(refs, list) or any(type(ref) is not str for ref in refs):
+            _schema_error(
+                source,
+                f"{path}.resources",
+                f"got {type(refs).__name__}",
+                "an array of resource-name strings",
+            )
+        if len(refs) != len(set(refs)):
+            _schema_error(
+                source,
+                f"{path}.resources",
+                "contains duplicate resource names",
+                "a unique list",
+            )
+        for ref in refs:
+            if not ENV_NAME_RE.match(ref):
+                _schema_error(
+                    source,
+                    f"{path}.resources",
+                    f"invalid resource name `{ref}`",
+                    "environment identifiers",
+                )
+            if ref not in resources:
+                _schema_error(
+                    source,
+                    f"{path}.resources",
+                    f"references undeclared resource `{ref}`",
+                    "names declared under [resources]",
+                )
+        apps[name] = dict(spec)
+    return apps
+
+
+def _validate_setup(data: dict[str, Any], *, source: str) -> dict[str, dict[str, Any]]:
+    raw = _table(data.get("setup", {}), source=source, path="setup")
+    setup: dict[str, dict[str, Any]] = {}
+    for name, raw_spec in raw.items():
+        path = f"setup.{name}"
+        spec = _table(raw_spec, source=source, path=path)
+        _allowed_keys(spec, {"run"}, source=source, path=path)
+        if "run" not in spec:
+            _schema_error(
+                source,
+                path,
+                "missing field `run`",
+                "a non-empty string or non-empty array of strings",
+            )
+        commands = spec["run"]
+        if isinstance(commands, str):
+            _non_empty_string(commands, source=source, path=f"{path}.run")
+        elif isinstance(commands, list) and commands:
+            for index, command in enumerate(commands):
+                _non_empty_string(command, source=source, path=f"{path}.run.{index}")
+        else:
+            _schema_error(
+                source,
+                f"{path}.run",
+                f"got {type(commands).__name__}",
+                "a non-empty string or non-empty array of strings",
+            )
+        setup[name] = dict(spec)
+    return setup
+
+
+def validate_target_spec(
+    dtype: str,
+    spec: dict[str, Any],
+    *,
+    source: str,
+    path: str,
+) -> dict[str, str]:
+    if dtype not in TARGET_TYPES:
+        _schema_error(
+            source,
+            path,
+            f"unknown target type `{dtype}`",
+            "one of " + ", ".join(TARGET_TYPES),
+        )
+    filtered = {key: value for key, value in spec.items() if value is not None}
+    _allowed_keys(filtered, _TARGET_FIELDS[dtype], source=source, path=path)
+    for field, value in filtered.items():
+        if field == "platform":
+            _enum(value, {"ios", "android"}, source=source, path=f"{path}.{field}")
+        else:
+            _non_empty_string(value, source=source, path=f"{path}.{field}")
+    return filtered
+
 
 def _parse_targets_section(
     data: dict[str, Any], *, source: str
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Parse [targets.<type>.<variant>] tables (type ∈ simulator/emulator/device)."""
-    if "devices" in data and "targets" not in data:
-        raise ValueError(
-            f"{source}: `[devices.*]` was renamed to `[targets.*]`; rename the table "
-            "(target types are simulator/emulator/device)"
+    if "devices" in data:
+        _schema_error(
+            source,
+            "devices",
+            "`[devices.*]` was renamed to `[targets.*]`",
+            "[targets.simulator|emulator|device.VARIANT]",
         )
-    raw = data.get("targets", {}) or {}
+    raw = _table(data.get("targets", {}), source=source, path="targets")
     out: dict[str, dict[str, dict[str, Any]]] = {}
-    for type_key, type_val in raw.items():
+    for type_key, raw_type in raw.items():
         if type_key not in TARGET_TYPES:
-            raise ValueError(
-                f"{source}: unknown target type `{type_key}` (known: {', '.join(TARGET_TYPES)})"
+            _schema_error(
+                source,
+                f"targets.{type_key}",
+                f"unknown target type `{type_key}`",
+                "one of " + ", ".join(TARGET_TYPES),
             )
-        if not isinstance(type_val, dict):
-            raise ValueError(f"{source}: [targets.{type_key}] must be a table of variants")
+        type_table = _table(raw_type, source=source, path=f"targets.{type_key}")
         variants: dict[str, dict[str, Any]] = {}
-        for variant_name, spec in type_val.items():
+        for variant_name, raw_spec in type_table.items():
             if not TARGET_VARIANT_RE.match(variant_name):
-                raise ValueError(
-                    f"{source}: variant name `{variant_name}` must match [A-Za-z][A-Za-z0-9_-]*"
+                _schema_error(
+                    source,
+                    f"targets.{type_key}.{variant_name}",
+                    f"invalid variant name `{variant_name}`",
+                    "a name matching [A-Za-z][A-Za-z0-9_-]*",
                 )
-            if not isinstance(spec, dict):
-                raise ValueError(f"{source}: [targets.{type_key}.{variant_name}] must be a table")
-            variants[variant_name] = dict(spec)
+            spec = _table(
+                raw_spec,
+                source=source,
+                path=f"targets.{type_key}.{variant_name}",
+            )
+            variants[variant_name] = validate_target_spec(
+                type_key,
+                spec,
+                source=source,
+                path=f"targets.{type_key}.{variant_name}",
+            )
         out[type_key] = variants
     return out
 
@@ -249,22 +765,26 @@ def _parse_targets_section(
 class Recipe:
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
-        self.resources: dict[str, dict[str, Any]] = dict(data.get("resources", {}) or {})
-        self.setup: dict[str, dict[str, Any]] = dict(data.get("setup", {}) or {})
-        self.project: dict[str, Any] = dict(data.get("project", {}) or {})
+        source = _source(path, RECIPE_NAME)
+        if "devices" in data:
+            _parse_targets_section(data, source=source)
+        _allowed_keys(data, _RECIPE_SECTIONS, source=source, path="document")
+        self.resources = _validate_resources(data, source=source, base_dir=path.parent)
+        self.setup = _validate_setup(data, source=source)
+        self.project = _validate_project(data, source=source)
+        self.apps = _validate_apps(data, self.resources, source=source)
         self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
             data,
-            source=path.name or RECIPE_NAME,
+            source=source,
         )
-        for name in self.resources:
-            if not ENV_NAME_RE.match(name):
-                raise ValueError(f"resource name `{name}` is not a valid env var identifier")
 
     @classmethod
     def load(cls, path: Path) -> Recipe:
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-        return cls(data, path)
+        return cls(_load_toml(path, RECIPE_NAME), path)
+
+    @classmethod
+    def parse(cls, text: str, path: Path) -> Recipe:
+        return cls(_parse_toml(text, path, RECIPE_NAME), path)
 
 
 LOCAL_SKELETON = """\
@@ -298,18 +818,25 @@ class LocalConfig:
 
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
+        source = _source(path, LOCAL_NAME)
+        if "devices" in data:
+            _parse_targets_section(data, source=source)
+        _allowed_keys(data, _CONFIG_SECTIONS, source=source, path="document")
+        self.settings = _parse_settings(data, source=source)
         self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
             data,
-            source=path.name or LOCAL_NAME,
+            source=source,
         )
 
     @classmethod
     def load(cls, path: Path) -> LocalConfig:
         if not path.exists():
             return cls({}, path)
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-        return cls(data, path)
+        return cls(_load_toml(path, LOCAL_NAME), path)
+
+    @classmethod
+    def parse(cls, text: str, path: Path) -> LocalConfig:
+        return cls(_parse_toml(text, path, LOCAL_NAME), path)
 
 
 GLOBAL_SKELETON = """\
@@ -350,18 +877,25 @@ class GlobalConfig:
 
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
+        source = _source(path, GLOBAL_CONFIG_NAME)
+        if "devices" in data:
+            _parse_targets_section(data, source=source)
+        _allowed_keys(data, _CONFIG_SECTIONS, source=source, path="document")
+        self.settings = _parse_settings(data, source=source)
         self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
             data,
-            source=path.name or GLOBAL_CONFIG_NAME,
+            source=source,
         )
 
     @classmethod
     def load(cls, path: Path) -> GlobalConfig:
         if not path.exists():
             return cls({}, path)
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-        return cls(data, path)
+        return cls(_load_toml(path, GLOBAL_CONFIG_NAME), path)
+
+    @classmethod
+    def parse(cls, text: str, path: Path) -> GlobalConfig:
+        return cls(_parse_toml(text, path, GLOBAL_CONFIG_NAME), path)
 
 
 def _global_config_path() -> Path:
@@ -386,20 +920,27 @@ _SETTINGS_SCHEMA: dict[str, type] = {"prefix_match": bool}
 def _parse_settings(data: dict[str, Any], source: str) -> dict[str, Any]:
     """Read and strictly validate a `[settings]` table. Unknown keys and wrong
     value types are errors (a silently-ignored typo'd toggle is worse than loud)."""
-    raw = data.get("settings", {})
-    if not isinstance(raw, dict):
-        raise ValueError(f"[settings] in {source} must be a table")
+    raw = _table(data.get("settings", {}), source=source, path="settings")
     parsed: dict[str, Any] = {}
     for key, value in raw.items():
         expected = _SETTINGS_SCHEMA.get(key)
         if expected is None:
-            known = ", ".join(sorted(_SETTINGS_SCHEMA))
-            raise ValueError(f"unknown setting `{key}` in {source} [settings]; known: {known}")
+            _schema_error(
+                source,
+                "settings",
+                f"unknown field `{key}`",
+                "only " + ", ".join(sorted(_SETTINGS_SCHEMA)),
+            )
         # bool is a subclass of int, so a plain isinstance check would let `1` pass
         # for a bool key and `true` pass for a (future) int key. The second clause
         # rejects a bool wherever a non-bool type is expected.
         if not isinstance(value, expected) or (expected is not bool and isinstance(value, bool)):
-            raise ValueError(f"setting `{key}` in {source} [settings] must be {expected.__name__}")
+            _schema_error(
+                source,
+                f"settings.{key}",
+                f"got {type(value).__name__}",
+                expected.__name__,
+            )
         parsed[key] = value
     return parsed
 
@@ -413,9 +954,10 @@ def load_settings(cwd: Path) -> Settings:
     for path in (_global_config_path(), cwd / LOCAL_NAME):
         if not path.exists():
             continue
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-        merged.update(_parse_settings(data, source=path.name or str(path)))
+        config = (
+            GlobalConfig.load(path) if path.name == GLOBAL_CONFIG_NAME else LocalConfig.load(path)
+        )
+        merged.update(config.settings)
     # _parse_settings only ever returns validated, whitelisted keys, so they map
     # 1:1 onto Settings fields; absent keys fall back to the dataclass defaults.
     return Settings(**merged)
@@ -504,7 +1046,7 @@ def topo_sort(recipe: Recipe) -> list[str]:
     for n, spec in recipe.resources.items():
         tpl = spec.get("template")
         if isinstance(tpl, str):
-            deps[n] = {r for r in template_refs(tpl) if r in name_set and r != n}
+            deps[n] = {r for r in template_refs(tpl) if r in name_set}
 
     out: list[str] = []
     seen: set[str] = set()

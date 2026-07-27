@@ -1,6 +1,6 @@
 # The recipe: `splashdown.toml`
 
-The committed file. Four kinds of top-level tables: `[project]`, `[apps.*]`, `[resources.*]`, and (for mobile) `[targets.*]`. The scanner produces a working version. Edit freely.
+The committed file. Its top-level sections are `[project]`, `[apps.*]`, `[resources.*]`, `[targets.*]` (for mobile), and `[setup.*]`. The scanner produces a working version.
 
 ```toml
 [project]
@@ -35,6 +35,17 @@ template = "{{ PORT }}"        # Vite's /api proxy must hit the api's actual por
 Resource types: `port`, `uuid`, `template`, `cwd`, `cwd-slug`, `set`.
 Template scope: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`, `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`, plus prior resolved resources.
 
+Each resource type has a small, strict shape:
+
+| Type | Fields |
+| --- | --- |
+| `port` | Required `range = [LO, HI]`, where both values are integers and `1 <= LO <= HI <= 65535` |
+| `template` | Required string `template` |
+| `set` | Optional string `default` |
+| `uuid`, `cwd`, `cwd-slug` | No type-specific fields |
+
+Every resource also accepts the optional `writer` field. Fields belonging to another resource type are errors.
+
 Templates are derived values and re-render on every sync. Referenced resource changes therefore propagate immediately. For a stable generated component, declare it separately as `type = "uuid"` and reference that resource from the template; calling `uuid()` directly in a template creates a new value on every sync.
 
 `set` resources hold manually supplied values:
@@ -66,7 +77,7 @@ run = [
 ]
 ```
 
-`run` accepts one command string or a non-empty array of strings. Commands run sequentially from the checkout root with resolved resources added to their environment. The requested setup name must exist; an unknown name or malformed `run` value exits 1. Execution stops at the first failed command and also exits 1. Resource allocation and output-file writes happen before setup starts and are not rolled back if a command fails.
+`run` accepts one non-empty command string or a non-empty array of non-empty strings. It is the only field accepted in a setup block. Commands run sequentially from the checkout root with resolved resources added to their environment. The requested setup name must exist. Execution stops at the first failed command and exits 1. Resource allocation and output-file writes happen before setup execution starts and are not rolled back if a command fails.
 
 **For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands. Pin an explicit version like `ios = "18.5"` for fixed coverage.
 
@@ -91,6 +102,22 @@ For a **plugged-in phone**, declare a `device` target (or just rely on auto-pick
 # id       = "..."        # exact udid / adb serial
 ```
 
-Target types: `simulator`, `emulator`, `device`.
+Target types and their compatible fields:
+
+| Type | Optional fields |
+| --- | --- |
+| `simulator` | `model`, `ios`, `name` |
+| `emulator` | `device`, `image`, `name` |
+| `device` | `id`, `name`, `platform` (`ios` or `android`) |
+
+All supplied target values must be non-empty strings. A field for the wrong type, such as `image` on a simulator, is an error.
+
+## Validation
+
+Splashdown validates the complete recipe whenever it loads it. Unknown sections or fields, wrong value types, unknown workspace/loader/profile names, malformed targets, and invalid resource definitions are hard errors. `[apps.NAME]` must contain `path`, `profile`, and a unique `resources` list whose entries are declared under `[resources]`.
+
+`[project]` accepts `workspace`, `loader`, `framework`, `run`, `ios`, and `android`. `run` is either one non-empty command string or a table containing `ios` and/or `android` commands. The `ios` table accepts `scheme`, `mode`, `configuration`, `workspace`, and `project`; the `android` table accepts `mode`, `module`, `variant`, `application_id`, and `launch_activity`. All supplied leaf values are non-empty strings. App profiles use a built-in profile name or `unknown`.
+
+Templates are also checked up front: expressions must use the documented restricted syntax, every referenced name must exist, and resource dependency cycles are rejected. Validation finishes before registry allocation or generated-file updates, so a mistake anywhere in the document cannot leave a partially provisioned checkout. Errors identify the source and qualified field, for example `splashdown.toml: [resources.PORT.range] ...`.
 
 For per-checkout variants layered on top of this recipe, see [Per-checkout overrides](overrides.md).

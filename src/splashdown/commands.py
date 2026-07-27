@@ -75,6 +75,7 @@ from .scanner import (
     _detect_loader,
     _merge_app_resources,
     _merge_app_targets,
+    _prune_unresolvable_templates,
     _should_defer_monorepo,
 )
 from .wiring import (
@@ -1084,7 +1085,10 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     Used when init detects an ambiguous monorepo it should not auto-configure."""
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
-    (cwd / RECIPE_NAME).write_text(render_scanned_recipe(inv, {}, {}, cwd))
+    recipe_path = cwd / RECIPE_NAME
+    rendered = render_scanned_recipe(inv, {}, {}, cwd)
+    Recipe.parse(rendered, recipe_path)
+    recipe_path.write_text(rendered)
     print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
     print(
         f"monorepo detected ({len(inv.apps)} apps) — resources not auto-configured; "
@@ -1147,14 +1151,16 @@ def cmd_init(
     merged_resources = _merge_app_resources(inv.apps, res_by_app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
     merged_targets = _merge_app_targets(inv.apps)
+    for name in _prune_unresolvable_templates(merged_resources, app_resource_names):
+        print(f"  skipped {name}: template references a resource no app declares", file=sys.stderr)
 
     no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
 
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
-    recipe_path.write_text(
-        render_scanned_recipe(inv, merged_resources, app_resource_names, cwd, merged_targets)
-    )
+    rendered = render_scanned_recipe(inv, merged_resources, app_resource_names, cwd, merged_targets)
+    Recipe.parse(rendered, recipe_path)
+    recipe_path.write_text(rendered)
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME
@@ -1205,7 +1211,9 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
         sys.exit(2)
     loader_name = loader_override or _detect_loader(cwd)
     recipe_path = cwd / RECIPE_NAME
-    recipe_path.write_text(scaffold.replace("__SPLASH_LOADER__", loader_name))
+    rendered = scaffold.replace("__SPLASH_LOADER__", loader_name)
+    Recipe.parse(rendered, recipe_path)
+    recipe_path.write_text(rendered)
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
     local_path = cwd / LOCAL_NAME
@@ -1322,6 +1330,7 @@ def cmd_refresh_inventory(cwd: Path) -> int:
     if not recipe_path.exists():
         print(f"no {RECIPE_NAME} in {cwd}; run `splash init` instead", file=sys.stderr)
         return 1
+    existing = Recipe.load(recipe_path)
     inv = Scanner().scan(cwd)
 
     res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
@@ -1332,10 +1341,13 @@ def cmd_refresh_inventory(cwd: Path) -> int:
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
     profile_emitted = _merge_app_resources(inv.apps, res_by_app)
+    # Names already in the recipe stay resolvable — refresh_recipe keeps them.
+    _prune_unresolvable_templates(profile_emitted, app_resource_names, set(existing.resources))
 
     from .tomlio import refresh_recipe  # noqa: PLC0415
 
     rebuilt = refresh_recipe(recipe_path.read_text(), inv, profile_emitted, app_resource_names, cwd)
+    Recipe.parse(rebuilt, recipe_path)
     recipe_path.write_text(rebuilt)
     n_resources = len(tomllib.loads(rebuilt).get("resources", {}))
     print(

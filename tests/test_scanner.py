@@ -64,10 +64,9 @@ export default defineConfig(({ mode }) => {
     assert rc != 0  # the check flags `problem` and we didn't pass --fix
 
 
-def test_refresh_inventory_preserves_resource_comments_and_unknown_keys(tmp_path):
-    """refresh-inventory must round-trip an underscore-named resource verbatim,
-    including a user comment and an unknown key inside the block."""
-    (tmp_path / "splashdown.toml").write_text("""\
+def test_refresh_inventory_rejects_unknown_resource_key_without_writing(tmp_path):
+    path = tmp_path / "splashdown.toml"
+    path.write_text("""\
 # top-of-file comment
 [project]
 workspace = "single"
@@ -84,13 +83,111 @@ range = [9000, 9010]
 # user note inside the block
 custom_unknown_key = "keep me"
 """)
+    before = path.read_text()
+    with pytest.raises(ValueError, match="unknown field `custom_unknown_key`"):
+        sd.cmd_refresh_inventory(tmp_path)
+    assert path.read_text() == before
+
+
+def test_refresh_inventory_validates_existing_apps_before_replacing_them(tmp_path):
+    path = tmp_path / "splashdown.toml"
+    path.write_text("""\
+[project]
+workspace = "single"
+loader = "none"
+
+[apps.main]
+path = "."
+profile = "unknown"
+resources = []
+unknown = "would otherwise be erased"
+""")
+    before = path.read_text()
+    with pytest.raises(ValueError, match=r"\[apps\.main\] unknown field `unknown`"):
+        sd.cmd_refresh_inventory(tmp_path)
+    assert path.read_text() == before
+
+
+def _vite_app(root: Path, *, proxy: bool) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "package.json").write_text('{"name": "web", "devDependencies": {"vite": "^5"}}')
+    config = (
+        'export default { server: { proxy: { "/api": "http://localhost:9081" } } }'
+        if proxy
+        else "export default {}"
+    )
+    (root / "vite.config.ts").write_text(config)
+
+
+def test_init_prunes_vite_api_port_when_no_app_declares_port(tmp_path, capsys):
+    """Vite emits API_DEV_PORT = "{{ PORT }}" for any proxying config, but PORT
+    only exists when the repo also has a backend app. Without pruning, the
+    unresolvable reference fails Recipe validation and init writes nothing."""
+    _vite_app(tmp_path, proxy=True)
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert set(recipe.resources) == {"WEB_DEV_PORT"}
+    assert recipe.apps["main"]["resources"] == ["WEB_DEV_PORT"]
+    assert "skipped API_DEV_PORT" in capsys.readouterr().err
+
+
+def test_init_keeps_vite_api_port_when_a_backend_declares_port(tmp_path):
+    (tmp_path / "package.json").write_text('{"name": "mono", "private": true}')
+    (tmp_path / "pnpm-workspace.yaml").write_text('packages:\n  - "apps/*"\n')
+    _vite_app(tmp_path / "apps" / "web", proxy=True)
+    api = tmp_path / "apps" / "api"
+    api.mkdir(parents=True)
+    (api / "package.json").write_text('{"name": "api", "dependencies": {"express": "^4"}}')
+    (api / "index.js").write_text("require('express')()")
+
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert recipe.resources["API_DEV_PORT"]["template"] == "{{ PORT }}"
+    assert "API_DEV_PORT" in recipe.apps["web"]["resources"]
+
+
+def test_refresh_inventory_keeps_template_resolved_by_the_existing_recipe(tmp_path):
+    """A resource the recipe already declares keeps a profile template resolvable,
+    so refresh must not prune it just because no scanned app emits PORT."""
+    _vite_app(tmp_path, proxy=True)
+    (tmp_path / sd.RECIPE_NAME).write_text("""\
+[project]
+workspace = "single"
+loader = "none"
+
+[apps.main]
+path = "."
+profile = "vite"
+resources = ["WEB_DEV_PORT", "API_DEV_PORT"]
+
+[resources.PORT]
+type = "port"
+range = [9081, 9100]
+
+[resources.WEB_DEV_PORT]
+type = "port"
+range = [5174, 5200]
+
+[resources.API_DEV_PORT]
+type = "template"
+template = "{{ PORT }}"
+""")
     assert sd.cmd_refresh_inventory(tmp_path) == 0
-    text = (tmp_path / "splashdown.toml").read_text()
-    # Comment + unknown key survive; resource still parses with its value.
-    assert "# user note inside the block" in text
-    assert 'custom_unknown_key = "keep me"' in text
-    rec = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert "MY_PORT_WITH_UNDERSCORES" in rec.resources
+    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert "API_DEV_PORT" in recipe.resources
+    assert "API_DEV_PORT" in recipe.apps["main"]["resources"]
+
+
+def test_prune_unresolvable_templates_cascades(tmp_path):
+    resources = {
+        "A": {"type": "template", "template": "{{ MISSING }}"},
+        "B": {"type": "template", "template": "{{ A }}"},
+        "C": {"type": "port", "range": [1, 2]},
+    }
+    app_names = {"main": ["A", "B", "C"]}
+    assert sd.scanner._prune_unresolvable_templates(resources, app_names) == ["A", "B"]
+    assert set(resources) == {"C"}
+    assert app_names == {"main": ["C"]}
 
 
 def test_enumerate_apps_handles_pnpm_workspace_with_comments(tmp_path):

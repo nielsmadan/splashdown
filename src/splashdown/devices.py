@@ -32,6 +32,7 @@ from .recipe import (
     _global_config_path,
     _make_scope,
     render_template,
+    validate_target_spec,
 )
 from .registry import DeviceRow, Registry
 
@@ -788,6 +789,12 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
         raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
     if not TARGET_VARIANT_RE.match(variant):
         raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
+    validated_fields = validate_target_spec(
+        dtype,
+        fields,
+        source="command line",
+        path=f"targets.{dtype}.{variant}",
+    )
 
     path = cwd / LOCAL_NAME
     existing_text = path.read_text() if path.exists() else LOCAL_SKELETON
@@ -806,7 +813,9 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
 
     from .tomlio import target_add_text  # noqa: PLC0415
 
-    path.write_text(target_add_text(existing_text, dtype, variant, fields))
+    rendered = target_add_text(existing_text, dtype, variant, validated_fields)
+    LocalConfig.parse(rendered, path)
+    path.write_text(rendered)
 
 
 def _prepare_target_remove(cwd: Path, dtype: str, variant: str) -> tuple[dict[str, Any], Path, str]:
@@ -845,6 +854,12 @@ def global_target_add(dtype: str, variant: str, fields: dict[str, str | None]) -
         raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
     if not TARGET_VARIANT_RE.match(variant):
         raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
+    validated_fields = validate_target_spec(
+        dtype,
+        fields,
+        source="command line",
+        path=f"targets.{dtype}.{variant}",
+    )
 
     path = _global_config_path()
     existing_text = path.read_text() if path.exists() else GLOBAL_SKELETON
@@ -853,8 +868,10 @@ def global_target_add(dtype: str, variant: str, fields: dict[str, str | None]) -
 
     from .tomlio import target_add_text  # noqa: PLC0415
 
+    rendered = target_add_text(existing_text, dtype, variant, validated_fields)
+    GlobalConfig.parse(rendered, path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(target_add_text(existing_text, dtype, variant, fields))
+    path.write_text(rendered)
     return path
 
 

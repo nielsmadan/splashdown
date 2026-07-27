@@ -27,15 +27,16 @@ the variant behaves like any recipe target: `splash run <type> <variant>` boots 
 ## How it works (current state)
 
 Two TOML files are loaded independently and unioned at read time — the local file is never
-merged into the recipe on disk:
+merged into the recipe on disk. Both documents are validated completely before their values
+are used:
 
-- The committed recipe is parsed into a `Recipe` (`src/splashdown/recipe.py:227`); its
-  `[targets.*]` tables go through the shared `_parse_targets_section`
-  (`src/splashdown/recipe.py:196`), which validates target types and variant-name syntax.
+- The committed recipe is parsed into a `Recipe`; unknown top-level sections and fields are
+  hard errors, and its `[targets.*]` tables go through the shared target validator.
 - The per-checkout file is parsed into a `LocalConfig` (`src/splashdown/recipe.py:267`),
-  using the *same* `_parse_targets_section`. `LocalConfig.load`
-  (`src/splashdown/recipe.py:278`) returns an empty config when the file is absent, so a
-  checkout with no local variants is the normal case.
+  using the same target validator. Its only permitted top-level sections are `settings` and
+  `targets`; both are fully validated, including unknown nested fields. `LocalConfig.load`
+  returns an empty config when the file is absent, so a checkout with no local variants is
+  the normal case.
 - `merged_targets` (`src/splashdown/recipe.py:287`) unions the two catalogs. It copies the
   recipe's per-type variant dicts, then folds in each local variant — and **raises** if a
   `(type, variant)` pair already exists in the recipe bucket. This is the collision rule.
@@ -45,12 +46,14 @@ merged into the recipe on disk:
 
 The CLI side:
 
-- `add` writes the variant. `_target_dispatch` (`src/splashdown/commands.py:1377`) collects
+- `add` validates, then writes the variant. `_target_dispatch` (`src/splashdown/commands.py:1377`) collects
   the `--model/--ios/--device/--image/--name/--id/--platform` flags into a field dict and
-  calls `target_add` (`src/splashdown/devices.py:756`), which re-checks for collisions
-  against *both* the recipe and any existing local variant before appending the table via
-  the tomlkit writer `target_add_text` (`src/splashdown/tomlio.py:196`). tomlkit is used so
-  comments and unrelated tables in the local file survive the edit.
+  calls `target_add` (`src/splashdown/devices.py:756`). It rejects flags that do not belong
+  to the selected target type, validates field values, re-checks for collisions against
+  *both* the recipe and any existing local variant, renders the edit in memory, then parses
+  the complete result as `LocalConfig` before writing. A bad flag or malformed existing
+  document therefore leaves the file untouched. The tomlkit writer preserves comments and
+  unrelated valid tables.
 - `remove` preflights the variant and computes the edited TOML through
   `_prepare_target_remove` before any lifecycle action. Unless `--keep-instance` is set or the
   type is a physical `device`, it destroys the registry row's actual simulator UDID/AVD name when
@@ -95,18 +98,22 @@ model = "iPhone 16"
 ios   = "17.5"
 ```
 
-`splash target add <type> <variant>` flags (`src/splashdown/cli.py:260`), all optional and
-written verbatim as the table's string fields:
+`splash target add <type> <variant>` flags (`src/splashdown/cli.py:260`) are optional, but
+only the fields belonging to the selected type are accepted:
 
 | Flag | Field | Used by |
 |---|---|---|
-| `--model` | `model` | simulator / emulator (device model) |
+| `--model` | `model` | simulator |
 | `--ios` | `ios` | simulator (runtime, e.g. `17.5`) |
 | `--device` | `device` | emulator (AVD device profile) |
 | `--image` | `image` | emulator (system image) |
-| `--name` | `name` | sim/emulator name override; device: match by name |
+| `--name` | `name` | simulator/emulator name override; device match by name |
 | `--id` | `id` | device: exact udid / adb serial |
 | `--platform` | `platform` | device: narrow auto-pick to `ios`/`android` |
+
+All supplied values must be non-empty strings; `platform` is restricted to `ios` or
+`android`. The same field rules apply to hand-written recipe, local, and global target
+tables.
 
 `splash target remove <type> <variant>` takes `--keep-instance`
 (`src/splashdown/cli.py:279`): edit the TOML only, leaving the sim/emulator and registry row
@@ -133,9 +140,10 @@ prefix_match = false   # default true
 |---|---|---|
 | `prefix_match` | `true` | `splash run`/`start`/`stop`/`destroy` accept unique-prefix `TYPE`/`VARIANT` args (see [device-targets](device-targets.md)). |
 
-`_parse_settings` strictly validates the table — unknown keys and wrong value types raise,
-so a typo'd toggle never silently no-ops. Recognized keys are whitelisted in
-`_SETTINGS_SCHEMA`; add new toggles there and to the `Settings` dataclass.
+Loading either auxiliary config validates the whole document, not just the selected setting:
+only `settings` and `targets` are legal top-level sections, and unknown fields or wrong value
+types raise. Recognized settings are whitelisted in `_SETTINGS_SCHEMA`; add new toggles there
+and to the `Settings` dataclass.
 
 ## Gotchas
 
@@ -152,6 +160,10 @@ so a typo'd toggle never silently no-ops. Recognized keys are whitelisted in
   (`src/splashdown/recipe.py:366`), and `_prepare_target_remove` refuses to select a recipe
   variant for removal. To change a shared target, edit `splashdown.toml`; to shadow one locally,
   pick a different variant name.
+- **Target fields are type-specific.** The CLI exposes all target flags on one parser, but
+  `target add simulator ... --device=...` (and equivalent incompatible combinations) fails
+  before the local file is written. Hand-written local/global/recipe tables follow the same
+  rule; unknown fields are never retained as extensions.
 - **Default `remove` destroys state.** `splash target remove` is destructive by default — it
   deletes the sim/emulator and the registry row, not just the TOML table. Pass `--keep-instance`
   for a config-only edit. Ownership and both config files are validated first, and a lifecycle

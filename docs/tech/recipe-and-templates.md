@@ -2,11 +2,12 @@
 
 ## Purpose
 
-`recipe.py` owns the *read* side of splashdown's two config files —
-`splashdown.toml` (the committed recipe) and `splashdown.local.toml` (the
-gitignored per-checkout add-on) — and the `{{ … }}` template engine that turns
-resource specs into concrete values during a sync. `tomlio.py` owns the *write*
-side: comment- and unknown-key-preserving edits to those same files.
+`recipe.py` owns the dependency-free read and validation side of all three TOML
+documents: `splashdown.toml` (the committed recipe),
+`splashdown.local.toml` (the gitignored per-checkout add-on), and the global
+`config.toml`. It also owns the `{{ … }}` template engine that turns resource
+specs into concrete values during a sync. `tomlio.py` owns comment-preserving
+writes to those documents.
 
 The split is deliberate and load-bearing for startup latency: reads go through
 stdlib `tomllib`, writes go through `tomlkit`, and `tomlio` is structured so the
@@ -19,7 +20,7 @@ git-hook hot path never imports `tomlkit` at all (see [Why](#why)).
   - [`[targets.*]` parsing](#targets-parsing)
   - [merged_targets & resolve_variant](#merged_targets--resolve_variant)
   - [The template engine](#the-template-engine)
-  - [Dependency ordering: template_refs & topo_sort](#dependency-ordering-template_refs--topo_sort)
+  - [Template preflight and dependency ordering](#template-preflight-and-dependency-ordering)
   - [_env_quote](#_env_quote)
   - [tomlio: comment-preserving writes](#tomlio-comment-preserving-writes)
 - [Key entry points](#key-entry-points)
@@ -29,37 +30,61 @@ git-hook hot path never imports `tomlkit` at all (see [Why](#why)).
 
 ## How it works (current state)
 
-### Recipe & LocalConfig parsing
+### Recipe, LocalConfig, and GlobalConfig parsing
 
-`Recipe` (`recipe.py:227`) wraps a parsed TOML document: it pulls out
-`resources`, `setup`, `project`, and `targets`, defaulting each to an empty
-dict so a sparse recipe never raises on missing tables. `Recipe.load`
-(`recipe.py:241`) is the only file-touching path and opens the file in binary
-mode for `tomllib.load` — there is no `tomlkit` import anywhere in this module.
-The constructor validates every resource name against `ENV_NAME_RE` (a POSIX env
-identifier), so an invalid resource is rejected at parse time rather than when it
-is later written into `splashdown.env`.
+`Recipe`, `LocalConfig`, and `GlobalConfig` validate the complete TOML document
+when constructed. Their `load` classmethods read with stdlib `tomllib`; their
+`parse` classmethods provide the same validation for an in-memory string before
+a generated or edited document is written. Missing local and global files still
+produce empty configs, so callers can load them unconditionally.
 
-`LocalConfig` (`recipe.py:267`) is the much thinner per-checkout counterpart:
-it parses *only* a `[targets.*]` section. `LocalConfig.load` (`recipe.py:278`)
-treats a missing file as an empty config (the common case — most checkouts never
-create one), so callers can load it unconditionally. `LOCAL_SKELETON`
-(`recipe.py:248`) is the comment-only template written when a local file is first
-scaffolded; it documents the add-only contract inline.
+Validation is strict and centralized:
+
+- A recipe permits only `project`, `apps`, `resources`, `targets`, and `setup`
+  at the top level. Project fields and nested iOS/Android command settings are
+  whitelisted and checked against the built-in workspace, loader, and profile
+  registries.
+- Every app requires `path`, `profile`, and a unique `resources` string array;
+  resource references must name declarations in `[resources]`. This is metadata
+  validation only — provisioning still operates on the top-level resource
+  catalog.
+- Resource validation is discriminated by `type`. Required fields, exact TOML
+  types, port bounds, type-specific field leakage, and writer syntax are all
+  rejected during load. `envfile=PATH` must be a non-empty relative path that
+  resolves inside the checkout; absolute, `..`, and escaping-symlink paths fail.
+- Every setup table permits only `run`, as either a non-empty string or a
+  non-empty array of non-empty strings.
+- Local and global documents permit only `settings` and `targets`; both sections
+  are validated completely.
+
+Unknown sections and fields are errors rather than extension points. Schema
+errors consistently use
+`SOURCE: [qualified.path] problem; expected ...`, including TOML decoding
+errors. The existing `[devices.*]` rename diagnostic is retained in that format.
+
+The objects continue exposing plain dictionaries (`project`, `apps`,
+`resources`, `setup`, `targets`, and `settings`), so consumers do not need a
+second model layer. `LOCAL_SKELETON` is the comment-only template written when a
+local file is first scaffolded.
 
 ### `[targets.*]` parsing
 
-Both files share `_parse_targets_section` (`recipe.py:196`), which parses the
-two-level `[targets.<type>.<variant>]` shape. It enforces:
+All three documents share `_parse_targets_section`, and CLI mutation shares its
+leaf validator, `validate_target_spec`. Together they enforce:
 
 - `<type>` ∈ `TARGET_TYPES` (`simulator`/`emulator`/`device`) — anything else is
   an error listing the known types.
 - `<variant>` matches `TARGET_VARIANT_RE`.
-- each type table and each variant spec is a TOML table.
+- each type table and each variant spec is a TOML table;
+- `simulator` accepts only `model`, `ios`, and `name`;
+- `emulator` accepts only `device`, `image`, and `name`;
+- `device` accepts only `id`, `name`, and `platform`, with platform restricted
+  to `ios` or `android`;
+- every supplied leaf is a non-empty string.
 
-It also carries one migration guard: a top-level `[devices.*]` table with no
-`[targets.*]` raises a rename hint, because the section was renamed. The `source`
-argument is threaded purely so error messages name the offending file.
+It also carries one migration guard: any top-level `[devices.*]` table raises a
+rename hint, because the section was renamed. The `source` argument is threaded
+so error messages name the offending file.
 
 ### merged_targets & resolve_variant
 
@@ -86,9 +111,11 @@ tables, highest priority first: the checkout's `splashdown.local.toml`, then the
 machine-wide `~/.config/splashdown/config.toml`. The global path is recomputed from
 `XDG_CONFIG_HOME` at call time (mirroring `Registry`) so tests can monkeypatch the
 env; both files are read with stdlib `tomllib`, keeping the provisioning read-path
-dependency-free. `_parse_settings` strictly validates against the `_SETTINGS_SCHEMA`
-whitelist — unknown keys and wrong value types raise, so a typo never silently
-no-ops. Add a new toggle by extending both `_SETTINGS_SCHEMA` and `Settings`.
+dependency-free. Loading settings constructs `LocalConfig`/`GlobalConfig`, so
+the *whole* document — not just `[settings]` — must be valid.
+`_parse_settings` validates against the `_SETTINGS_SCHEMA` whitelist; unknown
+keys and wrong value types raise. Add a new toggle by extending both
+`_SETTINGS_SCHEMA` and `Settings`.
 
 ### The template engine
 
@@ -126,19 +153,24 @@ template vocabulary:
 fresh scope from the accumulating `resolved` dict for each template
 (`provisioning.py:71`).
 
-### Dependency ordering: template_refs & topo_sort
+### Template preflight and dependency ordering
+
+Recipe validation preflights every template before provisioning can touch the
+registry. Each placeholder is parsed as an expression and walked with the same
+syntax restrictions as runtime evaluation. Unknown names, unmatched delimiters,
+disallowed syntax, and references to undeclared resources are therefore load
+errors. Helper-specific failures that need runtime values — for example invalid
+arguments passed to a helper — remain runtime `TemplateError`s.
 
 `template_refs` (`recipe.py:172`) extracts the resource names a template depends
 on. It is **AST-based**: it parses each `{{ expr }}` and collects only
 `ast.Name` nodes, so an identifier-looking string literal (`{{ "PORT" }}`) is not
-mistaken for a dependency and cannot fabricate a phantom edge. If an expression
-fails to parse, it degrades to a lenient regex identifier scan — the real syntax
-error is surfaced later by `render_template` when the value is actually
-resolved.
+mistaken for a dependency and cannot fabricate a phantom edge.
 
-`topo_sort` (`recipe.py:333`) builds a dependency graph (edges restricted to
-names that are themselves resources, self-edges dropped) and orders it with a
-recursive DFS using the classic **temporary-mark / permanent-mark** scheme:
+Validation builds the dependency graph and rejects cycles, including
+self-references, while the complete document is still in memory. `topo_sort`
+then orders the already-validated resources with a recursive DFS using the
+classic **temporary-mark / permanent-mark** scheme:
 `temp` flags the active path so re-entering a node still on it is a cycle (raised
 as a `ValueError` naming the node), `seen` is the permanent set. The output lists
 referents before referrers, which is exactly the order `provision()` needs.
@@ -161,27 +193,33 @@ neutralize them and are read literally by mise/direnv too.
 Every function is a pure `str -> str` (or `str | None`) transform; callers own
 file I/O.
 
-- `render_scanned_recipe` (`tomlio.py:68`) builds a brand-new recipe document
-  (header comment, `[project]`, `[apps.*]`, `[resources.*]`) from scratch.
+- `render_scanned_recipe` builds a brand-new recipe document (header comment,
+  `[project]`, `[apps.*]`, `[resources.*]`) from scratch. Scanner output and
+  built-in preset output are passed through `Recipe.parse` before file I/O.
 - `refresh_recipe` (`tomlio.py:92`) is the re-scan path: it `tomlkit.parse`s the
   existing text, mutates `[project]` in place and replaces `[apps.*]` wholesale
   (via `_set_apps`, `tomlio.py:55`), but **only appends** profile resources whose
-  names aren't already present — preserving user edits, comments, and unknown
-  keys in `[resources.*]`.
+  names aren't already present. It preserves comments and existing resource
+  fields mechanically, but the rebuilt document must pass `Recipe.parse` before
+  it replaces the file; an unknown or stale field therefore prevents the write.
 - `ensure_mise_file_directive_text` (`tomlio.py:124`) idempotently ensures
   `_.file = "<env file>"` under `[env]`, handling the case where `_` already
   exists as a table (it sets the key in place rather than re-declaring a dotted
   key, which `tomlkit` would reject).
-- `target_add_text` / `target_remove_text` (`tomlio.py:152`, `tomlio.py:171`)
-  back `splash target add/remove`: add creates the nested
-  `[targets.<type>.<variant>]` table; remove deletes it and prunes now-empty
-  parent tables, returning `None` when the variant was already absent.
+- `target_add_text` / `target_remove_text` back `splash target add/remove`: add
+  creates the nested `[targets.<type>.<variant>]` table; remove deletes it and
+  prunes now-empty parent tables, returning `None` when the variant was already
+  absent. Add validates incompatible flags before rendering and parses the full
+  local/global result before writing it.
 
 ## Key entry points
 
-- `recipe.py:227` — `Recipe`; `recipe.py:241` `Recipe.load` (tomllib read).
-- `recipe.py:267` — `LocalConfig`; `recipe.py:278` `LocalConfig.load`.
-- `recipe.py:196` — `_parse_targets_section`.
+- `Recipe.load` / `Recipe.parse` — file and in-memory recipe validation.
+- `LocalConfig.load` / `LocalConfig.parse` and `GlobalConfig.load` /
+  `GlobalConfig.parse` — local/global validation.
+- `_validate_resources`, `_validate_apps`, `_validate_setup`,
+  `_validate_project` — recipe schema.
+- `_parse_targets_section` / `validate_target_spec` — shared target schema.
 - `recipe.py:287` — `merged_targets`; `recipe.py:305` — `resolve_variant`.
 - `recipe.py:152` — `render_template`; `recipe.py:144` `_safe_eval`;
   `recipe.py:103` `_eval_node` (the AST sandbox).
@@ -210,10 +248,9 @@ file I/O.
   variant)` collision instead of letting local win. Renaming the recipe variant
   is not how you customize one per checkout — pick a distinct name in the local
   file.
-- **`template_refs` self-edges and string literals are silently ignored**, so a
-  template referencing itself or quoting a resource-looking string won't create a
-  false cycle — but it also means such a reference resolves against the *scope*
-  (context/helper), not the resource.
+- **String literals do not create dependency edges.** A resource-looking string
+  such as `{{ "PORT" }}` is just a string. Self-references are real edges and
+  fail schema validation as a cycle.
 
 ## Why
 
@@ -221,10 +258,10 @@ file I/O.
   recipes executed by a git hook; see the gotcha above. The whitelist approach
   means the threat surface is the explicit `_BINOPS`/scope set, not the entire
   Python object graph.
-- **tomllib read vs tomlkit write split** — reads (the hot path: every
+- **tomllib read vs tomlkit write split** — reads and schema validation (the hot path: every
   post-checkout sync, `status`, completion) must stay dependency-light and fast,
-  so they use stdlib `tomllib`. Only *writes* need to preserve comments and
-  unknown keys, which is `tomlkit`'s job. Confining `tomlkit` to `tomlio.py`,
+  so they use stdlib `tomllib`. Only *writes* need to preserve comments, which
+  is `tomlkit`'s job. Confining `tomlkit` to `tomlio.py`,
   keeping `tomlio` out of `__init__.py`'s re-exports, and lazy-importing it from
   callers guarantees the read path never pays `tomlkit`'s import cost.
 

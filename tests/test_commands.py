@@ -181,6 +181,40 @@ def test_device_add_rejects_bad_variant(tmp_path):
         sd.target_add(tmp_path, "simulator", "has spaces", {"model": "X"})
 
 
+@pytest.mark.parametrize(
+    ("dtype", "fields"),
+    [
+        ("simulator", {"device": "pixel_9"}),
+        ("emulator", {"ios": "latest"}),
+        ("device", {"model": "iPhone 17"}),
+    ],
+)
+def test_device_add_rejects_incompatible_fields_before_writing(tmp_path, dtype, fields):
+    with pytest.raises(ValueError, match="unknown field"):
+        sd.target_add(tmp_path, dtype, "default", fields)
+    assert not (tmp_path / "splashdown.local.toml").exists()
+
+
+def test_cli_target_add_rejects_incompatible_flags_cleanly(tmp_path, capsys):
+    rc = sd.main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "target",
+            "add",
+            "simulator",
+            "default",
+            "--device",
+            "pixel_9",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "unknown field `device`" in captured.err
+    assert "Traceback" not in captured.err
+    assert not (tmp_path / "splashdown.local.toml").exists()
+
+
 def test_device_remove_strips_local_variant(tmp_path):
     sd.target_add(tmp_path, "simulator", "repro", {"model": "X"})
     sd.target_add(tmp_path, "simulator", "other", {"model": "Y"})

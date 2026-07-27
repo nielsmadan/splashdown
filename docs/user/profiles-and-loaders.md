@@ -10,7 +10,7 @@ mise and direnv only load a config once you trust/allow it, so splashdown runs t
 
 When no loader config is found, splashdown does **not** impose one. It picks `none` and instead routes the generated values straight into a dotenv file the project already reads (`.env` if present, else `.env.local`), provided at least one app actually reads dotenv files (Next.js, Django, FastAPI, Node backends). For apps that only see values exported into the process environment (Vite, Spring Boot, mobile), a plain dotenv file can't reach them, so splashdown keeps generating `splashdown.env` and prints how to source it or which loader to install. Force any choice with `splash init --loader=mise|direnv|devbox|none`.
 
-**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table. Splashdown picks up the change on the next sync and never re-scans unless you ask. `splash init --rescan` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
+**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table. Values must name a supported built-in workspace, loader, or profile; unknown names and fields are errors. Splashdown picks up a valid change on the next sync and never re-scans unless you ask. `splash init --rescan` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
 
 **Multi-instance collisions** are mangled at scan time. Two Vite apps both want `WEB_DEV_PORT`. The scanner renames them `WEB_DEV_PORT_ADMIN` / `WEB_DEV_PORT_CUSTOMER` based on the app names, so the recipe stays unambiguous.
 
@@ -27,6 +27,8 @@ range  = [9999, 10100]
 writer = "envfile=path/to/legacy/.env"
 ```
 
-Available writers: `splashdown-env` (default), `envfile=PATH` (any .env-format file, preserves non-managed lines), `envrc` (writes `.envrc.local`), `stdout` (echoes), `none` (registry-only, no file output).
+Available writers: `splashdown-env` (default), `envfile=PATH` (a .env-format file, preserving non-managed lines), `envrc` (writes `.envrc.local`), `stdout` (echoes), and `none` (registry-only, no file output).
+
+An `envfile=` path must be non-empty, relative to the checkout root, and stay inside the checkout. Absolute paths, `..` traversal, bare `envfile`, and other writer spellings are rejected during recipe validation, before any resource is allocated.
 
 Most of the time the framework Profile handles routing implicitly and `writer` stays unset. Use it when no Profile covers your consumer yet.

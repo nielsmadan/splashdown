@@ -250,26 +250,23 @@ def test_resolve_custom_run_missing_platform_falls_back(tmp_path):
 
 
 def test_resolve_custom_run_bad_type_raises(tmp_path):
-    r = _recipe(tmp_path, {"run": 123})
-    with pytest.raises(sd.DeviceError):
-        sd.profiles._resolve_custom_run(r, "ios")
+    with pytest.raises(ValueError, match=r"\[project\.run\]"):
+        _recipe(tmp_path, {"run": 123})
 
 
 def test_resolve_custom_run_empty_string_raises(tmp_path):
-    with pytest.raises(sd.DeviceError, match="empty"):
-        sd.profiles._resolve_custom_run(_recipe(tmp_path, {"run": ""}), "ios")
+    with pytest.raises(ValueError, match=r"\[project\.run\]"):
+        _recipe(tmp_path, {"run": ""})
 
 
 def test_resolve_custom_run_empty_table_value_raises(tmp_path):
-    with pytest.raises(sd.DeviceError, match="empty"):
-        sd.profiles._resolve_custom_run(_recipe(tmp_path, {"run": {"ios": "  "}}), "ios")
+    with pytest.raises(ValueError, match=r"\[project\.run\.ios\]"):
+        _recipe(tmp_path, {"run": {"ios": "  "}})
 
 
 def test_resolve_custom_run_non_string_table_value_raises(tmp_path):
-    # A mistyped value (int/array/bool) is a config error, not runnable text.
-    r = _recipe(tmp_path, {"run": {"ios": 123}})
-    with pytest.raises(sd.DeviceError):
-        sd.profiles._resolve_custom_run(r, "ios")
+    with pytest.raises(ValueError, match=r"\[project\.run\.ios\]"):
+        _recipe(tmp_path, {"run": {"ios": 123}})
 
 
 def test_substitute_missing_device_id_raises():

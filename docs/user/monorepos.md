@@ -182,10 +182,12 @@ resources = ["API_PORT"]
 [apps.ios]
 path = "ios"
 profile = "ios-native"
+resources = []
 
 [apps.android]
 path = "android"
 profile = "android-native"
+resources = []
 
 [resources.WEB_PORT]
 type = "port"
@@ -288,8 +290,9 @@ works as expected.
 
 **`splash init --rescan` after adding an app.** When you add a new app to the monorepo,
 run `splash init --rescan`. The rescanner updates `[project]` and `[apps.*]` but preserves
-the existing `[resources.*]` section verbatim, so your hand-authored resource names survive
-the rescan.
+the existing `[resources.*]` section, so your hand-authored resource names and comments
+survive the rescan. Every field there is validated against the schema, so an unknown key
+is an error rather than data the rescan carries forward.
 
 **`apps.*` with empty `resources = []` is intentional.** Native apps (`ios-native`,
 `android-native`) allocate no port resources, they use simulator/emulator targets, not

@@ -109,8 +109,8 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[t
             target = cwd / ENV_FILE_NAME
             changed = write_splashdown_env(target, items)
             msgs.append((f"{ENV_FILE_NAME}: {len(items)} vars", changed))
-        elif writer.startswith("envfile"):
-            path_arg = writer.split("=", 1)[1] if "=" in writer else ".env.local"
+        elif writer.startswith("envfile="):
+            path_arg = writer.removeprefix("envfile=")
             target = cwd / path_arg
             # The recipe is auto-run by the post-checkout hook, so a committed
             # `envfile=` value is untrusted input. Reject absolute paths and any
@@ -216,7 +216,7 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
     groups: dict[str, set[str]] = {}
     for name, spec in recipe.resources.items():
         writer = spec.get("writer", "splashdown-env")
-        if writer.startswith("envfile") or writer == "envrc":
+        if writer.startswith("envfile=") or writer == "envrc":
             groups.setdefault(writer, set()).add(name)
 
     changed: list[tuple[str, str]] = []
@@ -224,7 +224,7 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
         if writer == "envrc":
             relpath, export = ".envrc.local", True
         else:
-            relpath = writer.split("=", 1)[1] if "=" in writer else ".env.local"
+            relpath = writer.removeprefix("envfile=")
             export = False
         target = cwd / relpath
         # Mirror write_outputs' containment guard: never touch a path a committed

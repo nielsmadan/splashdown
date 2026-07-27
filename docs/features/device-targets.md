@@ -127,9 +127,11 @@ launcher (`src/splashdown/commands.py:1056`). Physical devices are never written
 
 **Declaring variants programmatically.** `splash target add` writes an add-only
 `[targets.<type>.<variant>]` table into the gitignored local file (`target_add`,
-`src/splashdown/devices.py:756`); `splash target remove` first verifies that the variant belongs to
-the local file and computes the edited TOML, then destroys the instance, writes the declaration
-change, and removes its registry row unless `--keep-instance`. When a registry row exists,
+`src/splashdown/devices.py:756`). Before writing, it applies the same type-specific target schema
+used for recipe, local, and global files, rejects incompatible CLI flags, renders the new document
+in memory, and validates the complete result. `splash target remove` first verifies that the variant
+belongs to the local file and computes the edited TOML, then destroys the instance, writes the
+declaration change, and removes its registry row unless `--keep-instance`. When a registry row exists,
 deletion uses its actual simulator UDID or AVD name rather than a newly resolved config name.
 A recipe-owned or missing variant, or malformed recipe/local file, is rejected before any device
 operation. If the lifecycle step raises, the local declaration and registry row remain intact.
@@ -161,6 +163,13 @@ Target variants live under `[targets.<type>.<variant>]` in the committed `splash
 (team-shared, version control), the gitignored `splashdown.local.toml` (per-checkout, add-only), or
 the machine-wide `~/.config/splashdown/config.toml` (`GlobalConfig`, shared across every project).
 Three types: `simulator`, `emulator`, `device`.
+
+All three documents are strict: recipe top-level sections are limited to `project`, `apps`,
+`resources`, `targets`, and `setup`; local and global configs are limited to `settings` and
+`targets`. Unknown target types or fields, malformed variant names, non-string/empty values, and
+invalid physical-device platforms are hard errors when the document loads. The same target
+validator is used for all three sources and `target add`, so invalid declarations fail before
+device lifecycle work or file mutation.
 
 `merged_targets(recipe, local, global_config=None)` (`src/splashdown/recipe.py`) folds the three
 scopes together. Recipe-vs-local collisions are a hard error; global variants then fold in on top:
@@ -201,6 +210,10 @@ Field meaning by type:
   `"android-34"`), `name` (override).
 - **device**: `platform` / `id` / `name` — all optional selectors; with one device connected, no
   config is needed.
+
+Every field above is optional, but supplied values must be non-empty strings. `device.platform`
+must be `ios` or `android`. Fields do not cross target types: for example, `model` is valid only
+for a simulator and `image` only for an emulator.
 
 App build/launch is configured under `[project.*]`:
 
@@ -264,6 +277,9 @@ splash target remove <type> <variant> [--keep-instance]
   retained instance.
 - **`splashdown.local.toml` is add-only.** A variant name that collides with a recipe-declared one
   is an error (`target_add`, `src/splashdown/devices.py:756`); pick a different name.
+- **The shared CLI parser does not make flags interchangeable.** `target add` shows every target
+  flag, but the selected type determines which ones are legal. Incompatible flags and invalid
+  values fail before either local or global config is written.
 - **Physical-device verbs differ.** For `type = device`, `stop`/`destroy` are no-op messages and
   `start` just confirms connectivity (`src/splashdown/commands.py:1073`, `:1089`, `:1114`); nothing
   is ever written to the registry.
@@ -285,10 +301,10 @@ splash target remove <type> <variant> [--keep-instance]
   matches connected hardware, `device_needs_recreate` returns `False`, no registry row). So bare
   `splash run` in an otherwise-target-less repo *does* resolve a lone global physical device.
 - **`splash init` scaffolds target tables only on first generation.** It writes the `[targets.*]`
-  tables when it creates `splashdown.toml`, but on re-run it preserves existing comments/keys and
-  does **not** backfill tables the scaffold gained later. A checkout generated before the
+  tables when it creates `splashdown.toml`, but on re-run it preserves existing comments and valid
+  tables without backfilling tables the scaffold gained later. A checkout generated before the
   react-native scaffold added its Android `[targets.emulator.default]` will lack it until you edit
-  the toml or run `splash target add`.
+  the TOML or run `splash target add`.
 
 ## Why
 
