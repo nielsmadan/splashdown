@@ -10,7 +10,7 @@ import tomllib
 import uuid as uuid_mod
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn, Self
 
 from . import (
     ENV_NAME_RE,
@@ -716,10 +716,7 @@ def validate_target_spec(
     return filtered
 
 
-def _parse_targets_section(
-    data: dict[str, Any], *, source: str
-) -> dict[str, dict[str, dict[str, Any]]]:
-    """Parse [targets.<type>.<variant>] tables (type ∈ simulator/emulator/device)."""
+def _reject_legacy_devices(data: dict[str, Any], *, source: str) -> None:
     if "devices" in data:
         _schema_error(
             source,
@@ -727,6 +724,12 @@ def _parse_targets_section(
             "`[devices.*]` was renamed to `[targets.*]`",
             "[targets.simulator|emulator|device.VARIANT]",
         )
+
+
+def _parse_targets_section(
+    data: dict[str, Any], *, source: str
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Parse [targets.<type>.<variant>] tables (type ∈ simulator/emulator/device)."""
     raw = _table(data.get("targets", {}), source=source, path="targets")
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for type_key, raw_type in raw.items():
@@ -766,8 +769,7 @@ class Recipe:
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
         source = _source(path, RECIPE_NAME)
-        if "devices" in data:
-            _parse_targets_section(data, source=source)
+        _reject_legacy_devices(data, source=source)
         _allowed_keys(data, _RECIPE_SECTIONS, source=source, path="document")
         self.resources = _validate_resources(data, source=source, base_dir=path.parent)
         self.setup = _validate_setup(data, source=source)
@@ -812,15 +814,13 @@ LOCAL_SKELETON = """\
 """
 
 
-class LocalConfig:
-    """Per-checkout local config from splashdown.local.toml. Holds additional
-    [targets.<type>.<variant>] variants, alongside (not replacing) the recipe's."""
+class _TargetConfig:
+    _source_name: ClassVar[str]
 
     def __init__(self, data: dict[str, Any], path: Path):
         self.path = path
-        source = _source(path, LOCAL_NAME)
-        if "devices" in data:
-            _parse_targets_section(data, source=source)
+        source = _source(path, self._source_name)
+        _reject_legacy_devices(data, source=source)
         _allowed_keys(data, _CONFIG_SECTIONS, source=source, path="document")
         self.settings = _parse_settings(data, source=source)
         self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
@@ -829,14 +829,21 @@ class LocalConfig:
         )
 
     @classmethod
-    def load(cls, path: Path) -> LocalConfig:
+    def load(cls, path: Path) -> Self:
         if not path.exists():
             return cls({}, path)
-        return cls(_load_toml(path, LOCAL_NAME), path)
+        return cls(_load_toml(path, cls._source_name), path)
 
     @classmethod
-    def parse(cls, text: str, path: Path) -> LocalConfig:
-        return cls(_parse_toml(text, path, LOCAL_NAME), path)
+    def parse(cls, text: str, path: Path) -> Self:
+        return cls(_parse_toml(text, path, cls._source_name), path)
+
+
+class LocalConfig(_TargetConfig):
+    """Per-checkout local config from splashdown.local.toml. Holds additional
+    [targets.<type>.<variant>] variants, alongside (not replacing) the recipe's."""
+
+    _source_name = LOCAL_NAME
 
 
 GLOBAL_SKELETON = """\
@@ -870,32 +877,12 @@ GLOBAL_SKELETON = """\
 """
 
 
-class GlobalConfig:
+class GlobalConfig(_TargetConfig):
     """Machine-wide config from ~/.config/splashdown/config.toml. Holds
     [targets.<type>.<variant>] variants shared across every project (the
     [settings] table in the same file is read separately by load_settings)."""
 
-    def __init__(self, data: dict[str, Any], path: Path):
-        self.path = path
-        source = _source(path, GLOBAL_CONFIG_NAME)
-        if "devices" in data:
-            _parse_targets_section(data, source=source)
-        _allowed_keys(data, _CONFIG_SECTIONS, source=source, path="document")
-        self.settings = _parse_settings(data, source=source)
-        self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
-            data,
-            source=source,
-        )
-
-    @classmethod
-    def load(cls, path: Path) -> GlobalConfig:
-        if not path.exists():
-            return cls({}, path)
-        return cls(_load_toml(path, GLOBAL_CONFIG_NAME), path)
-
-    @classmethod
-    def parse(cls, text: str, path: Path) -> GlobalConfig:
-        return cls(_parse_toml(text, path, GLOBAL_CONFIG_NAME), path)
+    _source_name = GLOBAL_CONFIG_NAME
 
 
 def _global_config_path() -> Path:

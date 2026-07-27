@@ -783,11 +783,22 @@ model = "iPhone 12"
     assert r.targets["simulator"]["default"]["model"] == "iPhone 17"
 
 
-def test_recipe_rejects_legacy_devices_table(tmp_path):
-    p = tmp_path / "splashdown.toml"
+@pytest.mark.parametrize(
+    ("config_type", "filename"),
+    [
+        (sd.Recipe, "splashdown.toml"),
+        (sd.LocalConfig, "splashdown.local.toml"),
+        (sd.GlobalConfig, "config.toml"),
+    ],
+)
+def test_configs_reject_legacy_devices_table(tmp_path, config_type, filename):
+    p = tmp_path / filename
     p.write_text('[devices.simulator.default]\nmodel = "iPhone 17"\n')
-    with pytest.raises(ValueError, match=r"renamed to `\[targets"):
-        sd.Recipe.load(p)
+    with pytest.raises(
+        ValueError,
+        match=rf"{re.escape(filename)}: \[devices\].*renamed to `\[targets",
+    ):
+        config_type.load(p)
 
 
 def test_cli_surfaces_recipe_errors_cleanly(tmp_path, monkeypatch, capsys):
