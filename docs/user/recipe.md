@@ -67,6 +67,23 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 # → "myapp-test-352e9e09" — stable per checkout path, 8-char truncated SHA256
 ```
 
+The same pattern gives every checkout its own database inside one shared Postgres container, with no new resource type. A database name needs no machine-wide coordination the way a port does, so a plain function of the checkout directory is enough and stays stable across reallocations:
+
+```toml
+[resources.DB_NAME]
+type     = "template"
+template = "myapp_{{ slug(cwd) }}"
+writer   = "envfile=apps/api/.env"
+```
+
+Three things to know before you add it:
+
+1. `slug()` lowercases and turns every non-alphanumeric run into a hyphen, so `myapp_{{ slug(cwd) }}` on a checkout named `myapp.feat-x` gives `myapp_myapp-feat-x`, mixing underscores and hyphens. That is safe only if whatever creates the database quotes the identifier. Use `lower(...)` plus `truncate(hash(cwd_abs), 8)` instead if you need a stricter character set.
+2. The first sync takes over any hand-set `DB_NAME=` line already in `apps/api/.env` and replaces it with the computed value. Other keys in that file are left alone. Check the file before you add the resource.
+3. There is no per-checkout exception. The resource applies to every checkout including your primary one, so the base database from your compose file simply goes unused there. You cannot express "compute this only in worktrees".
+
+Splashdown writes the name. Creating the database is your app's job, typically a `CREATE DATABASE IF NOT EXISTS`-style step on first connect, or a `[setup.*]` block.
+
 Optional setup blocks run explicitly through `splash sync --setup NAME`:
 
 ```toml

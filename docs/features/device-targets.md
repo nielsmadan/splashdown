@@ -69,7 +69,17 @@ no-ops with an explanatory message because splashdown owns no hardware.
 (`src/splashdown/commands.py:1130`) resolves it to the single declared target type, or errors with
 the list when there are zero or several. `_resolve_variant_for_cli` (`:1148`) loads recipe + local,
 merges them, and picks the variant (`resolve_variant`): an explicit arg, else `default`, else the
-sole declared variant. The CLI parser additionally reinterprets a lone non-type token as the
+sole declared variant.
+
+**Global targets are a *resolution*-scope concept, never an *inference*-scope one.** Type inference
+and type-prefix matching call `_declared_target_types(cwd, include_global=False)` — the project's own
+recipe + local types only — and fall back to the global-inclusive list only when the project declares
+none (`src/splashdown/commands.py:951`, `:972`; `src/splashdown/cli.py:340`). Resolution
+(`_resolve_variant_for_cli`, `_gather_targets_declared`) always uses the full merged catalog. Folding
+the always-available global `device` type into inference instead would make bare
+`splash run`/`start`/`stop`/`destroy` fail with `multiple target types declared (device, simulator)`
+in *every* mobile repo the moment a user adds one global test phone, break the `splash run d`
+type-prefix invariant in a sim-only project, and break variant completion. The CLI parser additionally reinterprets a lone non-type token as the
 variant (`splash run lowest-supported`) in `cli.py` (validated post-parse by
 `_normalize_device_args` (`src/splashdown/cli.py:284`)).
 
@@ -268,6 +278,17 @@ splash target remove <type> <variant> [--keep-instance]
   their orphaned sims; it does **not** recreate an orphan whose checkout still exists — `target
   refresh` does. The `status --check` footer routes each issue to the right command
   (`_print_check_summary`, `:570`).
+- **A global variant defeats single-variant auto-pick.** `resolve_variant` auto-picks when a type has
+  exactly one variant. Add a same-type global variant and the merged catalog has two, so the same
+  command that used to work now needs an explicit variant name or a `default` in the recipe. Adding a
+  global `simulator`/`emulator` is therefore not free for projects that already declare that type —
+  physical `device` variants, which surface everywhere, are the intended use.
+- **`target remove` without `--global` refuses a global-only variant up front.** The dispatcher checks
+  recipe + local first and raises "`is a global variant; remove it with … --global`" before any
+  teardown (`src/splashdown/commands.py:1478`), so a mistyped scope can no longer destroy the instance
+  and drop the registry row on its way to failing validation. The `--global` path edits
+  `~/.config/splashdown/config.toml` only and tells you to run `splash target refresh` to reap
+  instances the removal just made undeclared.
 - **`target remove` destroys the instance by default.** Pass `--keep-instance` for a toml-only edit.
   It preflights local ownership before destruction, refuses recipe-declared variants, and leaves
   both the declaration and registry row intact when the lifecycle step raises. A registered
@@ -287,6 +308,11 @@ splash target remove <type> <variant> [--keep-instance]
   (`src/splashdown/profiles.py`, `_ios_native_run`). For `react-native` the scheme is optional but
   forwards to `run-ios --scheme` when set; Android resolves `application_id` from Gradle if unset, but
   that costs a Gradle round-trip — set it explicitly to skip it.
+- **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/profiles.py:152`)
+  passes only `--device`. `expo run:ios --scheme` names a *URL* scheme, not an Xcode scheme, so
+  `[project.ios] scheme` has no correct mapping here — don't "fix" the asymmetry with react-native by
+  forwarding it. Use `[project] run` (the custom-run escape hatch) for an Expo app that needs extra
+  flags.
 - **Some apps need an x86_64 simulator.** A pod that excludes arm64 for the simulator
   (`EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64`, e.g. Google ML Kit) can only build on an x86_64
   sim — which only iOS ≤ 18.x provides. The default `ios = "latest"` picks the newest (arm64-only)

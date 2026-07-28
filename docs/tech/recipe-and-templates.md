@@ -251,6 +251,14 @@ file I/O.
 - **String literals do not create dependency edges.** A resource-looking string
   such as `{{ "PORT" }}` is just a string. Self-references are real edges and
   fail schema validation as a cycle.
+- **`slug()` emits lowercase and hyphens, never underscores.** `_slug`
+  (`recipe.py:34`) collapses every non-alphanumeric run to `-`, strips the edges
+  and lowercases (empty input → `"x"`). A template that mixes a literal
+  underscore prefix with a slug — `"myapp_db_{{ slug(cwd) }}"` on
+  `../myapp.feat-x` → `myapp_db_myapp-feat-x` — yields one identifier carrying
+  both separators. Harmless where the consumer quotes it, but it bites unquoted
+  SQL identifiers, AVD names, and hostname-ish consumers. Reach for
+  `lower`/`truncate`/`hash` when the consumer needs a stricter character set.
 
 ## Why
 

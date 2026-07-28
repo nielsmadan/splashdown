@@ -16,6 +16,8 @@ just test           # pytest -q
 just lint           # ruff check
 just fmt            # ruff format (writes)
 just typecheck      # mypy (strict, src/splashdown only)
+just docs-build     # user docs site into ./site (zensical --strict; the real link gate)
+just docs           # serve the docs site with live reload
 ```
 
 Run a single test: `uv run pytest tests/test_registry.py::test_two_checkouts_get_different_ports -q`
@@ -36,7 +38,7 @@ Run the full gate, not just `pytest`: `just check` (ruff check + ruff format --c
 How the local checks, hooks, and release flow fit together (the recipe list is under Commands; this is the behavior and gotchas behind them).
 
 - **Coverage floor is `fail_under = 80`** in `[tool.coverage.report]` (`pyproject.toml`) — the single source of truth, enforced on every `--cov` path: CI's test step and the pre-push lefthook (`uv run pytest -q --cov`). `just check` stays plain/fast and does **not** run coverage; only the `--cov` paths do. Real coverage runs ~84%, so the 80 floor has headroom for normal churn but still trips on a genuinely untested chunk.
-- **This repo's own git hooks** live in `lefthook.yml` (install with `just hooks`): pre-commit runs `ruff format --check` + `ruff check` in parallel over staged `*.py`; pre-push runs `mypy` + `pytest` over the whole project; all via `uv run`. This repo does **not** wire a `post-checkout` hook and has no `splashdown.toml` — it doesn't dogfood splashdown's own provisioning. (Don't confuse this with the *managed* post-checkout hook splashdown installs into consumer repos; the `lefthook install` / post-checkout gotchas elsewhere are about that managed hook.)
+- **This repo's own git hooks** live in `lefthook.yml` (install with `just hooks`): pre-commit runs `ruff format --check` + `ruff check` in parallel over staged `*.py`; pre-push runs `mypy` + `pytest` + a globbed `zensical build --strict` docs check (only when `docs/user/**`, `mkdocs.yml`, or `README.md` changed); all via `uv run`. This repo does **not** wire a `post-checkout` hook and has no `splashdown.toml` — it doesn't dogfood splashdown's own provisioning. (Don't confuse this with the *managed* post-checkout hook splashdown installs into consumer repos; the `lefthook install` / post-checkout gotchas elsewhere are about that managed hook.)
 
 ### Release flow
 
@@ -104,6 +106,7 @@ The `HOMEBREW_TAP_TOKEN` secret (in this repo's GitHub secrets) must have write 
 - **`splash completion <shell>` is the completion-setup path (not `register-python-argcomplete`).** splash bundles argcomplete and emits the shellcode itself via `argcomplete.shellcode` (`cmd_completion` in `commands.py`), so users just `eval "$(splash completion zsh)"` — no separately-installed `register-python-argcomplete`, and native zsh shellcode means no `bashcompinit`. This supersedes the old advice (install argcomplete separately + `activate-global-python-argcomplete`), which was unreliable under mise because the global hook scans the on-PATH `splash` shim for the `# PYTHON_ARGCOMPLETE_OK` marker rather than the real binary. The runtime `# PYTHON_ARGCOMPLETE_OK` marker + `completion.install` (`argcomplete.autocomplete`) hook is unchanged; `splash completion` only generates the shell-side registration. `argcomplete.shellcode` isn't in argcomplete's typed surface (`autocomplete` is), so the call carries `# type: ignore[attr-defined,no-untyped-call]`.
 - **Brew `release.yml` sha256 rewrite must be anchored.** The formula has both a top-level `sha256` and one inside each `resource` block. An unanchored `sed -i "s/sha256 \"[^\"]*\"/…/g"` overwrites all of them with the tarball sha, breaking `brew install` with a SHA mismatch on the resource. Anchored form: `sed -i "s|^  sha256 \"[^\"]*\"|  sha256 \"${TARBALL_SHA}\"|"` (two-space indent, no `g` flag).
 - **`release.yml` Test step must install the project itself.** Using `pip install build pytest` (without `.`) creates a clean environment that is missing runtime deps (`argcomplete`, `tomlkit`). Use `pip install build pytest .` — installs from the local wheel and pulls in all `[project.dependencies]` entries, keeping the test environment drift-free.
+- **Doc URLs printed by the CLI are asserted by tests.** The monorepo hint in `commands.py` prints `https://splashdown.dev/monorepos/` and `tests/test_scanner.py` asserts that exact string. Any reword of a user-facing hint — or a `docs/user/` page rename that changes its published URL — has to move with its test.
 - **CORS_ORIGINS must include the splashdown-allocated Vite port.** When splashdown assigns a Vite app a port other than its hardcoded default (e.g. `5174` instead of `5173`), any backend that validates `CORS_ORIGINS` against a static list will CORS-fail browser direct calls. The Vite dev proxy covers the normal SPA-calls-`/api/` case, but direct `http://localhost:PORT/...` fetches from the browser will fail. Fix by templating `CORS_ORIGINS` to reference `{{ WEB_DEV_PORT }}` or keep a wide enough static list.
 
 ## Conventions
@@ -121,3 +124,7 @@ The `HOMEBREW_TAP_TOKEN` secret (in this repo's GitHub secrets) must have write 
 ## Documentation
 
 Project docs live in `docs/` (start at `docs/overview.md`). Feature behavior lives in `docs/features/`, implementation in `docs/tech/` (both for contributors/agents); user how-tos in `docs/user/` (README links there). After completing a feature, run `doc --update` to keep them current.
+
+**The two audiences stay strictly separate and are never merged.** The user set is the slim `README.md` landing page plus `docs/user/`; the developer/LLM set is `docs/features/`, `docs/tech/`, `docs/product/`, `docs/superpowers/`. This is a settled decision, reaffirmed several times — do not propose folding `docs/features/` into the user docs, even where content overlaps (recipe schema, CLI reference); some duplication between the two sets is accepted. The splashdown.dev site publishes the **user set only**, enforced by `docs_dir: docs/user` in `mkdocs.yml`. See `docs/superpowers/specs/2026-07-19-docs-site-and-readme-split-design.md`.
+
+House style also differs per set: prose in `README.md` and `docs/user/` avoids em-dashes and semicolons (code blocks exempt), while the developer docs keep the author's em-dash-heavy voice — don't "normalize" either set toward the other.
