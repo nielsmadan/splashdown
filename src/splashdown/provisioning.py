@@ -161,18 +161,22 @@ def write_splashdown_env(path: Path, items: dict[str, str]) -> bool:
 
 
 def write_envfile(path: Path, items: dict[str, str]) -> bool:
-    existing = path.read_text().splitlines() if path.exists() else []
-    managed = set(items.keys())
-    kept = []
-    for line in existing:
-        m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-        if m and m.group(1) in managed:
-            continue
-        kept.append(line)
-    while kept and not kept[-1].strip():
-        kept.pop()
-    new = kept + [f"{k}={_env_quote(v)}" for k, v in items.items()]
-    return _write_if_changed(path, "\n".join(new) + "\n")
+    try:
+        existing = path.read_text().splitlines() if path.exists() else []
+        managed = set(items.keys())
+        kept = []
+        for line in existing:
+            m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+            if m and m.group(1) in managed:
+                continue
+            kept.append(line)
+        while kept and not kept[-1].strip():
+            kept.pop()
+        new = kept + [f"{k}={_env_quote(v)}" for k, v in items.items()]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return _write_if_changed(path, "\n".join(new) + "\n")
+    except OSError as error:
+        raise ValueError(f"could not write envfile `{path}`: {error}") from error
 
 
 def write_envrc(path: Path, items: dict[str, str]) -> bool:

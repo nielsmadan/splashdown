@@ -51,7 +51,7 @@ Entry: `write_outputs()` at `provisioning.py:91`.
 2. **Truncate guard**: if no resource targets `splashdown-env` anymore but the file still exists on disk, inject an empty group for it so the stale file gets emptied rather than left lying with values that contradict the recipe (`provisioning.py:103`).
 3. For each `(writer, items)` group, dispatch (`provisioning.py:107`):
    - `splashdown-env` → `write_splashdown_env(cwd/splashdown.env, items)`. Splashdown owns this file wholesale and rewrites it entirely.
-   - `envfile=<path>` → `write_envfile`. The schema already requires a
+   - `envfile=<path>` → `write_envfile`, creating missing parent directories. The schema already requires a
      non-empty relative path with no `..` component. A defensive **containment
      guard** (`provisioning.py:119`) also requires the resolved target to be
      `is_relative_to(cwd)`. The recipe is committed and auto-run by the
@@ -69,7 +69,7 @@ Entry: `write_outputs()` at `provisioning.py:91`.
 `_write_if_changed()` (`provisioning.py:141`) is the common gate: it reads the existing file and writes only if the contents differ, returning whether it wrote. This is what makes re-running `sync` a no-op when nothing changed (and keeps mtimes stable for `cd`-triggered loaders).
 
 - `write_splashdown_env` (`provisioning.py:150`): builds `K=_env_quote(V)` lines and replaces the whole file. Empty `items` → empty file.
-- `write_envfile` (`provisioning.py:163`): *surgical merge* into a foreign file. Reads existing lines, drops any line whose `KEY=` is one splashdown manages (regex `^\s*([A-Za-z_]\w*)\s*=`), trims trailing blanks, then appends the managed `K=_env_quote(V)` lines (same quoting as `splashdown.env`). Non-managed lines are preserved.
+- `write_envfile` (`provisioning.py:163`): *surgical merge* into a foreign file. Reads existing lines, drops any line whose `KEY=` is one splashdown manages (regex `^\s*([A-Za-z_]\w*)\s*=`), trims trailing blanks, then appends the managed `K=_env_quote(V)` lines (same quoting as `splashdown.env`). Non-managed lines are preserved, and missing parent directories are created before the file is written.
 - `write_envrc` (`provisioning.py:178`): same merge strategy but matches `export KEY=` and emits `export K=<single-quoted V>`. Uses shell single-quote escaping (`'\''`) rather than `_env_quote`, since `.envrc` is sourced by a shell (direnv).
 
 ### `run_setup()` — `[setup.*]` hooks

@@ -125,7 +125,7 @@ range  = [9081, 9100]
 writer = "envfile=.env"    # writes `PORT=9081` into ./.env
 ```
 
-Splashdown owns the lines it writes and updates them in place on each run. Use a non-empty path relative to the checkout root, for example `writer = "envfile=apps/web/.env"` in a monorepo. Absolute paths and paths containing `..` are rejected. Values routed this way are not in `splashdown.env`, so a loader will not see them. Prefer the loader path when both an app and your shell need the value.
+Splashdown owns the lines it writes and updates them in place on each run. Use a non-empty path relative to the checkout root, for example `writer = "envfile=apps/web/.env"` in a monorepo; missing parent directories are created automatically. Absolute paths and paths containing `..` are rejected. Values routed this way are not in `splashdown.env`, so a loader will not see them. Prefer the loader path when both an app and your shell need the value.
 
 ## Keeping wiring healthy
 

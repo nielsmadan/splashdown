@@ -184,6 +184,58 @@ writer   = "envfile=.env.local"
     assert "MY_VAR=hello" in text
 
 
+def test_envfile_writer_creates_parent_directories(registry, checkout):
+    _write_recipe(
+        checkout,
+        """
+[resources.MY_VAR]
+type     = "template"
+template = "hello"
+writer   = "envfile=apps/web/.env"
+""",
+    )
+    resolved = sd.provision(checkout, registry=registry)
+    sd.write_outputs(checkout, sd.Recipe.load(checkout / "splashdown.toml"), resolved)
+    assert (checkout / "apps" / "web" / ".env").read_text() == "MY_VAR=hello\n"
+
+
+@pytest.mark.parametrize(
+    ("writer_path", "conflict_path", "conflict_is_directory"),
+    [
+        ("apps/web/.env", "apps", False),
+        (".env", ".env", True),
+    ],
+)
+def test_envfile_writer_reports_filesystem_conflicts_cleanly(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    writer_path,
+    conflict_path,
+    conflict_is_directory,
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    conflict = tmp_path / conflict_path
+    if conflict_is_directory:
+        conflict.mkdir()
+    else:
+        conflict.write_text("not a directory\n")
+    _write_recipe(
+        tmp_path,
+        f"""
+[resources.MY_VAR]
+type     = "template"
+template = "hello"
+writer   = "envfile={writer_path}"
+""",
+    )
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 1
+    error = capsys.readouterr().err
+    assert "error: could not write envfile" in error
+    assert writer_path in error
+
+
 def test_envfile_writer_rejects_escaping_relative_path(registry, checkout):
     # The recipe is auto-run from the post-checkout hook, so an `envfile=` path
     # that escapes the checkout would be an arbitrary-file-write primitive.
