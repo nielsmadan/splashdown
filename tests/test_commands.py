@@ -190,7 +190,7 @@ def test_device_add_rejects_bad_variant(tmp_path):
     ],
 )
 def test_device_add_rejects_incompatible_fields_before_writing(tmp_path, dtype, fields):
-    with pytest.raises(ValueError, match="unknown field"):
+    with pytest.raises(sd.DeviceError, match="unknown field"):
         sd.target_add(tmp_path, dtype, "default", fields)
     assert not (tmp_path / "splashdown.local.toml").exists()
 

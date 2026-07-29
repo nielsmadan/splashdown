@@ -781,6 +781,22 @@ def _load_recipe_or_empty(cwd: Path) -> Recipe:
     return Recipe.load(path) if path.exists() else Recipe({}, path)
 
 
+def _validate_target_fields(
+    dtype: str,
+    variant: str,
+    fields: dict[str, str | None],
+) -> dict[str, str]:
+    try:
+        return validate_target_spec(
+            dtype,
+            fields,
+            source="command line",
+            path=f"targets.{dtype}.{variant}",
+        )
+    except ValueError as error:
+        raise DeviceError(str(error)) from error
+
+
 def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None]) -> None:
     """Append a [targets.<type>.<variant>] table to splashdown.local.toml. Errors
     if the (type, variant) pair already exists in either the recipe or the local
@@ -789,12 +805,7 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
         raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
     if not TARGET_VARIANT_RE.match(variant):
         raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
-    validated_fields = validate_target_spec(
-        dtype,
-        fields,
-        source="command line",
-        path=f"targets.{dtype}.{variant}",
-    )
+    validated_fields = _validate_target_fields(dtype, variant, fields)
 
     path = cwd / LOCAL_NAME
     existing_text = path.read_text() if path.exists() else LOCAL_SKELETON
@@ -854,12 +865,7 @@ def global_target_add(dtype: str, variant: str, fields: dict[str, str | None]) -
         raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
     if not TARGET_VARIANT_RE.match(variant):
         raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
-    validated_fields = validate_target_spec(
-        dtype,
-        fields,
-        source="command line",
-        path=f"targets.{dtype}.{variant}",
-    )
+    validated_fields = _validate_target_fields(dtype, variant, fields)
 
     path = _global_config_path()
     existing_text = path.read_text() if path.exists() else GLOBAL_SKELETON

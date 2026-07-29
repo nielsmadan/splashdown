@@ -262,7 +262,13 @@ _PORT_RANGE_LENGTH = 2
 _MAX_PORT = 65535
 
 
-def _schema_error(source: str, path: str, problem: str, expected: str) -> NoReturn:
+def _schema_error(
+    source: str,
+    path: str,
+    *,
+    problem: str,
+    expected: str,
+) -> NoReturn:
     raise ValueError(f"{source}: [{path}] {problem}; expected {expected}")
 
 
@@ -278,8 +284,8 @@ def _load_toml(path: Path, fallback: str) -> dict[str, Any]:
         _schema_error(
             _source(path, fallback),
             "document",
-            f"invalid TOML: {error}",
-            "valid TOML",
+            problem=f"invalid TOML: {error}",
+            expected="valid TOML",
         )
 
 
@@ -290,8 +296,8 @@ def _parse_toml(text: str, path: Path, fallback: str) -> dict[str, Any]:
         _schema_error(
             _source(path, fallback),
             "document",
-            f"invalid TOML: {error}",
-            "valid TOML",
+            problem=f"invalid TOML: {error}",
+            expected="valid TOML",
         )
 
 
@@ -303,7 +309,12 @@ def _table(
     expected: str = "a table",
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
-        _schema_error(source, path, f"got {type(value).__name__}", expected)
+        _schema_error(
+            source,
+            path,
+            problem=f"got {type(value).__name__}",
+            expected=expected,
+        )
     return value
 
 
@@ -313,14 +324,19 @@ def _allowed_keys(value: dict[str, Any], allowed: set[str], *, source: str, path
         _schema_error(
             source,
             path,
-            f"unknown field `{unknown[0]}`",
-            "only " + ", ".join(sorted(allowed)),
+            problem=f"unknown field `{unknown[0]}`",
+            expected="only " + ", ".join(sorted(allowed)),
         )
 
 
 def _non_empty_string(value: Any, *, source: str, path: str) -> str:
     if type(value) is not str or not value.strip():
-        _schema_error(source, path, f"got {type(value).__name__}", "a non-empty string")
+        _schema_error(
+            source,
+            path,
+            problem=f"got {type(value).__name__}",
+            expected="a non-empty string",
+        )
     return value
 
 
@@ -330,8 +346,8 @@ def _enum(value: Any, choices: set[str], *, source: str, path: str) -> str:
         _schema_error(
             source,
             path,
-            f"unknown value `{parsed}`",
-            "one of " + ", ".join(sorted(choices)),
+            problem=f"unknown value `{parsed}`",
+            expected="one of " + ", ".join(sorted(choices)),
         )
     return parsed
 
@@ -376,8 +392,8 @@ def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
                 _schema_error(
                     source,
                     "project.run",
-                    "table is empty",
-                    "one or both of `ios` and `android`",
+                    problem="table is empty",
+                    expected="one or both of `ios` and `android`",
                 )
             for platform, command in run.items():
                 _non_empty_string(command, source=source, path=f"project.run.{platform}")
@@ -401,8 +417,8 @@ def _validate_writer(value: Any, *, source: str, path: str, base_dir: Path) -> s
         _schema_error(
             source,
             path,
-            f"unknown writer `{writer}`",
-            "splashdown-env, envrc, stdout, none, or envfile=RELATIVE_PATH",
+            problem=f"unknown writer `{writer}`",
+            expected="splashdown-env, envrc, stdout, none, or envfile=RELATIVE_PATH",
         )
     path_arg = writer.removeprefix("envfile=")
     candidate = Path(path_arg)
@@ -417,8 +433,8 @@ def _validate_writer(value: Any, *, source: str, path: str, base_dir: Path) -> s
         _schema_error(
             source,
             path,
-            f"invalid envfile path `{path_arg}`",
-            "a non-empty relative path that stays inside the checkout",
+            problem=f"invalid envfile path `{path_arg}`",
+            expected="a non-empty relative path that stays inside the checkout",
         )
     return writer
 
@@ -433,8 +449,8 @@ def _validate_template_node(
             _schema_error(
                 source,
                 path,
-                f"unknown template name `{node.id}`",
-                "a context name, helper, or declared resource",
+                problem=f"unknown template name `{node.id}`",
+                expected="a context name, helper, or declared resource",
             )
         return
     if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
@@ -448,7 +464,12 @@ def _validate_template_node(
         if any(kw.arg is None for kw in node.keywords) or any(
             isinstance(arg, ast.Starred) for arg in node.args
         ):
-            _schema_error(source, path, "template uses argument unpacking", "explicit arguments")
+            _schema_error(
+                source,
+                path,
+                problem="template uses argument unpacking",
+                expected="explicit arguments",
+            )
         _validate_template_node(node.func, names, source=source, path=path, expr=expr)
         for arg in node.args:
             _validate_template_node(arg, names, source=source, path=path, expr=expr)
@@ -467,8 +488,8 @@ def _validate_template_node(
     _schema_error(
         source,
         path,
-        f"disallowed template syntax `{type(node).__name__}` in `{expr}`",
-        "the documented restricted expression syntax",
+        problem=f"disallowed template syntax `{type(node).__name__}` in `{expr}`",
+        expected="the documented restricted expression syntax",
     )
 
 
@@ -480,8 +501,8 @@ def _validate_template(template: str, resource_names: set[str], *, source: str, 
         _schema_error(
             source,
             path,
-            "unmatched template delimiter",
-            "balanced `{{ expression }}` placeholders",
+            problem="unmatched template delimiter",
+            expected="balanced `{{ expression }}` placeholders",
         )
     for match in matches:
         expr = match.group(1)
@@ -491,8 +512,8 @@ def _validate_template(template: str, resource_names: set[str], *, source: str, 
             _schema_error(
                 source,
                 path,
-                f"invalid template expression `{expr}`",
-                "valid restricted expression syntax",
+                problem=f"invalid template expression `{expr}`",
+                expected="valid restricted expression syntax",
             )
         _validate_template_node(tree.body, names, source=source, path=path, expr=expr)
 
@@ -514,8 +535,8 @@ def _validate_template_cycles(resources: dict[str, dict[str, Any]], *, source: s
             _schema_error(
                 source,
                 f"resources.{name}.template",
-                f"dependency cycle involving `{name}`",
-                "acyclic resource references",
+                problem=f"dependency cycle involving `{name}`",
+                expected="acyclic resource references",
             )
         active.add(name)
         for dependency in deps.get(name, set()):
@@ -539,12 +560,17 @@ def _validate_resources(
             _schema_error(
                 source,
                 path,
-                f"invalid resource name `{name}`",
-                "an environment identifier matching [A-Za-z_][A-Za-z0-9_]*",
+                problem=f"invalid resource name `{name}`",
+                expected="an environment identifier matching [A-Za-z_][A-Za-z0-9_]*",
             )
         spec = _table(raw_spec, source=source, path=path)
         if "type" not in spec:
-            _schema_error(source, path, "missing field `type`", "a resource type")
+            _schema_error(
+                source,
+                path,
+                problem="missing field `type`",
+                expected="a resource type",
+            )
         resource_type = _enum(spec["type"], _RESOURCE_TYPES, source=source, path=f"{path}.type")
         _allowed_keys(spec, _RESOURCE_FIELDS[resource_type], source=source, path=path)
         if "writer" in spec:
@@ -556,7 +582,12 @@ def _validate_resources(
             )
         if resource_type == "port":
             if "range" not in spec:
-                _schema_error(source, path, "missing field `range`", "range = [LO, HI]")
+                _schema_error(
+                    source,
+                    path,
+                    problem="missing field `range`",
+                    expected="range = [LO, HI]",
+                )
             port_range = spec["range"]
             if (
                 not isinstance(port_range, list)
@@ -566,33 +597,38 @@ def _validate_resources(
                 _schema_error(
                     source,
                     f"{path}.range",
-                    f"got {port_range!r}",
-                    "exactly two integers [LO, HI]",
+                    problem=f"got {port_range!r}",
+                    expected="exactly two integers [LO, HI]",
                 )
             lo, hi = port_range
             if not (1 <= lo <= hi <= _MAX_PORT):
                 _schema_error(
                     source,
                     f"{path}.range",
-                    f"got [{lo}, {hi}]",
-                    "1 <= LO <= HI <= 65535",
+                    problem=f"got [{lo}, {hi}]",
+                    expected="1 <= LO <= HI <= 65535",
                 )
         elif resource_type == "template":
             if "template" not in spec:
-                _schema_error(source, path, "missing field `template`", "a string template")
+                _schema_error(
+                    source,
+                    path,
+                    problem="missing field `template`",
+                    expected="a string template",
+                )
             if type(spec["template"]) is not str:
                 _schema_error(
                     source,
                     f"{path}.template",
-                    f"got {type(spec['template']).__name__}",
-                    "a string",
+                    problem=f"got {type(spec['template']).__name__}",
+                    expected="a string",
                 )
         elif resource_type == "set" and "default" in spec and type(spec["default"]) is not str:
             _schema_error(
                 source,
                 f"{path}.default",
-                f"got {type(spec['default']).__name__}",
-                "a string",
+                problem=f"got {type(spec['default']).__name__}",
+                expected="a string",
             )
         resources[name] = dict(spec)
     for name, spec in resources.items():
@@ -623,7 +659,10 @@ def _validate_apps(
         for required in sorted(_APP_FIELDS):
             if required not in spec:
                 _schema_error(
-                    source, path, f"missing field `{required}`", "path, profile, resources"
+                    source,
+                    path,
+                    problem=f"missing field `{required}`",
+                    expected="path, profile, resources",
                 )
         _non_empty_string(spec["path"], source=source, path=f"{path}.path")
         _enum(spec["profile"], profiles, source=source, path=f"{path}.profile")
@@ -632,30 +671,30 @@ def _validate_apps(
             _schema_error(
                 source,
                 f"{path}.resources",
-                f"got {type(refs).__name__}",
-                "an array of resource-name strings",
+                problem=f"got {type(refs).__name__}",
+                expected="an array of resource-name strings",
             )
         if len(refs) != len(set(refs)):
             _schema_error(
                 source,
                 f"{path}.resources",
-                "contains duplicate resource names",
-                "a unique list",
+                problem="contains duplicate resource names",
+                expected="a unique list",
             )
         for ref in refs:
             if not ENV_NAME_RE.match(ref):
                 _schema_error(
                     source,
                     f"{path}.resources",
-                    f"invalid resource name `{ref}`",
-                    "environment identifiers",
+                    problem=f"invalid resource name `{ref}`",
+                    expected="environment identifiers",
                 )
             if ref not in resources:
                 _schema_error(
                     source,
                     f"{path}.resources",
-                    f"references undeclared resource `{ref}`",
-                    "names declared under [resources]",
+                    problem=f"references undeclared resource `{ref}`",
+                    expected="names declared under [resources]",
                 )
         apps[name] = dict(spec)
     return apps
@@ -672,8 +711,8 @@ def _validate_setup(data: dict[str, Any], *, source: str) -> dict[str, dict[str,
             _schema_error(
                 source,
                 path,
-                "missing field `run`",
-                "a non-empty string or non-empty array of strings",
+                problem="missing field `run`",
+                expected="a non-empty string or non-empty array of strings",
             )
         commands = spec["run"]
         if isinstance(commands, str):
@@ -685,8 +724,8 @@ def _validate_setup(data: dict[str, Any], *, source: str) -> dict[str, dict[str,
             _schema_error(
                 source,
                 f"{path}.run",
-                f"got {type(commands).__name__}",
-                "a non-empty string or non-empty array of strings",
+                problem=f"got {type(commands).__name__}",
+                expected="a non-empty string or non-empty array of strings",
             )
         setup[name] = dict(spec)
     return setup
@@ -703,8 +742,8 @@ def validate_target_spec(
         _schema_error(
             source,
             path,
-            f"unknown target type `{dtype}`",
-            "one of " + ", ".join(TARGET_TYPES),
+            problem=f"unknown target type `{dtype}`",
+            expected="one of " + ", ".join(TARGET_TYPES),
         )
     filtered = {key: value for key, value in spec.items() if value is not None}
     _allowed_keys(filtered, _TARGET_FIELDS[dtype], source=source, path=path)
@@ -721,8 +760,8 @@ def _reject_legacy_devices(data: dict[str, Any], *, source: str) -> None:
         _schema_error(
             source,
             "devices",
-            "`[devices.*]` was renamed to `[targets.*]`",
-            "[targets.simulator|emulator|device.VARIANT]",
+            problem="`[devices.*]` was renamed to `[targets.*]`",
+            expected="[targets.simulator|emulator|device.VARIANT]",
         )
 
 
@@ -737,8 +776,8 @@ def _parse_targets_section(
             _schema_error(
                 source,
                 f"targets.{type_key}",
-                f"unknown target type `{type_key}`",
-                "one of " + ", ".join(TARGET_TYPES),
+                problem=f"unknown target type `{type_key}`",
+                expected="one of " + ", ".join(TARGET_TYPES),
             )
         type_table = _table(raw_type, source=source, path=f"targets.{type_key}")
         variants: dict[str, dict[str, Any]] = {}
@@ -747,8 +786,8 @@ def _parse_targets_section(
                 _schema_error(
                     source,
                     f"targets.{type_key}.{variant_name}",
-                    f"invalid variant name `{variant_name}`",
-                    "a name matching [A-Za-z][A-Za-z0-9_-]*",
+                    problem=f"invalid variant name `{variant_name}`",
+                    expected="a name matching [A-Za-z][A-Za-z0-9_-]*",
                 )
             spec = _table(
                 raw_spec,
@@ -915,8 +954,8 @@ def _parse_settings(data: dict[str, Any], source: str) -> dict[str, Any]:
             _schema_error(
                 source,
                 "settings",
-                f"unknown field `{key}`",
-                "only " + ", ".join(sorted(_SETTINGS_SCHEMA)),
+                problem=f"unknown field `{key}`",
+                expected="only " + ", ".join(sorted(_SETTINGS_SCHEMA)),
             )
         # bool is a subclass of int, so a plain isinstance check would let `1` pass
         # for a bool key and `true` pass for a (future) int key. The second clause
@@ -925,8 +964,8 @@ def _parse_settings(data: dict[str, Any], source: str) -> dict[str, Any]:
             _schema_error(
                 source,
                 f"settings.{key}",
-                f"got {type(value).__name__}",
-                expected.__name__,
+                problem=f"got {type(value).__name__}",
+                expected=expected.__name__,
             )
         parsed[key] = value
     return parsed

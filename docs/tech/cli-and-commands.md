@@ -177,7 +177,7 @@ wrote.
 
 `target add` validates its CLI field map with the same `validate_target_spec`
 used by recipe, local, and global loads. Flags incompatible with the chosen type
-fail before rendering; the complete edited `LocalConfig` or `GlobalConfig` is
+raise `DeviceError` before rendering; the complete edited `LocalConfig` or `GlobalConfig` is
 then parsed before writing. The `env set` branch accepts only declared
 `type="set"` resources: assignment, recipe, declaration, and type failures
 return exit 2 without mutating the registry.

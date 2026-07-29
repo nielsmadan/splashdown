@@ -1565,6 +1565,11 @@ def test_global_target_add_rejects_duplicate(tmp_path):
         sd.global_target_add("device", "my-iphone", {"platform": "ios"})
 
 
+def test_global_target_add_rejects_incompatible_fields():
+    with pytest.raises(sd.DeviceError, match="unknown field"):
+        sd.global_target_add("simulator", "default", {"device": "pixel_9"})
+
+
 def test_global_target_remove_errors_when_missing(tmp_path):
     with pytest.raises(sd.DeviceError, match="no target"):
         sd.global_target_remove("device", "ghost")
