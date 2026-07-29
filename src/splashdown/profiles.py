@@ -560,7 +560,7 @@ class NextJsProfile(Profile):
         return False
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        return {"PORT": {"type": "port", "range": [3000, 3100]}}
+        return {"PORT": {"type": "port", "range": [3001, 3100]}}
 
 
 PROFILES["nextjs"] = NextJsProfile()
@@ -580,7 +580,7 @@ class DjangoProfile(Profile):
             return False
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        return {"PORT": {"type": "port", "range": [8000, 8100]}}
+        return {"PORT": {"type": "port", "range": [8001, 8100]}}
 
 
 PROFILES["django"] = DjangoProfile()
@@ -599,7 +599,7 @@ class FastApiProfile(Profile):
         return bool(pyproject.exists() and "fastapi" in pyproject.read_text().lower())
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        return {"PORT": {"type": "port", "range": [8000, 8100]}}
+        return {"PORT": {"type": "port", "range": [8001, 8100]}}
 
 
 PROFILES["fastapi"] = FastApiProfile()
@@ -619,7 +619,7 @@ class SpringBootProfile(Profile):
         return False
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        return {"PORT": {"type": "port", "range": [8080, 8180]}}
+        return {"PORT": {"type": "port", "range": [8081, 8180]}}
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_springboot_application_properties_check()]
@@ -677,7 +677,7 @@ class ReactNativeProfile(Profile):
         return _detect_rn(app_path)
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        return {"RCT_METRO_PORT": {"type": "port", "range": [8081, 8200]}}
+        return {"RCT_METRO_PORT": {"type": "port", "range": [8082, 8200]}}
 
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
@@ -696,7 +696,7 @@ class ExpoProfile(Profile):
         return _detect_expo(app_path)
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
-        return {"RCT_METRO_PORT": {"type": "port", "range": [8081, 8200]}}
+        return {"RCT_METRO_PORT": {"type": "port", "range": [8082, 8200]}}
 
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
@@ -790,7 +790,7 @@ resources = ["RCT_METRO_PORT"]
 
 [resources.RCT_METRO_PORT]
 type  = "port"
-range = [8081, 8200]
+range = [8082, 8200]
 
 # Uncomment to pick the Xcode scheme / build mode `splash run simulator` builds.
 # Needed when your dev environment is scheme-selected (e.g. a *Dev scheme that
@@ -861,7 +861,7 @@ loader = "__SPLASH_LOADER__"
 
 [resources.PORT]
 type  = "port"
-range = [3000, 3100]
+range = [3001, 3100]
 
 [resources.DATABASE_URL]
 type     = "template"
@@ -870,7 +870,7 @@ template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
 # Add extra ports as needed, e.g.:
 # [resources.STORYBOOK_PORT]
 # type  = "port"
-# range = [6006, 6100]
+# range = [6007, 6100]
 """
 
 _ELECTRON_SCAFFOLD = """\
@@ -892,7 +892,7 @@ loader = "__SPLASH_LOADER__"
 
 [resources.PORT]
 type  = "port"
-range = [3000, 3100]
+range = [3001, 3100]
 
 [resources.ELECTRON_USER_DATA_DIR]
 type     = "template"

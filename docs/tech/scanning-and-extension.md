@@ -110,7 +110,9 @@ defines five extension points; subclasses override the ones that apply:
 
 - `detect(app_path)` (`profiles.py:262`) — filesystem predicate; the Scanner's match key.
 - `resources(app)` (`profiles.py:265`) — `{resource_name: {type, range, ...}}` to merge
-  into `[resources.*]`. Names are canonical; the Scanner mangles on collision.
+  into `[resources.*]`. Names are canonical; the Scanner mangles on collision. Built-in
+  port ranges start above the framework's default port so splashdown never allocates the
+  conventional default.
 - `wiring_checks(app)` (`profiles.py:272`) — `WiringCheck`s the doctor runs to patch
   consumer configs (see `docs/tech/wiring.md`).
 - `run(cwd, recipe, info)` (`profiles.py:277`) — build+install+launch on a device. The
@@ -238,10 +240,8 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
   separately — a `SCAFFOLDS` entry if you want `splash init <name>` to work (the two
   registries are not linked). If the framework has consumer configs to patch, you also add
   `WiringCheck`s in `wiring.py` and return them from `wiring_checks()`.
-- **`ExpoProfile` has no `resources()` override** (`profiles.py:526`), so it inherits the
-  base's empty dict — an Expo app contributes *no* resources to the recipe (unlike
-  `ReactNativeProfile`, which emits `RCT_METRO_PORT` at `profiles.py:517`). If Expo should
-  pin a Metro/dev port, that's a real gap, not an intentional omission documented anywhere.
+- **`ReactNativeProfile` and `ExpoProfile` both emit `RCT_METRO_PORT`.** The allocation
+  range starts at `8082`, deliberately excluding Metro's framework-default port `8081`.
 - **The two mangling helpers duplicate the owners-then-mangle logic** (`scanner.py:179`
   and `scanner.py:203`). Change the mangling rule in one and the generated recipe's
   per-app `resources` list will drift out of sync with the merged `[resources.*]` table.

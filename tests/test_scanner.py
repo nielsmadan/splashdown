@@ -515,7 +515,7 @@ def test_nextjs_profile_emits_port_resource(tmp_path):
     (tmp_path / "next.config.js").write_text("")
     app = sd.AppInventory(name="web", path=tmp_path, profile="nextjs")
     res = sd.PROFILES["nextjs"].resources(app)
-    assert res == {"PORT": {"type": "port", "range": [3000, 3100]}}
+    assert res == {"PORT": {"type": "port", "range": [3001, 3100]}}
 
 
 def test_django_profile_detects_manage_py(tmp_path):
@@ -530,7 +530,7 @@ def test_django_profile_does_not_detect_without_manage_py(tmp_path):
 def test_django_profile_emits_port_resource(tmp_path):
     (tmp_path / "manage.py").write_text("import django\n")
     app = sd.AppInventory(name="api", path=tmp_path, profile="django")
-    assert sd.PROFILES["django"].resources(app) == {"PORT": {"type": "port", "range": [8000, 8100]}}
+    assert sd.PROFILES["django"].resources(app) == {"PORT": {"type": "port", "range": [8001, 8100]}}
 
 
 def test_fastapi_profile_detects_via_pyproject(tmp_path):
@@ -554,7 +554,7 @@ def test_fastapi_profile_emits_port_resource(tmp_path):
     (tmp_path / "requirements.txt").write_text("fastapi\n")
     app = sd.AppInventory(name="api", path=tmp_path, profile="fastapi")
     assert sd.PROFILES["fastapi"].resources(app) == {
-        "PORT": {"type": "port", "range": [8000, 8100]}
+        "PORT": {"type": "port", "range": [8001, 8100]}
     }
 
 
@@ -579,7 +579,7 @@ def test_springboot_profile_emits_port_resource(tmp_path):
     (tmp_path / "pom.xml").write_text("spring-boot-starter")
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
     assert sd.PROFILES["springboot"].resources(app) == {
-        "PORT": {"type": "port", "range": [8080, 8180]}
+        "PORT": {"type": "port", "range": [8081, 8180]}
     }
 
 

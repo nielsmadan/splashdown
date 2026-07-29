@@ -104,6 +104,7 @@ def test_init_writes_recipe_and_local_skeleton(tmp_path):
     sd.cmd_init(tmp_path, preset="rn")
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert "[resources." in recipe
+    assert "range = [8082, 8200]" in recipe
     assert (tmp_path / "splashdown.local.toml").exists()
 
 
@@ -146,6 +147,7 @@ def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert 'profile = "react-native"' in recipe
     assert "[resources.RCT_METRO_PORT]" in recipe
+    assert "range = [8082, 8200]" in recipe
     assert 'resources = ["RCT_METRO_PORT"]' in recipe
 
 
@@ -171,6 +173,7 @@ def test_init_server_preset_writes_generic_scaffold(tmp_path):
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert "[resources.PORT]" in recipe
     assert "[resources.DATABASE_URL]" in recipe
+    assert "range = [3001, 3100]" in recipe
     # Generic — should not name a specific framework.
     assert "Next.js preset" not in recipe
 
@@ -181,6 +184,7 @@ def test_init_nextjs_alias_still_works(tmp_path):
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert "[resources.PORT]" in recipe
     assert "[resources.DATABASE_URL]" in recipe
+    assert "range = [3001, 3100]" in recipe
 
 
 def test_init_electron_preset_includes_user_data_dir(tmp_path):
@@ -188,6 +192,7 @@ def test_init_electron_preset_includes_user_data_dir(tmp_path):
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert "[resources.PORT]" in recipe
     assert "[resources.ELECTRON_USER_DATA_DIR]" in recipe
+    assert "range = [3001, 3100]" in recipe
     # Per-checkout — must reference cwd_abs so each worktree gets its own dir.
     assert "cwd_abs" in recipe
 

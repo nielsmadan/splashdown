@@ -49,7 +49,7 @@ resources = ["API_PORT"]
 
 [resources.WEB_PORT]
 type = "port"
-range = [3000, 3100]
+range = [3001, 3100]
 
 [resources.API_PORT]
 type = "port"
@@ -106,11 +106,11 @@ resources = ["API_PORT"]
 
 [resources.RCT_METRO_PORT]
 type = "port"
-range = [8081, 8200]
+range = [8082, 8200]
 
 [resources.WEB_PORT]
 type = "port"
-range = [3000, 3100]
+range = [3001, 3100]
 
 [resources.API_PORT]
 type = "port"
@@ -191,7 +191,7 @@ resources = []
 
 [resources.WEB_PORT]
 type = "port"
-range = [3000, 3100]
+range = [3001, 3100]
 
 [resources.API_PORT]
 type = "port"

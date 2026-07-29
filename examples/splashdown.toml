@@ -2,11 +2,11 @@
 
 [resources.RCT_METRO_PORT]
 type  = "port"
-range = [8081, 8200]
+range = [8082, 8200]
 
 [resources.STORYBOOK_PORT]
 type  = "port"
-range = [6006, 6100]
+range = [6007, 6100]
 
 [resources.RUN_ID]
 type = "uuid"
