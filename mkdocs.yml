@@ -3,6 +3,7 @@ site_url: https://splashdown.dev
 site_description: splashdown pins per-checkout dev ports, env vars, iOS simulators, and Android emulators, coordinated machine-wide so concurrent git worktrees never collide.
 repo_url: https://github.com/nielsmadan/splashdown
 repo_name: nielsmadan/splashdown
+copyright: '<a href="/legal/">Legal notice</a> · <a href="/privacy/">Privacy</a>'
 
 # Publish the USER docs only. Developer/LLM docs (features/, tech/, product/,
 # superpowers/) live outside this dir and are never part of the site build.
