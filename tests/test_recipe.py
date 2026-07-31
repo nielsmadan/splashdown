@@ -236,6 +236,11 @@ platform = "ios"
     assert recipe.apps["main"]["profile"] == "flutter"
 
 
+def test_recipe_accepts_auto_framework(tmp_path):
+    recipe = sd.Recipe.parse('[project]\nframework = "auto"\n', tmp_path / "splashdown.toml")
+    assert recipe.project["framework"] == "auto"
+
+
 @pytest.mark.parametrize(
     ("text", "path"),
     [

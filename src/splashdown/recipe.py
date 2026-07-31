@@ -380,7 +380,7 @@ def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
     if "framework" in project:
         _enum(
             project["framework"],
-            _known_profiles(),
+            _known_profiles() | {"auto"},
             source=source,
             path="project.framework",
         )

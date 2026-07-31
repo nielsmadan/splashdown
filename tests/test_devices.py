@@ -1511,6 +1511,13 @@ def test_detect_framework_override_and_autodetect(tmp_path):
     assert sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path)) == "flutter"
 
 
+def test_detect_framework_auto_sentinel_loads_and_autodetects(tmp_path):
+    # `framework = "auto"` must survive recipe validation and mean auto-detect.
+    (tmp_path / "pubspec.yaml").write_text("name: app\n")
+    recipe = sd.Recipe.parse('[project]\nframework = "auto"\n', tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, recipe) == "flutter"
+
+
 def test_detect_framework_unknown_raises(tmp_path):
     with pytest.raises(sd.DeviceError):
         sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path))
