@@ -220,10 +220,28 @@ def _has_js_or_flutter(cwd: Path) -> bool:
     return _detect_flutter(cwd) or _detect_expo(cwd) or _detect_rn(cwd)
 
 
+def _pbxproj_targets_ios(project: Path) -> bool:
+    """Whether an .xcodeproj builds for iOS. Fails open unless the pbxproj says
+    macOS and nothing says iOS — projects that keep deployment targets in an
+    .xcconfig name neither, and must not be excluded on that silence."""
+    try:
+        text = (project / "project.pbxproj").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    if "IPHONEOS_DEPLOYMENT_TARGET" in text or "SDKROOT = iphoneos" in text:
+        return True
+    return "MACOSX_DEPLOYMENT_TARGET" not in text and "SDKROOT = macosx" not in text
+
+
 def _detect_ios_native(cwd: Path) -> bool:
     if _has_js_or_flutter(cwd):
         return False
-    return any(cwd.glob("*.xcworkspace")) or any(cwd.glob("*.xcodeproj"))
+    # A macOS-only app matches the same globs but has no simulator to build for.
+    # The workspace usually wraps a sibling project, so let the projects decide.
+    projects = sorted(cwd.glob("*.xcodeproj"))
+    if projects:
+        return any(_pbxproj_targets_ios(p) for p in projects)
+    return any(cwd.glob("*.xcworkspace"))
 
 
 def _detect_android_native(cwd: Path) -> bool:

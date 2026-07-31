@@ -214,9 +214,65 @@ def test_enumerate_apps_handles_pnpm_workspace_with_no_packages_key(tmp_path):
 
 
 def test_detect_framework_ios_native_xcodeproj(tmp_path):
+    proj = tmp_path / "MyApp.xcodeproj"
+    proj.mkdir()
+    (proj / "project.pbxproj").write_text("\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 15.0;\n")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
+def test_detect_ios_native_rejects_macos_only_project(tmp_path):
+    # A menu-bar macOS app matches the same glob but has no simulator to build
+    # for, so the ios-native run path would be meaningless.
+    proj = tmp_path / "MenuBarApp.xcodeproj"
+    proj.mkdir()
+    (proj / "project.pbxproj").write_text("\t\t\t\tMACOSX_DEPLOYMENT_TARGET = 14.0;\n")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    with pytest.raises(sd.DeviceError):
+        sd.detect_framework(tmp_path, r)
+
+
+def test_detect_ios_native_fails_open_without_pbxproj(tmp_path):
     (tmp_path / "MyApp.xcodeproj").mkdir()
     r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
     assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
+def test_detect_ios_native_fails_open_when_targets_live_in_xcconfig(tmp_path):
+    # A pbxproj that delegates build settings to an .xcconfig names neither
+    # deployment target; excluding it on that silence is a false negative.
+    proj = tmp_path / "MyApp.xcodeproj"
+    proj.mkdir()
+    (proj / "project.pbxproj").write_text(
+        "\t\t\tbaseConfigurationReference = ABC /* App.xcconfig */;\n"
+    )
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
+def test_detect_ios_native_finds_ios_project_beside_a_macos_one(tmp_path):
+    # Sorted order puts the macOS project first; inspecting only projects[0]
+    # made the iOS app undetectable.
+    mac = tmp_path / "AMacTool.xcodeproj"
+    mac.mkdir()
+    (mac / "project.pbxproj").write_text("MACOSX_DEPLOYMENT_TARGET = 14.0;\n")
+    ios = tmp_path / "ZiOSApp.xcodeproj"
+    ios.mkdir()
+    (ios / "project.pbxproj").write_text("IPHONEOS_DEPLOYMENT_TARGET = 15.0;\n")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "ios-native"
+
+
+def test_detect_ios_native_rejects_macos_workspace(tmp_path):
+    # The workspace short-circuit used to bypass the platform check entirely,
+    # which is the common CocoaPods/menu-bar-app layout.
+    proj = tmp_path / "MenuBar.xcodeproj"
+    proj.mkdir()
+    (proj / "project.pbxproj").write_text("MACOSX_DEPLOYMENT_TARGET = 14.0;\n")
+    (tmp_path / "MenuBar.xcworkspace").mkdir()
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    with pytest.raises(sd.DeviceError):
+        sd.detect_framework(tmp_path, r)
 
 
 def test_detect_framework_ios_native_xcworkspace(tmp_path):
