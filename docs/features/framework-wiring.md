@@ -59,6 +59,17 @@ The autofix call is wrapped so one check failing reports rather than crashing th
 run (`src/splashdown/wiring.py:93`). Exit code is 0 only when nothing is left in the
 `problem` state.
 
+An empty check list is reported two different ways, gated on `Profile.env_only`
+(`src/splashdown/profiles.py:420`). A profile that reads its port straight from the
+environment (`nextjs`, `node-backend`, `django`, `fastapi`) sets `env_only = True`,
+so there is nothing to patch and `doctor` prints ``✓ no wiring checks needed for
+`<name>` (env-only)`` — a positive verdict. Anything else with an empty list keeps the
+``doctor: no wiring checks defined for framework `<name>`.`` wording. That distinction
+is load-bearing: `expo` allocates `RCT_METRO_PORT` and runs Metro, so it genuinely
+needs the same config patching `react-native` gets, and reporting it green would be
+the exact false-pass this check exists to prevent. Membership in `PROFILES` is *not*
+sufficient — a profile has to opt in. Both branches exit 0.
+
 `cmd_doctor` resolves the app directory as well as the framework
 (`_resolve_doctor_target`, `src/splashdown/wiring.py:49`). When the recipe places the
 app in a subdirectory, checks run against that directory — running them at the

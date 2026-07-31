@@ -394,6 +394,13 @@ class Profile:
 
     name: str = ""
 
+    # Whether an empty `wiring_checks()` means "healthy, nothing to patch" rather
+    # than "nobody has written checks yet". Only True where the framework reads
+    # its port straight from the environment — doctor turns this into a positive
+    # verdict, so a framework that actually needs config patching (expo runs
+    # Metro) must leave it False or it gets reported green while broken.
+    env_only: bool = False
+
     # Whether this framework reads values from a plain dotenv file (`.env` /
     # `.env.local`) on its own. True for server frameworks where loading a
     # dotenv file is the conventional setup (Next.js natively; Django/FastAPI/
@@ -556,6 +563,7 @@ _NODE_BACKEND_DEPS = {"hono", "express", "fastify", "koa", "@hapi/hapi", "@nestj
 
 class NodeBackendProfile(Profile):
     name = "node-backend"
+    env_only = True
     reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
@@ -580,6 +588,7 @@ _NEXTJS_CONFIG_NAMES = ("next.config.js", "next.config.ts", "next.config.mjs")
 
 class NextJsProfile(Profile):
     name = "nextjs"
+    env_only = True
     reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
@@ -605,6 +614,7 @@ PROFILES["nextjs"] = NextJsProfile()
 
 class DjangoProfile(Profile):
     name = "django"
+    env_only = True
     reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
@@ -625,6 +635,7 @@ PROFILES["django"] = DjangoProfile()
 
 class FastApiProfile(Profile):
     name = "fastapi"
+    env_only = True
     reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:

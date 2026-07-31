@@ -138,6 +138,28 @@ def test_doctor_unknown_framework_no_checks_returns_0(tmp_path, capsys):
     assert "no wiring checks" in err.lower()
 
 
+def test_doctor_known_checkless_framework_reports_healthy(tmp_path, capsys):
+    # nextjs reads PORT straight from the environment — "checked, nothing to
+    # wire", not a shrug.
+    assert sd.PROFILES["nextjs"].env_only  # premise: still checkless and env-only
+    rc = sd.cmd_doctor(tmp_path, framework_override="nextjs")
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no wiring checks needed for" in err
+    assert "no wiring checks defined" not in err
+
+
+def test_doctor_checkless_but_not_env_only_keeps_the_shrug(tmp_path, capsys):
+    # expo declares RCT_METRO_PORT and runs Metro, so it genuinely needs config
+    # patching nobody has written yet. Reporting it green would be a false pass.
+    assert not sd.PROFILES["expo"].env_only
+    rc = sd.cmd_doctor(tmp_path, framework_override="expo")
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no wiring checks defined" in err
+    assert "no wiring checks needed for" not in err
+
+
 def test_doctor_checks_app_subdirectory_from_recipe(tmp_path, capsys):
     # The app lives in a subdir, so root detection misses it. Doctor must check
     # the declared app path, not silently pass having inspected nothing.

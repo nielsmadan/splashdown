@@ -83,7 +83,13 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
         print(f"doctor: checking {app_dir.relative_to(cwd)} (`{framework}`)", file=sys.stderr)
     checks = _wiring_checks_for_framework(framework, app_dir)
     if not checks:
-        print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
+        from .scanner import PROFILES  # noqa: PLC0415
+
+        profile = PROFILES.get(framework)
+        if profile is not None and profile.env_only:
+            print(f"  ✓  no wiring checks needed for `{framework}` (env-only)", file=sys.stderr)
+        else:
+            print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
         return 0
 
     bad = 0
