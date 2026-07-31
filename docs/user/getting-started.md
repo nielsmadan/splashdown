@@ -40,7 +40,7 @@ Splashdown scans the filesystem, detects your workspace layout and framework, an
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.
 2. Writes `splashdown.local.toml`, a gitignored per-checkout file (empty to start).
-3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env` when one is present, and installs a `post-checkout` git hook.
+3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, creating the config if the loader is installed but not yet set up here, and installs a `post-checkout` git hook.
 4. Allocates this checkout's resources and writes them to `splashdown.env`.
 
 Sample output for a small backend:
@@ -69,7 +69,7 @@ Pass `--no-sync` to scaffold the files without reserving ports yet.
 | `splashdown.toml` | Yes | The recipe: resources, apps, and (for mobile) device targets |
 | `splashdown.local.toml` | No | Per-checkout additions (gitignored) |
 | `splashdown.env` | No | Generated `KEY=VALUE` file, owned by splashdown (gitignored) |
-| loader config | Yes | Gains one line that sources `splashdown.env` |
+| loader config | Yes | Gains one line that sources `splashdown.env`, and is created if absent |
 
 See [How it works](how-it-works.md) for the full model.
 

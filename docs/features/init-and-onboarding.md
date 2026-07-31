@@ -48,8 +48,9 @@ detects the workspace manager (pnpm/yarn/npm/cargo/gradle/`single`) via `_detect
 (`scanner.py:37`); enumerates apps via `_enumerate_apps` (`scanner.py:67`); matches each app
 to a Profile by name through the `PROFILES` registry, defaulting to `"unknown"` when nothing
 matches (`scanner.py:172`); and detects the shell loader by asking each `Loader` in priority
-order mise → direnv → devbox, returning `"none"` when none is configured (`_detect_loader`,
-`scanner.py:145`). A `--loader` override replaces the detected loader on the inventory
+order mise → direnv → devbox, falling back to the first one installed on PATH and returning
+`"none"` only when none is configured or installed (`_detect_loader`,
+`scanner.py:155`). A `--loader` override replaces the detected loader on the inventory
 (`commands.py:1263`). The result is a `ProjectInventory` of `AppInventory` entries
 (`scanner.py:15`, `scanner.py:24`).
 
@@ -226,10 +227,19 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
   `approve()` never fails the run — a missing `mise`/`direnv` binary, non-zero exit, or timeout
   is swallowed (`loaders.py`, `_run_ok`).
 
-- **No-loader + process-only apps = silent no-op risk.** If no loader is detected and the only
-  apps read env from the process (Vite, Spring Boot, mobile) rather than a dotenv file,
-  splashdown keeps writing `splashdown.env` and prints how to source it, but nothing sources
-  it automatically (`commands.py:1185`, `_NO_LOADER_INSTRUCTIONS` at `:1160`).
+- **Loader detection falls back to PATH.** `_detect_loader` (`scanner.py`) first asks each
+  `Loader.detect()` whether the repo carries its config (`mise.toml`, `.envrc`, `devbox.json`),
+  and a repo-level config always wins. Failing that it checks whether the binary is installed
+  (`_loader_on_path` → `shutil.which`) in mise → direnv → devbox order and wires the first hit,
+  because a fresh clone has no config file yet and writing `splashdown.env` with nothing to
+  source it is a silent no-op. `--loader none` is the explicit opt-out. `Loader.wire()` already
+  handles the create-from-nothing case, so no separate scaffolding path is needed.
+
+- **No-loader + process-only apps = silent no-op risk.** Only reachable now when *no* loader is
+  installed at all (or `--loader none` was passed) and the only apps read env from the process
+  (Vite, Spring Boot, mobile) rather than a dotenv file: splashdown keeps writing
+  `splashdown.env` and prints how to source it, but nothing sources it automatically
+  (`_resolve_no_loader_delivery` at `commands.py:1023`, `_NO_LOADER_INSTRUCTIONS` at `:998`).
 
 - **`profile = "unknown"` apps are skipped, not failed.** An unrecognized framework gets no
   resources and no wiring; the rest of the project still scaffolds

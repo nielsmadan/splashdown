@@ -128,7 +128,10 @@ def refresh_recipe(
         proj = table()
         doc["project"] = proj
     proj["workspace"] = inv.workspace
-    proj["loader"] = inv.loader
+    # An explicit `loader = "none"` is an opt-out, not a stale scan result — a
+    # rescan on a machine that happens to have mise installed must not undo it.
+    if proj.get("loader") != "none":
+        proj["loader"] = inv.loader
     _set_apps(doc, inv, app_resource_names, cwd)
     if profile_resources:
         if "resources" in doc:

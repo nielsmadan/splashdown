@@ -697,6 +697,71 @@ def test_scanner_loader_defaults_to_none(tmp_path):
     assert inv.loader == "none"
 
 
+def test_scanner_loader_falls_back_to_installed_binary(tmp_path, monkeypatch):
+    # Fresh clone: no repo config, but mise is on PATH. Writing splashdown.env
+    # with nothing to source it is a silent no-op, so wire the installed loader.
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "mise"
+
+
+def test_scanner_loader_installed_fallback_respects_priority(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: True)
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "mise"
+
+
+def test_scanner_loader_repo_config_beats_installed_binary(tmp_path, monkeypatch):
+    (tmp_path / ".envrc").write_text("")
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
+    inv = sd.Scanner().scan(tmp_path)
+    assert inv.loader == "direnv"
+
+
+@pytest.mark.parametrize("installed", ["direnv", "devbox"])
+def test_scanner_loader_fallback_covers_every_loader(tmp_path, monkeypatch, installed):
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == installed)
+    assert sd.Scanner().scan(tmp_path).loader == installed
+
+
+def test_scanner_loader_fallback_never_probes_none(tmp_path, monkeypatch):
+    probed: list[str] = []
+
+    def _record(name: str) -> bool:
+        probed.append(name)
+        return False
+
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", _record)
+    assert sd.Scanner().scan(tmp_path).loader == "none"
+    assert "none" not in probed
+
+
+def test_cmd_init_wires_installed_loader_without_repo_config(tmp_path, monkeypatch):
+    # The whole point of the PATH fallback: a fresh clone with mise installed
+    # gets a wired mise.toml instead of an unread splashdown.env.
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path)
+    assert 'loader = "mise"' in (tmp_path / "splashdown.toml").read_text()
+    assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
+
+
+def test_cmd_init_loader_none_opts_out_of_the_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: True)
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path, loader_override="none")
+    assert 'loader = "none"' in (tmp_path / "splashdown.toml").read_text()
+    assert not (tmp_path / "mise.toml").exists()
+
+
+def test_rescan_preserves_explicit_loader_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: True)
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path, loader_override="none")
+    sd.cmd_refresh_inventory(tmp_path)
+    assert 'loader = "none"' in (tmp_path / "splashdown.toml").read_text()
+
+
 def test_scanner_detects_mise_loader(tmp_path):
     (tmp_path / "mise.toml").write_text("")
     inv = sd.Scanner().scan(tmp_path)

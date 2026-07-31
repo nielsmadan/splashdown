@@ -143,13 +143,28 @@ def _expand_workspace_globs(cwd: Path, globs: list[str]) -> list[tuple[str, Path
     return out
 
 
+def _loader_on_path(name: str) -> bool:
+    """Whether a loader's binary is installed. `shutil` is imported lazily — it
+    drags in the compression modules and this is only ever reached from `init`,
+    never from the git-hook provisioning path."""
+    import shutil  # noqa: PLC0415
+
+    return shutil.which(name) is not None
+
+
 def _detect_loader(cwd: Path) -> str:
-    """Detect which shell-env loader the user has configured by asking each loader
-    in priority order (mise → direnv → devbox). Returns "none" when no loader is
-    present — `cmd_init` then delivers values into a dotenv file or prints
-    instructions, rather than imposing a loader the user never chose."""
+    """Detect which shell-env loader to wire, asking each loader in priority order
+    (mise → direnv → devbox). A loader configured in the repo always wins; failing
+    that, the first one installed on PATH is used, since a fresh clone has no
+    config file yet and writing splashdown.env with nothing to source it is a
+    silent no-op. Returns "none" only when nothing is installed — `cmd_init` then
+    delivers values into a dotenv file or prints instructions. `--loader none`
+    remains the explicit opt-out."""
     for name, loader in LOADERS.items():
         if loader.detect(cwd):
+            return name
+    for name, loader in LOADERS.items():
+        if name != "none" and _loader_on_path(loader.name):
             return name
     return "none"
 
