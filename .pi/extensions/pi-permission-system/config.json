@@ -1,0 +1,29 @@
+{
+  "permission": {
+    "bash": {
+      "just build *": "allow",
+      "just changelog *": "allow",
+      "just check *": "allow",
+      "just clean *": "allow",
+      "just cov *": "allow",
+      "just demo *": "allow",
+      "just docs *": "allow",
+      "just docs-build *": "allow",
+      "just fmt *": "allow",
+      "just hooks *": "allow",
+      "just install-local *": "allow",
+      "just lint *": "allow",
+      "just refresh-local *": "allow",
+      "just reset-local *": "allow",
+      "just test *": "allow",
+      "just test-verbose *": "allow",
+      "just typecheck *": "allow",
+      "just release *": "deny",
+      "just tag-release *": "deny",
+      "just tag-release-major *": "deny",
+      "just tag-release-minor *": "deny",
+      "just tag-release-patch *": "deny"
+    },
+    "mcp": {}
+  }
+}
