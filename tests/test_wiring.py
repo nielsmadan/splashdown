@@ -894,3 +894,58 @@ def test_revert_gitignore_exact_match_preserves_padded_line(tmp_path):
     text = (tmp_path / ".gitignore").read_text()
     assert "  splashdown.env  " in text
     assert "splashdown.env\n" not in text.replace("  splashdown.env  ", "")
+
+
+def test_doctor_runs_compose_check_alongside_the_framework(tmp_path, capsys):
+    # A compose file is project-level: the check runs at the repo root whatever
+    # framework resolved, and its problem is enough to fail the run.
+    (tmp_path / "astro.config.mjs").write_text(
+        "export default { server: { port: Number(process.env.WEB_DEV_PORT) || 4321 } };\n"
+    )
+    (tmp_path / "compose.yaml").write_text(
+        'services:\n  db:\n    image: postgres:16\n    ports:\n      - "5432:5432"\n'
+    )
+    assert sd.cmd_doctor(tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "astro-config-port" in err
+    assert "compose-hardcoded-ports" in err
+
+
+def test_doctor_compose_check_runs_without_any_framework_checks(tmp_path, capsys):
+    # nextjs is env-only and contributes no checks, but a compose problem must
+    # still be reported rather than swallowed by the "nothing to check" branch.
+    (tmp_path / "compose.yaml").write_text('services:\n  db:\n    ports:\n      - "5432:5432"\n')
+    assert sd.cmd_doctor(tmp_path, framework_override="nextjs") == 1
+    err = capsys.readouterr().err
+    assert "compose-hardcoded-ports" in err
+    assert "no wiring checks needed" not in err
+
+
+def test_doctor_compose_check_runs_at_root_for_a_subdirectory_app(tmp_path, capsys):
+    app = tmp_path / "apps" / "web"
+    app.mkdir(parents=True)
+    (app / "astro.config.mjs").write_text("export default {};\n")
+    (tmp_path / "compose.yaml").write_text('services:\n  db:\n    ports:\n      - "5432:5432"\n')
+    (tmp_path / "splashdown.toml").write_text(
+        '[apps.web]\npath = "apps/web"\nprofile = "astro"\nresources = []\n'
+    )
+    assert sd.cmd_doctor(tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "compose-hardcoded-ports" in err
+    assert "not applicable" not in err
+
+
+def test_cmd_init_emits_compose_project_name(tmp_path):
+    (tmp_path / "compose.yaml").write_text("services:\n  db:\n    image: postgres:16\n")
+    (tmp_path / "astro.config.mjs").write_text("export default {};\n")
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert "COMPOSE_PROJECT_NAME" in recipe.resources
+    assert recipe.apps["main"]["profile"] == "astro"
+
+
+def test_cmd_init_without_compose_emits_no_compose_resource(tmp_path):
+    (tmp_path / "astro.config.mjs").write_text("export default {};\n")
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert "COMPOSE_PROJECT_NAME" not in recipe.resources

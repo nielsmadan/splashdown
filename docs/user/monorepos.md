@@ -239,35 +239,55 @@ same fields, merged into a monorepo recipe.
 
 ## docker-compose services
 
-Splashdown does not patch `docker-compose.yml` / `compose.yaml`. Containerized services
-expose ports via the compose `ports:` mapping (host side), not via env vars that splashdown
-manages. The right pattern is:
+Splashdown never rewrites `compose.yaml` / `docker-compose.yml`. It ships no YAML parser, and
+rewriting a format with significant whitespace by regex is not safe enough to do to your files.
+What it does instead is allocate the values and tell you exactly which lines to change.
 
-1. Pick a stable host-port range per service in `compose.yaml`:
+When a compose file sits at the repo root, `splash init` adds a `COMPOSE_PROJECT_NAME` resource:
 
-   ```yaml
-   services:
-     db:
-       image: postgres:16
-       ports: ["5433:5432"]   # host 5433 → container 5432
-   ```
+```toml
+[resources.COMPOSE_PROJECT_NAME]
+type     = "template"
+template = "{{ slug(parent) }}-{{ slug(cwd) }}"
+```
 
-2. Reference that fixed port in `splashdown.toml` as a template, so worktrees still get
-   distinct values if you run multiple stacks simultaneously:
+That one variable does most of the work. Compose reads it from the environment and uses it to
+namespace containers, networks and volumes, so two worktrees of the same repo stop colliding
+without either compose file changing. Your loader already exports it on `cd`, so a plain
+`docker compose up` picks it up.
 
-   ```toml
-   [resources.DATABASE_URL]
-   type     = "template"
-   template = "postgres://localhost:5433/myapp_{{ slug(cwd) }}"
-   ```
+Host ports still need an edit, because compose bakes them into the `ports:` mapping. Declare a
+resource per published port and reference it with compose's `${VAR:-default}` form:
 
-   Or, if you do need compose's host port to vary per worktree, generate it yourself and
-   pass it into compose via an env file, but compose reads `.env` at the project level, not
-   `splashdown.env`, so you'd need a `writer = "envfile=.env"` resource and care about
-   variable name collisions with the rest of your `.env`.
+```toml
+[resources.DB_PORT]
+type  = "port"
+range = [5433, 5500]
+```
 
-Guidance: keep compose port mappings fixed and let the `DATABASE_URL` (or equivalent) carry
-the per-checkout uniqueness through the slug or hash helpers.
+```yaml
+services:
+  db:
+    image: postgres:16
+    ports:
+      - "${DB_PORT:-5432}:5432"
+```
+
+Drop `container_name:` while you are there. A literal container name defeats
+`COMPOSE_PROJECT_NAME`, since it pins the container to one name across every checkout.
+
+`splash doctor` reports what is still hardcoded:
+
+```
+✗  compose-hardcoded-ports: compose.yaml hardcodes host ports 5432, 6379; container_name myapp_db
+```
+
+`splash init compose` scaffolds a recipe with `COMPOSE_PROJECT_NAME` and a `DB_PORT` already
+declared.
+
+Splashdown does not allocate a port per service automatically. Which services deserve a pinned
+host port is a judgement call, and inventing resource names for every mapping in the file would
+produce config you then have to undo.
 
 ---
 

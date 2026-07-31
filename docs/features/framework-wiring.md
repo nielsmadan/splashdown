@@ -36,27 +36,27 @@ Spring Boot `application.properties` (report-only).
 
 ## How it works (current state)
 
-The unit is `WiringCheck` (`src/splashdown/wiring.py:22`): an `id`, a human
+The unit is `WiringCheck` (`src/splashdown/wiring.py:23`): an `id`, a human
 `description`, `applies(cwd)`, `detect(cwd) -> ("ok"|"problem", detail)`, an optional
 `autofix(cwd)` (`None` means manual-only), and `manual_instructions(cwd)`.
 
 Checks are owned by **Profiles**, not by `doctor` directly. RN checks accumulate in
-the module-level list `_RN_WIRING_CHECKS` (`src/splashdown/wiring.py:37`) as each
+the module-level list `_RN_WIRING_CHECKS` (`src/splashdown/wiring.py:38`) as each
 `rn-*` helper is appended; the shared `_HOOK_WIRING_CHECK`
-(`src/splashdown/wiring.py:438`) is reused by native presets that otherwise have no
+(`src/splashdown/wiring.py:453`) is reused by native presets that otherwise have no
 per-checkout wiring. Vite and Spring Boot define their checks inline in their
 Profiles. `cmd_doctor` resolves the active framework (override, else recipe, else
-`detect_framework`) via `_resolve_doctor_framework` (`src/splashdown/wiring.py:40`),
+`detect_framework`) via `_resolve_doctor_framework` (`src/splashdown/wiring.py:41`),
 then pulls that framework's check list through `_wiring_checks_for_framework`
-(`src/splashdown/wiring.py:52`), which synthesizes an `AppInventory` rooted at `cwd`
+(`src/splashdown/wiring.py:60`), which synthesizes an `AppInventory` rooted at `cwd`
 and calls `Profile.wiring_checks`.
 
-The run loop in `cmd_doctor` (`src/splashdown/wiring.py:64`): for each check, skip if
+The run loop in `cmd_doctor` (`src/splashdown/wiring.py:72`): for each check, skip if
 `applies` is false; if `detect` returns `ok`, print `✓`; on `problem`, if `--fix` was
 passed and an `autofix` exists, run it, re-`detect`, and report `(fixed)` or
 fall through to manual instructions; otherwise print `✗` plus the manual snippet.
 The autofix call is wrapped so one check failing reports rather than crashing the
-run (`src/splashdown/wiring.py:93`). Exit code is 0 only when nothing is left in the
+run (`src/splashdown/wiring.py:110`). Exit code is 0 only when nothing is left in the
 `problem` state.
 
 An empty check list is reported two different ways, gated on `Profile.env_only`
@@ -78,48 +78,67 @@ nothing.
 
 The individual checks:
 
-- **`rn-hook` / `hook`** (`src/splashdown/wiring.py:118`, registered at
-  `src/splashdown/wiring.py:173` and `:438`) — verifies a `post-checkout` hook fires
+- **`rn-hook` / `hook`** (`src/splashdown/wiring.py:137`, registered at
+  `src/splashdown/wiring.py:188` and `:438`) — verifies a `post-checkout` hook fires
   `splash`. Detection branches on the project's hook manager: lefthook config, husky
   `.husky/post-checkout`, a clean `.githooks` + `core.hooksPath`, or a foreign
   `core.hooksPath` (reported, not touched). Autofix delegates to
   `_ensure_post_checkout_hook` so it coexists with the project's existing manager.
-- **`rn-metro-config`** (`src/splashdown/wiring.py:201`, registered `:263`) —
+- **`rn-metro-config`** (`src/splashdown/wiring.py:216`, registered `:278`) —
   `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix handles three
-  shapes (`src/splashdown/wiring.py:185` comment): a literal `port: <N>` is rewritten
+  shapes (`src/splashdown/wiring.py:227` comment): a literal `port: <N>` is rewritten
   to `Number(process.env.RCT_METRO_PORT) || <N>` keeping the literal as fallback; an
   existing `server: {` block gets a port line; a bare config object gets a `server`
   block injected. Unrecognized shapes fall through to manual instructions.
-- **`rn-pkg-port`** (`src/splashdown/wiring.py:304`, registered `:341`) — strips a
+- **`rn-pkg-port`** (`src/splashdown/wiring.py:319`, registered `:356`) — strips a
   hardcoded `--port <N>` from `package.json` scripts that boot Metro (`start`/`ios`/
   `android`, or any script invoking `react-native start`), so the RN CLI reads
   `RCT_METRO_PORT` from the environment. The `react-native start` match is deliberately
-  narrow (`src/splashdown/wiring.py:281`) so `--port` on unrelated tools is left alone.
-- **`rn-xcode-env`** (`src/splashdown/wiring.py:387`, registered `:424`) — `ios/.xcode.env`
+  narrow (`src/splashdown/wiring.py:296`) so `--port` on unrelated tools is left alone.
+- **`rn-xcode-env`** (`src/splashdown/wiring.py:402`, registered `:439`) — `ios/.xcode.env`
   should source `RCT_METRO_PORT` from this checkout's `splashdown.env`. Autofix strips
   any static literal export and appends a sentinel-wrapped managed block
-  (`src/splashdown/wiring.py:356`): honor a value already set by `run-ios`, else read
+  (`src/splashdown/wiring.py:373`): honor a value already set by `run-ios`, else read
   `splashdown.env`, else fall back to 8083. Sentinels make the patch idempotent
   (find-by-pair, replace) and mark tool-managed vs hand-edited lines. The literal-export
-  regex is intentionally narrow (`src/splashdown/wiring.py:377`) so hand-written
+  regex is intentionally narrow (`src/splashdown/wiring.py:392`) so hand-written
   conditional wirings are not mangled.
-- **`vite-config-process-env`** (`src/splashdown/profiles.py:532`, detect/autofix at
-  `:543`/`:553`) — rewrites the `loadEnv` idiom `env.X` to `process.env.X` in
+- **`vite-config-process-env`** (`src/splashdown/profiles.py:705`, detect/autofix at
+  `:716`/`:726`) — rewrites the `loadEnv` idiom `env.X` to `process.env.X` in
   `vite.config.{ts,js,mjs}` so values loaded into the shell by mise/direnv/devbox reach
-  Vite. The matcher (`src/splashdown/profiles.py:465`) skips already-fixed
-  `process.env.X`, and `_vite_unfixed_env_matches` (`:468`) additionally skips any
+  Vite. The matcher (`src/splashdown/profiles.py:638`) skips already-fixed
+  `process.env.X`, and `_vite_unfixed_env_matches` (`:641`) additionally skips any
   `env.X` whose name is already read as `process.env.X` somewhere in the file —
   `process.env.X || env.X` is a deliberate shell-then-dotenv fallback chain, and
   rewriting its second term would silently delete the dotenv layer.
-- **`vite-port-wired`** (`src/splashdown/profiles.py:506`) — the companion assertion:
+- **`vite-port-wired`** (`src/splashdown/profiles.py:679`) — the companion assertion:
   the config must name the allocated port var (`WEB_DEV_PORT`) somewhere, or the port
   is allocated and never consumed. **Report-only** (`autofix=None`) because injecting a
   `server.port` block into an arbitrary config is not safely mechanical. It deliberately
   tests for the variable name rather than the string `process.env.`, so bracket access
   and destructuring both pass — an earlier substring test flagged those correct configs
   as problems and left `doctor --fix` failing with nothing to fix.
-- **`springboot-application-properties`** (`src/splashdown/profiles.py:694`, detect at
-  `:708`) — checks that `application.properties`/`application.yml` uses the
+- **`astro-config-port`** (`src/splashdown/profiles.py:583`, detect/autofix at `:594`/`:605`)
+  — `astro.config.*` must set `server.port` from `WEB_DEV_PORT`. Astro is the one web
+  profile that reads *neither* `PORT` from the environment nor a dotenv file for its dev
+  port, so an unwired config silently boots on 4321 no matter what splashdown allocated;
+  the port range starts at 4322 so that case can't masquerade as wired. The autofix injects
+  the line after a `defineConfig({` or bare `export default {`. It deliberately bails when
+  a `server:` block already exists anywhere in the file: Astro configs commonly carry a
+  `vite: { server: {…} }`, and a regex can't tell that nesting apart from the top-level
+  block, so guessing would put the port where it configures Vite's dev server instead.
+- **`compose-hardcoded-ports`** (`src/splashdown/profiles.py:502`, detect at `:516`) —
+  project-level, not owned by any Profile. Reports host-port mappings whose host side is a
+  bare number and any literal `container_name:`. **Report-only** (`autofix=None`): splashdown
+  ships no YAML parser (deps are frozen at two), so a rewrite would be regex over
+  indentation-sensitive text. `compose_project_resources` (`:480`) emits
+  `COMPOSE_PROJECT_NAME` — the one value that needs no compose edit, since compose reads it
+  from the environment — and deliberately invents no per-service ports, because which service
+  deserves a pinned port is a judgement call and wrong guesses become config the user must
+  undo. `cmd_doctor` appends these via `compose_wiring_checks` (`:498`) against the repo root,
+  independent of the resolved framework.
+- **`springboot-application-properties`** (`src/splashdown/profiles.py:867`, detect at
+  `:881`) — checks that `application.properties`/`application.yml` uses the
   `server.port=${PORT:8080}` placeholder. **Report-only**: `autofix=None`
   (`src/splashdown/profiles.py:486`) because rewriting Java/Spring config is too risky
   to mechanize; only manual instructions are printed.
@@ -136,13 +155,13 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
 
 ## Key entry points
 
-- `src/splashdown/wiring.py:22` — `WiringCheck` NamedTuple (the check contract).
-- `src/splashdown/wiring.py:37` — `_RN_WIRING_CHECKS` registry; `:438` `_HOOK_WIRING_CHECK`.
-- `src/splashdown/wiring.py:64` — `cmd_doctor` run loop (detect / `--fix` / manual).
-- `src/splashdown/wiring.py:40` — `_resolve_doctor_framework`; `:52` `_wiring_checks_for_framework`.
-- `src/splashdown/wiring.py:118`/`:201`/`:304`/`:387` — `rn-hook`, `rn-metro-config`, `rn-pkg-port`, `rn-xcode-env` detect/autofix.
-- `src/splashdown/wiring.py:356` — `ios/.xcode.env` sentinel-wrapped managed block.
-- `src/splashdown/profiles.py:532`/`:506`/`:694` — `vite-config-process-env` (autofix), `vite-port-wired` and `springboot-application-properties` (both report-only) checks.
+- `src/splashdown/wiring.py:23` — `WiringCheck` NamedTuple (the check contract).
+- `src/splashdown/wiring.py:38` — `_RN_WIRING_CHECKS` registry; `:438` `_HOOK_WIRING_CHECK`.
+- `src/splashdown/wiring.py:72` — `cmd_doctor` run loop (detect / `--fix` / manual).
+- `src/splashdown/wiring.py:41` — `_resolve_doctor_framework`; `:52` `_wiring_checks_for_framework`.
+- `src/splashdown/wiring.py:137`/`:201`/`:304`/`:387` — `rn-hook`, `rn-metro-config`, `rn-pkg-port`, `rn-xcode-env` detect/autofix.
+- `src/splashdown/wiring.py:373` — `ios/.xcode.env` sentinel-wrapped managed block.
+- `src/splashdown/profiles.py:705`/`:506`/`:694` — `vite-config-process-env` (autofix), `vite-port-wired` and `springboot-application-properties` (both report-only) checks.
 - `src/splashdown/cli.py:185` — `doctor` argparse parser (`--fix`, `--framework`); dispatch at `src/splashdown/cli.py:358`.
 - `src/splashdown/commands.py:1305` — `init` post-scaffold wiring loop; `:267` `_ensure_post_checkout_hook` (shared hook coexistence).
 
@@ -159,7 +178,7 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
   or returning it from a Profile's `wiring_checks`.
 - The `ios/.xcode.env` managed block is delimited by the sentinel pair
   `# >>> splashdown-managed RCT_METRO_PORT >>>` / `# <<< ... <<<`
-  (`src/splashdown/wiring.py:356`) — edits inside it will be overwritten by `--fix`.
+  (`src/splashdown/wiring.py:373`) — edits inside it will be overwritten by `--fix`.
 
 ## Gotchas
 
@@ -178,11 +197,11 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
   its old port (`src/splashdown/wiring.py:358` block comment).
 - **Detection can come back empty.** If the framework can't be resolved (no recipe, no
   detectable framework) `doctor` errors and asks for `--framework`
-  (`src/splashdown/wiring.py:69`); a framework with no checks exits 0 with a note
-  (`src/splashdown/wiring.py:77`).
+  (`src/splashdown/wiring.py:78`); a framework with no checks exits 0 with a note
+  (`src/splashdown/wiring.py:90`).
 - **A foreign `core.hooksPath` is reported, not auto-wired.** If `core.hooksPath` points
   to a non-`.githooks` directory, the hook check stays a `✗` even under `--fix` and prints
-  manual instructions (`src/splashdown/wiring.py:134`).
+  manual instructions (`src/splashdown/wiring.py:151`).
 - **Vite autofix leaves `loadEnv` lines in place.** It only rewrites `env.X` reads to
   `process.env.X`; the `loadEnv` call itself is untouched
   (`src/splashdown/profiles.py:347` comment), so a stray `env.X` outside the matcher's

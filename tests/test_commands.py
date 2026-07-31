@@ -932,3 +932,17 @@ def test_deinit_loader_none_is_noop(tmp_path, registry):
     (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
     sd.cmd_deinit(co, registry)  # NoneLoader.unwire is a no-op; must not raise
     assert not (co / "splashdown.toml").exists()
+
+
+def test_scaffold_presets_include_astro_and_compose(tmp_path):
+    for preset in ("astro", "compose"):
+        assert preset in sd.SCAFFOLDS
+
+
+@pytest.mark.parametrize("preset", ["astro", "compose"])
+def test_new_scaffolds_parse_as_valid_recipes(tmp_path, preset):
+    d = tmp_path / preset
+    d.mkdir()
+    sd.cmd_init(d, preset=preset, loader_override="none")
+    recipe = sd.Recipe.load(d / sd.RECIPE_NAME)
+    assert recipe.resources

@@ -1149,6 +1149,12 @@ def cmd_init(
         _write_minimal_monorepo_recipe(cwd, inv)
         return
     merged_resources = _merge_app_resources(inv.apps, res_by_app)
+    # Compose is project-level infrastructure, so its resources are merged in after
+    # the per-app pass rather than claimed by any one app.
+    from .profiles import compose_project_resources  # noqa: PLC0415
+
+    for name, spec in compose_project_resources(cwd).items():
+        merged_resources.setdefault(name, spec)
     app_resource_names = _app_resource_names(inv.apps, res_by_app)
     merged_targets = _merge_app_targets(inv.apps)
     for name in _prune_unresolvable_templates(merged_resources, app_resource_names):

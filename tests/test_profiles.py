@@ -329,3 +329,151 @@ def test_run_custom_command_none_when_no_run(tmp_path, monkeypatch):
         sd.profiles.subprocess, "call", lambda *a, **k: pytest.fail("should not run")
     )
     assert sd.profiles.run_custom_command(tmp_path, _recipe(tmp_path, {}), {"kind": "ios"}) is None
+
+
+# ---------- astro ----------
+
+
+def _astro_check(path):
+    app = sd.AppInventory(name="web", path=path, profile="astro")
+    return next(c for c in sd.PROFILES["astro"].wiring_checks(app) if c.id == "astro-config-port")
+
+
+def test_astro_detects_config_file(tmp_path):
+    (tmp_path / "astro.config.mjs").write_text("export default {}\n")
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "astro"
+
+
+def test_astro_detects_package_dependency(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"astro": "^5"}}')
+    r = sd.Recipe({"project": {}}, tmp_path / "splashdown.toml")
+    assert sd.detect_framework(tmp_path, r) == "astro"
+
+
+def test_astro_port_range_skips_the_framework_default(tmp_path):
+    app = sd.AppInventory(name="web", path=tmp_path, profile="astro")
+    lo, hi = sd.PROFILES["astro"].resources(app)["WEB_DEV_PORT"]["range"]
+    assert lo > 4321, "an unwired app handed 4321 is indistinguishable from a wired one"
+    assert lo < hi
+
+
+def test_astro_autofix_injects_server_port(tmp_path):
+    cfg = tmp_path / "astro.config.mjs"
+    cfg.write_text(
+        'import { defineConfig } from "astro/config";\n'
+        "export default defineConfig({\n  integrations: [],\n});\n"
+    )
+    check = _astro_check(tmp_path)
+    assert check.detect(tmp_path)[0] == "problem"
+    check.autofix(tmp_path)
+    text = cfg.read_text()
+    assert "server: { port: Number(process.env.WEB_DEV_PORT) || 4321 }" in text
+    assert "integrations: []" in text  # existing config preserved
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_astro_autofix_handles_bare_default_export(tmp_path):
+    cfg = tmp_path / "astro.config.mjs"
+    cfg.write_text("export default {\n  site: 'https://example.com',\n};\n")
+    check = _astro_check(tmp_path)
+    check.autofix(tmp_path)
+    assert check.detect(tmp_path)[0] == "ok"
+    assert "site: 'https://example.com'" in cfg.read_text()
+
+
+def test_astro_autofix_leaves_an_existing_server_block_alone(tmp_path):
+    # The block may be nested under `vite:`, where a port would configure Vite's
+    # server rather than Astro's — report instead of guessing at the nesting.
+    cfg = tmp_path / "astro.config.mjs"
+    original = (
+        'import { defineConfig } from "astro/config";\n'
+        "export default defineConfig({\n  vite: { server: { hmr: true } },\n});\n"
+    )
+    cfg.write_text(original)
+    check = _astro_check(tmp_path)
+    check.autofix(tmp_path)
+    assert cfg.read_text() == original
+    assert check.detect(tmp_path)[0] == "problem"
+    assert "vite:" in check.manual_instructions(tmp_path)
+
+
+def test_astro_autofix_leaves_unrecognized_shape_alone(tmp_path):
+    cfg = tmp_path / "astro.config.mjs"
+    original = "const cfg = makeConfig();\nexport default cfg;\n"
+    cfg.write_text(original)
+    check = _astro_check(tmp_path)
+    check.autofix(tmp_path)
+    assert cfg.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "export default { server: { port: Number(process.env.WEB_DEV_PORT) || 4321 } };\n",
+        'export default { server: { port: Number(process.env["WEB_DEV_PORT"]) } };\n',
+        "const { WEB_DEV_PORT } = process.env;\nexport default { server: { port: WEB_DEV_PORT } };\n",
+    ],
+)
+def test_astro_check_passes_on_wired_configs(tmp_path, body):
+    (tmp_path / "astro.config.mjs").write_text(body)
+    assert _astro_check(tmp_path).detect(tmp_path)[0] == "ok"
+
+
+# ---------- docker-compose ----------
+
+
+def test_compose_resources_only_when_a_compose_file_exists(tmp_path):
+    assert sd.compose_project_resources(tmp_path) == {}
+    (tmp_path / "compose.yaml").write_text("services: {}\n")
+    res = sd.compose_project_resources(tmp_path)
+    assert res["COMPOSE_PROJECT_NAME"]["type"] == "template"
+
+
+def test_compose_project_name_is_unique_per_checkout(tmp_path):
+    (tmp_path / "compose.yaml").write_text("services: {}\n")
+    tpl = sd.compose_project_resources(tmp_path)["COMPOSE_PROJECT_NAME"]["template"]
+    one = sd.render_template(tpl, sd._make_scope(tmp_path / "wrk" / "dev1", None, {}))
+    two = sd.render_template(tpl, sd._make_scope(tmp_path / "wrk" / "dev2", None, {}))
+    assert one != two
+    assert one == "wrk-dev1"
+
+
+def test_compose_check_flags_hardcoded_ports_and_container_name(tmp_path):
+    (tmp_path / "compose.yaml").write_text("""\
+services:
+  db:
+    image: postgres:16
+    container_name: myapp_db
+    ports:
+      - "5432:5432"
+""")
+    check = sd.compose_wiring_checks(tmp_path)[0]
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "5432" in detail
+    assert "myapp_db" in detail
+    assert check.autofix is None  # YAML rewriting is not safely mechanical
+
+
+def test_compose_check_passes_on_a_templated_file(tmp_path):
+    (tmp_path / "compose.yaml").write_text("""\
+services:
+  db:
+    image: postgres:16
+    ports:
+      - "${DB_PORT:-5432}:5432"
+""")
+    check = sd.compose_wiring_checks(tmp_path)[0]
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_compose_check_allows_a_templated_container_name(tmp_path):
+    (tmp_path / "compose.yaml").write_text(
+        'services:\n  db:\n    container_name: "${COMPOSE_PROJECT_NAME}_db"\n'
+    )
+    assert sd.compose_wiring_checks(tmp_path)[0].detect(tmp_path)[0] == "ok"
+
+
+def test_compose_wiring_checks_empty_without_a_compose_file(tmp_path):
+    assert sd.compose_wiring_checks(tmp_path) == []

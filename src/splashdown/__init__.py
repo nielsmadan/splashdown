@@ -137,7 +137,12 @@ from .hooks import (
     _wire_post_checkout_lefthook,
 )
 from .loaders import LOADERS, Loader
-from .profiles import SCAFFOLDS, Profile
+from .profiles import (
+    SCAFFOLDS,
+    Profile,
+    compose_project_resources,
+    compose_wiring_checks,
+)
 from .provisioning import (
     provision,
     run_setup,

@@ -81,8 +81,13 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
         return 1
     if app_dir != cwd:
         print(f"doctor: checking {app_dir.relative_to(cwd)} (`{framework}`)", file=sys.stderr)
-    checks = _wiring_checks_for_framework(framework, app_dir)
-    if not checks:
+    from .profiles import compose_wiring_checks  # noqa: PLC0415
+
+    # Project-level checks run against the repo root regardless of which framework
+    # resolved — a compose file is infrastructure, not an app.
+    targets = [(check, app_dir) for check in _wiring_checks_for_framework(framework, app_dir)]
+    targets += [(check, cwd) for check in compose_wiring_checks(cwd)]
+    if not targets:
         from .scanner import PROFILES  # noqa: PLC0415
 
         profile = PROFILES.get(framework)
@@ -93,34 +98,34 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
         return 0
 
     bad = 0
-    for check in checks:
-        if not check.applies(app_dir):
+    for check, check_dir in targets:
+        if not check.applies(check_dir):
             print(f"  -  {check.id}: not applicable", file=sys.stderr)
             continue
-        status, detail = check.detect(app_dir)
+        status, detail = check.detect(check_dir)
         if status == "ok":
             print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
             continue
         if fix and check.autofix is not None:
             try:
-                check.autofix(app_dir)
+                check.autofix(check_dir)
             except Exception as e:  # noqa: BLE001 - report rather than crash whole run
                 print(f"  ✗  {check.id}: autofix failed: {e}", file=sys.stderr)
                 bad += 1
                 continue
-            status_after, detail_after = check.detect(app_dir)
+            status_after, detail_after = check.detect(check_dir)
             if status_after == "ok":
                 print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
                 continue
             print(f"  ✗  {check.id}: still problem after autofix: {detail_after}", file=sys.stderr)
             if check.manual_instructions is not None:
-                for line in check.manual_instructions(app_dir).splitlines():
+                for line in check.manual_instructions(check_dir).splitlines():
                     print(f"        {line}", file=sys.stderr)
             bad += 1
             continue
         print(f"  ✗  {check.id}: {detail}", file=sys.stderr)
         if check.manual_instructions is not None:
-            for line in check.manual_instructions(app_dir).splitlines():
+            for line in check.manual_instructions(check_dir).splitlines():
                 print(f"        {line}", file=sys.stderr)
         bad += 1
     return 0 if bad == 0 else 1

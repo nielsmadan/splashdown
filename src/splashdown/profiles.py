@@ -457,6 +457,179 @@ class Profile:
         raise DeviceError(f"don't know how to run framework `{self.name}`")
 
 
+# ---------- docker-compose (project-level, not a Profile) ----------
+# A compose file is infrastructure spanning apps, not an app, so it is not matched
+# per-directory by the scanner. Its resources are emitted once for the repo and its
+# check runs alongside whatever framework doctor resolved.
+
+_COMPOSE_FILE_NAMES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
+# Host side of a `- "5432:5432"` port mapping. `${VAR:-5432}:5432` is the wired
+# form, so a mapping whose host side is a bare number is the thing to report.
+_COMPOSE_HARDCODED_PORT_RE = re.compile(r"^\s*-\s*[\"']?(\d+):\d+", re.MULTILINE)
+_COMPOSE_CONTAINER_NAME_RE = re.compile(r"^\s*container_name\s*:\s*(?!.*\$\{)(\S.*)$", re.MULTILINE)
+
+
+def _compose_file_path(root: Path) -> Path | None:
+    for name in _COMPOSE_FILE_NAMES:
+        candidate = root / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def compose_project_resources(root: Path) -> dict[str, dict[str, Any]]:
+    """Resources every compose repo wants, emitted once for the project.
+
+    `COMPOSE_PROJECT_NAME` is the load-bearing one: it namespaces containers,
+    networks and volumes per checkout, which is what keeps two worktrees of the
+    same repo from fighting. Host ports are deliberately *not* invented here —
+    which service deserves a pinned port is a judgement call, so the wiring check
+    reports them and the user declares the ones they want."""
+    if _compose_file_path(root) is None:
+        return {}
+    return {
+        "COMPOSE_PROJECT_NAME": {
+            "type": "template",
+            "template": "{{ slug(parent) }}-{{ slug(cwd) }}",
+        }
+    }
+
+
+def compose_wiring_checks(root: Path) -> list[WiringCheck]:
+    return [_compose_hardcoded_check()] if _compose_file_path(root) is not None else []
+
+
+def _compose_hardcoded_check() -> WiringCheck:
+    """Report-only. Compose files are YAML with significant whitespace and
+    splashdown ships no YAML parser, so a mechanical rewrite would be regex over
+    indentation-sensitive text — the check names what to change instead."""
+    return WiringCheck(
+        id="compose-hardcoded-ports",
+        description="compose file templates its host ports and container names",
+        applies=lambda cwd: _compose_file_path(cwd) is not None,
+        detect=_compose_hardcoded_detect,
+        autofix=None,
+        manual_instructions=_compose_hardcoded_manual,
+    )
+
+
+def _compose_hardcoded_detect(cwd: Path) -> tuple[str, str]:
+    cfg = _compose_file_path(cwd)
+    if cfg is None:  # applies() guarantees the compose file exists
+        raise DeviceError("compose file not found")
+    text = cfg.read_text()
+    ports = sorted({m.group(1) for m in _COMPOSE_HARDCODED_PORT_RE.finditer(text)})
+    names = sorted({m.group(1).strip() for m in _COMPOSE_CONTAINER_NAME_RE.finditer(text)})
+    problems = []
+    if ports:
+        problems.append(f"host ports {', '.join(ports)}")
+    if names:
+        problems.append(f"container_name {', '.join(names)}")
+    if problems:
+        return ("problem", f"{cfg.name} hardcodes {'; '.join(problems)}")
+    return ("ok", f"{cfg.name} has no hardcoded host ports or container names")
+
+
+def _compose_hardcoded_manual(cwd: Path) -> str:
+    cfg = _compose_file_path(cwd)
+    name = cfg.name if cfg else "compose.yaml"
+    return (
+        f"Templatize {name} so each checkout gets its own ports and containers:\n"
+        '  ports:\n    - "${DB_PORT:-5432}:5432"   # declare DB_PORT in splashdown.toml\n'
+        "Drop `container_name:` and let COMPOSE_PROJECT_NAME namespace them.\n"
+        "COMPOSE_PROJECT_NAME is already allocated per checkout; compose reads it\n"
+        "from the environment, so run `docker compose up` in a shell your loader\n"
+        "has populated (any shell you have cd'd into)."
+    )
+
+
+_ASTRO_CONFIG_NAMES = (
+    "astro.config.mjs",
+    "astro.config.ts",
+    "astro.config.js",
+    "astro.config.mts",
+    "astro.config.cjs",
+)
+# An existing `server:` block may be nested under `vite:`, where a port would not
+# reach Astro's dev server. Detecting one anywhere is the signal to stop and let
+# the user place it, rather than guess at nesting with a regex.
+_ASTRO_SERVER_BLOCK_RE = re.compile(r"\bserver\s*:\s*\{")
+_ASTRO_DEFAULT_EXPORT_RE = re.compile(r"export\s+default\s+(?:defineConfig\s*\(\s*)?\{")
+
+
+def _astro_config_path(app_path: Path) -> Path | None:
+    for name in _ASTRO_CONFIG_NAMES:
+        candidate = app_path / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+class AstroProfile(Profile):
+    name = "astro"
+
+    def detect(self, app_path: Path) -> bool:
+        return _astro_config_path(app_path) is not None or "astro" in _read_pkg_deps(app_path)
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # Skips Astro's own 4321 so an unwired app can't accidentally be handed
+        # the default and look wired.
+        return {"WEB_DEV_PORT": {"type": "port", "range": [4322, 4400]}}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_astro_port_check()]
+
+
+def _astro_port_check() -> WiringCheck:
+    return WiringCheck(
+        id="astro-config-port",
+        description="astro.config wires server.port to WEB_DEV_PORT",
+        applies=lambda cwd: _astro_config_path(cwd) is not None,
+        detect=_astro_port_detect,
+        autofix=_astro_port_autofix,
+        manual_instructions=_astro_port_manual,
+    )
+
+
+def _astro_port_detect(cwd: Path) -> tuple[str, str]:
+    cfg = _astro_config_path(cwd)
+    if cfg is None:  # applies() guarantees the astro config exists
+        raise DeviceError("astro.config.* not found")
+    if "WEB_DEV_PORT" in cfg.read_text():
+        return ("ok", "astro.config reads WEB_DEV_PORT")
+    # Unlike Next.js, Astro never reads PORT from the environment — the port has
+    # to be in the config or on the command line.
+    return ("problem", "astro.config never reads WEB_DEV_PORT; Astro ignores $PORT")
+
+
+def _astro_port_autofix(cwd: Path) -> None:
+    cfg = _astro_config_path(cwd)
+    if cfg is None:  # applies() guarantees the astro config exists
+        raise DeviceError("astro.config.* not found")
+    text = cfg.read_text()
+    if "WEB_DEV_PORT" in text or _ASTRO_SERVER_BLOCK_RE.search(text):
+        return
+    m = _ASTRO_DEFAULT_EXPORT_RE.search(text)
+    if m is None:  # unrecognized shape — manual_instructions covers it
+        return
+    block = "\n  server: { port: Number(process.env.WEB_DEV_PORT) || 4321 },"
+    cfg.write_text(text[: m.end()] + block + text[m.end() :])
+    print(f"patched {cfg.name} (server.port → WEB_DEV_PORT)", file=sys.stderr)
+
+
+def _astro_port_manual(cwd: Path) -> str:
+    return (
+        "Astro does not read PORT from the environment, so the dev port has to be\n"
+        "in astro.config. Add it to the top-level config object:\n"
+        "  server: { port: Number(process.env.WEB_DEV_PORT) || 4321 }\n"
+        "If you already have a `server:` block, put the port there — a block nested\n"
+        "under `vite:` configures Vite's server, not Astro's."
+    )
+
+
+PROFILES["astro"] = AstroProfile()
+
+
 _VITE_CONFIG_NAMES = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
 # Matches `env.VAR_NAME` access (the loadEnv idiom). The wiring autofix rewrites
 # these to `process.env.VAR_NAME` so splashdown.env + mise loading works.
@@ -1013,8 +1186,58 @@ device = "pixel_9"
 """
 
 
+_ASTRO_SCAFFOLD = """\
+# splashdown.toml — Astro preset. Astro does not read PORT from the environment,
+# so astro.config must consume WEB_DEV_PORT itself:
+#     server: { port: Number(process.env.WEB_DEV_PORT) || 4321 }
+# `splash doctor --fix` writes that line for you.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[apps.main]
+path      = "."
+profile   = "astro"
+resources = ["WEB_DEV_PORT"]
+
+# Skips Astro's own 4321 so an unwired checkout can't look wired.
+[resources.WEB_DEV_PORT]
+type  = "port"
+range = [4322, 4400]
+"""
+
+_COMPOSE_SCAFFOLD = """\
+# splashdown.toml — docker-compose preset. COMPOSE_PROJECT_NAME namespaces this
+# checkout's containers, networks and volumes so parallel worktrees don't collide.
+# Reference the ports from compose with the ${VAR:-default} form:
+#     ports:
+#       - "${DB_PORT:-5432}:5432"
+# and drop `container_name:` so COMPOSE_PROJECT_NAME can do its job.
+# Run `docker compose up` in a shell your loader has populated.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[resources.COMPOSE_PROJECT_NAME]
+type     = "template"
+template = "{{ slug(parent) }}-{{ slug(cwd) }}"
+
+[resources.DB_PORT]
+type  = "port"
+range = [5433, 5500]
+
+# Add one entry per service that publishes a host port, e.g.:
+# [resources.REDIS_PORT]
+# type  = "port"
+# range = [6380, 6450]
+"""
+
 SCAFFOLDS: dict[str, str] = {
     "minimal": _MINIMAL_SCAFFOLD,
+    "astro": _ASTRO_SCAFFOLD,
+    "compose": _COMPOSE_SCAFFOLD,
     "react-native": _RN_SCAFFOLD,
     "rn": _RN_SCAFFOLD,
     "flutter": _FLUTTER_SCAFFOLD,
