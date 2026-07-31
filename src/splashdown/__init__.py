@@ -17,8 +17,6 @@ import os
 import re
 from pathlib import Path
 
-# ---------- paths & constants ----------
-
 
 def _resolve_version() -> str:
     """Resolve the version from installed package metadata (single source of
@@ -169,7 +167,6 @@ from .recipe import (
     topo_sort,
 )
 
-# ---------- re-exports ----------
 # Import submodules in dependency order so PROFILES gets populated before
 # anything tries to use it (profiles.py imports scanner.PROFILES and fills it).
 from .registry import DeviceRow, Registry, _port_in_use

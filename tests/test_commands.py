@@ -747,9 +747,6 @@ def test_declared_target_types_lists_declared(tmp_path):
     assert sorted(sd.commands._declared_target_types(tmp_path)) == ["emulator", "simulator"]
 
 
-# ---------- deinit ----------
-
-
 def test_deinit_round_trips_init(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     sd.cmd_init(tmp_path, preset="minimal")

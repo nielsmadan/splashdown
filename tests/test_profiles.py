@@ -220,9 +220,6 @@ def test_android_native_run_rejects_shell_injection(tmp_path, monkeypatch, field
         sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
 
 
-# ---------- custom run command ([project] run / [project.run]) ----------
-
-
 def _recipe(tmp_path, project):
     return sd.Recipe({"project": project}, tmp_path / "splashdown.toml")
 
@@ -331,9 +328,6 @@ def test_run_custom_command_none_when_no_run(tmp_path, monkeypatch):
     assert sd.profiles.run_custom_command(tmp_path, _recipe(tmp_path, {}), {"kind": "ios"}) is None
 
 
-# ---------- astro ----------
-
-
 def _astro_check(path):
     app = sd.AppInventory(name="web", path=path, profile="astro")
     return next(c for c in sd.PROFILES["astro"].wiring_checks(app) if c.id == "astro-config-port")
@@ -418,9 +412,6 @@ def test_astro_autofix_leaves_unrecognized_shape_alone(tmp_path):
 def test_astro_check_passes_on_wired_configs(tmp_path, body):
     (tmp_path / "astro.config.mjs").write_text(body)
     assert _astro_check(tmp_path).detect(tmp_path)[0] == "ok"
-
-
-# ---------- docker-compose ----------
 
 
 def test_compose_resources_only_when_a_compose_file_exists(tmp_path):

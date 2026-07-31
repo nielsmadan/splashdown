@@ -9,7 +9,6 @@ from pathlib import Path
 from . import ENV_FILE_NAME
 from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive
 
-# ---------- loaders ----------
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
 # sentinel-wrapped blocks so wire is idempotent and visually obvious. mise and
@@ -63,8 +62,6 @@ class MiseLoader(Loader):
         return (cwd / "mise.toml").exists() or (cwd / ".mise.toml").exists()
 
     def wire(self, cwd: Path) -> bool:
-        # Reuses the existing helper that already handles new-file creation,
-        # existing [env] table append, and idempotent re-runs.
         return _ensure_mise_file_directive(cwd)
 
     def approve(self, cwd: Path, *, announce: bool = False) -> bool:
@@ -166,7 +163,6 @@ class DevboxLoader(Loader):
         hooks = shell.setdefault("init_hook", [])
         if isinstance(hooks, str):
             hooks = [hooks]
-        # Replace any existing splashdown-managed entry; else append.
         new_hooks = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
         new_hooks.append(_DEVBOX_HOOK_CMD)
         if new_hooks == hooks:

@@ -10,8 +10,6 @@ from typing import Any
 from .loaders import LOADERS
 from .recipe import _TEMPLATE_NAMES, template_refs
 
-# ---------- scanner & inventory ----------
-
 
 @dataclass
 class AppInventory:

@@ -787,9 +787,6 @@ def test_scanner_loader_precedence_mise_over_direnv(tmp_path):
     assert inv.loader == "mise"
 
 
-# ---------- hook + gitignore reversal (deinit) ----------
-
-
 def test_revert_gitignore_removes_only_our_lines(tmp_path):
     (tmp_path / ".gitignore").write_text(
         "node_modules\nsplashdown.env\nsplashdown.local.toml\n*.log\n"

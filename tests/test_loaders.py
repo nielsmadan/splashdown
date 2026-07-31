@@ -119,9 +119,6 @@ def test_react_native_profile_inherits_existing_wiring_checks(tmp_path):
     assert "rn-xcode-env" in ids
 
 
-# ---------- loader un-wiring (deinit) ----------
-
-
 def test_mise_loader_unwire_deletes_solely_managed_file(tmp_path):
     sd.LOADERS["mise"].wire(tmp_path)
     assert (tmp_path / "mise.toml").exists()
@@ -191,9 +188,6 @@ def test_devbox_loader_unwire_deletes_solely_managed_file(tmp_path):
     assert not (tmp_path / "devbox.json").exists()
 
 
-# ---------- wire() create-vs-edit signal ----------
-
-
 def test_mise_loader_wire_returns_true_on_create_false_on_rerun(tmp_path):
     assert sd.LOADERS["mise"].wire(tmp_path) is True  # created from nothing
     assert (tmp_path / "mise.toml").exists()
@@ -224,9 +218,6 @@ def test_devbox_and_none_loader_wire_return_false(tmp_path):
     (tmp_path / "devbox.json").write_text("{}")
     assert sd.LOADERS["devbox"].wire(tmp_path) is False
     assert sd.LOADERS["none"].wire(tmp_path) is False
-
-
-# ---------- approve() trust/allow ----------
 
 
 def test_mise_loader_approve_invokes_mise_trust_with_config_path(tmp_path, monkeypatch):
@@ -294,9 +285,6 @@ def test_approve_silent_when_not_announced(tmp_path, monkeypatch, capsys):
     _record_run_ok(monkeypatch, ok=True)
     sd.LOADERS["mise"].approve(tmp_path)  # announce defaults False
     assert capsys.readouterr().err == ""
-
-
-# ---------- _run_ok: every failure must be swallowed ----------
 
 
 def test_run_ok_true_on_zero_exit(tmp_path, monkeypatch):

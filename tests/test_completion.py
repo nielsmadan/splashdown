@@ -225,9 +225,6 @@ def test_install_is_noop_without_argcomplete_env(monkeypatch):
     assert install(sd._build_parser()) is None
 
 
-# --- `splash completion` subcommand (shell registration shellcode) ---
-
-
 def test_completion_zsh_outputs_native_zsh(capsys):
     rc = sd.cmd_completion("zsh")
     out = capsys.readouterr().out

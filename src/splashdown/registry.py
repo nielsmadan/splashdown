@@ -10,8 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-# ---------- registry ----------
-
 
 class DeviceRow(NamedTuple):
     checkout: str
@@ -88,8 +86,6 @@ class Registry:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
-
-    # --- ports ---
 
     def _read_ports(self) -> list[tuple[int, str, str]]:
         out: list[tuple[int, str, str]] = []
@@ -195,8 +191,6 @@ class Registry:
             self._write_devices(kept_dev)
         return removed
 
-    # --- key/value (uuids, template results, set values) ---
-
     def _read_kv(self) -> list[tuple[str, str, str]]:
         out: list[tuple[str, str, str]] = []
         for line in self.kv_file.read_text().splitlines():
@@ -243,8 +237,6 @@ class Registry:
             if path == abspath:
                 out[key] = value
         return out
-
-    # --- devices (sim / AVD instances we created) ---
 
     def _read_devices(self) -> list[DeviceRow]:
         out: list[DeviceRow] = []

@@ -29,8 +29,6 @@ from .recipe import load_settings
 from .registry import Registry
 from .wiring import cmd_doctor
 
-# ---------- CLI ----------
-
 
 class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
     """Hide the auto-generated subcommand list; the epilog carries the tiered overview."""

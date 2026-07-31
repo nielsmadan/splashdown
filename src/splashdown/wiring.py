@@ -12,8 +12,6 @@ from .devices import DeviceError, detect_framework, resolve_app_dir
 from .hooks import _detect_hook_manager, _ensure_post_checkout_hook, _lefthook_config_path
 from .recipe import Recipe
 
-# ---------- framework wiring (doctor) ----------
-#
 # The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
 # per-framework spec shipped with the tool. Each WiringCheck names
 # a small fact about the project (e.g. "metro.config.js consumes RCT_METRO_PORT")
@@ -129,9 +127,6 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
                 print(f"        {line}", file=sys.stderr)
         bad += 1
     return 0 if bad == 0 else 1
-
-
-# ---------- React Native wiring checks ----------
 
 
 def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
@@ -422,7 +417,6 @@ def _rn_xcode_autofix(cwd: Path) -> None:
     # Strip any prior sentinel block (only reachable if sentinels existed but no
     # splashdown.env reference — defensive).
     text = _XCODE_BLOCK_RE.sub("", text)
-    # Append our block at the end. Ensure exactly one separating newline.
     text = text.rstrip() + ("\n\n" if text.strip() else "")
     text += _XCODE_BLOCK
     path.write_text(text)

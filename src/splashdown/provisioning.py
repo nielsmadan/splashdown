@@ -18,8 +18,6 @@ from .recipe import (
 )
 from .registry import Registry
 
-# ---------- provisioning ----------
-
 # A port resource's `range` is a two-element [lo, hi] list.
 _PORT_RANGE_LEN = 2
 
@@ -83,9 +81,6 @@ def provision(
             raise ValueError(f"`{name}` has unknown type `{rtype}`")
         resolved[name] = value
     return resolved
-
-
-# ---------- writers ----------
 
 
 def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[tuple[str, bool]]:
@@ -242,9 +237,6 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
         elif _write_if_changed(target, remaining):
             changed.append((relpath, "cleaned"))
     return changed
-
-
-# ---------- lifecycle (setup hooks) ----------
 
 
 def run_setup(cwd: Path, recipe: Recipe, preset: str | None, env: dict[str, str]) -> list[str]:

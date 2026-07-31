@@ -22,8 +22,6 @@ from . import (
 )
 from .errors import DeviceError
 
-# ---------- template engine ----------
-
 _TEMPLATE_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
 
 
@@ -211,8 +209,6 @@ def template_refs(tpl: str) -> set[str]:
         refs.update(node.id for node in ast.walk(tree) if isinstance(node, ast.Name))
     return refs
 
-
-# ---------- recipe ----------
 
 _WORKSPACES = ("single", "pnpm", "yarn", "npm", "cargo", "gradle")
 _RECIPE_SECTIONS = {"project", "apps", "resources", "targets", "setup"}
@@ -1093,9 +1089,6 @@ def topo_sort(recipe: Recipe) -> list[str]:
     for n in names:
         visit(n)
     return out
-
-
-# ---------- writers ----------
 
 
 _ENV_SAFE_RE = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")

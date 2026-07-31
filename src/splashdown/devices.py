@@ -36,8 +36,6 @@ from .recipe import (
 )
 from .registry import DeviceRow, Registry
 
-# ---------- devices: iOS sims + Android emulators ----------
-
 
 def _default_sim_name(cwd: Path, variant: str) -> str:
     """Sim instance name: '<parent>/<basename>/<variant>'. The path component
@@ -76,9 +74,6 @@ def _resolve_device_name(
     if dtype == "emulator":
         return _sanitize_avd_name(name)
     return name
-
-
-# --- iOS simulator ---
 
 
 def _xcrun_json(args: list[str]) -> Any:
@@ -221,9 +216,6 @@ def ios_destroy(udid: str) -> None:
         raise DeviceError(
             f"simctl delete failed for {udid}: {proc.stderr.strip() or proc.returncode}"
         )
-
-
-# --- Android emulator ---
 
 
 def _android_home() -> Path:
@@ -400,7 +392,6 @@ def android_destroy(avd_name: str) -> None:
         )
 
 
-# --- physical devices (discovered, not created) ---
 # Physical hardware is the odd one out: splashdown can't create, boot, or destroy
 # it. The only operation that makes sense is *discovery* — list what's plugged in
 # and hand its native identifier (iOS udid / adb serial) to the framework's
@@ -557,9 +548,6 @@ def physical_status(spec: dict[str, Any]) -> str:
     return "connected"
 
 
-# --- reconciliation (auto-upgrade on latest, pin on explicit) ---
-
-
 def _latest_os_for(dtype: str, cache: dict[str, str] | None) -> str:
     """Latest iOS runtime version / Android system image. Each shells out, so a
     shared `cache` (keyed by platform) resolves it at most once per command run."""
@@ -657,9 +645,6 @@ def ensure_fresh_sim(
         return {"kind": "android", "serial": "", "name": sim_name}
 
     raise DeviceError(f"unknown target type `{dtype}`")
-
-
-# --- generic device dispatch ---
 
 
 def device_status(dtype: str, resolved_name: str) -> str:

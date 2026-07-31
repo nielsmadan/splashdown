@@ -84,8 +84,6 @@ from .wiring import (
     cmd_doctor,
 )
 
-# ---------- status helpers ----------
-
 
 def _gather_resource_entries(
     co_path: Path, *, co_exists: bool, resources: dict[str, str]
@@ -436,9 +434,6 @@ def _print_check_summary(summary: dict[str, int]) -> None:
         )
 
 
-# ---------- command functions ----------
-
-
 def cmd_status(
     cwd: Path,
     registry: Registry,
@@ -500,8 +495,6 @@ def cmd_status(
     if check:
         _print_check_summary(summary)
     elif not show_all:
-        # Default-mode footer: lightweight defunct-row count.
-
         stale = sum(
             1
             for r in registry._read_ports()  # noqa: SLF001
@@ -1138,7 +1131,6 @@ def cmd_init(
         print(f"  {rel}\t→ {app.profile}", file=sys.stderr)
     print(f"  shell loader\t→ {inv.loader}", file=sys.stderr)
 
-    # Collect per-app resources, then merge with collision-mangling.
     res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
     for app in inv.apps:
         if app.profile == "unknown":
@@ -1264,9 +1256,9 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
         recipe = None
         loader_name = None
 
-    # 1. Destroy this checkout's sims/AVDs. Iterate registry rows (not recipe
-    #    variants) so orphaned instances get cleaned up too, destroying each by
-    #    the identifier its row stores (UDID for sims, AVD name for emulators).
+    # Iterate registry rows (not recipe variants) so orphaned instances get cleaned
+    # up too, destroying each by the identifier its row stores (UDID for sims, AVD
+    # name for emulators).
     for row in registry.devices_for(abspath):
         if row.dtype == "device":
             continue  # hardware splashdown doesn't own
@@ -1276,38 +1268,34 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
         except DeviceError as e:
             print(f"warning: could not destroy {row.dtype}.{row.variant}: {e}", file=sys.stderr)
 
-    # 2. Drop every registry row for this checkout (ports/kv/devices).
     removed = registry.release(abspath)
     if removed:
         print(f"released {removed} registry entr{'y' if removed == 1 else 'ies'}", file=sys.stderr)
 
-    # 3. Delete the generated env file (splashdown owns it wholesale).
+    # splashdown owns splashdown.env wholesale, so it goes unconditionally.
     env_path = cwd / ENV_FILE_NAME
     if env_path.exists():
         env_path.unlink()
         print(f"removed {ENV_FILE_NAME}", file=sys.stderr)
 
-    # 3b. Strip splashdown's keys from per-resource `envfile=`/`envrc` writer
-    #     destinations (e.g. per-app .env files in a monorepo). Unlike
-    #     splashdown.env, these are user-owned — we remove only our keys and delete
-    #     the file only if nothing else remains.
+    # Per-resource `envfile=`/`envrc` writer destinations (e.g. per-app .env files
+    # in a monorepo) are user-owned, unlike splashdown.env — remove only our keys
+    # and delete the file only if nothing else remains.
     if recipe is not None:
         for relpath, action in clear_writer_destinations(cwd, recipe):
             print(f"{action} {relpath}", file=sys.stderr)
 
-    # 4. Un-wire the loader. `.get` guards an absent/unknown loader name; the
-    #    "none" loader resolves to a no-op unwire.
+    # `.get` guards an absent/unknown loader name; the "none" loader resolves to a
+    # no-op unwire.
     loader = LOADERS.get(loader_name) if loader_name else None
     if loader is not None:
         loader.unwire(cwd)
 
-    # 5. Remove the git post-checkout hook.
     _remove_post_checkout_hook(cwd)
 
-    # 6. Revert the .gitignore additions.
     _revert_gitignore(cwd)
 
-    # 7. Remove splashdown.local.toml — only when it's still the untouched skeleton.
+    # Only remove splashdown.local.toml when it's still the untouched skeleton.
     local_path = cwd / LOCAL_NAME
     if local_path.exists():
         if local_path.read_text() == LOCAL_SKELETON:
@@ -1316,7 +1304,6 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
         else:
             print(f"note: {LOCAL_NAME} was modified — left in place", file=sys.stderr)
 
-    # 8. Remove the recipe.
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists():
         recipe_path.unlink()

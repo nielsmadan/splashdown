@@ -15,7 +15,6 @@ from .recipe import Recipe
 from .scanner import PROFILES, AppInventory
 from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
 
-# ---------- scaffold registry ----------
 # Named scaffolds for `splash init NAME`. Framework detection, wiring checks,
 # and `splash run` logic live on `Profile` subclasses (below).
 
@@ -157,7 +156,6 @@ def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
 
 
-# ---------- custom run command ----------
 # `[project] run` (or a `[project.run]` table) overrides the framework's built-in
 # launcher — the escape hatch for a specific package manager (yarn/pnpm), a
 # monorepo subdir, or any non-standard invocation. Mobile-only (that's the only
@@ -398,7 +396,6 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     )
 
 
-# ---------- profiles ----------
 # A Profile encodes how splashdown integrates with one framework. The Scanner
 # matches each app to a Profile by filesystem detection; Profiles contribute
 # resources (which end up in [resources.*]) and wiring checks (which the doctor
@@ -457,7 +454,6 @@ class Profile:
         raise DeviceError(f"don't know how to run framework `{self.name}`")
 
 
-# ---------- docker-compose (project-level, not a Profile) ----------
 # A compose file is infrastructure spanning apps, not an app, so it is not matched
 # per-directory by the scanner. Its resources are emitted once for the repo and its
 # check runs alongside whatever framework doctor resolved.
