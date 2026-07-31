@@ -59,6 +59,12 @@ The autofix call is wrapped so one check failing reports rather than crashing th
 run (`src/splashdown/wiring.py:93`). Exit code is 0 only when nothing is left in the
 `problem` state.
 
+`cmd_doctor` resolves the app directory as well as the framework
+(`_resolve_doctor_target`, `src/splashdown/wiring.py:49`). When the recipe places the
+app in a subdirectory, checks run against that directory — running them at the
+workspace root reports every check "not applicable" and exits 0 having inspected
+nothing.
+
 The individual checks:
 
 - **`rn-hook` / `hook`** (`src/splashdown/wiring.py:118`, registered at

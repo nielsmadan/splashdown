@@ -905,11 +905,46 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
     for name, profile in PROFILES.items():
         if profile.detect(cwd):
             return name
+    # Root detection misses workspaces whose app lives in a subdirectory, but the
+    # recipe already records each app's resolved profile. Key by app name, not by
+    # profile — two apps sharing a profile are still two apps.
+    declared = {
+        name: str(spec["profile"])
+        for name, spec in recipe.apps.items()
+        if spec.get("profile") != "unknown"
+    }
+    if len(declared) == 1:
+        return next(iter(declared.values()))
+    if declared:
+        listed = ", ".join(f"`{n}` → `{p}`" for n, p in sorted(declared.items()))
+        raise DeviceError(
+            f"ambiguous project framework; apps declare {listed} — "
+            f"set `[project] framework` in {RECIPE_NAME}"
+        )
     raise DeviceError(
         "could not detect project framework; set `[project] framework = "
         + "|".join(f'"{n}"' for n in PROFILES)
-        + "` in splashdown.toml"
+        + f"` in {RECIPE_NAME}"
     )
+
+
+def resolve_app_dir(cwd: Path, recipe: Recipe, framework: str) -> Path:
+    """Where the app using `framework` lives. Wiring checks patch files inside the
+    app directory, so a workspace whose app sits in a subdirectory must not be
+    checked (or run) at its root."""
+    from .scanner import PROFILES  # noqa: PLC0415
+
+    profile = PROFILES.get(framework)
+    if profile is not None and profile.detect(cwd):
+        return cwd
+    matches = [
+        str(spec["path"]) for spec in recipe.apps.values() if spec.get("profile") == framework
+    ]
+    if len(matches) == 1:
+        candidate = cwd / matches[0]
+        if candidate.is_dir():
+            return candidate
+    return cwd
 
 
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
@@ -926,4 +961,4 @@ def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     fw = detect_framework(cwd, recipe)
     if fw not in PROFILES:
         raise DeviceError(f"don't know how to run framework `{fw}`")
-    return int(PROFILES[fw].run(cwd, recipe, info))
+    return int(PROFILES[fw].run(resolve_app_dir(cwd, recipe, fw), recipe, info))

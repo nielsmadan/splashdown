@@ -1518,6 +1518,67 @@ def test_detect_framework_auto_sentinel_loads_and_autodetects(tmp_path):
     assert sd.detect_framework(tmp_path, recipe) == "flutter"
 
 
+def test_detect_framework_falls_back_to_single_app_profile(tmp_path):
+    # Root detection finds nothing (the app lives in a subdirectory), but the
+    # recipe already records the resolved profile.
+    recipe = sd.Recipe.parse(
+        '[apps.api]\npath = "apps/api"\nprofile = "node-backend"\nresources = []\n',
+        tmp_path / "splashdown.toml",
+    )
+    assert sd.detect_framework(tmp_path, recipe) == "node-backend"
+
+
+def test_detect_framework_ignores_unknown_app_profiles(tmp_path):
+    recipe = sd.Recipe.parse(
+        '[apps.api]\npath = "apps/api"\nprofile = "node-backend"\nresources = []\n'
+        '[apps.shared]\npath = "packages/shared"\nprofile = "unknown"\nresources = []\n',
+        tmp_path / "splashdown.toml",
+    )
+    assert sd.detect_framework(tmp_path, recipe) == "node-backend"
+
+
+def test_detect_framework_multi_app_raises_ambiguous(tmp_path):
+    recipe = sd.Recipe.parse(
+        '[apps.api]\npath = "apps/api"\nprofile = "node-backend"\nresources = []\n'
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n',
+        tmp_path / "splashdown.toml",
+    )
+    with pytest.raises(sd.DeviceError, match="ambiguous") as e:
+        sd.detect_framework(tmp_path, recipe)
+    # The remediation must not name a flag that only `doctor` accepts.
+    assert "--framework=NAME" not in str(e.value)
+
+
+def test_detect_framework_two_apps_same_profile_still_ambiguous(tmp_path):
+    # Deduping by profile collapsed these into one "unambiguous" app.
+    recipe = sd.Recipe.parse(
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n'
+        '[apps.admin]\npath = "apps/admin"\nprofile = "vite"\nresources = []\n',
+        tmp_path / "splashdown.toml",
+    )
+    with pytest.raises(sd.DeviceError, match="ambiguous"):
+        sd.detect_framework(tmp_path, recipe)
+
+
+def test_resolve_app_dir_points_at_declared_subdirectory(tmp_path):
+    (tmp_path / "apps" / "web").mkdir(parents=True)
+    recipe = sd.Recipe.parse(
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n',
+        tmp_path / "splashdown.toml",
+    )
+    assert sd.resolve_app_dir(tmp_path, recipe, "vite") == tmp_path / "apps" / "web"
+
+
+def test_resolve_app_dir_prefers_cwd_when_root_itself_matches(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "apps" / "web").mkdir(parents=True)
+    recipe = sd.Recipe.parse(
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n',
+        tmp_path / "splashdown.toml",
+    )
+    assert sd.resolve_app_dir(tmp_path, recipe, "vite") == tmp_path
+
+
 def test_detect_framework_unknown_raises(tmp_path):
     with pytest.raises(sd.DeviceError):
         sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path))

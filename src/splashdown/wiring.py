@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import RECIPE_NAME
-from .devices import DeviceError, detect_framework
+from .devices import DeviceError, detect_framework, resolve_app_dir
 from .hooks import _detect_hook_manager, _ensure_post_checkout_hook, _lefthook_config_path
 from .recipe import Recipe
 
@@ -40,14 +40,21 @@ _RN_WIRING_CHECKS: list[WiringCheck] = []
 
 def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
     """Pick the framework for doctor to check. Returns None if undetectable."""
-    if override:
-        return override
-    recipe_path = cwd / RECIPE_NAME
-    recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
     try:
-        return detect_framework(cwd, recipe)
+        return _resolve_doctor_target(cwd, override)[0]
     except DeviceError:
         return None
+
+
+def _resolve_doctor_target(cwd: Path, override: str | None) -> tuple[str, Path]:
+    """The framework to check and the directory to check it in. Raises DeviceError
+    with a specific reason when nothing resolves."""
+    if override:
+        return (override, cwd)
+    recipe_path = cwd / RECIPE_NAME
+    recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
+    framework = detect_framework(cwd, recipe)
+    return (framework, resolve_app_dir(cwd, recipe, framework))
 
 
 def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]:
@@ -66,48 +73,48 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
     """Run framework-aware wiring checks. With fix=True, apply safe autofixes."""
     import sys  # noqa: PLC0415
 
-    framework = _resolve_doctor_framework(cwd, framework_override)
-    if framework is None:
-        print(
-            "doctor: could not detect framework. Pass --framework=NAME or "
-            f"set `[project] framework = ...` in {RECIPE_NAME}.",
-            file=sys.stderr,
-        )
+    try:
+        framework, app_dir = _resolve_doctor_target(cwd, framework_override)
+    except DeviceError as e:
+        print(f"doctor: {e}", file=sys.stderr)
+        print("  pass --framework=NAME to check a specific framework.", file=sys.stderr)
         return 1
-    checks = _wiring_checks_for_framework(framework, cwd)
+    if app_dir != cwd:
+        print(f"doctor: checking {app_dir.relative_to(cwd)} (`{framework}`)", file=sys.stderr)
+    checks = _wiring_checks_for_framework(framework, app_dir)
     if not checks:
         print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
         return 0
 
     bad = 0
     for check in checks:
-        if not check.applies(cwd):
+        if not check.applies(app_dir):
             print(f"  -  {check.id}: not applicable", file=sys.stderr)
             continue
-        status, detail = check.detect(cwd)
+        status, detail = check.detect(app_dir)
         if status == "ok":
             print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
             continue
         if fix and check.autofix is not None:
             try:
-                check.autofix(cwd)
+                check.autofix(app_dir)
             except Exception as e:  # noqa: BLE001 - report rather than crash whole run
                 print(f"  ✗  {check.id}: autofix failed: {e}", file=sys.stderr)
                 bad += 1
                 continue
-            status_after, detail_after = check.detect(cwd)
+            status_after, detail_after = check.detect(app_dir)
             if status_after == "ok":
                 print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
                 continue
             print(f"  ✗  {check.id}: still problem after autofix: {detail_after}", file=sys.stderr)
             if check.manual_instructions is not None:
-                for line in check.manual_instructions(cwd).splitlines():
+                for line in check.manual_instructions(app_dir).splitlines():
                     print(f"        {line}", file=sys.stderr)
             bad += 1
             continue
         print(f"  ✗  {check.id}: {detail}", file=sys.stderr)
         if check.manual_instructions is not None:
-            for line in check.manual_instructions(cwd).splitlines():
+            for line in check.manual_instructions(app_dir).splitlines():
                 print(f"        {line}", file=sys.stderr)
         bad += 1
     return 0 if bad == 0 else 1

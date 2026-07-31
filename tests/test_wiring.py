@@ -138,6 +138,39 @@ def test_doctor_unknown_framework_no_checks_returns_0(tmp_path, capsys):
     assert "no wiring checks" in err.lower()
 
 
+def test_doctor_checks_app_subdirectory_from_recipe(tmp_path, capsys):
+    # The app lives in a subdir, so root detection misses it. Doctor must check
+    # the declared app path, not silently pass having inspected nothing.
+    app = tmp_path / "apps" / "web"
+    app.mkdir(parents=True)
+    (app / "vite.config.ts").write_text("""\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  return { server: { port: Number(env.WEB_DEV_PORT ?? 5173) } };
+});
+""")
+    (tmp_path / "splashdown.toml").write_text(
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n'
+    )
+    assert sd.cmd_doctor(tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "not applicable" not in err
+    assert sd.cmd_doctor(tmp_path, fix=True) == 0
+    assert "process.env.WEB_DEV_PORT" in (app / "vite.config.ts").read_text()
+
+
+def test_doctor_ambiguous_multi_app_reports_candidates(tmp_path, capsys):
+    (tmp_path / "splashdown.toml").write_text(
+        '[apps.api]\npath = "apps/api"\nprofile = "node-backend"\nresources = []\n'
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n'
+    )
+    assert sd.cmd_doctor(tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "ambiguous" in err
+    assert "api" in err and "web" in err
+
+
 def test_doctor_rejects_unknown_framework_from_recipe(tmp_path):
     (tmp_path / "splashdown.toml").write_text('[project]\nframework = "nonesuch"\n')
     with pytest.raises(ValueError, match=r"\[project\.framework\]"):
@@ -636,6 +669,8 @@ def test_scanner_pnpm_monorepo_enumerates_apps(tmp_path):
 
 
 def test_scanner_loader_defaults_to_none(tmp_path):
+    # The autouse _no_loader_on_path fixture makes this independent of what the
+    # dev/CI machine happens to have installed.
     inv = sd.Scanner().scan(tmp_path)
     assert inv.loader == "none"
 

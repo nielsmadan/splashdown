@@ -151,10 +151,21 @@ The key for the native id is `udid` on iOS and `serial` on Android — chosen pe
 
 ### Framework launch
 
-`detect_framework` (`devices.py:758`) honors a `[project] framework` override, else probes each
-registered `Profile.detect` in `PROFILES` order (flutter / react-native / expo / xcodebuild /
-gradle). `device_run` (`devices.py:774`) resolves the framework and delegates to
-`PROFILES[fw].run(cwd, recipe, info)` — the per-profile launcher consumes the `info` dict above
+`detect_framework` (`devices.py:899`) honors a `[project] framework` override (`"auto"` means the
+same as omitting it), else probes each registered `Profile.detect` in `PROFILES` order (flutter /
+react-native / expo / xcodebuild / gradle). Failing both, it falls back to the recipe's declared
+app profiles: exactly one app with a profile other than `"unknown"` wins, and two or more raise
+`DeviceError` naming each app and its profile. The fallback keys on app *name*, not the set of
+profiles — two apps sharing a profile are still two apps, and collapsing them would resolve an
+ambiguous workspace as if it were unambiguous.
+
+`resolve_app_dir` (`devices.py:931`) then answers *where* that framework lives: `cwd` when the
+root itself matches, else the single declared app's `path`. Both `device_run` and `cmd_doctor`
+resolve it, because wiring checks patch files inside the app directory and launchers shell out
+there — running either at the workspace root silently does nothing useful.
+
+`device_run` (`devices.py:950`) resolves the framework and delegates to
+`PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launcher consumes the `info` dict above
 (`flutter run -d <udid/serial>`, `xcodebuild`/`simctl`, `gradle`, etc.). The generic
 `device_status` / `device_shutdown` / `device_destroy` dispatchers (`devices.py:611`, `:624`,
 `:633`) drive the `splash start/stop/destroy` subcommands by `dtype`.
@@ -168,7 +179,7 @@ gradle). `device_run` (`devices.py:774`) resolves the framework and delegates to
 - `physical_discover` — `devices.py:457` — toolchain-tolerant discovery.
 - `_xcrun_json` / `_devicectl_json` — `devices.py:78`, `:386` — subprocess JSON wrappers.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py:611`, `:624`, `:633`.
-- `detect_framework` / `device_run` — `devices.py:758`, `:774`.
+- `detect_framework` / `resolve_app_dir` / `device_run` — `devices.py:899`, `:931`, `:950`.
 - `target_add` / `target_remove` — `devices.py:710`, `:739` — local-file variant writers.
 
 ## Gotchas

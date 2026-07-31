@@ -95,9 +95,12 @@ identically-prefixed variant of a declared type. With the setting off, both slot
 (today's behavior). `load_settings` (`src/splashdown/recipe.py`) resolves the flag from the global
 config + local file.
 
-**Framework launcher (UC2 build/launch).** `detect_framework` (`src/splashdown/devices.py:758`)
-picks the launcher from filesystem signals, overridable via `[project] framework`. `device_run`
-(`src/splashdown/devices.py:774`) dispatches to that profile's `run`. Launchers:
+**Framework launcher (UC2 build/launch).** `detect_framework` (`src/splashdown/devices.py:899`)
+picks the launcher from filesystem signals, overridable via `[project] framework`, and falls back
+to the recipe's declared app profiles when the repo root matches nothing (erroring when more than
+one app is declared). `device_run` (`src/splashdown/devices.py:950`) dispatches to that profile's
+`run`, rooted at `resolve_app_dir` (`:931`) so a monorepo app in a subdirectory builds in its own
+directory rather than the workspace root. Launchers:
 flutter (`flutter run -d <id>`), react-native, expo, ios-native (`xcodebuild build` then `xcrun
 simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_native_run`,
 `src/splashdown/profiles.py:111`), and android-native (`./gradlew :module:installVariant` then

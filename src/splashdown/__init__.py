@@ -122,6 +122,7 @@ from .devices import (
     ios_shutdown,
     physical_discover,
     physical_status,
+    resolve_app_dir,
     target_add,
     target_remove,
 )
