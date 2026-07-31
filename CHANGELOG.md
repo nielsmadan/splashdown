@@ -4,6 +4,21 @@ All notable user-facing changes to splashdown. While the project is on `0.x` it 
 [Semantic Versioning](https://semver.org) loosely: breaking changes may land in a minor
 release and are called out under **Breaking Changes**.
 
+## [0.15.0] - 2026-07-31
+
+### Features
+
+- Report env-only frameworks as wired instead of unchecked
+- Wire an installed loader when the repo has no config
+- Add astro and docker-compose templates
+
+### Bug Fixes
+
+- Accept auto as an explicit framework value
+- Keep the vite autofix from deleting a process.env fallback
+- Check and launch the app in its declared directory
+- Exclude macOS-only Xcode projects from ios-native detection
+
 ## [0.14.0] - 2026-07-30
 
 ### Features
@@ -151,6 +166,7 @@ release and are called out under **Breaking Changes**.
 
 - --cwd/--format no longer clobbered when set before a subcommand
 
+[0.15.0]: https://github.com/nielsmadan/splashdown/compare/v0.14.0..v0.15.0
 [0.14.0]: https://github.com/nielsmadan/splashdown/compare/v0.13.0..v0.14.0
 [0.13.0]: https://github.com/nielsmadan/splashdown/compare/v0.12.0..v0.13.0
 [0.12.0]: https://github.com/nielsmadan/splashdown/compare/v0.11.0..v0.12.0
