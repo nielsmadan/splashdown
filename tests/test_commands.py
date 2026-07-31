@@ -575,6 +575,108 @@ export default defineConfig(({ mode }) => {
     assert status == "ok"
 
 
+def test_vite_wiring_check_preserves_process_env_fallback_chain(tmp_path):
+    # `process.env.X || env.X` is a deliberate shell-then-dotenv fallback. The
+    # autofix used to rewrite the second term into a duplicate of the first,
+    # silently deleting the dotenv layer.
+    original = """\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  const webPort = Number(process.env.WEB_PORT || env.WEB_PORT || 5173);
+  return { server: { port: webPort } };
+});
+"""
+    (tmp_path / "vite.config.ts").write_text(original)
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(
+        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+    )
+    status, _ = check.detect(tmp_path)
+    assert status == "ok"
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_text() == original
+
+
+def test_vite_wiring_check_still_fixes_uncovered_env_access(tmp_path):
+    # One name has a process.env fallback, the other doesn't — only the bare one
+    # gets rewritten.
+    (tmp_path / "vite.config.ts").write_text("""\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  const webPort = Number(process.env.WEB_PORT || env.WEB_PORT || 5173);
+  const apiPort = Number(env.API_DEV_PORT ?? 8080);
+  return { server: { port: webPort, proxy: { "/api": `http://localhost:${apiPort}` } } };
+});
+""")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(
+        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+    check.autofix(tmp_path)
+    text = (tmp_path / "vite.config.ts").read_text()
+    assert "process.env.WEB_PORT || env.WEB_PORT" in text
+    assert "process.env.API_DEV_PORT ?? 8080" in text
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_vite_port_wired_check_flags_config_that_never_names_the_port(tmp_path):
+    # No server.port wiring at all — the allocated port goes unused, so reporting
+    # "ok" would prove absence rather than presence.
+    (tmp_path / "vite.config.ts").write_text(
+        'import { defineConfig } from "vite";\nexport default defineConfig({ plugins: [] });\n'
+    )
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-port-wired")
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "WEB_DEV_PORT" in detail
+    # Report-only: rewriting an arbitrary config to add server.port isn't safe.
+    assert check.autofix is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'export default { server: { port: Number(process.env["WEB_DEV_PORT"]) || 5173 } };\n',
+        "const { WEB_DEV_PORT } = process.env;\nexport default { server: { port: WEB_DEV_PORT } };\n",
+        "export default { server: { port: Number(process.env.WEB_DEV_PORT) || 5173 } };\n",
+    ],
+)
+def test_vite_checks_pass_on_correctly_wired_configs(tmp_path, body):
+    # Bracket access and destructuring are correct wiring; flagging them made
+    # `doctor --fix` fail permanently on a working project.
+    (tmp_path / "vite.config.ts").write_text(body)
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    for check in sd.PROFILES["vite"].wiring_checks(app):
+        assert check.detect(tmp_path)[0] == "ok", check.id
+    assert sd.cmd_doctor(tmp_path, fix=True, framework_override="vite") == 0
+
+
+def test_vite_autofix_rewrites_every_uncovered_match(tmp_path):
+    # Two bare `env.X` reads: the substitution walks matches in reverse so the
+    # earlier match's offsets stay valid after the later one is spliced.
+    (tmp_path / "vite.config.ts").write_text("""\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  const a = Number(env.WEB_DEV_PORT ?? 1);
+  const b = Number(env.API_DEV_PORT ?? 2);
+  return { server: { port: a, proxy: { "/api": `http://localhost:${b}` } } };
+});
+""")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(
+        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+    )
+    check.autofix(tmp_path)
+    text = (tmp_path / "vite.config.ts").read_text()
+    assert "const a = Number(process.env.WEB_DEV_PORT ?? 1);" in text
+    assert "const b = Number(process.env.API_DEV_PORT ?? 2);" in text
+
+
 def test_vite_wiring_check_idempotent(tmp_path):
     (tmp_path / "vite.config.ts").write_text(
         "export default { server: { port: Number(process.env.WEB_DEV_PORT ?? 5173) } };\n"

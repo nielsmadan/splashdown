@@ -86,13 +86,23 @@ The individual checks:
   (find-by-pair, replace) and mark tool-managed vs hand-edited lines. The literal-export
   regex is intentionally narrow (`src/splashdown/wiring.py:377`) so hand-written
   conditional wirings are not mangled.
-- **`vite-config-process-env`** (`src/splashdown/profiles.py:321`, detect/autofix at
-  `:332`/`:342`) — rewrites the `loadEnv` idiom `env.X` to `process.env.X` in
+- **`vite-config-process-env`** (`src/splashdown/profiles.py:532`, detect/autofix at
+  `:543`/`:553`) — rewrites the `loadEnv` idiom `env.X` to `process.env.X` in
   `vite.config.{ts,js,mjs}` so values loaded into the shell by mise/direnv/devbox reach
-  Vite. The matcher (`src/splashdown/profiles.py:289`) skips already-fixed
-  `process.env.X`.
-- **`springboot-application-properties`** (`src/splashdown/profiles.py:477`, detect at
-  `:491`) — checks that `application.properties`/`application.yml` uses the
+  Vite. The matcher (`src/splashdown/profiles.py:465`) skips already-fixed
+  `process.env.X`, and `_vite_unfixed_env_matches` (`:468`) additionally skips any
+  `env.X` whose name is already read as `process.env.X` somewhere in the file —
+  `process.env.X || env.X` is a deliberate shell-then-dotenv fallback chain, and
+  rewriting its second term would silently delete the dotenv layer.
+- **`vite-port-wired`** (`src/splashdown/profiles.py:506`) — the companion assertion:
+  the config must name the allocated port var (`WEB_DEV_PORT`) somewhere, or the port
+  is allocated and never consumed. **Report-only** (`autofix=None`) because injecting a
+  `server.port` block into an arbitrary config is not safely mechanical. It deliberately
+  tests for the variable name rather than the string `process.env.`, so bracket access
+  and destructuring both pass — an earlier substring test flagged those correct configs
+  as problems and left `doctor --fix` failing with nothing to fix.
+- **`springboot-application-properties`** (`src/splashdown/profiles.py:694`, detect at
+  `:708`) — checks that `application.properties`/`application.yml` uses the
   `server.port=${PORT:8080}` placeholder. **Report-only**: `autofix=None`
   (`src/splashdown/profiles.py:486`) because rewriting Java/Spring config is too risky
   to mechanize; only manual instructions are printed.
@@ -115,7 +125,7 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
 - `src/splashdown/wiring.py:40` — `_resolve_doctor_framework`; `:52` `_wiring_checks_for_framework`.
 - `src/splashdown/wiring.py:118`/`:201`/`:304`/`:387` — `rn-hook`, `rn-metro-config`, `rn-pkg-port`, `rn-xcode-env` detect/autofix.
 - `src/splashdown/wiring.py:356` — `ios/.xcode.env` sentinel-wrapped managed block.
-- `src/splashdown/profiles.py:321`/`:477` — `vite-config-process-env` (autofix) and `springboot-application-properties` (report-only) checks.
+- `src/splashdown/profiles.py:532`/`:506`/`:694` — `vite-config-process-env` (autofix), `vite-port-wired` and `springboot-application-properties` (both report-only) checks.
 - `src/splashdown/cli.py:185` — `doctor` argparse parser (`--fix`, `--framework`); dispatch at `src/splashdown/cli.py:358`.
 - `src/splashdown/commands.py:1305` — `init` post-scaffold wiring loop; `:267` `_ensure_post_checkout_hook` (shared hook coexistence).
 

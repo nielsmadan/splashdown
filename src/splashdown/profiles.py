@@ -440,6 +440,14 @@ _VITE_CONFIG_NAMES = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vi
 _VITE_ENV_ACCESS_RE = re.compile(r"(?<!process\.)(?<!\.)env\.([A-Z][A-Z0-9_]*)\b")
 
 
+def _vite_unfixed_env_matches(text: str) -> list[re.Match[str]]:
+    """`env.X` accesses with no matching `process.env.X` read anywhere in the file.
+    `process.env.X || env.X` is a deliberate shell-then-dotenv fallback chain, so
+    rewriting its second term would silently delete the dotenv layer."""
+    covered = set(re.findall(r"process\.env\.([A-Z][A-Z0-9_]*)\b", text))
+    return [m for m in _VITE_ENV_ACCESS_RE.finditer(text) if m.group(1) not in covered]
+
+
 def _vite_config_path(app_path: Path) -> Path | None:
     for name in _VITE_CONFIG_NAMES:
         candidate = app_path / name
@@ -466,7 +474,34 @@ class ViteProfile(Profile):
         return out
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
-        return [_vite_process_env_check()]
+        ports = [name for name, spec in self.resources(app).items() if spec.get("type") == "port"]
+        return [_vite_process_env_check(), *(_vite_port_wired_check(p) for p in ports)]
+
+
+def _vite_port_wired_check(port_var: str) -> WiringCheck:
+    """Report-only. A vite.config that never names the allocated port var leaves it
+    unused, but adding a `server.port` block to an arbitrary config is not safely
+    mechanical, so print the snippet instead of guessing (as springboot does)."""
+
+    def detect(cwd: Path) -> tuple[str, str]:
+        cfg = _vite_config_path(cwd)
+        if cfg is None:  # applies() guarantees the vite config exists
+            raise DeviceError("vite.config.* not found")
+        if port_var in cfg.read_text():
+            return ("ok", f"vite.config references {port_var}")
+        return ("problem", f"vite.config never reads {port_var}; allocated port goes unused")
+
+    return WiringCheck(
+        id="vite-port-wired",
+        description=f"vite.config wires its dev-server port to {port_var}",
+        applies=lambda cwd: _vite_config_path(cwd) is not None,
+        detect=detect,
+        autofix=None,
+        manual_instructions=lambda cwd: (
+            f"Wire the dev server port in vite.config:\n"
+            f"  server: {{ port: Number(process.env.{port_var}) || 5173 }}"
+        ),
+    )
 
 
 def _vite_process_env_check() -> WiringCheck:
@@ -485,7 +520,7 @@ def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
     if cfg is None:  # applies() guarantees the vite config exists
         raise DeviceError("vite.config.* not found")
     text = cfg.read_text()
-    if "loadEnv" in text and _VITE_ENV_ACCESS_RE.search(text):
+    if "loadEnv" in text and _vite_unfixed_env_matches(text):
         return ("problem", "vite.config uses loadEnv; should read process.env")
     return ("ok", "vite.config reads process.env")
 
@@ -495,10 +530,12 @@ def _vite_process_env_autofix(cwd: Path) -> None:
     if cfg is None:  # applies() guarantees the vite config exists
         raise DeviceError("vite.config.* not found")
     text = cfg.read_text()
-    # Rewrite every `env.VAR` access to `process.env.VAR`. Keep loadEnv lines
-    # untouched (the user may want them for other purposes) — the new access
-    # path just bypasses them.
-    new_text = _VITE_ENV_ACCESS_RE.sub(r"process.env.\1", text)
+    # Rewrite every `env.VAR` access to `process.env.VAR`, skipping names already
+    # read from process.env elsewhere. Keep loadEnv lines untouched (the user may
+    # want them for other purposes) — the new access path just bypasses them.
+    new_text = text
+    for m in reversed(_vite_unfixed_env_matches(text)):
+        new_text = new_text[: m.start()] + f"process.env.{m.group(1)}" + new_text[m.end() :]
     if new_text != text:
         cfg.write_text(new_text)
         print(f"patched {cfg.name} (env.X → process.env.X)", file=sys.stderr)
