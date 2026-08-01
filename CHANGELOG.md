@@ -4,6 +4,20 @@ All notable user-facing changes to splashdown. While the project is on `0.x` it 
 [Semantic Versioning](https://semver.org) loosely: breaking changes may land in a minor
 release and are called out under **Breaking Changes**.
 
+## [0.16.0] - 2026-08-01
+
+### Features
+
+- Add templates for rails, flask, laravel and aspnetcore
+- Add templates for angular, nuxt and deno
+
+### Bug Fixes
+
+- Read every docker compose port layout
+- Check the deno port flag reaches deno
+- Require the angular port flag to reach ng serve
+- Scan every spring boot config for server.port
+
 ## [0.15.0] - 2026-07-31
 
 ### Features
@@ -166,6 +180,7 @@ release and are called out under **Breaking Changes**.
 
 - --cwd/--format no longer clobbered when set before a subcommand
 
+[0.16.0]: https://github.com/nielsmadan/splashdown/compare/v0.15.0..v0.16.0
 [0.15.0]: https://github.com/nielsmadan/splashdown/compare/v0.14.0..v0.15.0
 [0.14.0]: https://github.com/nielsmadan/splashdown/compare/v0.13.0..v0.14.0
 [0.13.0]: https://github.com/nielsmadan/splashdown/compare/v0.12.0..v0.13.0
