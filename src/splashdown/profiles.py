@@ -1096,23 +1096,56 @@ def _springboot_application_properties_check() -> WiringCheck:
     return WiringCheck(
         id="springboot-application-properties",
         description="application.properties reads server.port from PORT env",
-        applies=lambda cwd: (
-            (cwd / "src" / "main" / "resources" / "application.properties").exists()
-            or (cwd / "src" / "main" / "resources" / "application.yml").exists()
-        ),
+        # Derived from the same enumeration detect uses. Two hardcoded filenames here
+        # skipped the check entirely on an `application.yaml`- or profile-only project.
+        applies=lambda cwd: bool(_springboot_config_files(cwd)),
         detect=_springboot_app_props_detect,
         autofix=None,  # manual-only — patching Java configs is too risky to auto-rewrite
         manual_instructions=_springboot_app_props_manual,
     )
 
 
+_SPRING_FLAT_PORT_RE = re.compile(r"^[ \t]*server\.port[ \t]*[:=][ \t]*(.+)$", re.MULTILINE)
+_SPRING_NESTED_PORT_RE = re.compile(r"(?:^|[{,\n])[ \t]*port[ \t]*:[ \t]*([^,}\n]+)")
+
+
+def _springboot_config_files(cwd: Path) -> list[Path]:
+    """Every config Spring may load, profile-specific ones included: an
+    `application-dev.properties` pinning a literal overrides a wired base file."""
+    resources = cwd / "src" / "main" / "resources"
+    found = [
+        p
+        for pattern in ("application*.properties", "application*.yml", "application*.yaml")
+        for p in resources.glob(pattern)
+    ]
+    return sorted(found)
+
+
+def _springboot_declared_port(path: Path) -> str | None:
+    """The effective `server.port` a config declares, or None if it declares none.
+
+    Reads the flat `server.port` spelling and YAML's nested `server:` block, which a
+    properties file cannot write. The nested lookup is pinned to column 0 so
+    `management.server.port` — Actuator's separate port, and perfectly normal — is not
+    mistaken for the app's. The *last* declaration wins, matching Spring: taking the
+    first read a wired value that a later line had already overridden."""
+    text = _strip_hash_comments(path.read_text())
+    values = [m.group(1).strip() for m in _SPRING_FLAT_PORT_RE.finditer(text)]
+    for region in _yaml_key_regions(text, "server", indent=0):
+        values += [m.group(1).strip() for m in _SPRING_NESTED_PORT_RE.finditer(region)]
+    return values[-1] if values else None
+
+
 def _springboot_app_props_detect(cwd: Path) -> tuple[str, str]:
-    props = cwd / "src" / "main" / "resources" / "application.properties"
-    yml = cwd / "src" / "main" / "resources" / "application.yml"
-    text = (props.read_text() if props.exists() else "") + (yml.read_text() if yml.exists() else "")
-    if re.search(r"server\.port\s*[:=]\s*\$\{PORT", text):
-        return ("ok", "server.port uses PORT env placeholder")
-    return ("problem", "server.port should read ${PORT:8080} from env")
+    declared = {
+        p.name: v for p in _springboot_config_files(cwd) if (v := _springboot_declared_port(p))
+    }
+    if not declared:
+        return ("problem", "server.port should read ${PORT:8080} from env")
+    pinned = sorted(name for name, value in declared.items() if "${PORT" not in value)
+    if pinned:
+        return ("problem", f"server.port is pinned to a literal in: {', '.join(pinned)}")
+    return ("ok", "server.port uses PORT env placeholder")
 
 
 def _springboot_app_props_manual(cwd: Path) -> str:

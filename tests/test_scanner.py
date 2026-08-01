@@ -1213,6 +1213,72 @@ def test_angular_detect_accepts_the_port_flag_spellings(tmp_path, tmp_path_facto
         assert _angular_app(d, script).detect(d)[0] == "ok", script
 
 
+def _springboot_check(tmp_path, files):
+    for name, body in files.items():
+        path = tmp_path / "src" / "main" / "resources" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
+    return next(
+        c
+        for c in sd.PROFILES["springboot"].wiring_checks(app)
+        if c.id == "springboot-application-properties"
+    )
+
+
+def test_springboot_accepts_nested_yaml_port(tmp_path):
+    # The canonical YAML spelling; the flat `server.port` form is properties-only.
+    check = _springboot_check(tmp_path, {"application.yml": "server:\n  port: ${PORT:8080}\n"})
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_springboot_flags_a_literal_in_nested_yaml(tmp_path):
+    check = _springboot_check(tmp_path, {"application.yml": "server:\n  port: 9090\n"})
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "application.yml" in detail
+
+
+def test_springboot_flags_a_literal_in_a_second_config_file(tmp_path):
+    # A wired application.properties does not excuse a yml that pins a literal:
+    # whichever file wins, the port is no longer per-checkout.
+    check = _springboot_check(
+        tmp_path,
+        {
+            "application.properties": "server.port=${PORT:8080}\n",
+            "application.yml": "server:\n  port: 9090\n",
+        },
+    )
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "application.yml" in detail
+
+
+def test_springboot_scans_profile_specific_files(tmp_path):
+    check = _springboot_check(
+        tmp_path,
+        {
+            "application.properties": "server.port=${PORT:8080}\n",
+            "application-dev.properties": "server.port=9090\n",
+        },
+    )
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "application-dev.properties" in detail
+
+
+def test_springboot_ignores_commented_out_wiring(tmp_path):
+    check = _springboot_check(
+        tmp_path, {"application.properties": "# server.port=${PORT:8080}\nserver.port=9090\n"}
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_springboot_accepts_flow_style_yaml(tmp_path):
+    check = _springboot_check(tmp_path, {"application.yaml": "server: { port: ${PORT:8080} }\n"})
+    assert check.detect(tmp_path)[0] == "ok"
+
+
 def test_aspnetcore_detects_blazor_webassembly_sdk(tmp_path):
     # blazor/mvc/webapi/razor all emit Microsoft.NET.Sdk.Web; only standalone Blazor
     # WASM uses its own SDK, and it shares the same launchSettings mechanics.
@@ -1420,3 +1486,48 @@ def test_deno_autofix_leaves_chained_commands_alone(tmp_path):
     check.autofix(tmp_path)
     task = json.loads((tmp_path / "deno.json").read_text())["tasks"]["dev"]
     assert task == "deno serve --port $PORT app.ts && psql --port 5432 -c 'select 1'"
+
+
+def test_springboot_applies_to_yaml_and_profile_only_projects(tmp_path, tmp_path_factory):
+    # applies() hardcoded two filenames while detect globbed three patterns, so
+    # these projects were skipped entirely with a "not applicable" line.
+    for name in ("application.yaml", "application-dev.properties"):
+        d = tmp_path_factory.mktemp("sb")
+        check = _springboot_check(d, {name: "server:\n  port: 9090\n"})
+        assert check.applies(d) is True, name
+        assert check.detect(d)[0] == "problem", name
+
+
+def test_springboot_ignores_a_nested_management_server_port(tmp_path):
+    # Actuator's separate management port is normal and is not the app's port.
+    check = _springboot_check(
+        tmp_path,
+        {
+            "application.yml": "management:\n  server:\n    port: 9091\nserver:\n  port: ${PORT:8080}\n"
+        },
+    )
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_springboot_takes_the_last_declaration_like_spring_does(tmp_path):
+    check = _springboot_check(
+        tmp_path, {"application.properties": "server.port=${PORT:8080}\nserver.port=9090\n"}
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_springboot_ignores_a_trailing_comment(tmp_path):
+    # The leading-# fixture never exercised stripping: the flat regex is anchored.
+    check = _springboot_check(
+        tmp_path, {"application.properties": "server.port=9090  # want ${PORT:8080}\n"}
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_springboot_reports_a_config_that_declares_no_port(tmp_path):
+    check = _springboot_check(
+        tmp_path, {"application.yml": "spring:\n  application:\n    name: x\n"}
+    )
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "${PORT:8080}" in detail
