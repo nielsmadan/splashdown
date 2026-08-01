@@ -640,8 +640,15 @@ class AngularProfile(Profile):
 
 
 _NG_SERVE_RE = re.compile(r"\bng\s+serve\b")
-_NG_LITERAL_PORT_RE = re.compile(r"\s+--port[=\s]\d+")
 _NG_PORT_VAR = "$WEB_DEV_PORT"
+# The variable has to reach `--port`. Merely naming it (`WEB_DEV_PORT=4200 ng serve`)
+# sets an environment variable that `ng serve` never reads. Anchored on the right so
+# `--port=$WEB_DEV_PORT_EXTRA` is not read as a match.
+_NG_PORT_ARG_RE = re.compile(r"--port[=\s]+[\"']?\$\{?WEB_DEV_PORT\}?[\"']?(?![\w.-])")
+_NG_ANY_PORT_RE = re.compile(r"\s+--port[=\s]+[\"']?\$?\{?[\w.-]+\}?[\"']?")
+# `ng serve && echo done` is one script with two commands; the flag belongs to the
+# first. Appending to the whole string handed it to `echo`.
+_NG_SEGMENT_END_RE = re.compile(r"\s(?:&&|\|\||[;|])")
 
 
 def _angular_serve_scripts(data: Any) -> dict[str, str]:
@@ -674,23 +681,44 @@ def _angular_pkg_port_detect(cwd: Path) -> tuple[str, str]:
         return ("problem", f"could not read package.json: {e}")
     serving = _angular_serve_scripts(data)
     if not serving:
-        return ("ok", "no `ng serve` script to wire")
-    unwired = [n for n, v in serving.items() if "WEB_DEV_PORT" not in v]
+        # Not a pass: Angular reads no port env var at all, so with no script to
+        # carry --port the allocated WEB_DEV_PORT reaches nothing and the app
+        # keeps binding angular.json's default in every checkout.
+        return (
+            "problem",
+            "no `ng serve` script to carry --port; WEB_DEV_PORT reaches nothing (not autofixable)",
+        )
+    unwired = [n for n, v in serving.items() if not _NG_PORT_ARG_RE.search(v)]
     if unwired:
         return ("problem", f"`ng serve` scripts ignore WEB_DEV_PORT: {', '.join(unwired)}")
     return ("ok", "`ng serve` scripts pass WEB_DEV_PORT")
 
 
+def _angular_wire_serve_script(value: str) -> str:
+    """Insert `--port $WEB_DEV_PORT` into the `ng serve` command itself, replacing any
+    port flag already on it. Appending to the end of the script instead put the flag
+    on whatever came after a `&&`, and left a second `--port` behind when the existing
+    one was a variable rather than a literal."""
+    m = _NG_SERVE_RE.search(value)
+    if m is None:
+        return value
+    head, rest = value[: m.end()], value[m.end() :]
+    end = _NG_SEGMENT_END_RE.search(rest)
+    cut = end.start() if end else len(rest)
+    return f"{head} --port {_NG_PORT_VAR}{_NG_ANY_PORT_RE.sub('', rest[:cut])}{rest[cut:]}"
+
+
 def _angular_pkg_port_autofix(cwd: Path) -> None:
     path = cwd / "package.json"
     data = json.loads(path.read_text())
-    scripts = data["scripts"]
+    scripts = data.get("scripts")
+    if not isinstance(scripts, dict):
+        return
     changed = False
     for name, value in _angular_serve_scripts(data).items():
-        if "WEB_DEV_PORT" in value:
+        if _NG_PORT_ARG_RE.search(value):
             continue
-        # Drop any literal --port first so the file keeps one source of truth.
-        scripts[name] = f"{_NG_LITERAL_PORT_RE.sub('', value).rstrip()} --port {_NG_PORT_VAR}"
+        scripts[name] = _angular_wire_serve_script(value)
         changed = True
     if changed:
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")

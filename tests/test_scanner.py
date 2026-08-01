@@ -1015,16 +1015,52 @@ def test_angular_wiring_flags_and_fixes_unwired_serve_script(tmp_path):
 
 
 def test_angular_wiring_replaces_literal_port(tmp_path):
+    # The flag goes on `ng serve` itself rather than at the end of the script, so it
+    # survives a compound command; other flags keep their order.
     check = _angular_app(tmp_path, "ng serve --port 4300 --open")
     check.autofix(tmp_path)
     scripts = json.loads((tmp_path / "package.json").read_text())["scripts"]
-    assert scripts["start"] == "ng serve --open --port $WEB_DEV_PORT"
+    assert scripts["start"] == "ng serve --port $WEB_DEV_PORT --open"
     assert "4300" not in scripts["start"]
+
+
+def test_angular_autofix_replaces_a_variable_port_instead_of_duplicating(tmp_path):
+    check = _angular_app(tmp_path, "ng serve --port $OTHER_PORT")
+    check.autofix(tmp_path)
+    script = json.loads((tmp_path / "package.json").read_text())["scripts"]["start"]
+    assert script == "ng serve --port $WEB_DEV_PORT"
+    assert script.count("--port") == 1
+
+
+def test_angular_autofix_keeps_the_flag_on_ng_serve_in_a_compound_script(tmp_path):
+    # Appending to the whole script handed `--port` to `echo`, and detect then
+    # reported that ok.
+    check = _angular_app(tmp_path, "ng serve && echo done")
+    check.autofix(tmp_path)
+    script = json.loads((tmp_path / "package.json").read_text())["scripts"]["start"]
+    assert script == "ng serve --port $WEB_DEV_PORT && echo done"
+
+
+def test_angular_autofix_survives_a_package_json_with_no_scripts(tmp_path):
+    (tmp_path / "angular.json").write_text("{}")
+    (tmp_path / "package.json").write_text("{}")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="angular")
+    check = next(c for c in sd.PROFILES["angular"].wiring_checks(app) if c.id == "angular-pkg-port")
+    check.autofix(tmp_path)  # must not raise KeyError
+    assert check.detect(tmp_path)[0] == "problem"
 
 
 def test_angular_wiring_ok_when_already_wired(tmp_path):
     check = _angular_app(tmp_path, "ng serve --port $WEB_DEV_PORT")
     assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_angular_wiring_flags_a_project_with_no_serve_script(tmp_path):
+    # Previously reported ok. Angular consults no port env var, so a project with
+    # no `ng serve` script has nowhere for WEB_DEV_PORT to go — reporting that
+    # green claimed a wiring that does not exist.
+    check = _angular_app(tmp_path, "ng build")
+    assert check.detect(tmp_path)[0] == "problem"
 
 
 def test_nuxt_profile_detects_config_and_dep(tmp_path, tmp_path_factory):
@@ -1150,6 +1186,31 @@ def test_deno_detect_reports_a_config_it_cannot_parse(tmp_path):
     status, detail = check.detect(tmp_path)
     assert status == "problem"
     assert "can't read" in detail
+
+
+def test_angular_detect_reports_when_no_ng_serve_script_exists(tmp_path):
+    # Angular reads no port env var at all, so "nothing to wire" means the
+    # allocated port reaches nothing — that is a finding, not a pass.
+    check = _angular_app(tmp_path, "node scripts/dev.js")
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "no `ng serve` script" in detail
+
+
+def test_angular_detect_requires_the_var_to_reach_the_port_flag(tmp_path):
+    # Setting the variable is not passing it: `ng serve` ignores the environment.
+    check = _angular_app(tmp_path, "cross-env WEB_DEV_PORT=4200 ng serve")
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_angular_detect_accepts_the_port_flag_spellings(tmp_path, tmp_path_factory):
+    for script in (
+        "ng serve --port $WEB_DEV_PORT",
+        "ng serve --port=${WEB_DEV_PORT}",
+        'ng serve --port "$WEB_DEV_PORT"',
+    ):
+        d = tmp_path_factory.mktemp("ng")
+        assert _angular_app(d, script).detect(d)[0] == "ok", script
 
 
 def test_aspnetcore_detects_blazor_webassembly_sdk(tmp_path):
