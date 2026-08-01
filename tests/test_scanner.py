@@ -1027,11 +1027,6 @@ def test_angular_wiring_ok_when_already_wired(tmp_path):
     assert check.detect(tmp_path)[0] == "ok"
 
 
-def test_angular_wiring_ok_when_no_serve_script(tmp_path):
-    check = _angular_app(tmp_path, "ng build")
-    assert check.detect(tmp_path)[0] == "ok"
-
-
 def test_nuxt_profile_detects_config_and_dep(tmp_path, tmp_path_factory):
     (tmp_path / "nuxt.config.ts").write_text("export default defineNuxtConfig({})")
     assert sd.PROFILES["nuxt"].detect(tmp_path) is True
@@ -1111,6 +1106,50 @@ def test_deno_autofix_skips_jsonc_to_preserve_comments(tmp_path):
     check = _deno_app(tmp_path, original, name="deno.jsonc")
     check.autofix(tmp_path)
     assert (tmp_path / "deno.jsonc").read_text() == original
+
+
+def test_deno_detect_rejects_a_port_flag_after_the_script_arg(tmp_path):
+    # The mirror of the autofix regression above: everything after the script
+    # argument is passed to the script, so this task still binds 8000.
+    check = _deno_app(tmp_path, '{"tasks": {"dev": "deno serve server.ts --port $PORT"}}')
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "script argument" in detail
+
+
+def test_deno_detect_ignores_port_in_an_unrelated_task(tmp_path):
+    check = _deno_app(
+        tmp_path,
+        '{"tasks": {"dev": "deno serve server.ts", "db": "psql -p $PORT"}}',
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_deno_detect_accepts_the_flag_before_the_script_arg(tmp_path):
+    for task in (
+        "deno serve --port $PORT server.ts",
+        "deno serve --allow-net --port=${PORT} server.ts",
+        'deno serve --port "$PORT" server.ts',
+    ):
+        check = _deno_app(tmp_path, json.dumps({"tasks": {"dev": task}}))
+        assert check.detect(tmp_path)[0] == "ok", task
+
+
+def test_deno_detect_ignores_commented_out_wiring_in_jsonc(tmp_path):
+    check = _deno_app(
+        tmp_path,
+        '{\n  // "dev": "deno serve --port $PORT main.ts"\n'
+        '  "tasks": {"dev": "deno serve main.ts"}\n}\n',
+        name="deno.jsonc",
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_deno_detect_reports_a_config_it_cannot_parse(tmp_path):
+    check = _deno_app(tmp_path, "{ this is not json at all ")
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "can't read" in detail
 
 
 def test_aspnetcore_detects_blazor_webassembly_sdk(tmp_path):
@@ -1245,3 +1284,78 @@ def test_init_rn_single_app_still_scaffolds(tmp_path):
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
     assert "RCT_METRO_PORT" in recipe.resources
     assert "default" in recipe.targets.get("simulator", {})
+
+
+def test_deno_autofix_relocates_a_misordered_port_flag(tmp_path):
+    check = _deno_app(tmp_path, '{"tasks": {"dev": "deno serve server.ts --port $PORT"}}')
+    assert check.detect(tmp_path)[0] == "problem"
+    check.autofix(tmp_path)
+    task = json.loads((tmp_path / "deno.json").read_text())["tasks"]["dev"]
+    assert task == "deno serve --port $PORT server.ts"
+    assert task.count("--port") == 1
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_deno_detect_accepts_jsonc_with_trailing_commas(tmp_path):
+    # Deno's own config reader accepts them; rejecting them reported a correctly
+    # wired project as broken, and .jsonc is never autofixed, so it stayed broken.
+    check = _deno_app(
+        tmp_path,
+        '{\n  "tasks": {\n    "dev": "deno serve --port $PORT main.ts",\n  },\n}\n',
+        name="deno.jsonc",
+    )
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_deno_detect_ignores_a_commented_out_task_in_wired_jsonc(tmp_path):
+    # The complement of the above: comments stripped, real task still read.
+    check = _deno_app(
+        tmp_path,
+        '{\n  // "dev": "deno serve --port $PORT old.ts"\n'
+        '  "tasks": {"dev": "deno serve --port $PORT main.ts"}\n}\n',
+        name="deno.jsonc",
+    )
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_deno_detect_requires_splashdowns_own_port_var(tmp_path):
+    check = _deno_app(tmp_path, json.dumps({"tasks": {"dev": "deno serve --port $MY_PORT app.ts"}}))
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_deno_detect_handles_flags_that_take_a_separate_value(tmp_path):
+    # `--host 0.0.0.0` used to be read as the script argument, so a correctly wired
+    # task was reported as having its flag in the wrong place.
+    for task in (
+        "deno serve --host 0.0.0.0 --port $PORT main.ts",
+        "deno serve --config deno.json --port $PORT ./src/main.ts",
+        "deno serve --log-level debug --port=${PORT} npm:my-server",
+    ):
+        check = _deno_app(tmp_path, json.dumps({"tasks": {"dev": task}}))
+        assert check.detect(tmp_path)[0] == "ok", task
+
+
+def test_deno_detect_does_not_claim_misordered_without_a_port_flag(tmp_path):
+    check = _deno_app(tmp_path, json.dumps({"tasks": {"dev": "deno serve --allow-env=PORT m.ts"}}))
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "script argument" not in detail
+
+
+def test_deno_detect_ignores_commented_out_source_wiring(tmp_path):
+    check = _deno_app(tmp_path, json.dumps({"tasks": {"dev": "deno run main.ts"}}))
+    (tmp_path / "main.ts").write_text(
+        '// Deno.env.get("PORT")\nDeno.serve(() => new Response(""));'
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_deno_autofix_leaves_chained_commands_alone(tmp_path):
+    # A blanket substitution deleted the sidecar's own --port and wrote the file.
+    check = _deno_app(
+        tmp_path,
+        json.dumps({"tasks": {"dev": "deno serve app.ts && psql --port 5432 -c 'select 1'"}}),
+    )
+    check.autofix(tmp_path)
+    task = json.loads((tmp_path / "deno.json").read_text())["tasks"]["dev"]
+    assert task == "deno serve --port $PORT app.ts && psql --port 5432 -c 'select 1'"

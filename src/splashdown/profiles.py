@@ -736,7 +736,6 @@ PROFILES["node-backend"] = NodeBackendProfile()
 
 _DENO_CONFIG_NAMES = ("deno.json", "deno.jsonc")
 _DENO_SERVE_RE = re.compile(r"\bdeno\s+serve\b")
-_DENO_LITERAL_PORT_RE = re.compile(r"\s+--port[=\s]\d+")
 
 
 def _deno_config_path(app_path: Path) -> Path | None:
@@ -784,23 +783,138 @@ def _deno_sources_read_port(cwd: Path) -> bool:
     this is a cheap positive signal, not an audit."""
     for path in sorted([*cwd.glob("*.ts"), *cwd.glob("*.js"), *cwd.glob("*.tsx")]):
         try:
-            if 'env.get("PORT")' in path.read_text() or "env.get('PORT')" in path.read_text():
-                return True
+            text = _strip_js_comments(path.read_text())
         except OSError:
             continue
+        if 'env.get("PORT")' in text or "env.get('PORT')" in text:
+            return True
     return False
+
+
+# `deno serve`'s script argument is always a module specifier, so the flag run ends
+# at the first token that looks like one. Enumerating which flags take a
+# space-separated value instead is an allowlist that can't be completed — omitting
+# `--host` made `deno serve --host 0.0.0.0 --port $PORT x.ts` read as misordered.
+_DENO_MODULE_RE = re.compile(
+    r"^(?:\./|\.\./|/|https?:|npm:|jsr:|file:|data:)|\.(?:ts|tsx|js|jsx|mjs|mts|cjs)$"
+)
+# splashdown's own variable, not merely a name containing "PORT" — `--port $MY_PORT`
+# leaves the allocated PORT unused and must not read as wired.
+_DENO_OUR_PORT_RE = re.compile(r"""^["']?\$\{?PORT\}?["']?$""")
+_DENO_TRAILING_PORT_RE = re.compile(r"""\s+--port[=\s]+["']?\$\{?PORT\}?["']?""")
+_DENO_ANY_PORT_RE = re.compile(r"""\s+--port[=\s]+["']?\$?\{?[\w.:-]+\}?["']?""")
+_DENO_PORT_FLAG_RE = re.compile(r"^--port(?:=(.*))?$")
+_JSONC_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _deno_flag_span(rest: str) -> int:
+    """Offset in `rest` (the text after `deno serve`) where deno's own flags stop
+    and the script argument begins. Everything past it is the script's argv."""
+    for token in re.finditer(r"\S+", rest):
+        word = token.group()
+        if word == "--":
+            return token.end()
+        if not word.startswith("-") and _DENO_MODULE_RE.search(word):
+            return token.start()
+    return len(rest)
+
+
+def _deno_serve_port_wired(task: str) -> bool:
+    """Whether a `deno serve` task passes PORT *to deno*. Position is the whole
+    point: everything after the script argument is handed to the script, so an
+    appended `--port $PORT` is silently dropped and the server keeps binding 8000."""
+    m = _DENO_SERVE_RE.search(task)
+    if m is None:
+        return False
+    rest = task[m.end() :]
+    tokens = list(re.finditer(r"\S+", rest[: _deno_flag_span(rest)]))
+    for i, token in enumerate(tokens):
+        flag = _DENO_PORT_FLAG_RE.match(token.group())
+        if flag is None:
+            continue
+        value = flag.group(1)
+        if value is None and i + 1 < len(tokens):
+            value = tokens[i + 1].group()
+        return _DENO_OUR_PORT_RE.match(value or "") is not None
+    return False
+
+
+def _deno_serve_port_misplaced(task: str) -> bool:
+    """A `--port $PORT` that landed after the script argument, where deno never
+    sees it. Distinct from "no port flag at all" so the two get different advice."""
+    m = _DENO_SERVE_RE.search(task)
+    if m is None:
+        return False
+    rest = task[m.end() :]
+    return _DENO_TRAILING_PORT_RE.search(rest[_deno_flag_span(rest) :]) is not None
+
+
+def _deno_config_data(cfg: Path) -> dict[str, Any] | None:
+    """The parsed config, or None when it can't be read. Comments are stripped and
+    trailing commas retried, because deno.jsonc legitimately carries both and
+    rejecting them reported correctly-wired projects as broken."""
+    try:
+        text = _strip_js_comments(cfg.read_text())
+    except OSError:
+        return None
+    for candidate in (text, _JSONC_TRAILING_COMMA_RE.sub(r"\1", text)):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        return data if isinstance(data, dict) else None
+    return None
+
+
+def _deno_tasks(cfg: Path) -> dict[str, str] | None:
+    """The `tasks` table, or None when the config can't be read."""
+    data = _deno_config_data(cfg)
+    if data is None:
+        return None
+    tasks = data.get("tasks")
+    if not isinstance(tasks, dict):
+        return {}
+    return {k: v for k, v in tasks.items() if isinstance(v, str)}
 
 
 def _deno_port_detect(cwd: Path) -> tuple[str, str]:
     cfg = _deno_config_path(cwd)
     if cfg is None:
         raise DeviceError("deno.json* not found")
-    # Text scan rather than a parse: deno.jsonc allows comments, which json.loads rejects.
-    if "$PORT" in cfg.read_text() or "${PORT}" in cfg.read_text():
+    tasks = _deno_tasks(cfg)
+    if tasks is None:
+        return ("problem", f"{cfg.name} can't read as JSON; check the PORT wiring by hand")
+    serve = {n: v for n, v in tasks.items() if _DENO_SERVE_RE.search(v)}
+    if any(_deno_serve_port_wired(v) for v in serve.values()):
         return ("ok", f"{cfg.name} passes PORT to the server")
+    misordered = [n for n, v in serve.items() if _deno_serve_port_misplaced(v)]
+    if misordered:
+        return (
+            "problem",
+            f"--port comes after the script argument in: {', '.join(sorted(misordered))}; "
+            "deno passes it to the script, not to itself",
+        )
     if _deno_sources_read_port(cwd):
         return ("ok", "server code reads PORT from the environment")
     return ("problem", "nothing consumes PORT; Deno has no port env var of its own")
+
+
+def _deno_wire_serve_task(task: str) -> str:
+    """Put `--port $PORT` directly after `deno serve`, never at the end: everything
+    following the script argument is passed to the script, so an appended flag is
+    silently ignored and the server keeps binding 8000.
+
+    The rewrite is scoped to deno's own flag run. A blanket substitution over the
+    whole string deleted `--port` from chained sidecar commands (`&& psql --port
+    5432`), so past the script argument only splashdown's own `$PORT` is lifted."""
+    m = _DENO_SERVE_RE.search(task)
+    if m is None:
+        return task
+    head, rest = task[: m.end()], task[m.end() :]
+    cut = _deno_flag_span(rest)
+    flags = _DENO_ANY_PORT_RE.sub("", rest[:cut])
+    argv = _DENO_TRAILING_PORT_RE.sub("", rest[cut:])
+    return f"{head} --port $PORT{flags}{argv}".rstrip()
 
 
 def _deno_port_autofix(cwd: Path) -> None:
@@ -814,13 +928,11 @@ def _deno_port_autofix(cwd: Path) -> None:
         return
     changed = False
     for name, value in tasks.items():
-        if not isinstance(value, str) or not _DENO_SERVE_RE.search(value) or "$PORT" in value:
+        if not isinstance(value, str) or not _DENO_SERVE_RE.search(value):
             continue
-        # Insert directly after `deno serve`, never at the end: everything following
-        # the script argument is passed to the script, so an appended --port is
-        # silently ignored and the server keeps binding 8000.
-        stripped = _DENO_LITERAL_PORT_RE.sub("", value)
-        tasks[name] = _DENO_SERVE_RE.sub("deno serve --port $PORT", stripped, count=1)
+        if _deno_serve_port_wired(value):
+            continue
+        tasks[name] = _deno_wire_serve_task(value)
         changed = True
     if changed:
         cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
