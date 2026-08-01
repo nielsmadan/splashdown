@@ -1593,7 +1593,7 @@ def test_device_run_custom_command_bypasses_framework_detection(tmp_path, monkey
         captured["cmd"] = cmd
         return 7
 
-    monkeypatch.setattr(sd.profiles.subprocess, "call", _fake_call)
+    monkeypatch.setattr(sd.runners.subprocess, "call", _fake_call)
     recipe = sd.Recipe({"project": {"run": "echo ran {device_id}"}}, tmp_path / "splashdown.toml")
     rc = sd.device_run(tmp_path, recipe, {"kind": "ios", "udid": "ABCD"})
     assert rc == 7  # returns the custom command's exit code

@@ -61,7 +61,8 @@ run (`src/splashdown/wiring.py:110`). Exit code is 0 only when nothing is left i
 
 An empty check list is reported two different ways, gated on `Profile.env_only`
 (`src/splashdown/profiles.py:420`). A profile that reads its port straight from the
-environment (`nextjs`, `node-backend`, `django`, `fastapi`) sets `env_only = True`,
+environment (`nextjs`, `node-backend`, `django`, `fastapi`, `flask`, `rails`,
+`laravel`) sets `env_only = True`,
 so there is nothing to patch and `doctor` prints ``✓ no wiring checks needed for
 `<name>` (env-only)`` — a positive verdict. Anything else with an empty list keeps the
 ``doctor: no wiring checks defined for framework `<name>`.`` wording. That distinction
@@ -142,6 +143,26 @@ The individual checks:
   `server.port=${PORT:8080}` placeholder. **Report-only**: `autofix=None`
   (`src/splashdown/profiles.py:486`) because rewriting Java/Spring config is too risky
   to mechanize; only manual instructions are printed.
+- **`laravel` → `vite-port-wired`** — Laravel is the only profile that claims two ports,
+  because a Laravel app runs two dev servers: `php artisan serve` (`SERVER_PORT`, read
+  straight from the environment) and, since Laravel 9, Vite for assets. It reuses vite's
+  report-only port check for the second half and returns an empty list for API-only apps
+  with no vite config, which then get the green `env_only` verdict. `LaravelProfile` is
+  registered *ahead* of `ViteProfile` for the same reason: every modern Laravel app ships a
+  `vite.config.js`, so vite would otherwise claim it and leave the PHP port unmanaged.
+- **`aspnet-launch-settings`** (`src/splashdown/profiles.py:958`, detect at `:971`) —
+  ASP.NET Core is the one profile whose env var is real but conditionally ignored:
+  `ASPNETCORE_HTTP_PORTS` works, except `dotnet run` reads `applicationUrl` out of
+  `Properties/launchSettings.json` first and that wins. The check flags any
+  `"commandName": "Project"` profile declaring the key. **Autofix**: pops
+  `applicationUrl` and rewrites the file — the one config rewrite here that *is* safely
+  mechanical, because launchSettings is JSON and round-trips through `json.loads`/`dumps`
+  rather than regex over indentation-sensitive text (contrast compose and Spring, both
+  report-only for exactly that reason). `IISExpress` profiles keep their `applicationUrl`:
+  only IIS Express reads it, so editing it would be a change with no effect on the port.
+  Gated on the target framework (`_aspnet_supports_http_ports`): `ASPNETCORE_HTTP_PORTS`
+  is .NET 8+, so net6.0/net7.0 projects get a report-only twin instead — there, dropping
+  `applicationUrl` would hand the app the shared default 5000 and make collisions worse.
 
 `init` runs the same checks in fix mode after scaffolding the recipe, wiring the loader,
 and installing the hook: the wiring loop is in `cmd_init`

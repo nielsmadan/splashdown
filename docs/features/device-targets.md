@@ -103,8 +103,8 @@ one app is declared). `device_run` (`src/splashdown/devices.py:950`) dispatches 
 directory rather than the workspace root. Launchers:
 flutter (`flutter run -d <id>`), react-native, expo, ios-native (`xcodebuild build` then `xcrun
 simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_native_run`,
-`src/splashdown/profiles.py:111`), and android-native (`./gradlew :module:installVariant` then
-`adb shell am start` — `_android_native_run`, `src/splashdown/profiles.py:181`).
+`src/splashdown/runners.py:213`), and android-native (`./gradlew :module:installVariant` then
+`adb shell am start` — `_android_native_run`, `src/splashdown/runners.py:283`).
 
 **Auto-upgrade after an Xcode/SDK bump (UC4).** Two paths:
 1. *Lazy*, on `splash run`: `ensure_fresh_sim` recreates the one sim being run if its `latest` OS
@@ -165,7 +165,7 @@ Adding a variant that already exists in the recipe is an error.
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/commands.py:985` (`cmd_target_prune`) |
 | `target add` / `remove` (local variants) | `src/splashdown/devices.py:756` / `:800`; preflight `:785`; dispatch `src/splashdown/commands.py:1377` |
 | Framework launcher selection | `src/splashdown/devices.py:758` (`detect_framework`), `:774` (`device_run`) |
-| iOS-native / Android-native launch | `src/splashdown/profiles.py:111` / `:181` |
+| iOS-native / Android-native launch | `src/splashdown/runners.py:213` / `:181` |
 | Physical-device discovery | `src/splashdown/devices.py:493` (`ensure_physical`), `:480` (`_physical_match`) |
 | CLI parsers: run/start/stop/destroy loop | `src/splashdown/cli.py:197` (note: `--yes` only on `destroy`, `:214`) |
 | CLI parsers: `target refresh`/`prune`/`add`/`remove` | `src/splashdown/cli.py:220` / `:231` / `:244` / `:263` |
@@ -311,7 +311,7 @@ splash target remove <type> <variant> [--keep-instance]
   (`src/splashdown/profiles.py`, `_ios_native_run`). For `react-native` the scheme is optional but
   forwards to `run-ios --scheme` when set; Android resolves `application_id` from Gradle if unset, but
   that costs a Gradle round-trip — set it explicitly to skip it.
-- **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/profiles.py:152`)
+- **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/runners.py:92`)
   passes only `--device`. `expo run:ios --scheme` names a *URL* scheme, not an Xcode scheme, so
   `[project.ios] scheme` has no correct mapping here — don't "fix" the asymmetry with react-native by
   forwarding it. Use `[project] run` (the custom-run escape hatch) for an Expo app that needs extra

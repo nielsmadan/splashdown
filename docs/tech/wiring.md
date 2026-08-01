@@ -144,6 +144,15 @@ Exit code is 0 only when nothing is left in the `problem` state (`wiring.py:112`
   placeholder. **Report-only**: `autofix=None` (`profiles.py:486`), so `doctor`
   reports the `✗` and prints manual instructions but never rewrites the file, even
   under `--fix`.
+- **`aspnet-launch-settings`** (`AspNetCoreProfile.wiring_checks`, `profiles.py:955`;
+  check tuple at `:958`, detect/autofix at `:971`/`:983`) — flags any
+  `"commandName": "Project"` profile in `Properties/launchSettings.json` that pins
+  `applicationUrl`, which `dotnet run` honours ahead of an inherited
+  `ASPNETCORE_HTTP_PORTS`. **Autofix present**, unlike the two report-only checks
+  above: launchSettings is JSON, so the fix is `json.loads` → `pop("applicationUrl")`
+  → `json.dumps(indent=2)` with no regex over whitespace-significant text.
+  `_aspnet_project_profiles` (`:946`) is what narrows the rewrite to `Project`
+  profiles, leaving `IISExpress` entries untouched.
 
 ### Idempotency: sentinel-wrapped patches
 

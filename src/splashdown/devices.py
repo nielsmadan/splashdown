@@ -934,7 +934,7 @@ def resolve_app_dir(cwd: Path, recipe: Recipe, framework: str) -> Path:
 
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
-    from .profiles import run_custom_command  # noqa: PLC0415
+    from .runners import run_custom_command  # noqa: PLC0415
     from .scanner import PROFILES  # noqa: PLC0415
 
     # A custom `[project] run` command overrides the framework launcher (and

@@ -1,44 +1,25 @@
 from __future__ import annotations
 
 import json
-import os
-import plistlib
 import re
-import shlex
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from .devices import DeviceError
 from .recipe import Recipe
+from .runners import (
+    _android_native_run,
+    _expo_run,
+    _flutter_run,
+    _ios_native_run,
+    _rn_run,
+)
 from .scanner import PROFILES, AppInventory
 from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
 
 # Named scaffolds for `splash init NAME`. Framework detection, wiring checks,
 # and `splash run` logic live on `Profile` subclasses (below).
-
-
-def _no_flag(label: str, value: str) -> str:
-    """Reject a recipe-supplied value that argv would parse as an option (leading
-    `-`). These reach xcodebuild/gradle/adb as bare positionals where a `-foo`
-    would silently become a tool flag."""
-    if value.startswith("-"):
-        raise DeviceError(f"{label} must not start with '-': {value!r}")
-    return value
-
-
-# Android package / activity names are restricted to identifiers, dots, and (for
-# inner classes) `$`. `adb shell am start` re-parses its argv through the device's
-# /bin/sh, so a recipe value like `.Main; rm -rf /sdcard` would be a shell injection
-# on the device — validate against the legal charset rather than trusting argv.
-_ANDROID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.$]+$")
-
-
-def _android_component(label: str, value: str) -> str:
-    if not _ANDROID_COMPONENT_RE.match(value):
-        raise DeviceError(f"{label} may only contain letters, digits, `_`, `.`, `$`: {value!r}")
-    return value
 
 
 def _detect_flutter(cwd: Path) -> bool:
@@ -65,153 +46,10 @@ def _detect_rn(cwd: Path) -> bool:
     return "react-native" in _read_pkg_deps(cwd)
 
 
-def _flutter_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    device_id = (info.get("udid") if info["kind"] == "ios" else info.get("serial")) or ""
-    return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
-
-
-def _rn_ios_flags(recipe: Recipe) -> list[str]:
-    """`react-native run-ios` scheme/mode from `[project.ios]`. The scheme selects
-    the build environment for scheme-driven apps (dev/staging/prod each copying a
-    different `.env`), so without it RN CLI silently builds the project-name
-    scheme — often the production one."""
-    cfg = recipe.project.get("ios") or {}
-    flags: list[str] = []
-    if scheme := cfg.get("scheme"):
-        flags += ["--scheme", _no_flag("ios scheme", scheme)]
-    if mode := cfg.get("mode"):
-        flags += ["--mode", _no_flag("ios mode", mode)]
-    return flags
-
-
-def _rn_android_flags(recipe: Recipe) -> list[str]:
-    """`react-native run-android` build variant from `[project.android] mode`
-    (RN 0.73+ `--mode`, e.g. `developmentDebug`)."""
-    cfg = recipe.project.get("android") or {}
-    if mode := cfg.get("mode"):
-        return ["--mode", _no_flag("android mode", mode)]
-    return []
-
-
-def _rn_ios_arch_hint(cwd: Path) -> str | None:
-    """Advisory hint when the app's CocoaPods exclude arm64 for the iOS simulator
-    (a vendored SDK like Google ML Kit ships no arm64-sim slice). Such an app can
-    only build against an x86_64 simulator — which only iOS <= 18.x provides — so
-    against splashdown's default (newest, arm64-only) sim `xcodebuild` fails with
-    an opaque "Unable to find a destination". Returns None unless the exclusion is
-    present, so the hint stays silent for apps that don't need x86_64.
-
-    Reads `EXCLUDED_ARCHS[sdk=iphonesimulator*]` from the generated Pods build
-    files rather than probing the sim's arch (simctl exposes no clean arch field)."""
-    pods = cwd / "ios" / "Pods"
-    if not pods.is_dir():
-        return None
-    needle = "EXCLUDED_ARCHS[sdk=iphonesimulator*]"
-    candidates = list(pods.rglob("*.xcconfig"))
-    pbxproj = pods / "Pods.xcodeproj" / "project.pbxproj"
-    if pbxproj.exists():
-        candidates.append(pbxproj)
-    for path in candidates:
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        if any(needle in ln and "arm64" in ln for ln in text.splitlines()):
-            return (
-                "splashdown: this app excludes arm64 for the iOS simulator (a vendored SDK "
-                "like Google ML Kit ships no arm64-sim slice), so it needs an x86_64 "
-                "simulator — only iOS <= 18.x provides one.\n"
-                '  If the build failed with "Unable to find a destination...", pin an '
-                "x86_64-capable runtime in splashdown.toml:\n"
-                "      [targets.simulator.default]\n"
-                '      ios = "18.5"\n'
-                "  then re-run `splash sync`."
-            )
-    return None
-
-
-def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    if info["kind"] == "ios":
-        cmd = ["npx", "react-native", "run-ios", "--udid", info["udid"], *_rn_ios_flags(recipe)]
-        rc = subprocess.call(cmd, cwd=cwd)
-        if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
-            print(hint, file=sys.stderr)
-        return rc
-    cmd = [
-        "npx",
-        "react-native",
-        "run-android",
-        "--deviceId",
-        info["serial"],
-        *_rn_android_flags(recipe),
-    ]
-    return subprocess.call(cmd, cwd=cwd)
-
-
-def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    # No scheme/mode forwarding: `expo run:ios --scheme` means a URL scheme, not
-    # an Xcode scheme, so `[project.ios] scheme` can't be mapped cleanly here.
-    if info["kind"] == "ios":
-        return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
-    return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
-
-
 # `[project] run` (or a `[project.run]` table) overrides the framework's built-in
 # launcher — the escape hatch for a specific package manager (yarn/pnpm), a
 # monorepo subdir, or any non-standard invocation. Mobile-only (that's the only
 # place `splash run` exists). See _resolve_custom_run / run_custom_command.
-
-_RUN_PLACEHOLDER = re.compile(r"\{(device_id|device_name|platform)\}")
-
-
-def _resolve_custom_run(recipe: Recipe, kind: str) -> str | None:
-    """The user's custom run command for this platform, or None if unset (or the
-    platform is unset in a `[project.run]` table — the other platform stays on
-    auto-detection). `[project] run` is either a single string (shared across
-    platforms) or a `[project.run]` table with `ios`/`android` keys."""
-    run = recipe.project.get("run")
-    if run is None:
-        return None
-    if isinstance(run, dict):
-        cmd = run.get(kind)
-        if cmd is None:
-            return None  # this platform isn't customized → fall back to detection
-    elif isinstance(run, str):
-        cmd = run
-    else:
-        raise DeviceError("`[project] run` must be a string or a [project.run] table")
-    if not isinstance(cmd, str):
-        raise DeviceError(f"`[project] run` command must be a string, got {type(cmd).__name__}")
-    if not cmd.strip():
-        raise DeviceError("`[project] run` command is empty")
-    return cmd
-
-
-def _substitute_run_placeholders(cmd: str, info: dict[str, str]) -> str:
-    """Substitute {device_id}/{device_name}/{platform} in a custom run command.
-    Device values are shell-quoted so spaces/quotes can't break the command;
-    unknown `{...}` sequences are left untouched (shell brace-expansion survives)."""
-    device_id = info.get("udid") or info.get("serial") or ""
-    if "{device_id}" in cmd and not device_id:
-        raise DeviceError("run command uses {device_id} but no device id is available")
-    values = {
-        "device_id": shlex.quote(device_id),
-        "device_name": shlex.quote(info.get("name", "")),
-        "platform": info.get("kind", ""),
-    }
-    return _RUN_PLACEHOLDER.sub(lambda m: values[m.group(1)], cmd)
-
-
-def run_custom_command(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int | None:
-    """Run the user's custom command with the booted device identifier injected.
-    Returns the exit code, or None when no custom command is configured (caller
-    falls back to framework detection). Runs via a shell (like `[setup.*]`) so
-    pipes / `&&` / `$ENV` / `cd` work."""
-    cmd = _resolve_custom_run(recipe, info["kind"])
-    if cmd is None:
-        return None
-    cmd = _substitute_run_placeholders(cmd, info)
-    return subprocess.call(cmd, shell=True, cwd=cwd)  # noqa: S602 — user-authored run command by design
 
 
 def _has_js_or_flutter(cwd: Path) -> bool:
@@ -248,152 +86,6 @@ def _detect_android_native(cwd: Path) -> bool:
     has_build = (cwd / "build.gradle").exists() or (cwd / "build.gradle.kts").exists()
     has_settings = (cwd / "settings.gradle").exists() or (cwd / "settings.gradle.kts").exists()
     return has_build and has_settings
-
-
-def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
-    """Build the workspace/project flag for xcodebuild — explicit setting wins,
-    else first match at repo root."""
-    if w := cfg.get("workspace"):
-        return ["-workspace", str(w)]
-    if p := cfg.get("project"):
-        return ["-project", str(p)]
-    workspaces = sorted(cwd.glob("*.xcworkspace"))
-    if workspaces:
-        return ["-workspace", workspaces[0].name]
-    projects = sorted(cwd.glob("*.xcodeproj"))
-    if projects:
-        return ["-project", projects[0].name]
-    raise DeviceError(
-        "ios-native: no .xcworkspace or .xcodeproj at repo root; "
-        'set `[project.ios] workspace = "..."` or `project = "..."`'
-    )
-
-
-def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    cfg = recipe.project.get("ios") or {}
-    scheme = cfg.get("scheme")
-    if not scheme:
-        raise DeviceError(
-            'ios-native: set `[project.ios] scheme = "<your-scheme>"` in splashdown.toml'
-        )
-    scheme = _no_flag("ios scheme", scheme)
-    configuration = _no_flag("ios configuration", cfg.get("configuration", "Debug"))
-    udid = info["udid"]
-    derived = cwd / "build" / "splash-derived"
-    project_flag = _ios_xcodebuild_args(cwd, cfg)
-
-    common = [
-        "xcodebuild",
-        *project_flag,
-        "-scheme",
-        scheme,
-        "-configuration",
-        configuration,
-        "-destination",
-        f"id={udid}",
-        "-derivedDataPath",
-        str(derived),
-    ]
-    rc = subprocess.call([*common, "build"], cwd=cwd)
-    if rc != 0:
-        return rc
-
-    settings = subprocess.run(
-        [*common, "-showBuildSettings", "-json"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    try:
-        entries = json.loads(settings.stdout)
-        bs = entries[0]["buildSettings"]
-        app_path = Path(bs["BUILT_PRODUCTS_DIR"]) / bs["WRAPPER_NAME"]
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        raise DeviceError(f"ios-native: couldn't read xcodebuild settings: {e}") from e
-    if not app_path.exists():
-        raise DeviceError(f"ios-native: built .app missing at {app_path}")
-
-    try:
-        with (app_path / "Info.plist").open("rb") as f:
-            plist = plistlib.load(f)
-        bundle_id = plist["CFBundleIdentifier"]
-    except (FileNotFoundError, KeyError) as e:
-        raise DeviceError(f"ios-native: couldn't read bundle id from {app_path}: {e}") from e
-
-    if info.get("physical"):
-        # Physical iOS devices aren't reachable via simctl (simulator-only);
-        # devicectl (Xcode 15+) installs and launches on real hardware.
-        rc = subprocess.call(
-            ["xcrun", "devicectl", "device", "install", "app", "--device", udid, str(app_path)]
-        )
-        if rc != 0:
-            return rc
-        return subprocess.call(
-            ["xcrun", "devicectl", "device", "process", "launch", "--device", udid, bundle_id]
-        )
-
-    rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
-    if rc != 0:
-        return rc
-    return subprocess.call(["xcrun", "simctl", "launch", udid, bundle_id])
-
-
-def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    cfg = recipe.project.get("android") or {}
-    module = _no_flag("android module", cfg.get("module", "app"))
-    variant = _no_flag("android variant", cfg.get("variant", "debug"))
-    serial = info["serial"]
-    gradlew = cwd / "gradlew"
-    gradle_cmd = [f"./{gradlew.name}"] if gradlew.exists() else ["gradle"]
-
-    install_task = f":{module}:install{variant[:1].upper()}{variant[1:]}"
-    env = {**os.environ, "ANDROID_SERIAL": serial}
-    rc = subprocess.call([*gradle_cmd, install_task], cwd=cwd, env=env)
-    if rc != 0:
-        return rc
-
-    app_id = cfg.get("application_id")
-    if not app_id:
-        try:
-            out = subprocess.check_output(
-                [*gradle_cmd, f":{module}:properties", "-q"],
-                cwd=cwd,
-                text=True,
-                env=env,
-            )
-            for line in out.splitlines():
-                if line.startswith("applicationId:"):
-                    app_id = line.split(":", 1)[1].strip()
-                    break
-        except subprocess.CalledProcessError:
-            pass
-    if not app_id:
-        raise DeviceError(
-            "android-native: couldn't resolve applicationId; set "
-            '`[project.android] application_id = "..."` in splashdown.toml'
-        )
-    app_id = _android_component("android application_id", app_id)
-
-    if activity := cfg.get("launch_activity"):
-        activity = _android_component("android launch_activity", activity)
-        return subprocess.call(
-            ["adb", "-s", serial, "shell", "am", "start", "-n", f"{app_id}/{activity}"],
-        )
-    return subprocess.call(
-        [
-            "adb",
-            "-s",
-            serial,
-            "shell",
-            "monkey",
-            "-p",
-            app_id,
-            "-c",
-            "android.intent.category.LAUNCHER",
-            "1",
-        ],
-    )
 
 
 # A Profile encodes how splashdown integrates with one framework. The Scanner
@@ -743,6 +435,44 @@ def _vite_process_env_manual(cwd: Path) -> str:
     )
 
 
+class LaravelProfile(Profile):
+    name = "laravel"
+    env_only = True
+    reads_dotenv = True
+
+    def detect(self, app_path: Path) -> bool:
+        # Lumen also ships an `artisan`, so the composer requirement is what
+        # distinguishes a Laravel app (lumen pulls laravel/lumen-framework).
+        if not (app_path / "artisan").exists():
+            return False
+        composer = app_path / "composer.json"
+        return bool(composer.exists() and "laravel/framework" in composer.read_text())
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # A Laravel app runs two dev servers that both collide across worktrees:
+        # `php artisan serve` (SERVER_PORT, read straight from the environment) and,
+        # since Laravel 9, Vite for assets. Only claim the Vite port when the app
+        # actually ships a vite config — API-only Laravel apps don't.
+        out: dict[str, dict[str, Any]] = {"SERVER_PORT": {"type": "port", "range": [8001, 8100]}}
+        if _vite_config_path(app.path) is not None:
+            out["WEB_DEV_PORT"] = {"type": "port", "range": [5174, 5200]}
+        return out
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        # SERVER_PORT needs no patching; the Vite half does. With no vite config
+        # the empty list plus env_only gives the green "env-only" verdict.
+        if _vite_config_path(app.path) is None:
+            return []
+        return [_vite_port_wired_check("WEB_DEV_PORT")]
+
+
+# Registered ahead of `vite`: Laravel has shipped a vite.config since Laravel 9, so
+# ViteProfile matches every modern Laravel app and would otherwise claim it — leaving
+# the PHP server's port unmanaged. Detection here needs `artisan` *and* the composer
+# entry, so it can't steal a plain Vite app.
+PROFILES["laravel"] = LaravelProfile()
+
+
 PROFILES["vite"] = ViteProfile()
 
 _NODE_BACKEND_DEPS = {"hono", "express", "fastify", "koa", "@hapi/hapi", "@nestjs/core"}
@@ -840,6 +570,30 @@ class FastApiProfile(Profile):
 PROFILES["fastapi"] = FastApiProfile()
 
 
+class FlaskProfile(Profile):
+    name = "flask"
+    env_only = True
+    reads_dotenv = True
+
+    def detect(self, app_path: Path) -> bool:
+        for f in ("requirements.txt", "requirements-dev.txt"):
+            req = app_path / f
+            if req.exists() and "flask" in req.read_text().lower():
+                return True
+        pyproject = app_path / "pyproject.toml"
+        return bool(pyproject.exists() and "flask" in pyproject.read_text().lower())
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # Only `flask run` reads this; `python app.py` calling app.run() still
+        # hardcodes 5000.
+        return {"FLASK_RUN_PORT": {"type": "port", "range": [5001, 5100]}}
+
+
+# Registered after fastapi so a project carrying both deps resolves to fastapi —
+# flask is the more common incidental dependency of the two.
+PROFILES["flask"] = FlaskProfile()
+
+
 class SpringBootProfile(Profile):
     name = "springboot"
 
@@ -891,6 +645,188 @@ def _springboot_app_props_manual(cwd: Path) -> str:
 
 
 PROFILES["springboot"] = SpringBootProfile()
+
+_CSPROJ_WEB_SDK_RE = re.compile(r'Sdk\s*=\s*"Microsoft\.NET\.Sdk\.Web"')
+
+
+def _launch_settings_path(app_path: Path) -> Path:
+    return app_path / "Properties" / "launchSettings.json"
+
+
+class AspNetCoreProfile(Profile):
+    name = "aspnetcore"
+
+    def detect(self, app_path: Path) -> bool:
+        for proj in app_path.glob("*.csproj"):
+            try:
+                if _CSPROJ_WEB_SDK_RE.search(proj.read_text()):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # Skips .NET's own 5000/5001 so an unwired app can't accidentally be handed
+        # the default and look wired. 5174-5200 is vite's, so start above it.
+        return {"ASPNETCORE_HTTP_PORTS": {"type": "port", "range": [5201, 5300]}}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        if _aspnet_supports_http_ports(app.path):
+            return [_aspnet_launch_settings_check()]
+        return [_aspnet_legacy_tfm_check()]
+
+
+_TFM_RE = re.compile(r"<TargetFrameworks?>([^<]+)</TargetFrameworks?>")
+_NET_VERSION_RE = re.compile(r"^net(\d+)\.(\d+)$")
+
+
+def _aspnet_supports_http_ports(app_path: Path) -> bool:
+    """ASPNETCORE_HTTP_PORTS is .NET 8+. net6.0/net7.0 ignore it outright, so
+    dropping their applicationUrl would strand the app on the shared default 5000 —
+    the exact collision splashdown exists to prevent. A multi-target project counts
+    as modern if any target qualifies; an absent or unparseable TFM is treated as
+    modern, which is overwhelmingly the common case."""
+    versions: list[tuple[int, int]] = []
+    for proj in app_path.glob("*.csproj"):
+        try:
+            text = proj.read_text()
+        except OSError:
+            continue
+        for group in _TFM_RE.findall(text):
+            for tfm in group.split(";"):
+                if m := _NET_VERSION_RE.match(tfm.strip()):
+                    versions.append((int(m.group(1)), int(m.group(2))))
+    return not versions or max(versions) >= (8, 0)
+
+
+def _aspnet_legacy_tfm_check() -> WiringCheck:
+    """Report-only twin of `aspnet-launch-settings` for pre-.NET-8 projects, where
+    the autofix would do harm rather than good. Never reports `ok`: splashdown
+    genuinely cannot wire this TFM mechanically, and a green verdict on a broken
+    wiring is the one outcome these checks exist to prevent."""
+    return WiringCheck(
+        id="aspnet-launch-settings",
+        description="launchSettings.json lets the allocated port reach the app",
+        applies=lambda cwd: _launch_settings_path(cwd).exists(),
+        detect=lambda cwd: (
+            "problem",
+            "project targets .NET < 8, which ignores ASPNETCORE_HTTP_PORTS",
+        ),
+        autofix=None,
+        manual_instructions=_aspnet_legacy_manual,
+    )
+
+
+def _aspnet_legacy_manual(cwd: Path) -> str:
+    return (
+        "ASPNETCORE_HTTP_PORTS needs .NET 8+. Either retarget the project, or derive\n"
+        "the URL form this TFM does read by adding to splashdown.toml:\n"
+        "  [resources.ASPNETCORE_URLS]\n"
+        '  type     = "template"\n'
+        '  template = "http://localhost:{{ ASPNETCORE_HTTP_PORTS }}"\n'
+        "then remove `applicationUrl` from the Project profiles in\n"
+        "Properties/launchSettings.json so the environment wins."
+    )
+
+
+def _read_launch_settings(path: Path) -> tuple[Any, str, str]:
+    """Parsed JSON plus the byte conventions to write it back with. The .NET
+    templates emit this file with a UTF-8 BOM and CRLF endings — a plain
+    `read_text()` leaves the BOM in the string and `json.loads` then rejects a
+    perfectly valid file, and a plain `write_text()` would strip both and churn
+    every line for Windows-authored projects."""
+    raw = path.read_bytes()
+    encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8"
+    text = raw.decode(encoding)
+    return json.loads(text), encoding, "\r\n" if "\r\n" in text else "\n"
+
+
+def _aspnet_project_profiles(data: Any) -> dict[str, Any]:
+    """The `commandName: "Project"` launch profiles — the ones `dotnet run` uses.
+    IISExpress profiles carry their own applicationUrl that only IIS Express reads,
+    so touching them would be an edit with no effect on the dev-server port."""
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    if not isinstance(profiles, dict):
+        return {}
+    return {
+        k: v
+        for k, v in profiles.items()
+        if isinstance(v, dict) and v.get("commandName") == "Project"
+    }
+
+
+def _aspnet_launch_settings_check() -> WiringCheck:
+    """`dotnet run` reads applicationUrl out of launchSettings.json and it wins over
+    an inherited ASPNETCORE_HTTP_PORTS, so the allocated port is silently ignored
+    while the file declares one. Dropping the key is the fix, and launchSettings is
+    JSON — unlike the compose/Spring cases, the rewrite is safely mechanical."""
+    return WiringCheck(
+        id="aspnet-launch-settings",
+        description="launchSettings.json lets ASPNETCORE_HTTP_PORTS set the port",
+        applies=lambda cwd: _launch_settings_path(cwd).exists(),
+        detect=_aspnet_launch_settings_detect,
+        autofix=_aspnet_launch_settings_autofix,
+        manual_instructions=_aspnet_launch_settings_manual,
+    )
+
+
+def _aspnet_launch_settings_detect(cwd: Path) -> tuple[str, str]:
+    path = _launch_settings_path(cwd)
+    try:
+        data, _, _ = _read_launch_settings(path)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ("problem", "launchSettings.json is not valid JSON")
+    pinned = [
+        name for name, spec in _aspnet_project_profiles(data).items() if spec.get("applicationUrl")
+    ]
+    if pinned:
+        return ("problem", f"launchSettings.json pins applicationUrl in: {', '.join(pinned)}")
+    return ("ok", "no launch profile pins applicationUrl")
+
+
+def _aspnet_launch_settings_autofix(cwd: Path) -> None:
+    path = _launch_settings_path(cwd)
+    data, encoding, newline = _read_launch_settings(path)
+    changed = False
+    for spec in _aspnet_project_profiles(data).values():
+        changed = spec.pop("applicationUrl", None) is not None or changed
+    if changed:
+        # Append a bare "\n" — `newline=` translates every \n on write, so passing
+        # the CRLF here too would emit a trailing \r\r\n.
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding=encoding, newline=newline)
+        print("patched Properties/launchSettings.json (dropped applicationUrl)", file=sys.stderr)
+
+
+def _aspnet_launch_settings_manual(cwd: Path) -> str:
+    return (
+        'Remove the `applicationUrl` key from each `"commandName": "Project"`\n'
+        "profile in Properties/launchSettings.json. With it gone, `dotnet run`\n"
+        "falls back to ASPNETCORE_HTTP_PORTS from the environment."
+    )
+
+
+PROFILES["aspnetcore"] = AspNetCoreProfile()
+
+_GEMFILE_RAILS_RE = re.compile(r"""^\s*gem\s+["']rails["']""", re.MULTILINE)
+
+
+class RailsProfile(Profile):
+    name = "rails"
+    env_only = True
+    reads_dotenv = True
+
+    def detect(self, app_path: Path) -> bool:
+        app_rb = app_path / "config" / "application.rb"
+        if app_rb.exists() and "Rails::Application" in app_rb.read_text():
+            return True
+        gemfile = app_path / "Gemfile"
+        return bool(gemfile.exists() and _GEMFILE_RAILS_RE.search(gemfile.read_text()))
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        return {"PORT": {"type": "port", "range": [3001, 3100]}}
+
+
+PROFILES["rails"] = RailsProfile()
 
 
 # Default device targets emitted by scanner-driven `splash init`, kept in sync
@@ -999,247 +935,3 @@ PROFILES["android-native"] = AndroidNativeProfile()
 # Named scaffolds for `splash init NAME`. Decoupled from PROFILES because some
 # entries (minimal, electron, server) don't have a detectable framework, and
 # some Profiles (vite, springboot, etc.) don't have a stock scaffold.
-
-_MINIMAL_SCAFFOLD = """\
-# splashdown.toml — minimal preset. One uuid slot; no apps, no devices.
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[resources.RUN_ID]
-type = "uuid"
-"""
-
-_RN_SCAFFOLD = """\
-# splashdown.toml — React Native preset.
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[apps.main]
-path = "."
-profile = "react-native"
-resources = ["RCT_METRO_PORT"]
-
-[resources.RCT_METRO_PORT]
-type  = "port"
-range = [8082, 8200]
-
-# Uncomment to pick the Xcode scheme / build mode `splash run simulator` builds.
-# Needed when your dev environment is scheme-selected (e.g. a *Dev scheme that
-# copies .env.development); without it RN CLI builds the project-name scheme.
-# [project.ios]
-# scheme = "MyAppDev"    # -> react-native run-ios --scheme
-# mode   = "Debug"       # -> react-native run-ios --mode (optional)
-# [project.android]
-# mode   = "developmentDebug"  # -> react-native run-android --mode (optional)
-
-[targets.simulator.default]
-model = "iPhone 17"
-# ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
-                   # "18.5" if you want a fixed version that never upgrades. Some
-                   # apps (a pod excluding arm64 for the simulator, e.g. Google ML
-                   # Kit) can only build on an x86_64 sim — pin ios = "18.5".
-
-[targets.emulator.default]
-device = "pixel_9"
-
-# Run on a plugged-in phone with `splash run device`. With one device
-# connected, auto-pick resolves it — no config needed. Uncomment to pin a
-# specific device by id/name, or to scope auto-pick to one platform.
-# [targets.device.default]
-# platform = "ios"        # optional: "ios" | "android"
-# name     = "My iPhone"  # optional: match by device name
-# id       = "..."        # optional: exact udid / adb serial
-"""
-
-_FLUTTER_SCAFFOLD = """\
-# splashdown.toml — Flutter preset.
-# Flutter's `flutter run` auto-assigns the Dart VM / DevTools port on each
-# launch; there is no equivalent of RN's RCT_METRO_PORT to pin. Splashdown's
-# value for Flutter is per-checkout sim/emulator naming.
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[apps.main]
-path = "."
-profile = "flutter"
-resources = []
-
-[targets.simulator.default]
-model = "iPhone 17"
-
-[targets.emulator.default]
-device = "pixel_9"
-
-# Run on a plugged-in phone with `splash run device`. With one device
-# connected, auto-pick resolves it — no config needed. Uncomment to pin a
-# specific device by id/name, or to scope auto-pick to one platform.
-# [targets.device.default]
-# platform = "ios"        # optional: "ios" | "android"
-# name     = "My iPhone"  # optional: match by device name
-# id       = "..."        # optional: exact udid / adb serial
-"""
-
-_SERVER_SCAFFOLD = """\
-# splashdown.toml — generic web/server preset (Next.js, Django, Rails, FastAPI,
-# Spring Boot, etc.). Allocates a free PORT per checkout and a unique DATABASE_URL
-# so worktrees don't clobber each other's databases.
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[resources.PORT]
-type  = "port"
-range = [3001, 3100]
-
-[resources.DATABASE_URL]
-type     = "template"
-template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
-
-# Add extra ports as needed, e.g.:
-# [resources.STORYBOOK_PORT]
-# type  = "port"
-# range = [6007, 6100]
-"""
-
-_ELECTRON_SCAFFOLD = """\
-# splashdown.toml — Electron preset.
-# Two per-checkout collisions to solve for parallel Electron dev:
-#   1. PORT — the renderer dev server (Vite / Webpack / Parcel / etc.).
-#   2. ELECTRON_USER_DATA_DIR — Electron's userData path. By default every
-#      instance reads/writes ~/Library/Application Support/<productName>; when
-#      two checkouts run side by side they clobber each other's settings,
-#      IndexedDB, and SingleInstanceLock. Wire your main process to honour the
-#      env var (early, before app.whenReady()):
-#         if (process.env.ELECTRON_USER_DATA_DIR) {
-#           app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR)
-#         }
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[resources.PORT]
-type  = "port"
-range = [3001, 3100]
-
-[resources.ELECTRON_USER_DATA_DIR]
-type     = "template"
-template = "{{ cwd_abs }}/.electron-userdata"
-"""
-
-_IOS_NATIVE_SCAFFOLD = """\
-# splashdown.toml — Native iOS preset (Swift/Obj-C + xcodebuild).
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[project.ios]
-# Required: the Xcode scheme to build.
-scheme = "MyApp"
-# Optional, defaults shown:
-# configuration = "Debug"
-# workspace     = "MyApp.xcworkspace"  # auto-detected from root if absent
-# project       = "MyApp.xcodeproj"    # auto-detected from root if absent
-
-[apps.main]
-path = "."
-profile = "ios-native"
-resources = []
-
-[targets.simulator.default]
-model = "iPhone 17"
-"""
-
-_ANDROID_NATIVE_SCAFFOLD = """\
-# splashdown.toml — Native Android preset (Kotlin/Java + Gradle).
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[project.android]
-# Optional, defaults shown:
-# module          = "app"
-# variant         = "debug"
-# application_id  = "com.example.myapp"  # asked from Gradle if not set
-# launch_activity = ".MainActivity"      # uses LAUNCHER intent if not set
-
-[apps.main]
-path = "."
-profile = "android-native"
-resources = []
-
-[targets.emulator.default]
-device = "pixel_9"
-"""
-
-
-_ASTRO_SCAFFOLD = """\
-# splashdown.toml — Astro preset. Astro does not read PORT from the environment,
-# so astro.config must consume WEB_DEV_PORT itself:
-#     server: { port: Number(process.env.WEB_DEV_PORT) || 4321 }
-# `splash doctor --fix` writes that line for you.
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[apps.main]
-path      = "."
-profile   = "astro"
-resources = ["WEB_DEV_PORT"]
-
-# Skips Astro's own 4321 so an unwired checkout can't look wired.
-[resources.WEB_DEV_PORT]
-type  = "port"
-range = [4322, 4400]
-"""
-
-_COMPOSE_SCAFFOLD = """\
-# splashdown.toml — docker-compose preset. COMPOSE_PROJECT_NAME namespaces this
-# checkout's containers, networks and volumes so parallel worktrees don't collide.
-# Reference the ports from compose with the ${VAR:-default} form:
-#     ports:
-#       - "${DB_PORT:-5432}:5432"
-# and drop `container_name:` so COMPOSE_PROJECT_NAME can do its job.
-# Run `docker compose up` in a shell your loader has populated.
-
-[project]
-workspace = "single"
-loader = "__SPLASH_LOADER__"
-
-[resources.COMPOSE_PROJECT_NAME]
-type     = "template"
-template = "{{ slug(parent) }}-{{ slug(cwd) }}"
-
-[resources.DB_PORT]
-type  = "port"
-range = [5433, 5500]
-
-# Add one entry per service that publishes a host port, e.g.:
-# [resources.REDIS_PORT]
-# type  = "port"
-# range = [6380, 6450]
-"""
-
-SCAFFOLDS: dict[str, str] = {
-    "minimal": _MINIMAL_SCAFFOLD,
-    "astro": _ASTRO_SCAFFOLD,
-    "compose": _COMPOSE_SCAFFOLD,
-    "react-native": _RN_SCAFFOLD,
-    "rn": _RN_SCAFFOLD,
-    "flutter": _FLUTTER_SCAFFOLD,
-    "ios-native": _IOS_NATIVE_SCAFFOLD,
-    "android-native": _ANDROID_NATIVE_SCAFFOLD,
-    "electron": _ELECTRON_SCAFFOLD,
-    "server": _SERVER_SCAFFOLD,
-    "nextjs": _SERVER_SCAFFOLD,  # historical alias for server
-}

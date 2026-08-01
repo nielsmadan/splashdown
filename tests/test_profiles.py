@@ -15,7 +15,7 @@ from conftest import (
 
 def test_flutter_run_builds_argv(tmp_path, monkeypatch):
     calls = _capture_profile_calls(monkeypatch)
-    rc = sd.profiles._flutter_run(
+    rc = sd.runners._flutter_run(
         tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"}
     )
     assert rc == 0
@@ -25,8 +25,8 @@ def test_flutter_run_builds_argv(tmp_path, monkeypatch):
 def test_rn_run_ios_and_android(tmp_path, monkeypatch):
     calls = _capture_profile_calls(monkeypatch)
     r = sd.Recipe({}, tmp_path / "x.toml")
-    sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
-    sd.profiles._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    sd.runners._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.runners._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
     flat = [" ".join(c) for c in calls]
     assert any("run-ios" in c and "--udid U1" in c for c in flat)
     assert any("run-android" in c and "--deviceId S1" in c for c in flat)
@@ -45,8 +45,8 @@ def test_rn_run_forwards_scheme_and_mode(tmp_path, monkeypatch):
         },
         tmp_path / "x.toml",
     )
-    sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
-    sd.profiles._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    sd.runners._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.runners._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
     flat = [" ".join(c) for c in calls]
     assert any(
         "run-ios" in c and "--scheme DreamHackDev" in c and "--mode Debug" in c for c in flat
@@ -58,7 +58,7 @@ def test_rn_run_rejects_flaglike_scheme(tmp_path, monkeypatch):
     _capture_profile_calls(monkeypatch)
     r = sd.Recipe({"project": {"ios": {"scheme": "-evil"}}}, tmp_path / "x.toml")
     try:
-        sd.profiles._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+        sd.runners._rn_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
     except sd.DeviceError:
         return
     raise AssertionError("expected DeviceError for flag-like scheme")
@@ -72,8 +72,8 @@ def _write_pods_excluded_arch(tmp_path):
 
 def test_rn_run_prints_arch_hint_on_failure(tmp_path, monkeypatch, capsys):
     _write_pods_excluded_arch(tmp_path)
-    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: 70)
-    rc = sd.profiles._rn_run(
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 70)
+    rc = sd.runners._rn_run(
         tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"}
     )
     assert rc == 70
@@ -83,22 +83,22 @@ def test_rn_run_prints_arch_hint_on_failure(tmp_path, monkeypatch, capsys):
 def test_rn_run_no_arch_hint_on_success_or_missing_pods(tmp_path, monkeypatch, capsys):
     # Success → no hint even when the exclusion is present.
     _write_pods_excluded_arch(tmp_path)
-    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: 0)
-    sd.profiles._rn_run(tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"})
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 0)
+    sd.runners._rn_run(tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"})
     assert "18.5" not in capsys.readouterr().err
     # Failure but no Pods → no hint.
     other = tmp_path / "no_pods"
     other.mkdir()
-    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: 70)
-    sd.profiles._rn_run(other, sd.Recipe({}, other / "x.toml"), {"kind": "ios", "udid": "U1"})
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 70)
+    sd.runners._rn_run(other, sd.Recipe({}, other / "x.toml"), {"kind": "ios", "udid": "U1"})
     assert "18.5" not in capsys.readouterr().err
 
 
 def test_expo_run_ios_and_android(tmp_path, monkeypatch):
     calls = _capture_profile_calls(monkeypatch)
     r = sd.Recipe({}, tmp_path / "x.toml")
-    sd.profiles._expo_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
-    sd.profiles._expo_run(tmp_path, r, {"kind": "android", "serial": "S1"})
+    sd.runners._expo_run(tmp_path, r, {"kind": "ios", "udid": "U1"})
+    sd.runners._expo_run(tmp_path, r, {"kind": "android", "serial": "S1"})
     flat = [" ".join(c) for c in calls]
     assert any("run:ios" in c and "--device U1" in c for c in flat)
     assert any("run:android" in c and "--device S1" in c for c in flat)
@@ -166,8 +166,8 @@ def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
             [{"buildSettings": {"BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}]
         )
 
-    monkeypatch.setattr(sd.profiles.subprocess, "run", lambda *a, **k: _Done())
-    rc = sd.profiles._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+    monkeypatch.setattr(sd.runners.subprocess, "run", lambda *a, **k: _Done())
+    rc = sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
     assert rc == 0
     flat = [" ".join(c) for c in calls]
     assert any("simctl install SIM-1" in c for c in flat)
@@ -179,9 +179,9 @@ def test_android_native_run_monkey_launcher(tmp_path, monkeypatch):
     recipe = sd.Recipe({"project": {"android": {}}}, tmp_path / "splashdown.toml")
     calls = _capture_profile_calls(monkeypatch)
     monkeypatch.setattr(
-        sd.profiles.subprocess, "check_output", lambda *a, **k: "applicationId: com.example.app\n"
+        sd.runners.subprocess, "check_output", lambda *a, **k: "applicationId: com.example.app\n"
     )
-    rc = sd.profiles._android_native_run(
+    rc = sd.runners._android_native_run(
         tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
     )
     assert rc == 0
@@ -196,7 +196,7 @@ def test_android_native_run_launch_activity(tmp_path, monkeypatch):
         tmp_path / "splashdown.toml",
     )
     calls = _capture_profile_calls(monkeypatch)
-    rc = sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
+    rc = sd.runners._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
     assert rc == 0
     flat = [" ".join(c) for c in calls]
     assert any("am start -n com.x/.Main" in c for c in flat)
@@ -217,7 +217,7 @@ def test_android_native_run_rejects_shell_injection(tmp_path, monkeypatch, field
     recipe = sd.Recipe({"project": {"android": android}}, tmp_path / "splashdown.toml")
     _capture_profile_calls(monkeypatch)
     with pytest.raises(sd.DeviceError):
-        sd.profiles._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
+        sd.runners._android_native_run(tmp_path, recipe, {"kind": "android", "serial": "S1"})
 
 
 def _recipe(tmp_path, project):
@@ -226,24 +226,24 @@ def _recipe(tmp_path, project):
 
 def test_resolve_custom_run_string_is_shared(tmp_path):
     r = _recipe(tmp_path, {"run": "flutter run -d {device_id}"})
-    assert sd.profiles._resolve_custom_run(r, "ios") == "flutter run -d {device_id}"
-    assert sd.profiles._resolve_custom_run(r, "android") == "flutter run -d {device_id}"
+    assert sd.runners._resolve_custom_run(r, "ios") == "flutter run -d {device_id}"
+    assert sd.runners._resolve_custom_run(r, "android") == "flutter run -d {device_id}"
 
 
 def test_resolve_custom_run_table_per_platform(tmp_path):
     r = _recipe(tmp_path, {"run": {"ios": "run-ios", "android": "run-android"}})
-    assert sd.profiles._resolve_custom_run(r, "ios") == "run-ios"
-    assert sd.profiles._resolve_custom_run(r, "android") == "run-android"
+    assert sd.runners._resolve_custom_run(r, "ios") == "run-ios"
+    assert sd.runners._resolve_custom_run(r, "android") == "run-android"
 
 
 def test_resolve_custom_run_none_when_absent(tmp_path):
-    assert sd.profiles._resolve_custom_run(_recipe(tmp_path, {}), "ios") is None
+    assert sd.runners._resolve_custom_run(_recipe(tmp_path, {}), "ios") is None
 
 
 def test_resolve_custom_run_missing_platform_falls_back(tmp_path):
     # A table that customizes only one platform leaves the other on auto-detection.
     r = _recipe(tmp_path, {"run": {"ios": "run-ios"}})
-    assert sd.profiles._resolve_custom_run(r, "android") is None
+    assert sd.runners._resolve_custom_run(r, "android") is None
 
 
 def test_resolve_custom_run_bad_type_raises(tmp_path):
@@ -270,24 +270,22 @@ def test_substitute_missing_device_id_raises():
     # {device_id} present but neither udid nor serial available -> loud error,
     # not a silent `-d ''`.
     with pytest.raises(sd.DeviceError, match="device_id"):
-        sd.profiles._substitute_run_placeholders("run -d {device_id}", {"kind": "ios"})
+        sd.runners._substitute_run_placeholders("run -d {device_id}", {"kind": "ios"})
 
 
 def test_substitute_device_id_ios_and_android():
     tpl = "launch --device {device_id}"
-    assert sd.profiles._substitute_run_placeholders(tpl, {"kind": "ios", "udid": "ABCD"}) == (
+    assert sd.runners._substitute_run_placeholders(tpl, {"kind": "ios", "udid": "ABCD"}) == (
         "launch --device ABCD"
     )
     assert (
-        sd.profiles._substitute_run_placeholders(
-            tpl, {"kind": "android", "serial": "emulator-5554"}
-        )
+        sd.runners._substitute_run_placeholders(tpl, {"kind": "android", "serial": "emulator-5554"})
         == "launch --device emulator-5554"
     )
 
 
 def test_substitute_name_is_shell_quoted_and_platform(monkeypatch):
-    out = sd.profiles._substitute_run_placeholders(
+    out = sd.runners._substitute_run_placeholders(
         "run {platform} {device_name}",
         {"kind": "ios", "udid": "U", "name": "Alice's iPhone"},
     )
@@ -298,7 +296,7 @@ def test_substitute_name_is_shell_quoted_and_platform(monkeypatch):
 
 
 def test_substitute_leaves_unknown_braces_untouched():
-    out = sd.profiles._substitute_run_placeholders(
+    out = sd.runners._substitute_run_placeholders(
         "echo {device_id} {foo}", {"kind": "ios", "udid": "U"}
     )
     assert out == "echo U {foo}"
@@ -312,9 +310,9 @@ def test_run_custom_command_executes_with_shell(tmp_path, monkeypatch):
         captured["kwargs"] = kwargs
         return 0
 
-    monkeypatch.setattr(sd.profiles.subprocess, "call", _fake_call)
+    monkeypatch.setattr(sd.runners.subprocess, "call", _fake_call)
     r = _recipe(tmp_path, {"run": {"ios": "yarn rn run-ios --udid {device_id}"}})
-    rc = sd.profiles.run_custom_command(tmp_path, r, {"kind": "ios", "udid": "ABCD"})
+    rc = sd.runners.run_custom_command(tmp_path, r, {"kind": "ios", "udid": "ABCD"})
     assert rc == 0
     assert captured["cmd"] == "yarn rn run-ios --udid ABCD"
     assert captured["kwargs"].get("shell") is True
@@ -323,9 +321,9 @@ def test_run_custom_command_executes_with_shell(tmp_path, monkeypatch):
 
 def test_run_custom_command_none_when_no_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        sd.profiles.subprocess, "call", lambda *a, **k: pytest.fail("should not run")
+        sd.runners.subprocess, "call", lambda *a, **k: pytest.fail("should not run")
     )
-    assert sd.profiles.run_custom_command(tmp_path, _recipe(tmp_path, {}), {"kind": "ios"}) is None
+    assert sd.runners.run_custom_command(tmp_path, _recipe(tmp_path, {}), {"kind": "ios"}) is None
 
 
 def _astro_check(path):

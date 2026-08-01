@@ -120,7 +120,7 @@ through the registry, expands templates, writes outputs, and prints the resolved
 "checkout has live values in one command" payoff.
 
 **Legacy preset path.** `splash init <preset>` routes to `_cmd_init_legacy_preset`
-(`commands.py:1321`): it looks the name up in `SCAFFOLDS` (`profiles.py:758`; unknown name →
+(`commands.py:1321`): it looks the name up in `SCAFFOLDS` (`scaffolds.py:231`; unknown name →
 `sys.exit(2)`), substitutes `__SPLASH_LOADER__`, validates the complete scaffold in memory, then
 writes it. Only after validation does it write the local skeleton, ensure gitignore, wire the
 loader and hook, and run `cmd_doctor(cwd, fix=True)` when the resolved framework has wiring checks.
@@ -155,7 +155,7 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 - `LOADERS` registry + idempotent `wire`: `src/splashdown/loaders.py:123` (mise `:33`,
   direnv `:61`, devbox `:91`, none `:119`).
 - `SCAFFOLDS` presets / `PROFILES` registration:
-  `src/splashdown/profiles.py:758` / `:364`–`:580`.
+  `src/splashdown/scaffolds.py:231`; the templates themselves fill that module.
 - `init` argparse parser: `src/splashdown/cli.py:144`. Dispatch (rescan before init, then
   optional sync): `src/splashdown/cli.py:347`–`353`.
 
@@ -163,7 +163,7 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 
 - **`splash init`** (no args) — scan-driven scaffold + wire + sync.
 - **`splash init <preset>`** — named scaffold; presets are the keys of `SCAFFOLDS`
-  (`profiles.py:758`): `minimal`, `react-native`/`rn`, `flutter`, `ios-native`,
+  (`scaffolds.py:231`): `minimal`, `react-native`/`rn`, `flutter`, `ios-native`,
   `android-native`, `electron`, `server`/`nextjs`.
 - **`--loader mise|direnv|devbox|none`** — override loader auto-detection
   (`none` = write a dotenv file / print instructions, wire nothing).

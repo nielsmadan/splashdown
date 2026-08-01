@@ -2,8 +2,10 @@
 
 The detection + extension layer: how splashdown looks at a repo on disk and decides
 *what* it is (workspace shape, apps, frameworks, shell loader) before any provisioning
-happens. Three modules: `scanner.py` (filesystem walk → inventory), `profiles.py`
-(per-framework integration rules + init scaffolds), `loaders.py` (shell-env wiring).
+happens. Five modules: `scanner.py` (filesystem walk → inventory), `profiles.py`
+(per-framework detection, resources and wiring checks), `runners.py`
+(build/install/launch behind `Profile.run`), `scaffolds.py` (the preset
+`splashdown.toml` templates, pure data), `loaders.py` (shell-env wiring).
 
 ## Contents
 
@@ -119,25 +121,45 @@ defines five extension points; subclasses override the ones that apply:
   base raises `DeviceError`; only mobile/native profiles override it. Web/backend
   profiles deliberately have no `splash run` (you use `pnpm dev` / `gradle bootRun`).
 - `reads_dotenv` class flag (`profiles.py:260`) — declares whether the framework picks up
-  a plain `.env`/`.env.local` on its own (Next.js, Django, FastAPI, Node backends → True;
-  Vite, Spring Boot, mobile → False). Consumed when no shell loader is present, to decide
+  a plain `.env`/`.env.local` on its own (Next.js, Django, FastAPI, Flask, Rails, Laravel,
+  Node backends → True; Vite, Spring Boot, ASP.NET Core, mobile → False). Consumed when no
+  shell loader is present, to decide
   whether a dotenv-file fallback can actually reach the app.
 
 The concrete profiles and the **detection-precedence order** they are registered in:
 
 ```
-PROFILES["vite"]            (profiles.py:364)
-PROFILES["node-backend"]    (profiles.py:388)
-PROFILES["nextjs"]          (profiles.py:415)
-PROFILES["django"]          (profiles.py:435)
-PROFILES["fastapi"]         (profiles.py:454)
-PROFILES["springboot"]      (profiles.py:507)
-PROFILES["flutter"]         (profiles.py:576)
-PROFILES["expo"]            (profiles.py:577)
-PROFILES["react-native"]    (profiles.py:578)
-PROFILES["ios-native"]      (profiles.py:579)
-PROFILES["android-native"]  (profiles.py:580)
+PROFILES["astro"]           (profiles.py:318)
+PROFILES["laravel"]         (profiles.py:473)
+PROFILES["vite"]            (profiles.py:476)
+PROFILES["node-backend"]    (profiles.py:501)
+PROFILES["nextjs"]          (profiles.py:529)
+PROFILES["django"]          (profiles.py:550)
+PROFILES["fastapi"]         (profiles.py:570)
+PROFILES["flask"]           (profiles.py:594)
+PROFILES["springboot"]      (profiles.py:647)
+PROFILES["aspnetcore"]      (profiles.py:808)
+PROFILES["rails"]           (profiles.py:829)
+PROFILES["flutter"]         (profiles.py:928)
+PROFILES["expo"]            (profiles.py:929)
+PROFILES["react-native"]    (profiles.py:930)
+PROFILES["ios-native"]      (profiles.py:931)
+PROFILES["android-native"]  (profiles.py:932)
 ```
+
+Two orderings here are load-bearing and were both found by running real generated
+projects rather than by reading detection code:
+
+- **`laravel` before `vite`.** Laravel has shipped a `vite.config.js` since Laravel 9, so
+  `ViteProfile` matches every modern Laravel app. Registered after vite, `LaravelProfile`
+  was dead code on real projects and the PHP server's port went unmanaged. Its detection
+  needs `artisan` *and* `laravel/framework` in `composer.json`, so it cannot steal a plain
+  Vite app. Laravel is also the one profile that claims two ports (`SERVER_PORT` for
+  `php artisan serve`, `WEB_DEV_PORT` for the asset server) because it runs two dev
+  servers that both collide across worktrees.
+- **`flask` after `fastapi`.** Both substring-match the same `pyproject.toml` /
+  `requirements.txt`, and flask is the more common incidental dependency of the two, so a
+  project declaring both resolves to fastapi.
 
 Each `PROFILES[...] = ...(...)` assignment runs at import; **list order is registration
 order is detection precedence.** The mobile block at the end is ordered deliberately
@@ -174,6 +196,33 @@ detectable framework, and some profiles (`vite`, `springboot`) have no stock sca
 Each template embeds the literal token `__SPLASH_LOADER__`, which `_cmd_init_legacy_preset`
 substitutes with the detected loader name at write time (`commands.py:1333`). The dict
 includes aliases (`rn`→RN scaffold, `nextjs`→server scaffold) (`profiles.py:758-768`).
+
+### runners.py & scaffolds.py — split out of profiles.py
+
+`profiles.py` had grown to ~1490 lines holding three unrelated concerns. Two were
+extracted; the dependency arrow points one way, `profiles -> runners`, and `scaffolds`
+depends on nothing at all.
+
+- **`runners.py`** — everything `Profile.run` delegates to: `_rn_run`, `_expo_run`,
+  `_flutter_run`, `_ios_native_run`, `_android_native_run`, the xcodebuild/gradle
+  argument builders, and the `[project] run` custom-command path
+  (`run_custom_command`, imported lazily by `devices.py`). It also owns the two argv
+  validators (`_no_flag`, `_android_component`) since they exist to sanitize values on
+  their way into a subprocess. Imports `DeviceError` from `errors.py` directly rather
+  than `devices.py`, so it carries no dependency on the device layer.
+- **`scaffolds.py`** — the preset `splashdown.toml` templates and the `SCAFFOLDS` dict.
+  Pure strings, no imports, no logic.
+
+The **detection helpers stayed in `profiles.py`** (`_detect_flutter`, `_read_pkg_deps`,
+`_detect_expo`, `_detect_rn`, `_detect_ios_native`, `_detect_android_native`,
+`_pbxproj_targets_ios`): they implement `Profile.detect`, so they belong with the
+profile they serve.
+
+**What was deliberately not done:** splitting `profiles.py` into a `profiles/` package
+by category. `PROFILES` insertion order *is* detection precedence, and scattering the
+registrations across modules would make that ordering implicit in import order — the
+laravel-vs-vite bug is what that failure mode looks like. Keeping every
+`PROFILES[...] = ...` line in one readable sequence is worth the file length.
 
 ### loaders.py — idempotent shell-env wiring
 

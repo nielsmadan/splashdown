@@ -62,7 +62,7 @@ ENV_FILE_NAME = "splashdown.env"
 # Re-export Path so tests can do `sd.Path` and monkeypatch it.
 from pathlib import Path
 
-# Import profiles — this populates PROFILES (and SCAFFOLDS).
+# Import profiles — this populates PROFILES.
 from . import profiles as _profiles_module
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .commands import (
@@ -136,7 +136,6 @@ from .hooks import (
 )
 from .loaders import LOADERS, Loader
 from .profiles import (
-    SCAFFOLDS,
     Profile,
     compose_project_resources,
     compose_wiring_checks,
@@ -170,6 +169,7 @@ from .recipe import (
 # Import submodules in dependency order so PROFILES gets populated before
 # anything tries to use it (profiles.py imports scanner.PROFILES and fills it).
 from .registry import DeviceRow, Registry, _port_in_use
+from .scaffolds import SCAFFOLDS
 from .scanner import (
     PROFILES,
     AppInventory,

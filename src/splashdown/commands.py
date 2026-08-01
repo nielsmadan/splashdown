@@ -1200,7 +1200,7 @@ def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
 def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
     """`splash init NAME` path: write the named scaffold, then wire the
     detected (or overridden) shell-env loader and the post-checkout hook."""
-    from .profiles import SCAFFOLDS  # noqa: PLC0415
+    from .scaffolds import SCAFFOLDS  # noqa: PLC0415
 
     scaffold = SCAFFOLDS.get(preset)
     if scaffold is None:

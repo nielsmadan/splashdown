@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -671,6 +672,323 @@ def test_springboot_wiring_check_accepts_env_placeholder(tmp_path):
     )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
+
+
+def test_flask_profile_detects_via_requirements(tmp_path):
+    (tmp_path / "requirements.txt").write_text("Flask==3.0.0\ngunicorn\n")
+    assert sd.PROFILES["flask"].detect(tmp_path) is True
+
+
+def test_flask_profile_detects_via_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\ndependencies = ["flask>=3", "gunicorn"]\n'
+    )
+    assert sd.PROFILES["flask"].detect(tmp_path) is True
+
+
+def test_flask_profile_does_not_detect_without_flask(tmp_path):
+    (tmp_path / "requirements.txt").write_text("django==5.0\n")
+    assert sd.PROFILES["flask"].detect(tmp_path) is False
+
+
+def test_flask_profile_emits_port_resource(tmp_path):
+    (tmp_path / "requirements.txt").write_text("flask\n")
+    app = sd.AppInventory(name="api", path=tmp_path, profile="flask")
+    assert sd.PROFILES["flask"].resources(app) == {
+        "FLASK_RUN_PORT": {"type": "port", "range": [5001, 5100]}
+    }
+
+
+def test_fastapi_wins_over_flask_when_both_declared(tmp_path):
+    # Both profiles substring-match the same file, so registration order decides.
+    (tmp_path / "requirements.txt").write_text("fastapi\nflask\n")
+    assert sd.Scanner().scan(tmp_path).apps[0].profile == "fastapi"
+
+
+def test_aspnetcore_profile_detects_web_sdk_csproj(tmp_path):
+    (tmp_path / "Api.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.Web">\n  <PropertyGroup />\n</Project>\n'
+    )
+    assert sd.PROFILES["aspnetcore"].detect(tmp_path) is True
+
+
+def test_aspnetcore_profile_does_not_detect_class_library(tmp_path):
+    (tmp_path / "Lib.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk">\n</Project>\n')
+    assert sd.PROFILES["aspnetcore"].detect(tmp_path) is False
+
+
+def test_aspnetcore_profile_emits_port_resource(tmp_path):
+    (tmp_path / "Api.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"></Project>')
+    app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
+    assert sd.PROFILES["aspnetcore"].resources(app) == {
+        "ASPNETCORE_HTTP_PORTS": {"type": "port", "range": [5201, 5300]}
+    }
+
+
+def _make_aspnet(tmp_path, launch_settings):
+    (tmp_path / "Api.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"></Project>')
+    (tmp_path / "Properties").mkdir()
+    (tmp_path / "Properties" / "launchSettings.json").write_text(json.dumps(launch_settings))
+    app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
+    return next(
+        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+    )
+
+
+def test_aspnet_wiring_check_flags_pinned_application_url(tmp_path):
+    check = _make_aspnet(
+        tmp_path,
+        {
+            "profiles": {
+                "http": {"commandName": "Project", "applicationUrl": "http://localhost:5062"}
+            }
+        },
+    )
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "http" in detail
+
+
+def test_aspnet_wiring_check_accepts_no_application_url(tmp_path):
+    check = _make_aspnet(tmp_path, {"profiles": {"http": {"commandName": "Project"}}})
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_aspnet_wiring_check_ignores_iis_express_profile(tmp_path):
+    # IIS Express reads its own applicationUrl; `dotnet run` never does.
+    check = _make_aspnet(
+        tmp_path,
+        {
+            "profiles": {
+                "IIS Express": {
+                    "commandName": "IISExpress",
+                    "applicationUrl": "http://localhost:8080",
+                },
+                "http": {"commandName": "Project"},
+            }
+        },
+    )
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_aspnet_wiring_autofix_drops_application_url(tmp_path):
+    check = _make_aspnet(
+        tmp_path,
+        {
+            "profiles": {
+                "IIS Express": {
+                    "commandName": "IISExpress",
+                    "applicationUrl": "http://localhost:8080",
+                },
+                "http": {
+                    "commandName": "Project",
+                    "applicationUrl": "http://localhost:5062",
+                    "environmentVariables": {"ASPNETCORE_ENVIRONMENT": "Development"},
+                },
+            }
+        },
+    )
+    check.autofix(tmp_path)
+    assert check.detect(tmp_path)[0] == "ok"
+    data = json.loads((tmp_path / "Properties" / "launchSettings.json").read_text())
+    assert "applicationUrl" not in data["profiles"]["http"]
+    # Unrelated keys and the IIS Express profile survive the rewrite.
+    assert (
+        data["profiles"]["http"]["environmentVariables"]["ASPNETCORE_ENVIRONMENT"] == "Development"
+    )
+    assert data["profiles"]["IIS Express"]["applicationUrl"] == "http://localhost:8080"
+
+
+def _real_launch_settings_bytes():
+    """Byte-for-byte shape of what `dotnet new web` actually emits: UTF-8 BOM and
+    CRLF endings. A plain read_text() leaves the BOM in the string and json.loads
+    then rejects the file, so the fixtures above (LF, no BOM) can't catch it."""
+    body = (
+        '{\n  "$schema": "https://json.schemastore.org/launchsettings.json",\n'
+        '  "profiles": {\n    "http": {\n      "commandName": "Project",\n'
+        '      "applicationUrl": "http://localhost:5270"\n    }\n  }\n}\n'
+    )
+    return b"\xef\xbb\xbf" + body.replace("\n", "\r\n").encode()
+
+
+def test_aspnet_wiring_check_reads_bom_and_crlf_file(tmp_path):
+    (tmp_path / "Api.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"></Project>')
+    (tmp_path / "Properties").mkdir()
+    settings = tmp_path / "Properties" / "launchSettings.json"
+    settings.write_bytes(_real_launch_settings_bytes())
+    app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
+    check = next(
+        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+    )
+    # Must read as a pinned URL, not as "not valid JSON".
+    assert check.detect(tmp_path)[0] == "problem"
+    assert "http" in check.detect(tmp_path)[1]
+
+    check.autofix(tmp_path)
+    assert check.detect(tmp_path)[0] == "ok"
+
+    raw = settings.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")  # BOM survives the rewrite
+    assert b"\r\r\n" not in raw  # translation must not double the CR
+    assert raw.count(b"\n") == raw.count(b"\r\n")  # every ending stayed CRLF
+    assert b'"$schema"' in raw  # unrelated keys survive
+
+
+def test_aspnet_wiring_autofix_keeps_lf_file_lf(tmp_path):
+    (tmp_path / "Api.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"></Project>')
+    (tmp_path / "Properties").mkdir()
+    settings = tmp_path / "Properties" / "launchSettings.json"
+    settings.write_text(
+        '{\n  "profiles": {\n    "http": {\n      "commandName": "Project",\n'
+        '      "applicationUrl": "http://localhost:5270"\n    }\n  }\n}\n'
+    )
+    app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
+    check = next(
+        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+    )
+    check.autofix(tmp_path)
+    raw = settings.read_bytes()
+    # A BOM-less LF file must not acquire either on the way back out.
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    assert b"\r" not in raw
+
+
+def test_aspnet_wiring_check_reports_malformed_json(tmp_path):
+    (tmp_path / "Api.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"></Project>')
+    (tmp_path / "Properties").mkdir()
+    (tmp_path / "Properties" / "launchSettings.json").write_text("{ not json")
+    app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
+    check = next(
+        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+    )
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_rails_profile_detects_via_application_rb(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "application.rb").write_text(
+        "module MyApp\n  class Application < Rails::Application\n  end\nend\n"
+    )
+    assert sd.PROFILES["rails"].detect(tmp_path) is True
+
+
+def test_rails_profile_detects_via_gemfile(tmp_path):
+    (tmp_path / "Gemfile").write_text('source "https://rubygems.org"\ngem "rails", "~> 7.1"\n')
+    assert sd.PROFILES["rails"].detect(tmp_path) is True
+
+
+def test_rails_profile_does_not_detect_plain_ruby_gem(tmp_path):
+    # `rails` as a substring of another gem name must not trigger detection.
+    (tmp_path / "Gemfile").write_text('source "x"\ngem "rails-html-sanitizer"\ngem "sinatra"\n')
+    assert sd.PROFILES["rails"].detect(tmp_path) is False
+
+
+def test_rails_profile_emits_port_resource(tmp_path):
+    (tmp_path / "Gemfile").write_text('gem "rails"\n')
+    app = sd.AppInventory(name="web", path=tmp_path, profile="rails")
+    assert sd.PROFILES["rails"].resources(app) == {"PORT": {"type": "port", "range": [3001, 3100]}}
+
+
+def test_laravel_profile_detects_artisan_plus_composer(tmp_path):
+    (tmp_path / "artisan").write_text("#!/usr/bin/env php\n")
+    (tmp_path / "composer.json").write_text('{"require": {"laravel/framework": "^11.0"}}')
+    assert sd.PROFILES["laravel"].detect(tmp_path) is True
+
+
+def test_laravel_profile_does_not_detect_lumen(tmp_path):
+    (tmp_path / "artisan").write_text("#!/usr/bin/env php\n")
+    (tmp_path / "composer.json").write_text('{"require": {"laravel/lumen-framework": "^10.0"}}')
+    assert sd.PROFILES["laravel"].detect(tmp_path) is False
+
+
+def _laravel_app(tmp_path, *, vite):
+    (tmp_path / "artisan").write_text("")
+    (tmp_path / "composer.json").write_text('{"require": {"laravel/framework": "^11.0"}}')
+    if vite:
+        (tmp_path / "package.json").write_text('{"devDependencies": {"vite": "^6"}}')
+        (tmp_path / "vite.config.js").write_text(
+            "import laravel from 'laravel-vite-plugin';\nexport default { plugins: [laravel()] };\n"
+        )
+    return sd.AppInventory(name="web", path=tmp_path, profile="laravel")
+
+
+def test_laravel_beats_vite_on_a_real_laravel_layout(tmp_path):
+    # Laravel has shipped a vite.config since Laravel 9, so ViteProfile matches every
+    # modern Laravel app; registration order must keep the PHP server's port managed.
+    _laravel_app(tmp_path, vite=True)
+    assert sd.Scanner().scan(tmp_path).apps[0].profile == "laravel"
+
+
+def test_laravel_claims_both_dev_server_ports(tmp_path):
+    app = _laravel_app(tmp_path, vite=True)
+    assert sd.PROFILES["laravel"].resources(app) == {
+        "SERVER_PORT": {"type": "port", "range": [8001, 8100]},
+        "WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]},
+    }
+    assert [c.id for c in sd.PROFILES["laravel"].wiring_checks(app)] == ["vite-port-wired"]
+
+
+def test_laravel_api_only_skips_the_vite_port(tmp_path):
+    app = _laravel_app(tmp_path, vite=False)
+    assert "WEB_DEV_PORT" not in sd.PROFILES["laravel"].resources(app)
+    assert sd.PROFILES["laravel"].wiring_checks(app) == []
+
+
+def test_plain_vite_app_is_not_claimed_by_laravel(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    assert sd.Scanner().scan(tmp_path).apps[0].profile == "vite"
+
+
+@pytest.mark.parametrize(
+    ("csproj", "modern"),
+    [
+        ("<TargetFramework>net9.0</TargetFramework>", True),
+        ("<TargetFramework>net8.0</TargetFramework>", True),
+        ("<TargetFramework>net7.0</TargetFramework>", False),
+        ("<TargetFramework>net6.0</TargetFramework>", False),
+        ("<TargetFrameworks>net6.0;net8.0</TargetFrameworks>", True),
+        ("<PropertyGroup />", True),  # unparseable → assume modern
+    ],
+)
+def test_aspnet_http_ports_support_by_target_framework(tmp_path, csproj, modern):
+    (tmp_path / "Api.csproj").write_text(f'<Project Sdk="Microsoft.NET.Sdk.Web">{csproj}</Project>')
+    assert sd.profiles._aspnet_supports_http_ports(tmp_path) is modern
+
+
+def test_aspnet_legacy_tfm_never_autofixes(tmp_path):
+    """net6/net7 ignore ASPNETCORE_HTTP_PORTS outright, so dropping applicationUrl
+    would strand the app on the shared default 5000 — worse than leaving it alone."""
+    (tmp_path / "Api.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.Web"><TargetFramework>net6.0</TargetFramework></Project>'
+    )
+    (tmp_path / "Properties").mkdir()
+    settings = tmp_path / "Properties" / "launchSettings.json"
+    original = json.dumps(
+        {
+            "profiles": {
+                "http": {"commandName": "Project", "applicationUrl": "http://localhost:5062"}
+            }
+        }
+    )
+    settings.write_text(original)
+    app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
+    check = next(
+        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+    )
+    assert check.autofix is None
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert ".NET < 8" in detail
+    assert settings.read_text() == original  # untouched
+
+
+def test_laravel_profile_emits_port_resource(tmp_path):
+    (tmp_path / "artisan").write_text("")
+    (tmp_path / "composer.json").write_text('{"require": {"laravel/framework": "^11.0"}}')
+    app = sd.AppInventory(name="web", path=tmp_path, profile="laravel")
+    assert sd.PROFILES["laravel"].resources(app) == {
+        "SERVER_PORT": {"type": "port", "range": [8001, 8100]}
+    }
 
 
 def test_scanner_gradle_skips_missing_module_dir(tmp_path):

@@ -133,17 +133,17 @@ def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
         tmp_path / "splashdown.toml",
     )
     calls = []
-    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: calls.append(args) or 0)
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: calls.append(args) or 0)
 
     class _Done:
         stdout = json.dumps(
             [{"buildSettings": {"BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}]
         )
 
-    monkeypatch.setattr(sd.profiles.subprocess, "run", lambda *a, **k: _Done())
+    monkeypatch.setattr(sd.runners.subprocess, "run", lambda *a, **k: _Done())
 
     info = {"kind": "ios", "udid": "00008-PHONE", "physical": True}
-    rc = sd.profiles._ios_native_run(tmp_path, recipe, info)
+    rc = sd.runners._ios_native_run(tmp_path, recipe, info)
     assert rc == 0
     flat = [" ".join(c) for c in calls]
     assert any("devicectl" in c and "install" in c for c in flat)

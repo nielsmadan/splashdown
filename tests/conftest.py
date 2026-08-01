@@ -110,7 +110,7 @@ def _inv_none(tmp_path, *profiles):
 
 def _capture_profile_calls(monkeypatch):
     calls: list = []
-    monkeypatch.setattr(sd.profiles.subprocess, "call", lambda args, **k: calls.append(args) or 0)
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: calls.append(args) or 0)
     return calls
 
 

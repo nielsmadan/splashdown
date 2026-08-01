@@ -109,7 +109,7 @@ KNOWN_CMDS = {
 
 def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser; one block per subcommand
     from .completion import device_arg_completer, variant_completer  # noqa: PLC0415
-    from .profiles import SCAFFOLDS  # noqa: PLC0415
+    from .scaffolds import SCAFFOLDS  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
         prog="splash",

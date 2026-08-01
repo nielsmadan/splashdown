@@ -249,7 +249,7 @@ def test_recipe_accepts_auto_framework(tmp_path):
         ('[project]\nunknown = "x"\n', "project"),
         ('[project]\nworkspace = "bun"\n', "project.workspace"),
         ('[project]\nloader = "dotenv"\n', "project.loader"),
-        ('[project]\nframework = "rails"\n', "project.framework"),
+        ('[project]\nframework = "cobol-on-cogs"\n', "project.framework"),
         ('[project]\nrun = ""\n', "project.run"),
         ('[project.run]\nwindows = "x"\n', "project.run"),
         ("[project.run]\n", "project.run"),
