@@ -55,9 +55,25 @@ The run loop in `cmd_doctor` (`src/splashdown/wiring.py:72`): for each check, sk
 `applies` is false; if `detect` returns `ok`, print `✓`; on `problem`, if `--fix` was
 passed and an `autofix` exists, run it, re-`detect`, and report `(fixed)` or
 fall through to manual instructions; otherwise print `✗` plus the manual snippet.
-The autofix call is wrapped so one check failing reports rather than crashing the
-run (`src/splashdown/wiring.py:110`). Exit code is 0 only when nothing is left in the
-`problem` state.
+Both the autofix and the `detect` calls are wrapped (`_run_detect`) so one check
+failing reports rather than crashing the run. A raising `detect` becomes a `✗`, never
+a `✓` — an unreadable file is precisely the case where the check knows nothing.
+Exit code is 0 only when nothing is left in the `problem` state.
+
+**A `✓` prints `check.description`, not `detail`** — which is what makes a false green
+here worse than a missing check. The line the user reads is an affirmative claim
+("compose file templates its host ports and container names") assembled from the check's
+own advertisement, so a `detect` that returns `ok` on input it never parsed does not
+merely stay silent, it vouches. Two disciplines follow from that, and every check obeys
+them: **strip comments before scanning** (`_strip_hash_comments` / `_strip_js_comments`,
+`src/splashdown/wiring.py:47`/`:67`) so leftover commented-out wiring is not read as wiring —
+this was itself violated on arrival by `_deno_sources_read_port` and all three branches of
+`_rn_hook_detect`, the last of which greened a fully commented-out lefthook block;
+and **return `problem` for anything unrecognized**, with a detail saying so, rather than
+falling through to the `ok` at the bottom of the function. The lexical helpers exist
+because splashdown ships no YAML/JS parser (deps frozen at two) — `_yaml_key_regions`
+walks a key's value region in either block or flow style, which is enough to read a
+config honestly without pretending to parse it.
 
 An empty check list is reported two different ways, gated on `Profile.env_only`
 (`src/splashdown/profiles.py:420`). A profile that reads its port straight from the
@@ -128,21 +144,47 @@ The individual checks:
   a `server:` block already exists anywhere in the file: Astro configs commonly carry a
   `vite: { server: {…} }`, and a regex can't tell that nesting apart from the top-level
   block, so guessing would put the port where it configures Vite's dev server instead.
-- **`compose-hardcoded-ports`** (`src/splashdown/profiles.py:502`, detect at `:516`) —
+- **`compose-hardcoded-ports`** (`src/splashdown/profiles.py:211`, detect at `:304`) —
   project-level, not owned by any Profile. Reports host-port mappings whose host side is a
-  bare number and any literal `container_name:`. **Report-only** (`autofix=None`): splashdown
-  ships no YAML parser (deps are frozen at two), so a rewrite would be regex over
-  indentation-sensitive text. `compose_project_resources` (`:480`) emits
+  bare number and any literal `container_name:`. It reads every YAML layout, because the
+  original line-anchored regexes (`^\s*-\s*["']?(\d+):\d+`) only saw block style and returned
+  a green **"no hardcoded host ports"** on flow style — `ports: ['5432:5432']` and
+  `{ container_name: db }` sailed through while both collide across worktrees. A missing
+  check leaves you unsure; that one asserted safety. So detection now walks each `ports:`
+  key's value region (`_yaml_key_regions`, `src/splashdown/wiring.py:136`), splits it into
+  entries (`_split_flow_entries` / `_split_block_entries`, the latter keeping continuation
+  lines so long syntax stays one entry), and classifies each (`_classify_port_entry`).
+  Three details are each a bug that shipped: the region walker accepts a block sequence at
+  its key's **own** indent (`ports:` then `- "5432:5432"` in the same column is legal YAML,
+  and stopping at the dedent reported those files clean — worse than the regex it replaced);
+  the key is matched inside a flow mapping too (`db: { ports: [...] }`), not only at line
+  start; and only the **host slot** is tested for `$`, since testing the whole entry passed
+  `"5432:${CONTAINER_PORT}"` as templated while the host side stayed pinned. Variables are
+  masked to a colon-free sentinel before the slots are split, because `${VAR:-5432}` contains
+  a colon. **Anything it can't classify is reported as a problem, never as ok** — an alias
+  (`ports: *shared`), an unrecognized scalar. That's the whole point: the check is allowed to
+  say "I couldn't read this", but never allowed to claim clean on a pattern it didn't parse.
+  `_yaml_key_regions` strips comments itself (`_strip_hash_comments`) so no caller can forget.
+  Still **report-only** (`autofix=None`): splashdown ships no YAML parser (deps are frozen at
+  two), so a rewrite would be regex over indentation-sensitive text — reading a value region
+  is bounded, rewriting one is not.
+  `compose_project_resources` (`:189`) emits
   `COMPOSE_PROJECT_NAME` — the one value that needs no compose edit, since compose reads it
   from the environment — and deliberately invents no per-service ports, because which service
   deserves a pinned port is a judgement call and wrong guesses become config the user must
-  undo. `cmd_doctor` appends these via `compose_wiring_checks` (`:498`) against the repo root,
+  undo. `cmd_doctor` appends these via `compose_wiring_checks` (`:207`) against the repo root,
   independent of the resolved framework.
-- **`springboot-application-properties`** (`src/splashdown/profiles.py:867`, detect at
-  `:881`) — checks that `application.properties`/`application.yml` uses the
-  `server.port=${PORT:8080}` placeholder. **Report-only**: `autofix=None`
-  (`src/splashdown/profiles.py:486`) because rewriting Java/Spring config is too risky
-  to mechanize; only manual instructions are printed.
+- **`springboot-application-properties`** (`src/splashdown/profiles.py:1089`, detect at
+  `:1133`) — checks that every config Spring may load uses the `server.port=${PORT:8080}`
+  placeholder. `_springboot_declared_port` reads two spellings: the flat `server.port` form
+  (all a `.properties` file can write) and YAML's nested `server:` block, which the original
+  `server\.port\s*[:=]` regex could never match — so correctly wired YAML projects carried a
+  permanent `✗`. Files are scanned individually via `_springboot_config_files`, which globs
+  `application*` rather than reading two fixed names: a profile-specific
+  `application-dev.properties` pinning a literal overrides a wired base file, and the old
+  concatenate-then-search collapsed exactly that case into a green. **Report-only**:
+  `autofix=None` because rewriting Java/Spring config is too risky to mechanize; only
+  manual instructions are printed.
 - **`laravel` → `vite-port-wired`** — Laravel is the only profile that claims two ports,
   because a Laravel app runs two dev servers: `php artisan serve` (`SERVER_PORT`, read
   straight from the environment) and, since Laravel 9, Vite for assets. It reuses vite's
@@ -178,11 +220,13 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
 
 - `src/splashdown/wiring.py:23` — `WiringCheck` NamedTuple (the check contract).
 - `src/splashdown/wiring.py:38` — `_RN_WIRING_CHECKS` registry; `:438` `_HOOK_WIRING_CHECK`.
-- `src/splashdown/wiring.py:72` — `cmd_doctor` run loop (detect / `--fix` / manual).
-- `src/splashdown/wiring.py:41` — `_resolve_doctor_framework`; `:52` `_wiring_checks_for_framework`.
-- `src/splashdown/wiring.py:137`/`:201`/`:304`/`:387` — `rn-hook`, `rn-metro-config`, `rn-pkg-port`, `rn-xcode-env` detect/autofix.
+- `src/splashdown/wiring.py:215` — `cmd_doctor` run loop (detect / `--fix` / manual).
+- `src/splashdown/wiring.py:175` — `_resolve_doctor_framework`; `:203` `_wiring_checks_for_framework`.
+- `src/splashdown/wiring.py:277`/`:359`/`:462`/`:545` — `rn-hook`, `rn-metro-config`, `rn-pkg-port`, `rn-xcode-env` detect/autofix.
 - `src/splashdown/wiring.py:373` — `ios/.xcode.env` sentinel-wrapped managed block.
-- `src/splashdown/profiles.py:705`/`:506`/`:694` — `vite-config-process-env` (autofix), `vite-port-wired` and `springboot-application-properties` (both report-only) checks.
+- `src/splashdown/profiles.py:514`/`:488`/`:1089` — `vite-config-process-env` (autofix), `vite-port-wired` and `springboot-application-properties` (both report-only) checks.
+- `src/splashdown/wiring.py:47`/`:67`/`:136` — `_strip_hash_comments` / `_strip_js_comments` / `_yaml_key_regions`, the lexical helpers every detect uses to read config without a parser.
+- `src/splashdown/wiring.py:194` — `_run_detect`, the guard that turns a raising check into one `✗`.
 - `src/splashdown/cli.py:185` — `doctor` argparse parser (`--fix`, `--framework`); dispatch at `src/splashdown/cli.py:358`.
 - `src/splashdown/commands.py:1305` — `init` post-scaffold wiring loop; `:267` `_ensure_post_checkout_hook` (shared hook coexistence).
 
