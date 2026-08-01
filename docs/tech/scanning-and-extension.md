@@ -131,35 +131,44 @@ The concrete profiles and the **detection-precedence order** they are registered
 ```
 PROFILES["astro"]           (profiles.py:318)
 PROFILES["laravel"]         (profiles.py:473)
-PROFILES["vite"]            (profiles.py:476)
-PROFILES["node-backend"]    (profiles.py:501)
-PROFILES["nextjs"]          (profiles.py:529)
-PROFILES["django"]          (profiles.py:550)
-PROFILES["fastapi"]         (profiles.py:570)
-PROFILES["flask"]           (profiles.py:594)
-PROFILES["springboot"]      (profiles.py:647)
-PROFILES["aspnetcore"]      (profiles.py:808)
-PROFILES["rails"]           (profiles.py:829)
-PROFILES["flutter"]         (profiles.py:928)
-PROFILES["expo"]            (profiles.py:929)
-PROFILES["react-native"]    (profiles.py:930)
-PROFILES["ios-native"]      (profiles.py:931)
-PROFILES["android-native"]  (profiles.py:932)
+PROFILES["nuxt"]            (profiles.py:498)
+PROFILES["angular"]         (profiles.py:581)
+PROFILES["vite"]            (profiles.py:583)
+PROFILES["node-backend"]    (profiles.py:608)
+PROFILES["deno"]            (profiles.py:712)
+PROFILES["nextjs"]          (profiles.py:740)
+PROFILES["django"]          (profiles.py:761)
+PROFILES["fastapi"]         (profiles.py:781)
+PROFILES["flask"]           (profiles.py:805)
+PROFILES["springboot"]      (profiles.py:858)
+PROFILES["aspnetcore"]      (profiles.py:1022)
+PROFILES["rails"]           (profiles.py:1043)
+PROFILES["flutter"]         (profiles.py:1142)
+PROFILES["expo"]            (profiles.py:1143)
+PROFILES["react-native"]    (profiles.py:1144)
+PROFILES["ios-native"]      (profiles.py:1145)
+PROFILES["android-native"]  (profiles.py:1146)
 ```
 
 Two orderings here are load-bearing and were both found by running real generated
 projects rather than by reading detection code:
 
-- **`laravel` before `vite`.** Laravel has shipped a `vite.config.js` since Laravel 9, so
+- **`laravel`, `nuxt` and `angular` before `vite`.** Laravel has shipped a `vite.config.js` since Laravel 9, so
   `ViteProfile` matches every modern Laravel app. Registered after vite, `LaravelProfile`
   was dead code on real projects and the PHP server's port went unmanaged. Its detection
   needs `artisan` *and* `laravel/framework` in `composer.json`, so it cannot steal a plain
   Vite app. Laravel is also the one profile that claims two ports (`SERVER_PORT` for
   `php artisan serve`, `WEB_DEV_PORT` for the asset server) because it runs two dev
-  servers that both collide across worktrees.
+  servers that both collide across worktrees. `nuxt` is Vite-based for the same reason
+  (a Nuxt app that adds a vite.config would otherwise get a `WEB_DEV_PORT` that
+  `nuxt dev` never reads), and `angular` is registered alongside them for symmetry
+  since Angular's builder is Vite-backed from v17 on.
 - **`flask` after `fastapi`.** Both substring-match the same `pyproject.toml` /
   `requirements.txt`, and flask is the more common incidental dependency of the two, so a
   project declaring both resolves to fastapi.
+
+`reads_dotenv` is False for `angular` and `deno`: neither reads a dotenv file, and both
+need their port threaded through a command line rather than an environment lookup.
 
 Each `PROFILES[...] = ...(...)` assignment runs at import; **list order is registration
 order is detection precedence.** The mobile block at the end is ordered deliberately

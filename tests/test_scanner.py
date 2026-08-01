@@ -982,6 +982,144 @@ def test_aspnet_legacy_tfm_never_autofixes(tmp_path):
     assert settings.read_text() == original  # untouched
 
 
+def _angular_app(tmp_path, start_script):
+    (tmp_path / "angular.json").write_text('{"projects": {"app": {}}}')
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"start": start_script}}))
+    app = sd.AppInventory(name="web", path=tmp_path, profile="angular")
+    check = next(c for c in sd.PROFILES["angular"].wiring_checks(app) if c.id == "angular-pkg-port")
+    return check
+
+
+def test_angular_profile_detects_angular_json(tmp_path):
+    (tmp_path / "angular.json").write_text("{}")
+    assert sd.PROFILES["angular"].detect(tmp_path) is True
+
+
+def test_angular_profile_emits_port_resource(tmp_path):
+    (tmp_path / "angular.json").write_text("{}")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="angular")
+    assert sd.PROFILES["angular"].resources(app) == {
+        "WEB_DEV_PORT": {"type": "port", "range": [4201, 4300]}
+    }
+
+
+def test_angular_wiring_flags_and_fixes_unwired_serve_script(tmp_path):
+    check = _angular_app(tmp_path, "ng serve")
+    status, detail = check.detect(tmp_path)
+    assert status == "problem"
+    assert "start" in detail
+    check.autofix(tmp_path)
+    assert check.detect(tmp_path)[0] == "ok"
+    scripts = json.loads((tmp_path / "package.json").read_text())["scripts"]
+    assert scripts["start"] == "ng serve --port $WEB_DEV_PORT"
+
+
+def test_angular_wiring_replaces_literal_port(tmp_path):
+    check = _angular_app(tmp_path, "ng serve --port 4300 --open")
+    check.autofix(tmp_path)
+    scripts = json.loads((tmp_path / "package.json").read_text())["scripts"]
+    assert scripts["start"] == "ng serve --open --port $WEB_DEV_PORT"
+    assert "4300" not in scripts["start"]
+
+
+def test_angular_wiring_ok_when_already_wired(tmp_path):
+    check = _angular_app(tmp_path, "ng serve --port $WEB_DEV_PORT")
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_angular_wiring_ok_when_no_serve_script(tmp_path):
+    check = _angular_app(tmp_path, "ng build")
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_nuxt_profile_detects_config_and_dep(tmp_path, tmp_path_factory):
+    (tmp_path / "nuxt.config.ts").write_text("export default defineNuxtConfig({})")
+    assert sd.PROFILES["nuxt"].detect(tmp_path) is True
+    other = tmp_path_factory.mktemp("bydep")
+    (other / "package.json").write_text('{"dependencies": {"nuxt": "^4"}}')
+    assert sd.PROFILES["nuxt"].detect(other) is True
+
+
+def test_nuxt_profile_emits_nuxt_port(tmp_path):
+    (tmp_path / "nuxt.config.ts").write_text("export default {}")
+    app = sd.AppInventory(name="web", path=tmp_path, profile="nuxt")
+    assert sd.PROFILES["nuxt"].resources(app) == {
+        "NUXT_PORT": {"type": "port", "range": [3001, 3100]}
+    }
+
+
+def test_nuxt_beats_vite_when_both_configs_present(tmp_path):
+    # Nuxt is Vite-based; a project that adds a vite.config must still resolve to nuxt
+    # or it gets a WEB_DEV_PORT that `nuxt dev` never reads.
+    (tmp_path / "nuxt.config.ts").write_text("export default {}")
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    assert sd.Scanner().scan(tmp_path).apps[0].profile == "nuxt"
+
+
+def _deno_app(tmp_path, config, name="deno.json"):
+    (tmp_path / name).write_text(config)
+    app = sd.AppInventory(name="api", path=tmp_path, profile="deno")
+    return next(c for c in sd.PROFILES["deno"].wiring_checks(app) if c.id == "deno-port-wired")
+
+
+def test_deno_profile_detects_json_and_jsonc(tmp_path, tmp_path_factory):
+    (tmp_path / "deno.json").write_text("{}")
+    assert sd.PROFILES["deno"].detect(tmp_path) is True
+    other = tmp_path_factory.mktemp("jsonc")
+    (other / "deno.jsonc").write_text("// comment\n{}")
+    assert sd.PROFILES["deno"].detect(other) is True
+
+
+def test_deno_profile_emits_port_resource(tmp_path):
+    (tmp_path / "deno.json").write_text("{}")
+    app = sd.AppInventory(name="api", path=tmp_path, profile="deno")
+    assert sd.PROFILES["deno"].resources(app) == {"PORT": {"type": "port", "range": [8001, 8100]}}
+
+
+def test_deno_autofix_inserts_port_before_the_script_arg(tmp_path):
+    """Regression: `deno serve` passes everything after the script argument to the
+    script itself, so an appended --port is silently ignored and the server keeps
+    binding 8000. The flag has to land directly after `deno serve`."""
+    check = _deno_app(tmp_path, '{"tasks": {"dev": "deno serve --allow-net server.ts"}}')
+    assert check.detect(tmp_path)[0] == "problem"
+    check.autofix(tmp_path)
+    task = json.loads((tmp_path / "deno.json").read_text())["tasks"]["dev"]
+    assert task == "deno serve --port $PORT --allow-net server.ts"
+    assert not task.endswith("$PORT")
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_deno_autofix_leaves_deno_run_tasks_alone(tmp_path):
+    # `deno run` takes no --port; the port has to be read in code instead.
+    original = '{"tasks": {"dev": "deno run --allow-net main.ts"}}'
+    check = _deno_app(tmp_path, original)
+    check.autofix(tmp_path)
+    assert (tmp_path / "deno.json").read_text() == original
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_deno_detect_accepts_code_that_reads_port(tmp_path):
+    check = _deno_app(tmp_path, '{"tasks": {"dev": "deno run main.ts"}}')
+    (tmp_path / "main.ts").write_text(
+        'Deno.serve({ port: Number(Deno.env.get("PORT")) || 8000 }, () => new Response("ok"));'
+    )
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_deno_autofix_skips_jsonc_to_preserve_comments(tmp_path):
+    original = '// keep me\n{"tasks": {"dev": "deno serve server.ts"}}'
+    check = _deno_app(tmp_path, original, name="deno.jsonc")
+    check.autofix(tmp_path)
+    assert (tmp_path / "deno.jsonc").read_text() == original
+
+
+def test_aspnetcore_detects_blazor_webassembly_sdk(tmp_path):
+    # blazor/mvc/webapi/razor all emit Microsoft.NET.Sdk.Web; only standalone Blazor
+    # WASM uses its own SDK, and it shares the same launchSettings mechanics.
+    (tmp_path / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly" />')
+    assert sd.PROFILES["aspnetcore"].detect(tmp_path) is True
+
+
 def test_laravel_profile_emits_port_resource(tmp_path):
     (tmp_path / "artisan").write_text("")
     (tmp_path / "composer.json").write_text('{"require": {"laravel/framework": "^11.0"}}')

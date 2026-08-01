@@ -473,6 +473,113 @@ class LaravelProfile(Profile):
 PROFILES["laravel"] = LaravelProfile()
 
 
+_NUXT_CONFIG_NAMES = ("nuxt.config.ts", "nuxt.config.js", "nuxt.config.mjs")
+
+
+class NuxtProfile(Profile):
+    name = "nuxt"
+    env_only = True
+    reads_dotenv = True
+
+    def detect(self, app_path: Path) -> bool:
+        if any((app_path / n).exists() for n in _NUXT_CONFIG_NAMES):
+            return True
+        return "nuxt" in _read_pkg_deps(app_path)
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # NUXT_PORT rather than the also-supported PORT: the specific name can't be
+        # claimed by a sibling backend in a monorepo. Skips Nuxt's own 3000.
+        return {"NUXT_PORT": {"type": "port", "range": [3001, 3100]}}
+
+
+# Ahead of `vite` for the same reason as laravel: Nuxt is Vite-based, and while the
+# minimal template ships no vite.config, a project that adds one must still resolve to
+# nuxt — ViteProfile would emit WEB_DEV_PORT that `nuxt dev` never reads.
+PROFILES["nuxt"] = NuxtProfile()
+
+
+class AngularProfile(Profile):
+    name = "angular"
+
+    def detect(self, app_path: Path) -> bool:
+        return (app_path / "angular.json").exists()
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # Skips Angular's own 4200 so an unwired app can't look wired.
+        return {"WEB_DEV_PORT": {"type": "port", "range": [4201, 4300]}}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_angular_pkg_port_check()]
+
+
+_NG_SERVE_RE = re.compile(r"\bng\s+serve\b")
+_NG_LITERAL_PORT_RE = re.compile(r"\s+--port[=\s]\d+")
+_NG_PORT_VAR = "$WEB_DEV_PORT"
+
+
+def _angular_serve_scripts(data: Any) -> dict[str, str]:
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    if not isinstance(scripts, dict):
+        return {}
+    return {k: v for k, v in scripts.items() if isinstance(v, str) and _NG_SERVE_RE.search(v)}
+
+
+def _angular_pkg_port_check() -> WiringCheck:
+    """Angular reads no environment variable for its dev-server port — only
+    `angular.json` or `--port`. Writing the allocated port as a literal into the
+    (committed) angular.json would churn it in every worktree, which is the collision
+    splashdown exists to remove, so the port is passed through the npm script instead:
+    npm runs scripts via a shell, so `$WEB_DEV_PORT` expands from the loader's env."""
+    return WiringCheck(
+        id="angular-pkg-port",
+        description="package.json `ng serve` scripts pass --port $WEB_DEV_PORT",
+        applies=lambda cwd: (cwd / "package.json").exists() and (cwd / "angular.json").exists(),
+        detect=_angular_pkg_port_detect,
+        autofix=_angular_pkg_port_autofix,
+        manual_instructions=_angular_pkg_port_manual,
+    )
+
+
+def _angular_pkg_port_detect(cwd: Path) -> tuple[str, str]:
+    try:
+        data = json.loads((cwd / "package.json").read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        return ("problem", f"could not read package.json: {e}")
+    serving = _angular_serve_scripts(data)
+    if not serving:
+        return ("ok", "no `ng serve` script to wire")
+    unwired = [n for n, v in serving.items() if "WEB_DEV_PORT" not in v]
+    if unwired:
+        return ("problem", f"`ng serve` scripts ignore WEB_DEV_PORT: {', '.join(unwired)}")
+    return ("ok", "`ng serve` scripts pass WEB_DEV_PORT")
+
+
+def _angular_pkg_port_autofix(cwd: Path) -> None:
+    path = cwd / "package.json"
+    data = json.loads(path.read_text())
+    scripts = data["scripts"]
+    changed = False
+    for name, value in _angular_serve_scripts(data).items():
+        if "WEB_DEV_PORT" in value:
+            continue
+        # Drop any literal --port first so the file keeps one source of truth.
+        scripts[name] = f"{_NG_LITERAL_PORT_RE.sub('', value).rstrip()} --port {_NG_PORT_VAR}"
+        changed = True
+    if changed:
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        print("patched package.json (ng serve --port $WEB_DEV_PORT)", file=sys.stderr)
+
+
+def _angular_pkg_port_manual(cwd: Path) -> str:
+    return (
+        "Angular exposes no env var for the dev-server port, so pass it in the script:\n"
+        '  "start": "ng serve --port $WEB_DEV_PORT"\n'
+        "This wires `npm start`; a bare `ng serve` still uses angular.json's default."
+    )
+
+
+PROFILES["angular"] = AngularProfile()
+
 PROFILES["vite"] = ViteProfile()
 
 _NODE_BACKEND_DEPS = {"hono", "express", "fastify", "koa", "@hapi/hapi", "@nestjs/core"}
@@ -499,6 +606,110 @@ class NodeBackendProfile(Profile):
 
 
 PROFILES["node-backend"] = NodeBackendProfile()
+
+_DENO_CONFIG_NAMES = ("deno.json", "deno.jsonc")
+_DENO_SERVE_RE = re.compile(r"\bdeno\s+serve\b")
+_DENO_LITERAL_PORT_RE = re.compile(r"\s+--port[=\s]\d+")
+
+
+def _deno_config_path(app_path: Path) -> Path | None:
+    for name in _DENO_CONFIG_NAMES:
+        candidate = app_path / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+class DenoProfile(Profile):
+    name = "deno"
+
+    def detect(self, app_path: Path) -> bool:
+        return _deno_config_path(app_path) is not None
+
+    def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
+        # Skips Deno.serve's own 8000. Note Deno reads no PORT of its own (verified
+        # against `deno serve` and `Deno.serve()` — both bind 8000 with PORT set), so
+        # this is only useful once the wiring check below is satisfied.
+        return {"PORT": {"type": "port", "range": [8001, 8100]}}
+
+    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+        return [_deno_port_check()]
+
+
+def _deno_port_check() -> WiringCheck:
+    """Deno is the one runtime here with no port convention at all: neither
+    `deno serve` nor `Deno.serve()` consults an environment variable, so an allocated
+    PORT reaches nothing until either a task passes `--port $PORT` or the server code
+    reads it. Only the first is mechanical, so autofix handles `deno serve` tasks and
+    everything else falls through to instructions."""
+    return WiringCheck(
+        id="deno-port-wired",
+        description="a deno task or the server code consumes PORT",
+        applies=lambda cwd: _deno_config_path(cwd) is not None,
+        detect=_deno_port_detect,
+        autofix=_deno_port_autofix,
+        manual_instructions=_deno_port_manual,
+    )
+
+
+def _deno_sources_read_port(cwd: Path) -> bool:
+    """Whether a top-level source file reads PORT itself. Root-only and non-recursive:
+    this is a cheap positive signal, not an audit."""
+    for path in sorted([*cwd.glob("*.ts"), *cwd.glob("*.js"), *cwd.glob("*.tsx")]):
+        try:
+            if 'env.get("PORT")' in path.read_text() or "env.get('PORT')" in path.read_text():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _deno_port_detect(cwd: Path) -> tuple[str, str]:
+    cfg = _deno_config_path(cwd)
+    if cfg is None:
+        raise DeviceError("deno.json* not found")
+    # Text scan rather than a parse: deno.jsonc allows comments, which json.loads rejects.
+    if "$PORT" in cfg.read_text() or "${PORT}" in cfg.read_text():
+        return ("ok", f"{cfg.name} passes PORT to the server")
+    if _deno_sources_read_port(cwd):
+        return ("ok", "server code reads PORT from the environment")
+    return ("problem", "nothing consumes PORT; Deno has no port env var of its own")
+
+
+def _deno_port_autofix(cwd: Path) -> None:
+    cfg = _deno_config_path(cwd)
+    # jsonc may carry comments that a json round-trip would delete.
+    if cfg is None or cfg.name.endswith(".jsonc"):
+        return
+    data = json.loads(cfg.read_text())
+    tasks = data.get("tasks")
+    if not isinstance(tasks, dict):
+        return
+    changed = False
+    for name, value in tasks.items():
+        if not isinstance(value, str) or not _DENO_SERVE_RE.search(value) or "$PORT" in value:
+            continue
+        # Insert directly after `deno serve`, never at the end: everything following
+        # the script argument is passed to the script, so an appended --port is
+        # silently ignored and the server keeps binding 8000.
+        stripped = _DENO_LITERAL_PORT_RE.sub("", value)
+        tasks[name] = _DENO_SERVE_RE.sub("deno serve --port $PORT", stripped, count=1)
+        changed = True
+    if changed:
+        cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        print(f"patched {cfg.name} (deno serve --port $PORT)", file=sys.stderr)
+
+
+def _deno_port_manual(cwd: Path) -> str:
+    return (
+        "Deno reads no PORT env var of its own. Either pass it from the deno.json task:\n"
+        '  "dev": "deno serve --port $PORT main.ts"\n'
+        "or read it where the server starts:\n"
+        '  Deno.serve({ port: Number(Deno.env.get("PORT")) || 8000 }, handler)'
+    )
+
+
+PROFILES["deno"] = DenoProfile()
 
 _NEXTJS_CONFIG_NAMES = ("next.config.js", "next.config.ts", "next.config.mjs")
 
@@ -646,7 +857,10 @@ def _springboot_app_props_manual(cwd: Path) -> str:
 
 PROFILES["springboot"] = SpringBootProfile()
 
-_CSPROJ_WEB_SDK_RE = re.compile(r'Sdk\s*=\s*"Microsoft\.NET\.Sdk\.Web"')
+# `dotnet new blazor|mvc|webapi|razor` all emit Microsoft.NET.Sdk.Web; only standalone
+# Blazor WebAssembly uses its own SDK. Both ship the same launchSettings.json shape and
+# both honour ASPNETCORE_HTTP_PORTS, so one profile covers them.
+_CSPROJ_WEB_SDK_RE = re.compile(r'Sdk\s*=\s*"Microsoft\.NET\.Sdk\.(?:Web|BlazorWebAssembly)"')
 
 
 def _launch_settings_path(app_path: Path) -> Path:

@@ -341,6 +341,80 @@ type  = "port"
 range = [5201, 5300]
 """
 
+_ANGULAR_SCAFFOLD = """\
+# splashdown.toml — Angular preset.
+#
+# Angular reads NO environment variable for its dev-server port — only angular.json
+# or `--port`. Writing the allocated port into the committed angular.json would churn
+# it in every worktree, so the port is passed through the npm script instead:
+#     "start": "ng serve --port $WEB_DEV_PORT"
+# npm runs scripts through a shell, so the value your loader exports expands.
+# `splash doctor --fix` rewrites the script for you.
+#
+# Caveat: this wires `npm start`. A bare `ng serve` still uses angular.json's default.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[apps.main]
+path      = "."
+profile   = "angular"
+resources = ["WEB_DEV_PORT"]
+
+# Skips Angular's own 4200 so an unwired checkout can't look wired.
+[resources.WEB_DEV_PORT]
+type  = "port"
+range = [4201, 4300]
+"""
+
+_NUXT_SCAFFOLD = """\
+# splashdown.toml — Nuxt preset. `nuxt dev` reads NUXT_PORT (and PORT) straight from
+# the environment, so no config patching is needed. NUXT_PORT is used here rather than
+# the generic PORT so a sibling backend in a monorepo can keep PORT for itself.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[apps.main]
+path      = "."
+profile   = "nuxt"
+resources = ["NUXT_PORT"]
+
+# Skips Nuxt's own 3000 so an unwired checkout can't look wired.
+[resources.NUXT_PORT]
+type  = "port"
+range = [3001, 3100]
+"""
+
+_DENO_SCAFFOLD = """\
+# splashdown.toml — Deno preset.
+#
+# Deno reads no PORT of its own: `deno serve` and `Deno.serve()` both bind 8000 no
+# matter what the environment says. Something has to consume the value — either pass
+# it from the deno.json task:
+#     "dev": "deno serve --port $PORT --allow-net server.ts"
+# (the flag must come BEFORE the script argument; anything after it is passed to the
+# script, not to Deno), or read it where the server starts:
+#     Deno.serve({ port: Number(Deno.env.get("PORT")) || 8000 }, handler)
+# `splash doctor --fix` handles the `deno serve` task form; the code form is manual.
+
+[project]
+workspace = "single"
+loader = "__SPLASH_LOADER__"
+
+[apps.main]
+path      = "."
+profile   = "deno"
+resources = ["PORT"]
+
+# Skips Deno.serve's own 8000 so an unwired checkout can't look wired.
+[resources.PORT]
+type  = "port"
+range = [8001, 8100]
+"""
+
 SCAFFOLDS: dict[str, str] = {
     "minimal": _MINIMAL_SCAFFOLD,
     "astro": _ASTRO_SCAFFOLD,
@@ -355,6 +429,9 @@ SCAFFOLDS: dict[str, str] = {
     "flask": _FLASK_SCAFFOLD,
     "laravel": _LARAVEL_SCAFFOLD,
     "aspnetcore": _ASPNETCORE_SCAFFOLD,
+    "angular": _ANGULAR_SCAFFOLD,
+    "nuxt": _NUXT_SCAFFOLD,
+    "deno": _DENO_SCAFFOLD,
     "server": _SERVER_SCAFFOLD,
     "nextjs": _SERVER_SCAFFOLD,  # historical alias for server
 }

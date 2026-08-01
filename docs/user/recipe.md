@@ -9,10 +9,11 @@ loader    = "mise"             # mise | direnv | devbox | none
 
 [apps.api]
 path      = "apps/api"
-profile   = "node-backend"     # astro | vite | nextjs | node-backend | django |
-                               # fastapi | flask | springboot | aspnetcore |
-                               # rails | laravel | react-native | expo |
-                               # flutter | ios-native | android-native | unknown
+profile   = "node-backend"     # astro | vite | angular | nuxt | nextjs |
+                               # node-backend | deno | django | fastapi | flask |
+                               # springboot | aspnetcore | rails | laravel |
+                               # react-native | expo | flutter | ios-native |
+                               # android-native | unknown
 resources = ["PORT"]
 
 [apps.web-admin]
