@@ -36,6 +36,140 @@ class WiringCheck(NamedTuple):
 _RN_WIRING_CHECKS: list[WiringCheck] = []
 
 
+# Detection is substring- and regex-based across every check here, which makes
+# commented-out config the standing hazard: a `// server: { port: process.env.X }`
+# left behind from a previous attempt reads exactly like working wiring, and the
+# check then prints a ✓ claiming the project is wired. Every detect that scans a
+# commentable file strips comments first. These are deliberately lexical, not
+# parsers — enough to tell code from commentary, nothing more.
+
+
+def _strip_hash_comments(text: str) -> str:
+    """Drop `#` comments from YAML / .properties / shell text, honouring quotes.
+    Indentation is preserved: YAML block structure is read off it."""
+    out: list[str] = []
+    for line in text.splitlines():
+        kept: list[str] = []
+        quote = ""
+        for ch in line:
+            if quote:
+                if ch == quote:
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "#" and (not kept or kept[-1] in " \t"):
+                break
+            kept.append(ch)
+        out.append("".join(kept).rstrip())
+    return "\n".join(out)
+
+
+def _strip_js_comments(text: str) -> str:
+    """Drop `//` and `/* */` comments from JS/JSONC text, honouring quotes.
+    Newlines inside block comments are kept so line-oriented checks still line up."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    quote = ""
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                out.append(text[i : i + 2])
+                i += 2
+                continue
+            # A `'` or `"` in a regex character class (`/['"]/`) opens a quote that
+            # never closes, and an unstripped tail then reads commented-out wiring as
+            # real. Only a template literal may span lines, so a newline closes the rest.
+            if ch == quote or (ch == "\n" and quote != "`"):
+                quote = ""
+            out.append(ch)
+        elif ch == "\\":  # an escaped `/` must not start a comment
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        elif ch in "\"'`":
+            quote = ch
+            out.append(ch)
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            chunk = text[i:] if end == -1 else text[i : end + 2]
+            out.append("\n" * chunk.count("\n"))
+            i += len(chunk)
+            continue
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _yaml_flow_value(text: str, start: int) -> str:
+    """The flow scalar or bracketed collection at `start`, ending at the first
+    top-level `,`/`}`/`]` or end of line. Quote- and depth-aware so a `,` inside
+    `['5432:5432', ...]` or a `:` inside `${PORT:-5432}` doesn't terminate it."""
+    depth, quote = 0, ""
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and ch in ",\n":
+            break
+        i += 1
+    return text[start:i]
+
+
+def _yaml_key_regions(text: str, key: str, *, indent: int | None = None) -> list[str]:
+    """The value text of every `<key>:` mapping entry: the flow value on the same
+    line, or the indented block beneath it. Anchoring a regex on block layout is
+    what silently missed every flow-style spelling, so the key is matched both at
+    line start and inside a flow mapping (`db: { ports: [...] }`). Pass `indent` to
+    accept only keys at that column — spring's `server:` must not match
+    `management:`'s nested one. Comments are stripped here so no caller can forget."""
+    text = _strip_hash_comments(text)
+    pattern = re.compile(
+        rf"(?:^|(?<=[{{,]))([ \t]*)(?:-[ \t]+)?{re.escape(key)}[ \t]*:", re.MULTILINE
+    )
+    regions: list[str] = []
+    for m in pattern.finditer(text):
+        at_line_start = m.start() == text.rfind("\n", 0, m.start()) + 1
+        if indent is not None and not (at_line_start and len(m.group(1)) == indent):
+            continue
+        inline = _yaml_flow_value(text, m.end()).strip()
+        if inline:
+            regions.append(inline)
+            continue
+        if not at_line_start:
+            continue
+        key_indent = len(m.group(1))
+        block: list[str] = []
+        for line in text[m.end() :].splitlines()[1:]:
+            stripped = line.lstrip()
+            if stripped:
+                line_indent = len(line) - len(stripped)
+                # A block sequence may sit at its key's own indent, which is both
+                # legal and common (`ports:` then `- "5432:5432"` at the same column).
+                if line_indent < key_indent:
+                    break
+                if line_indent == key_indent and not stripped.startswith("-"):
+                    break
+            block.append(line)
+        regions.append("\n".join(block))
+    return regions
+
+
 def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
     """Pick the framework for doctor to check. Returns None if undetectable."""
     try:
@@ -53,6 +187,15 @@ def _resolve_doctor_target(cwd: Path, override: str | None) -> tuple[str, Path]:
     recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
     framework = detect_framework(cwd, recipe)
     return (framework, resolve_app_dir(cwd, recipe, framework))
+
+
+def _run_detect(check: WiringCheck, cwd: Path) -> tuple[str, str]:
+    """A detect() that raises costs one ✗, not the whole doctor run — and never a ✓:
+    an unreadable file is precisely the case where the check knows nothing."""
+    try:
+        return check.detect(cwd)
+    except Exception as e:  # noqa: BLE001 - report rather than crash whole run
+        return ("problem", f"check could not run: {e}")
 
 
 def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]:
@@ -100,7 +243,7 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
         if not check.applies(check_dir):
             print(f"  -  {check.id}: not applicable", file=sys.stderr)
             continue
-        status, detail = check.detect(check_dir)
+        status, detail = _run_detect(check, check_dir)
         if status == "ok":
             print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
             continue
@@ -111,7 +254,7 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
                 print(f"  ✗  {check.id}: autofix failed: {e}", file=sys.stderr)
                 bad += 1
                 continue
-            status_after, detail_after = check.detect(check_dir)
+            status_after, detail_after = _run_detect(check, check_dir)
             if status_after == "ok":
                 print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
                 continue
@@ -134,20 +277,23 @@ def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
     if manager == "lefthook":
         path = _lefthook_config_path(cwd)
         if path.exists():
-            text = path.read_text()
+            # Lefthook's scaffolded config is mostly commented-out examples, so an
+            # unstripped scan reads one as a live hook — and a hook that never fires
+            # is the root cause of stale registry entries and port collisions.
+            text = _strip_hash_comments(path.read_text())
             if re.search(r"post-checkout\s*:", text) and re.search(r"\brun\s*:\s*splash\b", text):
                 return ("ok", "lefthook post-checkout invokes splash")
         return ("problem", "lefthook detected; post-checkout doesn't invoke splash")
     if manager == "husky":
         hook = cwd / ".husky" / "post-checkout"
-        if hook.exists() and "splash" in hook.read_text():
+        if hook.exists() and "splash" in _strip_hash_comments(hook.read_text()):
             return ("ok", "husky .husky/post-checkout invokes splash")
         return ("problem", "husky detected; .husky/post-checkout missing or doesn't invoke splash")
     if manager == "core-hookspath-other":
         return ("problem", "core.hooksPath points to a custom dir; can't auto-wire there")
     # Clean: expect .githooks + core.hooksPath = .githooks.
     hook = cwd / ".githooks" / "post-checkout"
-    if hook.exists() and "splash" in hook.read_text():
+    if hook.exists() and "splash" in _strip_hash_comments(hook.read_text()):
         try:
             out = (
                 subprocess.check_output(
@@ -209,7 +355,7 @@ def _rn_metro_applies(cwd: Path) -> bool:
 
 
 def _rn_metro_detect(cwd: Path) -> tuple[str, str]:
-    text = (cwd / "metro.config.js").read_text()
+    text = _strip_js_comments((cwd / "metro.config.js").read_text())
     if "process.env.RCT_METRO_PORT" in text:
         return ("ok", "metro.config.js reads process.env.RCT_METRO_PORT")
     if _METRO_LITERAL_PORT_RE.search(text):
@@ -395,7 +541,7 @@ def _rn_xcode_applies(cwd: Path) -> bool:
 
 
 def _rn_xcode_detect(cwd: Path) -> tuple[str, str]:
-    text = (cwd / "ios" / ".xcode.env").read_text()
+    text = _strip_hash_comments((cwd / "ios" / ".xcode.env").read_text())
     # A reference to splashdown.env means *somebody* wired it to the per-checkout
     # env file — sentinel block, hand-written conditional, etc. All fine.
     if "splashdown.env" in text:

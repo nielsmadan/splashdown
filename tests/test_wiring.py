@@ -946,3 +946,112 @@ def test_cmd_init_without_compose_emits_no_compose_resource(tmp_path):
     sd.cmd_init(tmp_path)
     recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
     assert "COMPOSE_PROJECT_NAME" not in recipe.resources
+
+
+def test_rn_metro_detect_ignores_commented_out_wiring(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "// server: { port: Number(process.env.RCT_METRO_PORT) }\n"
+        "module.exports = { server: { port: 8083 } };\n"
+    )
+    status, detail = sd._rn_metro_detect(tmp_path)
+    assert status == "problem"
+    assert "autofixable" in detail
+
+
+def test_rn_xcode_detect_ignores_a_commented_out_reference(tmp_path):
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / ".xcode.env").write_text(
+        "# source ../splashdown.env\nexport RCT_METRO_PORT=8083\n"
+    )
+    status, detail = sd._rn_xcode_detect(tmp_path)
+    assert status == "problem"
+    assert "literal" in detail
+
+
+def test_vite_checks_ignore_commented_out_wiring(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(
+        "/* server: { port: Number(process.env.WEB_DEV_PORT) } */\nexport default {};\n"
+    )
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-port-wired")
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_astro_check_ignores_commented_out_wiring(tmp_path):
+    (tmp_path / "astro.config.mjs").write_text(
+        "// port: process.env.WEB_DEV_PORT\nexport default defineConfig({});\n"
+    )
+    app = sd.AppInventory(name="web", path=tmp_path, profile="astro")
+    check = next(c for c in sd.PROFILES["astro"].wiring_checks(app) if c.id == "astro-config-port")
+    assert check.detect(tmp_path)[0] == "problem"
+
+
+def test_doctor_reports_a_raising_check_instead_of_crashing(tmp_path, capsys, monkeypatch):
+    # A detect() that blows up must cost one ✗, not the whole run.
+    def boom(cwd):
+        raise OSError("permission denied")
+
+    (tmp_path / "metro.config.js").write_text("module.exports = {};\n")
+    broken = sd.WiringCheck(
+        id="boom",
+        description="always raises",
+        applies=lambda cwd: True,
+        detect=boom,
+        autofix=None,
+        manual_instructions=None,
+    )
+    monkeypatch.setattr(sd.wiring, "_wiring_checks_for_framework", lambda f, c: [broken])
+    rc = sd.cmd_doctor(tmp_path, framework_override="react-native", fix=False)
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "boom" in err
+    assert "permission denied" in err
+
+
+def test_strip_js_comments_recovers_after_a_regex_literal(tmp_path):
+    # A quote inside a regex character class opened a string that never closed, so
+    # the whole rest of the file went unstripped and commented-out wiring counted.
+    (tmp_path / "metro.config.js").write_text(
+        'const strip = (s) => s.replace(/[\'"]/g, "");\n'
+        "// server: { port: Number(process.env.RCT_METRO_PORT) }\n"
+        "module.exports = { server: { port: 8081 } };\n"
+    )
+    status, detail = sd._rn_metro_detect(tmp_path)
+    assert status == "problem"
+    assert "autofixable" in detail
+
+
+def test_strip_js_comments_keeps_an_escaped_slash_out_of_comment_detection(tmp_path):
+    (tmp_path / "metro.config.js").write_text(
+        "const re = /https:\\/\\//; module.exports = "
+        "{ server: { port: Number(process.env.RCT_METRO_PORT) } };\n"
+    )
+    assert sd._rn_metro_detect(tmp_path)[0] == "ok"
+
+
+def test_strip_js_comments_keeps_multiline_template_literals(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(
+        "const banner = `line one\nline two`;\n"
+        "export default { server: { port: Number(process.env.WEB_DEV_PORT) } };\n"
+    )
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-port-wired")
+    assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_rn_hook_detect_ignores_a_commented_out_lefthook_block(tmp_path):
+    # Lefthook scaffolds a config that is mostly commented-out examples, and a hook
+    # that never fires is the root cause of stale registry entries.
+    _git_init(tmp_path)
+    (tmp_path / "lefthook.yml").write_text(
+        "# post-checkout:\n#   commands:\n#     splashdown:\n#       run: splash\n"
+        "pre-commit:\n  commands: {}\n"
+    )
+    assert sd._rn_hook_detect(tmp_path)[0] == "problem"
+
+
+def test_rn_hook_detect_ignores_a_commented_out_husky_hook(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".husky").mkdir()
+    (tmp_path / ".husky" / "post-checkout").write_text("#!/bin/sh\n# splash\n")
+    assert sd._rn_hook_detect(tmp_path)[0] == "problem"

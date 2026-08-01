@@ -464,5 +464,138 @@ def test_compose_check_allows_a_templated_container_name(tmp_path):
     assert sd.compose_wiring_checks(tmp_path)[0].detect(tmp_path)[0] == "ok"
 
 
+def _compose_detect(tmp_path, body):
+    (tmp_path / "compose.yaml").write_text(body)
+    return sd.compose_wiring_checks(tmp_path)[0].detect(tmp_path)
+
+
+def test_compose_check_flags_flow_style_ports(tmp_path):
+    status, detail = _compose_detect(
+        tmp_path,
+        "services:\n  db:\n    ports: ['5432:5432']\n  db-test:\n    ports: [\"5433:5432\"]\n",
+    )
+    assert status == "problem"
+    assert "5432" in detail
+    assert "5433" in detail
+
+
+def test_compose_check_passes_on_templated_flow_style_ports(tmp_path):
+    status, _ = _compose_detect(
+        tmp_path, 'services:\n  db:\n    ports: ["${DB_PORT:-5432}:5432", "${X}:80"]\n'
+    )
+    assert status == "ok"
+
+
+def test_compose_check_flags_an_inline_container_name(tmp_path):
+    status, detail = _compose_detect(
+        tmp_path, "services:\n  db: { container_name: myapp_db, image: postgres:16 }\n"
+    )
+    assert status == "problem"
+    assert "myapp_db" in detail
+    assert "postgres" not in detail  # the value stops at the flow-mapping comma
+
+
+def test_compose_check_allows_an_inline_templated_container_name(tmp_path):
+    status, _ = _compose_detect(
+        tmp_path, 'services:\n  db: { container_name: "${COMPOSE_PROJECT_NAME}_db" }\n'
+    )
+    assert status == "ok"
+
+
+def test_compose_check_flags_a_hardcoded_long_syntax_published_port(tmp_path):
+    status, detail = _compose_detect(
+        tmp_path,
+        "services:\n  db:\n    ports:\n      - target: 5432\n        published: 5433\n"
+        "        protocol: tcp\n",
+    )
+    assert status == "problem"
+    assert "5433" in detail
+
+
+def test_compose_check_allows_long_syntax_without_a_fixed_host_port(tmp_path):
+    status, _ = _compose_detect(
+        tmp_path,
+        "services:\n  db:\n    ports:\n      - target: 5432\n        published: ${DB_PORT}\n"
+        "      - target: 80\n        protocol: tcp\n",
+    )
+    assert status == "ok"
+
+
+def test_compose_check_allows_a_container_only_port(tmp_path):
+    # `- "3000"` publishes to an ephemeral host port; nothing to collide over.
+    status, _ = _compose_detect(tmp_path, 'services:\n  api:\n    ports:\n      - "3000"\n')
+    assert status == "ok"
+
+
+def test_compose_check_flags_a_host_ip_qualified_port(tmp_path):
+    status, detail = _compose_detect(
+        tmp_path, 'services:\n  db:\n    ports:\n      - "127.0.0.1:5432:5432/tcp"\n'
+    )
+    assert status == "problem"
+    assert "5432" in detail
+
+
+def test_compose_check_ignores_commented_out_ports(tmp_path):
+    # The comment must be indented *inside* the block: at column 0 the dedent rule
+    # discards it before stripping is ever consulted, so the test proved nothing.
+    status, _ = _compose_detect(
+        tmp_path,
+        'services:\n  db:\n    image: postgres:16  # ports: ["5432:5432"]\n'
+        '    ports:\n      # - "5432:5432"\n      - "${DB_PORT}:5432"\n',
+    )
+    assert status == "ok"
+
+
+def test_compose_check_flags_a_block_sequence_at_the_key_indent(tmp_path):
+    # Legal and common YAML: the `-` items sit at `ports:`'s own column. The
+    # region walker used to stop dead here and report the file clean.
+    status, detail = _compose_detect(
+        tmp_path,
+        'services:\n  db:\n    image: postgres:16\n    ports:\n    - "5432:5432"\n',
+    )
+    assert status == "problem"
+    assert "5432" in detail
+
+
+def test_compose_check_flags_ports_inside_an_inline_flow_mapping(tmp_path):
+    status, detail = _compose_detect(
+        tmp_path, "services:\n  db: { image: postgres:16, ports: ['5432:5432'] }\n"
+    )
+    assert status == "problem"
+    assert "5432" in detail
+
+
+def test_compose_check_flags_a_pinned_host_with_a_templated_container_port(tmp_path):
+    # Testing the whole entry for `$` passed this: the host side is still pinned.
+    status, detail = _compose_detect(
+        tmp_path, 'services:\n  db:\n    ports:\n      - "5432:${CONTAINER_PORT}"\n'
+    )
+    assert status == "problem"
+    assert "5432" in detail
+
+
+def test_compose_check_allows_an_empty_host_slot(tmp_path):
+    # `127.0.0.1::5432` binds loopback on an ephemeral host port: valid, not unreadable.
+    status, _ = _compose_detect(
+        tmp_path, 'services:\n  db:\n    ports:\n      - "127.0.0.1::5432"\n'
+    )
+    assert status == "ok"
+
+
+def test_compose_check_reports_a_ports_shape_it_cannot_read(tmp_path):
+    # The failure mode that matters: never claim safety on a pattern not understood.
+    status, detail = _compose_detect(
+        tmp_path,
+        "x-ports: &shared\n  - '5432:5432'\nservices:\n  db:\n    ports: *shared\n",
+    )
+    assert status == "problem"
+    assert "*shared" in detail
+
+
+def test_compose_check_allows_an_empty_ports_list(tmp_path):
+    status, _ = _compose_detect(tmp_path, "services:\n  db:\n    ports: []\n")
+    assert status == "ok"
+
+
 def test_compose_wiring_checks_empty_without_a_compose_file(tmp_path):
     assert sd.compose_wiring_checks(tmp_path) == []
