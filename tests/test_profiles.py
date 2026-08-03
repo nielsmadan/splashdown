@@ -70,17 +70,49 @@ def _write_pods_excluded_arch(tmp_path):
     cfg.write_text("EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64\n")
 
 
+def _fake_x86_64_target(monkeypatch, value):
+    monkeypatch.setattr(sd.devices, "ios_x86_64_target", lambda: value)
+
+
 def test_rn_run_prints_arch_hint_on_failure(tmp_path, monkeypatch, capsys):
     _write_pods_excluded_arch(tmp_path)
+    _fake_x86_64_target(monkeypatch, ("18.5", "iPhone 16 Pro"))
     monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 70)
     rc = sd.runners._rn_run(
         tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"}
     )
     assert rc == 70
-    assert 'ios = "18.5"' in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert 'ios = "18.5"' in err
+    # The model must ride along: device types are per-runtime, so pinning `ios`
+    # against the default `iPhone 17` model fails `simctl create`.
+    assert 'model = "iPhone 16 Pro"' in err
+
+
+def test_rn_arch_hint_tracks_installed_runtime(tmp_path, monkeypatch, capsys):
+    _write_pods_excluded_arch(tmp_path)
+    _fake_x86_64_target(monkeypatch, ("17.5", "iPhone 15 Pro"))
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 70)
+    sd.runners._rn_run(tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"})
+    err = capsys.readouterr().err
+    assert 'ios = "17.5"' in err
+    assert 'model = "iPhone 15 Pro"' in err
+    assert "18.5" not in err
+
+
+def test_rn_arch_hint_when_no_x86_64_runtime_installed(tmp_path, monkeypatch, capsys):
+    _write_pods_excluded_arch(tmp_path)
+    _fake_x86_64_target(monkeypatch, None)
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 70)
+    sd.runners._rn_run(tmp_path, sd.Recipe({}, tmp_path / "x.toml"), {"kind": "ios", "udid": "U1"})
+    err = capsys.readouterr().err
+    assert "no installed runtime has an x86_64 slice" in err
+    # No snippet to copy: there is no version to pin, so none may be invented.
+    assert 'ios = "' not in err
 
 
 def test_rn_run_no_arch_hint_on_success_or_missing_pods(tmp_path, monkeypatch, capsys):
+    _fake_x86_64_target(monkeypatch, ("18.5", "iPhone 16 Pro"))
     # Success → no hint even when the exclusion is present.
     _write_pods_excluded_arch(tmp_path)
     monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: 0)

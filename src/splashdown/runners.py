@@ -96,17 +96,38 @@ def _rn_ios_arch_hint(cwd: Path) -> str | None:
         except OSError:
             continue
         if any(needle in ln and "arm64" in ln for ln in text.splitlines()):
-            return (
-                "splashdown: this app excludes arm64 for the iOS simulator (a vendored SDK "
-                "like Google ML Kit ships no arm64-sim slice), so it needs an x86_64 "
-                "simulator — only iOS <= 18.x provides one.\n"
-                '  If the build failed with "Unable to find a destination...", pin an '
-                "x86_64-capable runtime in splashdown.toml:\n"
-                "      [targets.simulator.default]\n"
-                '      ios = "18.5"\n'
-                "  then re-run `splash sync`."
-            )
+            return _x86_64_sim_advice()
     return None
+
+
+def _x86_64_sim_advice() -> str:
+    head = (
+        "splashdown: this app excludes arm64 for the iOS simulator (a vendored SDK "
+        "like Google ML Kit ships no arm64-sim slice), so it needs an x86_64 "
+        "simulator — Apple dropped x86_64 from the iOS 26 runtimes.\n"
+        '  If the build failed with "Unable to find a destination...", '
+    )
+    # Lazy: devices.py imports this module for `run_custom_command`, so a
+    # module-level import here would close the cycle.
+    from .devices import ios_x86_64_target  # noqa: PLC0415
+
+    target = ios_x86_64_target()
+    if target is None:
+        return head + (
+            "no installed runtime has an x86_64 slice.\n"
+            "  Install an iOS 18.x runtime (Xcode > Settings > Components), then pin it "
+            "under [targets.simulator.default] in splashdown.toml."
+        )
+    version, model = target
+    # The model has to come from the same runtime: device types are per-runtime, so
+    # pinning `ios` alone against a newer default model fails `simctl create`.
+    return head + (
+        "pin an x86_64-capable runtime in splashdown.toml:\n"
+        "      [targets.simulator.default]\n"
+        f'      model = "{model}"\n'
+        f'      ios = "{version}"\n'
+        "  then re-run `splash sync`."
+    )
 
 
 def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:

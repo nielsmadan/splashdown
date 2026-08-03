@@ -48,7 +48,9 @@ model = "iPhone 17"
 # ios = "latest"   # implicit; auto-recreate when a newer iOS lands. Pin to e.g.
                    # "18.5" if you want a fixed version that never upgrades. Some
                    # apps (a pod excluding arm64 for the simulator, e.g. Google ML
-                   # Kit) can only build on an x86_64 sim — pin ios = "18.5".
+                   # Kit) can only build on an x86_64 sim — pin an iOS 18.x runtime,
+                   # and move `model` back to one that runtime has (iPhone 17 and
+                   # later exist only from iOS 26 on).
 
 [targets.emulator.default]
 device = "pixel_9"

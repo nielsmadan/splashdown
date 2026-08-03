@@ -132,6 +132,26 @@ def _ios_runtime_models(runtime_id: str) -> list[str]:
     return []
 
 
+def ios_x86_64_target() -> tuple[str, str] | None:
+    """(version, model) for the newest installed runtime carrying an x86_64 slice,
+    or None if every installed runtime is arm64-only. Apple dropped x86_64 from the
+    iOS 26 runtimes, so this is what an app whose pods exclude arm64 for the
+    simulator has to pin — see `_rn_ios_arch_hint` in `runners.py`."""
+    try:
+        runtimes = _ios_runtimes()
+    except DeviceError:
+        return None
+    for r in reversed(runtimes):
+        if "x86_64" not in (r.get("supportedArchitectures") or []):
+            continue
+        models = _ios_runtime_models(str(r.get("identifier", "")))
+        pro = next((m for m in models if m.endswith(" Pro")), None)
+        model = pro or (models[0] if models else None)
+        if model:
+            return str(r.get("version", "")), model
+    return None
+
+
 def _version_tuple(s: str) -> tuple[int, ...]:
     """Sort '18.5' / '19.0' / '17.0' as version numbers, not strings."""
     try:

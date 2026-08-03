@@ -118,6 +118,7 @@ from .devices import (
     ios_destroy,
     ios_ensure,
     ios_shutdown,
+    ios_x86_64_target,
     physical_discover,
     physical_status,
     resolve_app_dir,

@@ -1671,6 +1671,23 @@ def _fake_runtimes(monkeypatch, data=_RUNTIMES):
     monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: data)
 
 
+def test_ios_x86_64_target_picks_newest_runtime_with_an_x86_64_slice(monkeypatch):
+    _fake_runtimes(monkeypatch)
+    # 26.5 is newer but arm64-only, so it must be skipped rather than returned.
+    assert sd.ios_x86_64_target() == ("18.5", "iPhone 16 Pro")
+
+
+def test_ios_x86_64_target_none_when_every_runtime_is_arm64_only(monkeypatch):
+    arm_only = {"runtimes": [_RUNTIMES["runtimes"][1]]}
+    _fake_runtimes(monkeypatch, arm_only)
+    assert sd.ios_x86_64_target() is None
+
+
+def test_ios_x86_64_target_none_when_no_runtimes_installed(monkeypatch):
+    _fake_runtimes(monkeypatch, {"runtimes": []})
+    assert sd.ios_x86_64_target() is None
+
+
 def test_ios_runtime_models_excludes_non_iphone_types(monkeypatch):
     _fake_runtimes(monkeypatch)
     models = sd.devices._ios_runtime_models("com.apple.CoreSimulator.SimRuntime.iOS-18-5")
