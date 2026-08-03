@@ -96,24 +96,40 @@ def _ios_find_device_by_name(name: str) -> tuple[str, str] | None:
     return None
 
 
-def _ios_latest_runtime() -> str:
-    """Latest available iOS runtime identifier."""
+def _ios_runtimes() -> list[dict[str, Any]]:
+    """Available iOS runtimes, oldest version first."""
     data = _xcrun_json(["simctl", "list", "runtimes", "-j"])
     runtimes = [r for r in (data.get("runtimes") or []) if r.get("isAvailable")]
     if not runtimes:
         raise DeviceError("no available iOS runtimes; install one in Xcode")
     runtimes.sort(key=lambda r: _version_tuple(r.get("version", "0")))
-    return str(runtimes[-1].get("identifier", ""))
+    return runtimes
+
+
+def _ios_latest_runtime() -> str:
+    """Latest available iOS runtime identifier."""
+    return str(_ios_runtimes()[-1].get("identifier", ""))
 
 
 def _ios_latest_runtime_version() -> str:
     """Latest available iOS runtime version string, e.g. '18.5'. Drives auto-upgrade."""
-    data = _xcrun_json(["simctl", "list", "runtimes", "-j"])
-    runtimes = [r for r in (data.get("runtimes") or []) if r.get("isAvailable")]
-    if not runtimes:
-        raise DeviceError("no available iOS runtimes; install one in Xcode")
-    runtimes.sort(key=lambda r: _version_tuple(r.get("version", "0")))
-    return str(runtimes[-1].get("version", ""))
+    return str(_ios_runtimes()[-1].get("version", ""))
+
+
+def _ios_runtime_models(runtime_id: str) -> list[str]:
+    """iPhone model names the runtime can actually instantiate, newest first.
+    Device types are per-runtime: `iPhone 17` exists only from iOS 26 on, so a
+    model/runtime pair valid in isolation can still be rejected by simctl."""
+    try:
+        runtimes = _ios_runtimes()
+    except DeviceError:
+        return []
+    for r in runtimes:
+        if r.get("identifier") != runtime_id:
+            continue
+        supported = r.get("supportedDeviceTypes") or []
+        return [str(t.get("name", "")) for t in supported if "iPhone" in str(t.get("name", ""))]
+    return []
 
 
 def _version_tuple(s: str) -> tuple[int, ...]:
@@ -178,8 +194,32 @@ def ios_ensure(name: str, model: str | None, ios_version: str | None) -> tuple[s
             .strip()
         )
     except subprocess.CalledProcessError as e:
-        raise DeviceError(f"simctl create failed: {e.stderr.decode().strip()}") from e
+        detail = e.stderr.decode().strip()
+        raise DeviceError(
+            f"simctl create failed: {detail}{_ios_create_hint(model, ios_version, runtime)}"
+        ) from e
     return udid, "Shutdown"
+
+
+_MODELS_SHOWN = 8
+
+
+def _ios_create_hint(model: str | None, ios_version: str | None, runtime: str) -> str:
+    """Translate simctl's opaque `Incompatible device` into the pairing that is
+    actually wrong. Empty string when the model does look creatable on that runtime,
+    so an unrelated create failure isn't given a misleading explanation."""
+    if not model:
+        return ""
+    models = _ios_runtime_models(runtime)
+    if not models or model in models:
+        return ""
+    where = f"iOS {ios_version}" if ios_version else runtime
+    shown, rest = models[:_MODELS_SHOWN], models[_MODELS_SHOWN:]
+    return (
+        f"\n  `{model}` is not a device type {where} can create."
+        f"\n  Models it has: {', '.join(shown)}{', ...' if rest else ''}"
+        f"\n  Set a compatible `model` under [targets.simulator.<variant>]."
+    )
 
 
 def ios_boot(udid: str, state: str) -> None:

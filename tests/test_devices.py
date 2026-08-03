@@ -1641,3 +1641,73 @@ def test_global_target_add_rejects_incompatible_fields():
 def test_global_target_remove_errors_when_missing(tmp_path):
     with pytest.raises(sd.DeviceError, match="no target"):
         sd.global_target_remove("device", "ghost")
+
+
+_RUNTIMES = {
+    "runtimes": [
+        {
+            "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-5",
+            "version": "18.5",
+            "isAvailable": True,
+            "supportedArchitectures": ["x86_64", "arm64"],
+            "supportedDeviceTypes": [
+                {"name": "iPhone 16 Pro"},
+                {"name": "iPhone 16"},
+                {"name": "iPad Pro 13-inch"},
+            ],
+        },
+        {
+            "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+            "version": "26.5",
+            "isAvailable": True,
+            "supportedArchitectures": ["arm64"],
+            "supportedDeviceTypes": [{"name": "iPhone 17"}, {"name": "iPhone 17 Pro"}],
+        },
+    ]
+}
+
+
+def _fake_runtimes(monkeypatch, data=_RUNTIMES):
+    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: data)
+
+
+def test_ios_runtime_models_excludes_non_iphone_types(monkeypatch):
+    _fake_runtimes(monkeypatch)
+    models = sd.devices._ios_runtime_models("com.apple.CoreSimulator.SimRuntime.iOS-18-5")
+    assert models == ["iPhone 16 Pro", "iPhone 16"]
+
+
+def test_ios_create_failure_explains_incompatible_model(monkeypatch):
+    _fake_runtimes(monkeypatch)
+    monkeypatch.setattr(sd.devices, "_ios_find_device_by_name", lambda name: None)
+    monkeypatch.setattr(
+        sd.devices, "_ios_device_type_identifier", lambda m: "com.apple.x.iPhone-17"
+    )
+
+    def boom(args, **kwargs):
+        raise subprocess.CalledProcessError(1, args, stderr=b"Incompatible device (code=403)")
+
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", boom)
+    with pytest.raises(sd.DeviceError) as exc:
+        sd.devices.ios_ensure("co/app/default", "iPhone 17", "18.5")
+    msg = str(exc.value)
+    assert "Incompatible device" in msg
+    assert "`iPhone 17` is not a device type iOS 18.5 can create" in msg
+    assert "iPhone 16 Pro" in msg
+
+
+def test_ios_create_failure_stays_bare_when_model_is_compatible(monkeypatch):
+    _fake_runtimes(monkeypatch)
+    monkeypatch.setattr(sd.devices, "_ios_find_device_by_name", lambda name: None)
+    monkeypatch.setattr(
+        sd.devices, "_ios_device_type_identifier", lambda m: "com.apple.x.iPhone-16-Pro"
+    )
+
+    def boom(args, **kwargs):
+        raise subprocess.CalledProcessError(1, args, stderr=b"disk full")
+
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", boom)
+    with pytest.raises(sd.DeviceError) as exc:
+        sd.devices.ios_ensure("co/app/default", "iPhone 16 Pro", "18.5")
+    # An unrelated failure must not be given a misleading model explanation.
+    assert "is not a device type" not in str(exc.value)
