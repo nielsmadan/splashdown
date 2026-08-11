@@ -662,7 +662,7 @@ def cmd_completion(shell: str | None) -> int:
     import argcomplete  # noqa: PLC0415
 
     # argcomplete doesn't export shellcode in its typed surface (autocomplete is).
-    code = argcomplete.shellcode(["splash"], shell=shell)  # type: ignore[attr-defined,no-untyped-call]
+    code = argcomplete.shellcode(["splash"], shell=shell)  # type: ignore[attr-defined]
     print(code)
     return 0
 
