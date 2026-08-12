@@ -13,11 +13,9 @@ from .agentdocs import remove_agent_guidance, sync_agent_guidance
 from .devices import (
     DeviceError,
     DeviceHealth,
-    _android_avd_exists,
     _android_bin,
     _device_status_for_row,
     _ios_current_state,
-    _ios_udid_exists,
     _load_recipe_or_empty,
     _prepare_target_remove,
     _resolve_device_name,
@@ -630,10 +628,6 @@ def cmd_target_gc(registry: Registry) -> int:
     rows. Returns the number of device rows removed. Reconciling *live* checkouts
     against their recipes — recreating stale/missing devices — is
     `cmd_target_refresh`'s job, not gc's."""
-    _udid_exists = _ios_udid_exists
-    _avd_exists = _android_avd_exists
-    _destroy_ios = ios_destroy
-    _destroy_avd = android_destroy
     destroyed_count = 0
     rows = list(registry.all_devices())
     total = len(rows)
@@ -641,10 +635,7 @@ def cmd_target_gc(registry: Registry) -> int:
         _emit_progress("gc", i, total)
         if Path(row.checkout).exists():
             continue
-        if row.dtype == "simulator" and _udid_exists(row.udid):
-            _destroy_ios(row.udid)
-        elif row.dtype == "emulator" and _avd_exists(row.udid):
-            _destroy_avd(row.udid)
+        device_destroy_row(row)
         registry.remove_device(row.checkout, row.dtype, row.variant)
         destroyed_count += 1
     _finish_progress()
@@ -709,10 +700,6 @@ def cmd_target_refresh(
     variants no longer declared are dropped (their sim destroyed). Recreation
     leaves the new sim Shutdown — nothing is booted, so no concurrency limits
     apply."""
-    _udid_exists = _ios_udid_exists
-    _avd_exists = _android_avd_exists
-    _destroy_ios = ios_destroy
-    _destroy_avd = android_destroy
     _fresh_sim = ensure_fresh_sim
     recreated = unchanged = dropped = 0
     cache: dict[str, str] = {}
@@ -736,10 +723,7 @@ def cmd_target_refresh(
         cwd = Path(row.checkout)
         if spec is None:
             # Defunct checkout or undeclared variant: drop it, destroy its sim.
-            if row.dtype == "simulator" and _udid_exists(row.udid):
-                _destroy_ios(row.udid)
-            elif row.dtype == "emulator" and _avd_exists(row.udid):
-                _destroy_avd(row.udid)
+            device_destroy_row(row)
             registry.remove_device(row.checkout, row.dtype, row.variant)
             dropped += 1
             continue

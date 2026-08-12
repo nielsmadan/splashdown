@@ -127,8 +127,11 @@ dispatches on `dtype`:
   computes `stale = row is None OR underlying sim/AVD gone OR row.ios != target OR
   row.model != model_spec`. (`row.ios` doubles as the image column for both platforms.)
 
-When not stale, it returns the cached `info` unchanged. When stale, it destroys the old sim/AVD
-if it still exists, recreates it via `ios_ensure` / `android_ensure`, and writes the new row with
+When not stale, it returns the cached `info` unchanged. When stale, it routes the registry row
+through `device_destroy_row`, which shuts down any running instance before deleting it. The same
+operation handles dead-checkout GC and undeclared rows during fleet refresh, so every registered
+device follows one teardown policy. Reconciliation then recreates the device via
+`ios_ensure` / `android_ensure` and writes the new row with
 `registry.set_device(checkout, dtype, variant, udid/name, model, target)`. **The recreated sim is
 left Shutdown** — `ios_ensure` returns `"Shutdown"` and `ensure_fresh_sim` never boots it; booting
 is a separate, explicit step. Because a pinned variant's `target` equals its declared version, its

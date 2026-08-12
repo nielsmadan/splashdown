@@ -83,7 +83,6 @@ framework = "flutter"
 def _stub_ios_boot_chain(monkeypatch):
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_current_state", lambda u: "Shutdown")
     monkeypatch.setattr(sd.commands, "_ios_current_state", lambda u: "Shutdown")
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))

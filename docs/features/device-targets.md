@@ -116,7 +116,9 @@ simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_n
    walks every registry device row, first loading every relevant live checkout's recipe/local
    catalog. Any malformed config aborts the entire sweep before mutation. It then recreates each that is stale
    or missing-but-declared (including pinned variants whose sim was hand-deleted), leaves fresh ones
-   alone, and drops rows for defunct checkouts or undeclared variants (destroying their sim). Like
+   alone, and drops rows for defunct checkouts or undeclared variants. Every registered instance is
+   shut down before deletion, whether teardown comes from reconcile, refresh, GC, or explicit
+   removal. Like
    reconcile, it leaves recreated sims **Shutdown**. The recreate decision is taken *before* the
    call (`_device_needs_recreate`, `:874`) because `ensure_fresh_sim` is a no-op for fresh devices
    and the AVD name is stable across recreation, so the return value can't reveal what happened.

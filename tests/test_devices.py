@@ -31,7 +31,6 @@ def test_ensure_fresh_creates_when_missing(registry, checkout, monkeypatch):
     monkeypatch.setattr(sd.devices, "ios_ensure", fake_ensure)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     info = sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
     assert info["udid"] == "UDID-NEW"
     assert info["name"].endswith("/default")
@@ -43,15 +42,14 @@ def test_ensure_fresh_creates_when_missing(registry, checkout, monkeypatch):
 def test_ensure_fresh_recreates_when_ios_stale(registry, checkout, monkeypatch):
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
-    destroyed = []
+    lifecycle = []
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
+    monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: lifecycle.append(("shutdown", u)))
+    monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: lifecycle.append(("destroy", u)))
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
-    assert destroyed == ["UDID-OLD"]
+    assert lifecycle == [("shutdown", "UDID-OLD"), ("destroy", "UDID-OLD")]
     assert registry.get_device(abspath, "simulator", "default").udid == "UDID-NEW"
 
 
@@ -59,7 +57,6 @@ def test_ensure_fresh_keeps_when_pinned_and_current(registry, checkout, monkeypa
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "legacy", "UDID-X", "iPhone 12", "17.0")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     info = sd.ensure_fresh_sim(
         registry,
@@ -76,9 +73,7 @@ def test_ensure_fresh_recreates_when_pinned_ios_mismatch(registry, checkout, mon
     registry.set_device(abspath, "simulator", "legacy", "UDID-OLD", "iPhone 12", "17.0")
     destroyed = []
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     sd.ensure_fresh_sim(
@@ -96,10 +91,8 @@ def test_ensure_fresh_recreates_when_model_changed(registry, checkout, monkeypat
     registry.set_device(abspath, "simulator", "default", "UDID-OLD", "iPhone 17", "18.5")
     destroyed = []
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     # Recipe bumped from iPhone 17 -> iPhone 18.
     sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 18"})
@@ -112,18 +105,17 @@ def test_ensure_fresh_emulator_destroys_old_avd_on_rename(registry, checkout, mo
     abspath = str(checkout.resolve())
     # Emulator rows store the AVD name in the udid column.
     registry.set_device(abspath, "emulator", "default", "old-avd", "pixel_9", "android-34")
-    destroyed: list[str] = []
+    lifecycle: list[tuple[str, str]] = []
     # Only the OLD avd exists on disk; the freshly-resolved name does not (→ stale).
     monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: n == "old-avd")
-    monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: n == "old-avd")
     monkeypatch.setattr(sd.devices, "_android_latest_image", lambda: "android-34")
-    monkeypatch.setattr(sd.devices, "android_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "android_destroy", destroyed.append)
+    monkeypatch.setattr(sd.devices, "android_shutdown", lambda n: lifecycle.append(("shutdown", n)))
+    monkeypatch.setattr(sd.devices, "android_destroy", lambda n: lifecycle.append(("destroy", n)))
     monkeypatch.setattr(sd.devices, "android_ensure", lambda n, d, i: n)
     sd.ensure_fresh_sim(
         registry, checkout, "emulator", "default", {"device": "pixel_9", "name": "new-avd"}
     )
-    assert destroyed == ["old-avd"]
+    assert lifecycle == [("shutdown", "old-avd"), ("destroy", "old-avd")]
     assert registry.get_device(abspath, "emulator", "default").udid == "new-avd"
 
 
@@ -131,7 +123,6 @@ def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-X", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: False)  # user nuked the sim
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: False)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     info = sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
@@ -689,7 +680,6 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
     )
     reg.set_device(str(a), "simulator", "default", "UDID-GHOST", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: False)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda udid: False)
     monkeypatch.setattr(sd.devices, "device_status", lambda dt, name: "absent")
     monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "absent")
     capsys.readouterr()
@@ -1044,14 +1034,13 @@ def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
     a.rmdir()
-    destroyed = []
+    lifecycle = []
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
+    monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: lifecycle.append(("shutdown", u)))
+    monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: lifecycle.append(("destroy", u)))
     destroyed_count = sd.cmd_target_gc(registry)
     assert destroyed_count == 1
-    assert destroyed == ["UDID-A"]
+    assert lifecycle == [("shutdown", "UDID-A"), ("destroy", "UDID-A")]
     assert {r.udid for r in registry.all_devices()} == {"UDID-B"}
 
 
@@ -1061,13 +1050,12 @@ def test_device_gc_drops_defunct_emulator_and_destroys_avd(registry, tmp_path, m
     gone.mkdir()
     registry.set_device(str(gone), "emulator", "default", "AVD-GONE", "pixel_9", "android-34")
     gone.rmdir()
-    destroyed: list[str] = []
+    lifecycle: list[tuple[str, str]] = []
     monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: True)
-    monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: True)
-    monkeypatch.setattr(sd.devices, "android_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "android_destroy", destroyed.append)
+    monkeypatch.setattr(sd.devices, "android_shutdown", lambda n: lifecycle.append(("shutdown", n)))
+    monkeypatch.setattr(sd.devices, "android_destroy", lambda n: lifecycle.append(("destroy", n)))
     assert sd.cmd_target_gc(registry) == 1
-    assert destroyed == ["AVD-GONE"]
+    assert lifecycle == [("shutdown", "AVD-GONE"), ("destroy", "AVD-GONE")]
     assert list(registry.all_devices()) == []
 
 
@@ -1080,9 +1068,7 @@ def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, caps
     reg.set_device(str(dead), "simulator", "default", "UDID-DEAD", "iPhone 17", "18.5")
     destroyed = []
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     # dead/ never created on disk → it's a defunct checkout
     rc = sd.main(["--cwd", str(tmp_path), "gc"])
     assert rc == 0
@@ -1098,11 +1084,9 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     monkeypatch.setattr(
         sd.devices, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot")
@@ -1167,11 +1151,9 @@ def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, mo
         abspath, "simulator", "legacy", "UDID-LEGACY", "iPhone 12", "17.0"
     )  # pinned current
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(
         sd.devices, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated")
     )
@@ -1196,14 +1178,12 @@ def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
     )
     touched = []
     monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: True)
-    monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: True)
     monkeypatch.setattr(
         sd.devices,
         "_android_latest_image",
         lambda: "system-images;android-34;google_apis;arm64-v8a",
     )
     monkeypatch.setattr(sd.devices, "android_destroy", touched.append)
-    monkeypatch.setattr(sd.commands, "android_destroy", touched.append)
     monkeypatch.setattr(sd.devices, "android_ensure", lambda *a: touched.append("ensure"))
     rc = sd.cmd_target_refresh(registry, platforms=("ios",))
     assert rc == 0
@@ -1222,17 +1202,21 @@ def test_device_refresh_drops_defunct_and_undeclared(registry, tmp_path, monkeyp
         str(live.resolve()), "simulator", "old", "UDID-UNDECLARED", "iPhone 17", "18.5"
     )
     gone.rmdir()
-    destroyed = []
+    lifecycle = []
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
+    monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: lifecycle.append(("shutdown", u)))
+    monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: lifecycle.append(("destroy", u)))
     monkeypatch.setattr(
         sd.devices, "ios_ensure", lambda *a: pytest.fail("nothing should be recreated")
     )
     rc = sd.cmd_target_refresh(registry)
     assert rc == 0
-    assert set(destroyed) == {"UDID-GONE", "UDID-UNDECLARED"}
+    assert lifecycle == [
+        ("shutdown", "UDID-GONE"),
+        ("destroy", "UDID-GONE"),
+        ("shutdown", "UDID-UNDECLARED"),
+        ("destroy", "UDID-UNDECLARED"),
+    ]
     assert list(registry.all_devices()) == []
 
 
@@ -1249,7 +1233,6 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     )
     reg.set_device(str(co.resolve()), "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "shutdown")
     capsys.readouterr()

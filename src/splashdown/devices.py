@@ -711,8 +711,8 @@ def ensure_fresh_sim(
             if row is None:  # unreachable (stale is True when row is None); narrows the type
                 raise DeviceError("internal: simulator row vanished mid-check")
             return {"kind": "ios", "udid": row.udid, "name": sim_name}
-        if row is not None and _ios_udid_exists(row.udid):
-            ios_destroy(row.udid)
+        if row is not None:
+            device_destroy_row(row)
         udid, _state = ios_ensure(sim_name, model_spec or None, target_ios)
         registry.set_device(checkout, dtype, variant, udid, model_spec, target_ios)
         return {"kind": "ios", "udid": udid, "name": sim_name}
@@ -722,11 +722,8 @@ def ensure_fresh_sim(
         device_spec = spec.get("device", "")
         if not stale:
             return {"kind": "android", "serial": "", "name": sim_name}
-        if row is not None and _android_avd_exists(row.udid):
-            # Destroy the AVD the registry actually points at (row.udid), not the
-            # freshly-resolved sim_name — if the name changed between runs, the old
-            # AVD would otherwise be orphaned on disk. Mirrors the iOS branch.
-            android_destroy(row.udid)
+        if row is not None:
+            device_destroy_row(row)
         android_ensure(sim_name, device_spec or None, target_image)
         registry.set_device(checkout, dtype, variant, sim_name, device_spec, target_image)
         return {"kind": "android", "serial": "", "name": sim_name}
