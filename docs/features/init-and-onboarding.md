@@ -55,12 +55,11 @@ order mise → direnv → devbox, falling back to the first one installed on PAT
 (`scanner.py:15`, `scanner.py:24`).
 
 **Resource collection + collision mangling.** For each non-`unknown` app, `cmd_init` asks the
-matched `Profile.resources(app)` for the resources it wants, then merges them with
-`_merge_app_resources` (`scanner.py:179`): when the same canonical name is owned by more than
-one app it is mangled with the upper-cased app name (e.g. two Vite apps →
-`WEB_DEV_PORT_ADMIN` / `WEB_DEV_PORT_CUSTOMER`); single-owner names stay canonical.
-`_app_resource_names` (`scanner.py:203`) mirrors the mangling so each `[apps.<name>]`
-`resources` list points at the right keys (`commands.py:1284`).
+matched `Profile.resources(app)` for the resources it wants, then passes the per-app maps to
+`_build_resource_catalog`. When the same canonical name is owned by more than one app it is
+mangled with the upper-cased app name (e.g. two Vite apps → `WEB_DEV_PORT_ADMIN` /
+`WEB_DEV_PORT_CUSTOMER`); single-owner names stay canonical. The helper produces the flat
+resource table and each `[apps.<name>]` `resources` list together from the same resolved keys.
 
 **No-loader fallback.** When the loader is `"none"`, `_apply_no_loader_fallback`
 (`commands.py:1229`) decides delivery via `_resolve_no_loader_delivery` (`commands.py:1185`):
@@ -160,8 +159,8 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
   `src/splashdown/scanner.py:163` / `:24` / `:15`.
 - `_detect_workspace` / `_enumerate_apps` / `_detect_loader`:
   `src/splashdown/scanner.py:37` / `:67` / `:145`.
-- `_merge_app_resources` / `_app_resource_names` (collision mangling):
-  `src/splashdown/scanner.py:179` / `:203`.
+- `_build_resource_catalog` (collision mangling and app references):
+  `src/splashdown/scanner.py`.
 - `LOADERS` registry + idempotent `wire`: `src/splashdown/loaders.py:123` (mise `:33`,
   direnv `:61`, devbox `:91`, none `:119`).
 - `SCAFFOLDS` presets / `PROFILES` registration:

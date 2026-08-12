@@ -70,9 +70,8 @@ from .registry import Registry
 from .scanner import (
     ProjectInventory,
     Scanner,
-    _app_resource_names,
+    _build_resource_catalog,
     _detect_loader,
-    _merge_app_resources,
     _merge_app_targets,
     _prune_unresolvable_templates,
     _should_defer_monorepo,
@@ -1127,14 +1126,13 @@ def cmd_init(
     if _should_defer_monorepo(cwd, res_by_app, inv.apps):
         _write_minimal_monorepo_recipe(cwd, inv)
         return
-    merged_resources = _merge_app_resources(inv.apps, res_by_app)
+    merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
     # Compose is project-level infrastructure, so its resources are merged in after
     # the per-app pass rather than claimed by any one app.
     from .profiles import compose_project_resources  # noqa: PLC0415
 
     for name, spec in compose_project_resources(cwd).items():
         merged_resources.setdefault(name, spec)
-    app_resource_names = _app_resource_names(inv.apps, res_by_app)
     merged_targets = _merge_app_targets(inv.apps)
     for name in _prune_unresolvable_templates(merged_resources, app_resource_names):
         print(f"  skipped {name}: template references a resource no app declares", file=sys.stderr)
@@ -1322,8 +1320,7 @@ def cmd_refresh_inventory(cwd: Path) -> int:
             res_by_app[app.name] = {}
             continue
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
-    app_resource_names = _app_resource_names(inv.apps, res_by_app)
-    profile_emitted = _merge_app_resources(inv.apps, res_by_app)
+    profile_emitted, app_resource_names = _build_resource_catalog(res_by_app)
     # Names already in the recipe stay resolvable — refresh_recipe keeps them.
     _prune_unresolvable_templates(profile_emitted, app_resource_names, set(existing.resources))
 

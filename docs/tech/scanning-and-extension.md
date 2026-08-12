@@ -90,19 +90,14 @@ first-match-wins pattern as profiles.
 **Cross-app resource-name collision mangling.** Profiles emit *canonical* resource names
 (e.g. a Vite app wants `WEB_DEV_PORT`, a Next.js app wants `PORT`). When two apps of
 overlapping profiles coexist, those names would collide in the single flat
-`[resources.*]` table. The scanner resolves this in two mirror helpers consumed by
-`cmd_init` / `cmd_refresh_inventory`:
-
-- `_merge_app_resources()` (`scanner.py:179`) builds an `owners` map of
-  `resource_name → [app_names]`, then for any name owned by more than one app, mangles
-  every instance to `<NAME>_<APP>` (uppercased, `-`→`_`): e.g. `WEB_DEV_PORT` becomes
-  `WEB_DEV_PORT_ADMIN` / `WEB_DEV_PORT_CUSTOMER`. Single-owner names stay canonical.
-- `_app_resource_names()` (`scanner.py:203`) applies the identical mangling logic to
-  produce the per-app `resources = [...]` lists that go under each `[apps.<name>]` table.
-
-The two helpers must agree on the mangling rule or the generated recipe would list a
-resource name that the merged table doesn't contain — they intentionally duplicate the
-`owners`-then-mangle logic rather than share it.
+`[resources.*]` table. `_build_resource_catalog()` builds the owner counts and, for any
+name owned by more than one app, mangles every instance to `<NAME>_<APP>` (uppercased,
+`-`→`_`): e.g. `WEB_DEV_PORT` becomes `WEB_DEV_PORT_ADMIN` /
+`WEB_DEV_PORT_CUSTOMER`. Single-owner names stay canonical. The helper returns both the
+flat resource table and the per-app `resources = [...]` lists, deriving each pair from
+the same resolved name so declarations and references cannot diverge. If normalization
+would produce the same key twice (for example, app names `admin-web` and `admin_web`),
+catalog construction fails before init/rescan writes the recipe.
 
 `PROFILES` itself is *declared* empty in `scanner.py:34` and *filled* by `profiles.py` at
 import; `scanner.py` only ever reads it.
@@ -298,8 +293,7 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 - `scanner.py:163` — `Scanner.scan()`, the one public detection entry.
 - `scanner.py:37` / `scanner.py:67` / `scanner.py:121` — workspace detect, app enumerate,
   glob expand.
-- `scanner.py:179` / `scanner.py:203` — collision mangling (`_merge_app_resources`,
-  `_app_resource_names`).
+- `scanner.py` — collision mangling and per-app references (`_build_resource_catalog`).
 - `scanner.py:172` / `scanner.py:145` — first-match profile / loader resolution.
 - `profiles.py` — `Profile` base class and its seven extension points/flags, including
   `agent_guidance(app, port_names)`.

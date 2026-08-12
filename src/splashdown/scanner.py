@@ -208,28 +208,35 @@ class Scanner:
         return "unknown"
 
 
-def _merge_app_resources(
-    apps: list[AppInventory],
+def _build_resource_catalog(
     res_by_app: dict[str, dict[str, dict[str, Any]]],
-) -> dict[str, dict[str, Any]]:
-    """Merge per-app resource dicts into one [resources.*] table. When the same
-    canonical name appears in more than one app, all instances are mangled with
-    the app name (e.g. WEB_DEV_PORT → WEB_DEV_PORT_ADMIN / WEB_DEV_PORT_CUSTOMER).
-    Single-owner names are kept canonical."""
-    owners: dict[str, list[str]] = {}
-    for app_name, res in res_by_app.items():
-        for res_name in res:
-            owners.setdefault(res_name, []).append(app_name)
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    owner_counts: dict[str, int] = {}
+    for resources in res_by_app.values():
+        for resource_name in resources:
+            owner_counts[resource_name] = owner_counts.get(resource_name, 0) + 1
 
     merged: dict[str, dict[str, Any]] = {}
-    for app_name, res in res_by_app.items():
-        for res_name, spec in res.items():
-            if len(owners[res_name]) > 1:
-                key = f"{res_name}_{app_name.upper().replace('-', '_')}"
-            else:
-                key = res_name
-            merged[key] = spec
-    return merged
+    app_resource_names: dict[str, list[str]] = {}
+    sources: dict[str, tuple[str, str]] = {}
+    for app_name, resources in res_by_app.items():
+        names: list[str] = []
+        for resource_name, spec in resources.items():
+            resolved_name = resource_name
+            if owner_counts[resource_name] > 1:
+                resolved_name = f"{resource_name}_{app_name.upper().replace('-', '_')}"
+            if previous := sources.get(resolved_name):
+                previous_app, previous_resource = previous
+                raise ValueError(
+                    f"resource name collision after app-name normalization: "
+                    f"`{previous_app}.{previous_resource}` and `{app_name}.{resource_name}` "
+                    f"both resolve to `{resolved_name}`; rename one app"
+                )
+            sources[resolved_name] = (app_name, resource_name)
+            merged[resolved_name] = spec
+            names.append(resolved_name)
+        app_resource_names[app_name] = names
+    return merged, app_resource_names
 
 
 def _prune_unresolvable_templates(
@@ -327,25 +334,3 @@ def _should_defer_monorepo(
     """True when scanner-driven init should NOT auto-configure: a canonical-name
     collision, or a native project sibling the workspace doesn't claim."""
     return bool(_has_resource_collision(res_by_app) or _unclaimed_native_dirs(cwd, apps))
-
-
-def _app_resource_names(
-    apps: list[AppInventory],
-    res_by_app: dict[str, dict[str, dict[str, Any]]],
-) -> dict[str, list[str]]:
-    """Return {app_name: [resource_names]} after mangling. Mirrors what
-    [apps.<name>] `resources` should list."""
-    owners: dict[str, list[str]] = {}
-    for app_name, res in res_by_app.items():
-        for res_name in res:
-            owners.setdefault(res_name, []).append(app_name)
-    out: dict[str, list[str]] = {}
-    for app_name, res in res_by_app.items():
-        names = []
-        for res_name in res:
-            if len(owners[res_name]) > 1:
-                names.append(f"{res_name}_{app_name.upper().replace('-', '_')}")
-            else:
-                names.append(res_name)
-        out[app_name] = names
-    return out

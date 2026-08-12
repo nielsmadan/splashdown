@@ -325,42 +325,88 @@ def test_detect_framework_native_override_wins(tmp_path):
 
 
 def test_resource_name_scoping_single_instance_keeps_canonical_name():
-    apps = [sd.AppInventory(name="api", path=Path("."), profile="node-backend")]
     res_by_app = {"api": {"PORT": {"type": "port", "range": [9081, 9100]}}}
-    merged = sd._merge_app_resources(apps, res_by_app)
+    merged, consumed = sd._build_resource_catalog(res_by_app)
     assert "PORT" in merged
-    assert "api" not in merged.get("PORT", {}).get("__owners", [])  # canonical, single owner
+    assert consumed == {"api": ["PORT"]}
 
 
 def test_resource_name_scoping_multi_instance_mangles_with_app_name():
-    apps = [
-        sd.AppInventory(name="admin", path=Path("/a"), profile="vite"),
-        sd.AppInventory(name="customer", path=Path("/b"), profile="vite"),
-    ]
     res_by_app = {
         "admin": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
         "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
     }
-    merged = sd._merge_app_resources(apps, res_by_app)
-    assert "WEB_DEV_PORT" not in merged  # original collided, both mangled
-    assert "WEB_DEV_PORT_ADMIN" in merged
-    assert "WEB_DEV_PORT_CUSTOMER" in merged
-
-
-def test_resource_name_scoping_preserves_per_app_resources_list():
-    apps = [
-        sd.AppInventory(name="admin", path=Path("/a"), profile="vite"),
-        sd.AppInventory(name="customer", path=Path("/b"), profile="vite"),
-    ]
-    res_by_app = {
-        "admin": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
-        "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
-    }
-    sd._merge_app_resources(apps, res_by_app)
-    # The helper also reports which names each app should consume:
-    consumed = sd._app_resource_names(apps, res_by_app)
+    merged, consumed = sd._build_resource_catalog(res_by_app)
+    assert "WEB_DEV_PORT" not in merged
+    assert set(merged) == {"WEB_DEV_PORT_ADMIN", "WEB_DEV_PORT_CUSTOMER"}
     assert consumed["admin"] == ["WEB_DEV_PORT_ADMIN"]
     assert consumed["customer"] == ["WEB_DEV_PORT_CUSTOMER"]
+    assert {name for names in consumed.values() for name in names} == set(merged)
+
+
+def test_resource_catalog_keeps_declarations_and_references_aligned():
+    res_by_app = {
+        "admin-web": {
+            "WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]},
+            "API_ORIGIN": {"type": "template", "template": "http://localhost"},
+        },
+        "customer": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+    }
+    merged, consumed = sd._build_resource_catalog(res_by_app)
+    assert consumed == {
+        "admin-web": ["WEB_DEV_PORT_ADMIN_WEB", "API_ORIGIN"],
+        "customer": ["WEB_DEV_PORT_CUSTOMER"],
+    }
+    assert {name for names in consumed.values() for name in names} == set(merged)
+
+
+def test_resource_catalog_rejects_normalized_app_name_collision():
+    res_by_app = {
+        "admin-web": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+        "admin_web": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+    }
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"`admin-web\.WEB_DEV_PORT` and `admin_web\.WEB_DEV_PORT` both resolve to "
+            r"`WEB_DEV_PORT_ADMIN_WEB`"
+        ),
+    ):
+        sd._build_resource_catalog(res_by_app)
+
+
+def test_resource_catalog_rejects_mangled_name_colliding_with_canonical_name():
+    res_by_app = {
+        "admin": {"PORT": {}, "PORT_ADMIN": {}},
+        "customer": {"PORT": {}},
+    }
+    with pytest.raises(ValueError, match=r"both resolve to `PORT_ADMIN`"):
+        sd._build_resource_catalog(res_by_app)
+
+
+def test_refresh_inventory_preserves_recipe_on_normalized_app_name_collision(tmp_path, monkeypatch):
+    recipe_path = tmp_path / "splashdown.toml"
+    original = '[resources.KEEP]\ntype = "uuid"\n'
+    recipe_path.write_text(original)
+
+    class CollisionProfile:
+        def resources(self, app):
+            return {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}}
+
+    inventory = sd.ProjectInventory(
+        workspace="pnpm",
+        apps=[
+            sd.AppInventory(name="admin-web", path=tmp_path / "a", profile="collision-test"),
+            sd.AppInventory(name="admin_web", path=tmp_path / "b", profile="collision-test"),
+        ],
+        loader="none",
+    )
+    monkeypatch.setitem(sd.scanner.PROFILES, "collision-test", CollisionProfile())
+    monkeypatch.setattr(sd.commands.Scanner, "scan", lambda self, cwd: inventory)
+
+    with pytest.raises(ValueError, match="resource name collision"):
+        sd.cmd_refresh_inventory(tmp_path)
+    assert recipe_path.read_text() == original
 
 
 def test_cmd_init_scans_single_vite_app(tmp_path):

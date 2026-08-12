@@ -181,12 +181,11 @@ from .scanner import (
     ProjectInventory,
     RunnableProfile,
     Scanner,
-    _app_resource_names,
+    _build_resource_catalog,
     _detect_loader,
     _detect_workspace,
     _enumerate_apps,
     _expand_workspace_globs,
-    _merge_app_resources,
 )
 from .wiring import (
     _RN_WIRING_CHECKS,
