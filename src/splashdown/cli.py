@@ -443,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
             return _env_dispatch(args, cwd, registry)
 
         if args.cmd == "target":
-            return _target_dispatch(args, cwd)
+            return _target_dispatch(args, cwd, registry)
 
         # sync (default, what bare `splash` runs)
         return _cmd_provision(args, cwd, registry)

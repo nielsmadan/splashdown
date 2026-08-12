@@ -1026,6 +1026,27 @@ def test_cli_device_remove_destroys_registered_instance(tmp_path, monkeypatch):
     assert "[targets.simulator.repro]" not in local.read_text()
 
 
+def test_cli_target_remove_uses_composition_root_registry(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text("")
+    (tmp_path / "splashdown.local.toml").write_text(
+        '[targets.simulator.repro]\nmodel = "iPhone 17"\n'
+    )
+    state = tmp_path / "injected"
+    registry = sd.Registry(
+        state / "ports.tsv",
+        state / "kv.tsv",
+        state / "devices.tsv",
+    )
+    checkout = str(tmp_path.resolve())
+    registry.set_device(checkout, "simulator", "repro", "UDID", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: None)
+    monkeypatch.setattr(sd.commands, "device_destroy", lambda dtype, name: None)
+
+    assert sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"]) == 0
+    assert registry.get_device(checkout, "simulator", "repro") is None
+
+
 def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
     a = tmp_path / "gone"
     a.mkdir()
@@ -1220,6 +1241,27 @@ def test_device_refresh_drops_defunct_and_undeclared(registry, tmp_path, monkeyp
     assert list(registry.all_devices()) == []
 
 
+def test_cli_target_refresh_uses_composition_root_registry(tmp_path, monkeypatch):
+    state = tmp_path / "injected"
+    registry = sd.Registry(
+        state / "ports.tsv",
+        state / "kv.tsv",
+        state / "devices.tsv",
+    )
+    captured = {}
+
+    def fake_refresh(received, *, platforms):
+        captured["registry"] = received
+        captured["platforms"] = platforms
+        return 0
+
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    monkeypatch.setattr(sd.commands, "cmd_target_refresh", fake_refresh)
+
+    assert sd.main(["--cwd", str(tmp_path), "target", "refresh", "android"]) == 0
+    assert captured == {"registry": registry, "platforms": ("android",)}
+
+
 def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     co = tmp_path / "co"
@@ -1351,16 +1393,24 @@ def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys)
 
 def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
     """`splash device prune ios` should pass platforms=("ios",) only."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    state = tmp_path / "injected"
+    registry = sd.Registry(
+        state / "ports.tsv",
+        state / "kv.tsv",
+        state / "devices.tsv",
+    )
     captured = {}
 
     def _fake_prune(reg, *, yes, dry_run, platforms):
+        captured["registry"] = reg
         captured["platforms"] = platforms
         return 0
 
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
     monkeypatch.setattr(sd.commands, "cmd_target_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "ios", "--yes", "--dry-run"])
     assert rc == 0
+    assert captured["registry"] is registry
     assert captured["platforms"] == ("ios",)
 
 

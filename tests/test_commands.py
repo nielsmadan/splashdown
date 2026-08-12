@@ -215,6 +215,29 @@ def test_cli_target_add_rejects_incompatible_flags_cleanly(tmp_path, capsys):
     assert not (tmp_path / "splashdown.local.toml").exists()
 
 
+def test_cli_target_add_writes_local_fields(tmp_path):
+    rc = sd.main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "target",
+            "add",
+            "emulator",
+            "pixel",
+            "--device=pixel_9",
+            "--image=system-images;android-35;google_apis;arm64-v8a",
+            "--name=pixel-local",
+        ]
+    )
+    assert rc == 0
+    local = sd.LocalConfig.load(tmp_path / sd.LOCAL_NAME)
+    assert local.targets["emulator"]["pixel"] == {
+        "device": "pixel_9",
+        "image": "system-images;android-35;google_apis;arm64-v8a",
+        "name": "pixel-local",
+    }
+
+
 def test_device_remove_strips_local_variant(tmp_path):
     sd.target_add(tmp_path, "simulator", "repro", {"model": "X"})
     sd.target_add(tmp_path, "simulator", "other", {"model": "Y"})

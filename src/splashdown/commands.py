@@ -1423,100 +1423,96 @@ def _cmd_provision_inner(
     return 0
 
 
-def _target_dispatch(args: Any, cwd: Path) -> int:
-    # Bare `splash target` → list targets (mirrors bare `splash` → provision).
-    if args.target_cmd is None:
-        return cmd_targets_list(cwd, _resolve_format_arg(args))
-
-    if args.target_cmd == "add":
-        fields = {
-            "model": args.model,
-            "ios": args.ios,
-            "device": args.device,
-            "image": args.image,
-            "name": args.sim_name,
-            "id": args.device_id,
-            "platform": args.platform,
-        }
-        if getattr(args, "global_scope", False):
-            path = global_target_add(args.dtype, args.variant, fields)
-            print(f"added target `{args.dtype}.{args.variant}` to {path}", file=sys.stderr)
-            return 0
-        target_add(cwd, args.dtype, args.variant, fields)
-        print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
+def _target_add(args: Any, cwd: Path) -> int:
+    fields = {
+        "model": args.model,
+        "ios": args.ios,
+        "device": args.device,
+        "image": args.image,
+        "name": args.sim_name,
+        "id": args.device_id,
+        "platform": args.platform,
+    }
+    if getattr(args, "global_scope", False):
+        path = global_target_add(args.dtype, args.variant, fields)
+        print(f"added target `{args.dtype}.{args.variant}` to {path}", file=sys.stderr)
         return 0
+    target_add(cwd, args.dtype, args.variant, fields)
+    print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
+    return 0
 
-    if args.target_cmd == "remove":
-        if getattr(args, "global_scope", False):
-            path = global_target_remove(args.dtype, args.variant)
-            print(
-                f"removed target `{args.dtype}.{args.variant}` from {path}; run "
-                "`splash target refresh` to reap any now-undeclared instances",
-                file=sys.stderr,
-            )
-            return 0
-        # Default: also destroy the instance — most users want both. Opt out
-        # of state destruction with --keep-instance.
-        _dev_destroy = device_destroy
-        _dev_destroy_row = device_destroy_row
-        variant_arg = args.variant
-        # A variant that lives only in the machine-wide config isn't in the local
-        # file; point at --global rather than the generic "no target" error.
-        recipe = _load_recipe_or_empty(cwd)
-        try:
-            local = LocalConfig.load(cwd / LOCAL_NAME)
-        except ValueError:
-            local = LocalConfig({}, cwd / LOCAL_NAME)
-        in_project = variant_arg in recipe.targets.get(
-            args.dtype, {}
-        ) or variant_arg in local.targets.get(args.dtype, {})
-        if not in_project and variant_arg in GlobalConfig.load(_global_config_path()).targets.get(
-            args.dtype, {}
-        ):
-            raise DeviceError(
-                f"`{args.dtype}.{variant_arg}` is a global variant; "
-                "remove it with `splash target remove … --global`"
-            )
-        spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant_arg)
-        destroyed = False
-        if not args.keep_instance and args.dtype != "device":
-            registry = Registry()
-            checkout = str(cwd.resolve())
-            row = registry.get_device(checkout, args.dtype, variant_arg)
-            if row is not None:
-                _dev_destroy_row(row)
-            else:
-                resolved = _resolve_device_name(spec, cwd, variant_arg, args.dtype)
-                _dev_destroy(args.dtype, resolved)
-            local_path.write_text(new_local_text)
-            registry.remove_device(checkout, args.dtype, variant_arg)
-            destroyed = True
-        else:
-            local_path.write_text(new_local_text)
-        suffix = " (and destroyed the instance)" if destroyed else ""
+
+def _target_remove(args: Any, cwd: Path, registry: Registry) -> int:
+    if getattr(args, "global_scope", False):
+        path = global_target_remove(args.dtype, args.variant)
         print(
-            f"removed target `{args.dtype}.{variant_arg}` from {LOCAL_NAME}{suffix}",
+            f"removed target `{args.dtype}.{args.variant}` from {path}; run "
+            "`splash target refresh` to reap any now-undeclared instances",
             file=sys.stderr,
         )
         return 0
-
-    if args.target_cmd == "refresh":
-        platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-        _refresh = cmd_target_refresh
-        return int(_refresh(Registry(), platforms=platforms))
-
-    if args.target_cmd == "prune":
-        platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-        _prune = cmd_target_prune
-        return int(
-            _prune(
-                Registry(),
-                yes=args.yes,
-                dry_run=args.dry_run,
-                platforms=platforms,
-            )
+    variant = args.variant
+    recipe = _load_recipe_or_empty(cwd)
+    try:
+        local = LocalConfig.load(cwd / LOCAL_NAME)
+    except ValueError:
+        local = LocalConfig({}, cwd / LOCAL_NAME)
+    in_project = variant in recipe.targets.get(args.dtype, {}) or variant in local.targets.get(
+        args.dtype, {}
+    )
+    if not in_project and variant in GlobalConfig.load(_global_config_path()).targets.get(
+        args.dtype, {}
+    ):
+        raise DeviceError(
+            f"`{args.dtype}.{variant}` is a global variant; "
+            "remove it with `splash target remove … --global`"
         )
+    spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant)
+    destroyed = False
+    if not args.keep_instance and args.dtype != "device":
+        checkout = str(cwd.resolve())
+        row = registry.get_device(checkout, args.dtype, variant)
+        if row is not None:
+            device_destroy_row(row)
+        else:
+            resolved = _resolve_device_name(spec, cwd, variant, args.dtype)
+            device_destroy(args.dtype, resolved)
+        local_path.write_text(new_local_text)
+        registry.remove_device(checkout, args.dtype, variant)
+        destroyed = True
+    else:
+        local_path.write_text(new_local_text)
+    suffix = " (and destroyed the instance)" if destroyed else ""
+    print(f"removed target `{args.dtype}.{variant}` from {LOCAL_NAME}{suffix}", file=sys.stderr)
+    return 0
 
+
+def _target_refresh(args: Any, registry: Registry) -> int:
+    platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
+    return cmd_target_refresh(registry, platforms=platforms)
+
+
+def _target_prune(args: Any, registry: Registry) -> int:
+    platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
+    return cmd_target_prune(
+        registry,
+        yes=args.yes,
+        dry_run=args.dry_run,
+        platforms=platforms,
+    )
+
+
+def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
+    if args.target_cmd is None:
+        return cmd_targets_list(cwd, _resolve_format_arg(args))
+    if args.target_cmd == "add":
+        return _target_add(args, cwd)
+    if args.target_cmd == "remove":
+        return _target_remove(args, cwd, registry)
+    if args.target_cmd == "refresh":
+        return _target_refresh(args, registry)
+    if args.target_cmd == "prune":
+        return _target_prune(args, registry)
     print(f"splash target {args.target_cmd}: unknown action", file=sys.stderr)
     return 2
 

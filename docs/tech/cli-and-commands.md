@@ -171,9 +171,9 @@ When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdo
 The `target` and `env` subcommands have their own nested subparser actions, so
 they get sub-dispatchers rather than a single handler: `_target_dispatch` and
 `_env_dispatch`. Both treat a bare invocation (`splash target` / `splash env`)
-as "list" (mirroring bare `splash` → sync), and both normalize the checkout key
-to `str(Path(...).resolve())` so they hit the same registry key `provision()`
-wrote.
+as "list" (mirroring bare `splash` → sync). `_target_dispatch` routes to focused
+add/remove/refresh/prune handlers and receives the registry constructed by
+`main()`, so every registry-using target handler shares the composition-root dependency.
 
 `target add` validates its CLI field map with the same `validate_target_spec`
 used by recipe, local, and global loads. Flags incompatible with the chosen type
@@ -207,7 +207,7 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `cmd_status` — status entry — `commands.py:618`
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1229` / `:1185`
 - `_confirm` — shared `[y/N]` gate — `commands.py:1101`
-- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1378` / `:1477`
+- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py`
 - `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:33` / `:51` / `:68`
 
 ## Gotchas

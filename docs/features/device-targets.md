@@ -169,7 +169,7 @@ Adding a variant that already exists in the recipe is an error.
 | TYPE / variant inference | `src/splashdown/commands.py:1130` (`_infer_dtype`), `:1148` (`_resolve_variant_for_cli`) |
 | Fleet refresh (eager auto-upgrade) | `src/splashdown/commands.py:899` (`cmd_target_refresh`); recreate decision `:874` |
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/commands.py:985` (`cmd_target_prune`) |
-| `target add` / `remove` (local variants) | `src/splashdown/devices.py:756` / `:800`; preflight `:785`; dispatch `src/splashdown/commands.py:1377` |
+| `target add` / `remove` (local variants) | `src/splashdown/devices.py`; orchestration `src/splashdown/commands.py` (`_target_add` / `_target_remove`) |
 | Framework launcher selection | `src/splashdown/devices.py:758` (`detect_framework`), `:774` (`device_run`) |
 | iOS-native / Android-native launch | `src/splashdown/runners.py:213` / `:181` |
 | Physical-device discovery | `src/splashdown/devices.py:493` (`ensure_physical`), `:480` (`_physical_match`) |

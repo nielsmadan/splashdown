@@ -46,7 +46,7 @@ are used:
 
 The CLI side:
 
-- `add` validates, then writes the variant. `_target_dispatch` (`src/splashdown/commands.py:1377`) collects
+- `add` validates, then writes the variant. `_target_add` (`src/splashdown/commands.py`) collects
   the `--model/--ios/--device/--image/--name/--id/--platform` flags into a field dict and
   calls `target_add` (`src/splashdown/devices.py:756`). It rejects flags that do not belong
   to the selected target type, validates field values, re-checks for collisions against
@@ -75,7 +75,7 @@ The CLI side:
   file is first created.
 - `src/splashdown/recipe.py:287` — `merged_targets` (the union + collision error).
 - `src/splashdown/recipe.py:305` — `resolve_variant`.
-- `src/splashdown/commands.py:1377` — `_target_dispatch` (`add`/`remove` orchestration).
+- `src/splashdown/commands.py` — `_target_dispatch` routes to `_target_add` / `_target_remove`.
 - `src/splashdown/commands.py:562` — `_load_variant_spec` (union lookup used by target refresh).
 - `src/splashdown/devices.py:756` — `target_add` (collision re-check + write).
 - `src/splashdown/devices.py` — `_prepare_target_remove` (removal ownership and TOML preflight).
