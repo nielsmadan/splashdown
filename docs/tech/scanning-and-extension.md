@@ -123,9 +123,10 @@ defines seven extension points and flags; subclasses override the ones that appl
 - `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
   Init supplies the recipe's actual names after collision mangling. Common guidance is
   generated automatically for every app that references a port resource.
-- `run(cwd, recipe, info)` (`profiles.py:277`) — build+install+launch on a device. The
-  base raises `DeviceError`; only mobile/native profiles override it. Web/backend
-  profiles deliberately have no `splash run` (you use `pnpm dev` / `gradle bootRun`).
+- `run(cwd, recipe, info)` — build+install+launch on a device. Only mobile/native profiles
+  implement it and therefore satisfy the `RunnableProfile` protocol. Web/backend profiles
+  deliberately expose no launch capability, and command preflight rejects them before
+  provisioning or booting a target.
 - `reads_dotenv` class flag (`profiles.py:260`) — declares whether the framework picks up
   a plain `.env`/`.env.local` on its own (Next.js, Django, FastAPI, Flask, Rails, Laravel,
   Node backends → True; Vite, Spring Boot, ASP.NET Core, mobile → False). Consumed when no

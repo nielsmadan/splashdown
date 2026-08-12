@@ -5,10 +5,10 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from .loaders import LOADERS
-from .recipe import _TEMPLATE_NAMES, template_refs
+from .recipe import _TEMPLATE_NAMES, Recipe, template_refs
 
 
 @dataclass
@@ -28,6 +28,11 @@ class ProjectInventory:
     workspace: str  # "pnpm" | "yarn" | "npm" | "cargo" | "gradle" | "single"
     apps: list[AppInventory]
     loader: str  # "mise" | "direnv" | "devbox" | "none"
+
+
+@runtime_checkable
+class RunnableProfile(Protocol):
+    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int: ...
 
 
 # profiles.py populates this at import time.

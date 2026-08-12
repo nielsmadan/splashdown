@@ -83,6 +83,7 @@ from .commands import (
 )
 from .devices import (
     DeviceError,
+    DeviceHealth,
     _android_avd_exists,
     _android_bin,
     _android_home,
@@ -107,6 +108,7 @@ from .devices import (
     detect_framework,
     device_destroy,
     device_destroy_row,
+    device_health,
     device_needs_recreate,
     device_run,
     device_shutdown,
@@ -125,6 +127,7 @@ from .devices import (
     resolve_app_dir,
     target_add,
     target_remove,
+    validate_device_run,
 )
 from .hooks import (
     _detect_hook_manager,
@@ -176,6 +179,7 @@ from .scanner import (
     PROFILES,
     AppInventory,
     ProjectInventory,
+    RunnableProfile,
     Scanner,
     _app_resource_names,
     _detect_loader,

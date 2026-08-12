@@ -30,7 +30,6 @@ def test_ensure_fresh_creates_when_missing(registry, checkout, monkeypatch):
 
     monkeypatch.setattr(sd.devices, "ios_ensure", fake_ensure)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     info = sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
@@ -48,7 +47,6 @@ def test_ensure_fresh_recreates_when_ios_stale(registry, checkout, monkeypatch):
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
@@ -63,7 +61,6 @@ def test_ensure_fresh_keeps_when_pinned_and_current(registry, checkout, monkeypa
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     info = sd.ensure_fresh_sim(
         registry,
         checkout,
@@ -84,7 +81,6 @@ def test_ensure_fresh_recreates_when_pinned_ios_mismatch(registry, checkout, mon
     monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     sd.ensure_fresh_sim(
         registry,
         checkout,
@@ -102,7 +98,6 @@ def test_ensure_fresh_recreates_when_model_changed(registry, checkout, monkeypat
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
@@ -122,7 +117,6 @@ def test_ensure_fresh_emulator_destroys_old_avd_on_rename(registry, checkout, mo
     monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda n: n == "old-avd")
     monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: n == "old-avd")
     monkeypatch.setattr(sd.devices, "_android_latest_image", lambda: "android-34")
-    monkeypatch.setattr(sd.commands, "_android_latest_image", lambda: "android-34")
     monkeypatch.setattr(sd.devices, "android_destroy", destroyed.append)
     monkeypatch.setattr(sd.commands, "android_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "android_ensure", lambda n, d, i: n)
@@ -139,7 +133,6 @@ def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: False)  # user nuked the sim
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: False)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     info = sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
     assert info["udid"] == "UDID-NEW"
@@ -1107,7 +1100,6 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
@@ -1143,7 +1135,6 @@ def test_device_refresh_resolves_latest_os_once_across_rows(registry, tmp_path, 
 
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", counting_latest)
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", counting_latest)
     sd.cmd_target_refresh(registry, platforms=("ios",))
     assert calls["n"] == 1, f"latest-OS resolved {calls['n']}x; cache not shared"
 
@@ -1178,7 +1169,6 @@ def test_device_refresh_leaves_fresh_and_pinned_untouched(registry, tmp_path, mo
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     destroyed = []
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
@@ -1209,11 +1199,6 @@ def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
     monkeypatch.setattr(sd.commands, "_android_avd_exists", lambda n: True)
     monkeypatch.setattr(
         sd.devices,
-        "_android_latest_image",
-        lambda: "system-images;android-34;google_apis;arm64-v8a",
-    )
-    monkeypatch.setattr(
-        sd.commands,
         "_android_latest_image",
         lambda: "system-images;android-34;google_apis;arm64-v8a",
     )
@@ -1266,7 +1251,6 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "shutdown")
     capsys.readouterr()
     rc = sd.main(["--cwd", str(co), "status", "--check"])
@@ -1274,6 +1258,42 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "[stale]" in err
     assert "stale device" in err
+    assert "`splash target refresh`" in err
+
+
+def test_cli_status_check_flags_model_drift(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text(
+        '[targets.simulator.default]\nmodel = "iPhone 18"\nios = "18.5"\n'
+    )
+    reg = sd.Registry()
+    reg.set_device(str(co.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
+    monkeypatch.setattr(sd.commands, "device_status", lambda dtype, name: "shutdown")
+
+    assert sd.main(["--cwd", str(co), "status", "--check"]) == 0
+
+    err = capsys.readouterr().err
+    assert "[stale]" in err
+    assert "declared target drifted" in err
+
+
+def test_cli_status_all_check_flags_undeclared_device_row(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text("")
+    reg = sd.Registry()
+    reg.set_device(str(co.resolve()), "simulator", "old", "UDID", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
+    monkeypatch.setattr(sd.commands, "_device_status_for_row", lambda row: "shutdown")
+
+    assert sd.main(["--cwd", str(co), "status", "all", "--check"]) == 0
+
+    err = capsys.readouterr().err
+    assert "undeclared" in err
     assert "`splash target refresh`" in err
 
 
@@ -1598,6 +1618,31 @@ def test_device_run_custom_command_bypasses_framework_detection(tmp_path, monkey
     rc = sd.device_run(tmp_path, recipe, {"kind": "ios", "udid": "ABCD"})
     assert rc == 7  # returns the custom command's exit code
     assert captured["cmd"] == "echo ran ABCD"
+
+
+def test_cli_run_rejects_non_runnable_profile_before_device_mutation(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "vite"\n\n[targets.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        sd.commands,
+        "ensure_fresh_sim",
+        lambda *args, **kwargs: pytest.fail("device mutation must not start"),
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "run", "simulator"]) == 1
+    assert "does not support `splash run`" in capsys.readouterr().err
+    assert sd.Registry().all_devices() == []
+
+
+def test_run_preflight_accepts_custom_command_without_runnable_profile(tmp_path):
+    recipe = sd.Recipe(
+        {"project": {"framework": "vite", "run": {"ios": "echo custom"}}},
+        tmp_path / "splashdown.toml",
+    )
+
+    sd.validate_device_run(tmp_path, recipe, "ios")
 
 
 def test_device_run_no_custom_command_uses_framework(tmp_path, monkeypatch):

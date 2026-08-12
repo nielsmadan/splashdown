@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -626,6 +627,45 @@ def _target_os_for(dtype: str, spec: dict[str, Any], cache: dict[str, str] | Non
     return _latest_os_for(dtype, cache) if requested == "latest" else requested
 
 
+class DeviceHealth(StrEnum):
+    HEALTHY = "healthy"
+    MISSING = "missing"
+    ORPHAN = "orphan"
+    DRIFTED = "drifted"
+    UNDECLARED = "undeclared"
+
+
+def device_health(
+    registry: Registry,
+    cwd: Path,
+    dtype: str,
+    variant: str,
+    spec: dict[str, Any] | None,
+    *,
+    cache: dict[str, str] | None = None,
+) -> DeviceHealth:
+    if dtype == "device":
+        return DeviceHealth.UNDECLARED if spec is None else DeviceHealth.HEALTHY
+    row = registry.get_device(str(cwd.resolve()), dtype, variant)
+    if row is not None and _is_orphan_device(row):
+        return DeviceHealth.ORPHAN
+    if spec is None:
+        return DeviceHealth.UNDECLARED
+    if row is None:
+        return DeviceHealth.MISSING
+    target = _target_os_for(dtype, spec, cache)
+    if dtype == "simulator":
+        drifted = row.ios != target or row.model != spec.get("model", "")
+    elif dtype == "emulator":
+        resolved_name = _resolve_device_name(spec, cwd, variant, dtype)
+        drifted = (
+            row.udid != resolved_name or row.ios != target or row.model != spec.get("device", "")
+        )
+    else:
+        raise DeviceError(f"unknown target type `{dtype}`")
+    return DeviceHealth.DRIFTED if drifted else DeviceHealth.HEALTHY
+
+
 def device_needs_recreate(
     registry: Registry,
     cwd: Path,
@@ -639,22 +679,9 @@ def device_needs_recreate(
     row, the sim/AVD is gone, or its OS/model has drifted from the variant spec.
     The single source of truth for staleness — the actuator (`ensure_fresh_sim`)
     and the `target refresh` counter both call it, so they can never disagree."""
-    if dtype == "device":
-        return False
-    row = registry.get_device(str(cwd.resolve()), dtype, variant)
-    if row is None:
-        return True
-    target = _target_os_for(dtype, spec, cache)
-    if dtype == "simulator":
-        if not _ios_udid_exists(row.udid):
-            return True
-        return row.ios != target or row.model != spec.get("model", "")
-    if dtype == "emulator":
-        sim_name = _resolve_device_name(spec, cwd, variant, dtype)
-        if not _android_avd_exists(sim_name):
-            return True
-        return row.ios != target or row.model != spec.get("device", "")
-    return False
+    return (
+        device_health(registry, cwd, dtype, variant, spec, cache=cache) is not DeviceHealth.HEALTHY
+    )
 
 
 def ensure_fresh_sim(
@@ -992,10 +1019,24 @@ def resolve_app_dir(cwd: Path, recipe: Recipe, framework: str) -> Path:
     return cwd
 
 
+def validate_device_run(cwd: Path, recipe: Recipe, kind: str | None) -> None:
+    from .runners import _resolve_custom_run  # noqa: PLC0415
+    from .scanner import PROFILES, RunnableProfile  # noqa: PLC0415
+
+    if kind is not None and _resolve_custom_run(recipe, kind) is not None:
+        return
+    if kind is None and recipe.project.get("run"):
+        return
+    framework = detect_framework(cwd, recipe)
+    profile = PROFILES.get(framework)
+    if not isinstance(profile, RunnableProfile):
+        raise DeviceError(f"framework `{framework}` does not support `splash run`")
+
+
 def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     """Build + install + run the app on the given device. Returns exit code."""
     from .runners import run_custom_command  # noqa: PLC0415
-    from .scanner import PROFILES  # noqa: PLC0415
+    from .scanner import PROFILES, RunnableProfile  # noqa: PLC0415
 
     # A custom `[project] run` command overrides the framework launcher (and
     # bypasses detection), so it works even on a project with no matching profile.
@@ -1004,6 +1045,7 @@ def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return rc
 
     fw = detect_framework(cwd, recipe)
-    if fw not in PROFILES:
-        raise DeviceError(f"don't know how to run framework `{fw}`")
-    return int(PROFILES[fw].run(resolve_app_dir(cwd, recipe, fw), recipe, info))
+    profile = PROFILES.get(fw)
+    if not isinstance(profile, RunnableProfile):
+        raise DeviceError(f"framework `{fw}` does not support `splash run`")
+    return int(profile.run(resolve_app_dir(cwd, recipe, fw), recipe, info))

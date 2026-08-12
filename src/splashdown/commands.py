@@ -12,14 +12,12 @@ from . import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .agentdocs import remove_agent_guidance, sync_agent_guidance
 from .devices import (
     DeviceError,
+    DeviceHealth,
     _android_avd_exists,
     _android_bin,
-    _android_latest_image,
     _device_status_for_row,
     _ios_current_state,
-    _ios_latest_runtime_version,
     _ios_udid_exists,
-    _is_orphan_device,
     _load_recipe_or_empty,
     _prepare_target_remove,
     _resolve_device_name,
@@ -31,6 +29,7 @@ from .devices import (
     android_shutdown,
     device_destroy,
     device_destroy_row,
+    device_health,
     device_needs_recreate,
     device_run,
     device_shutdown,
@@ -43,6 +42,7 @@ from .devices import (
     ios_shutdown,
     physical_status,
     target_add,
+    validate_device_run,
 )
 from .hooks import (
     _ensure_gitignore,
@@ -68,7 +68,7 @@ from .recipe import (
     merged_targets,
     resolve_variant,
 )
-from .registry import DeviceRow, Registry
+from .registry import Registry
 from .scanner import (
     ProjectInventory,
     Scanner,
@@ -132,16 +132,19 @@ def _gather_devices_all(
             status = _device_status_for_row(row)
         except DeviceError as e:
             status = f"error: {e}"
-        orphan = stale = False
+        orphan = stale = undeclared = False
         if check and co_exists:
-            if _is_orphan_device(row):
+            spec = _load_variant_spec(co_path, row.dtype, row.variant)
+            health = device_health(registry, co_path, row.dtype, row.variant, spec, cache=cache)
+            if health is DeviceHealth.ORPHAN:
                 orphan = True
                 summary["orphan_devices"] += 1
-            else:
-                spec = _load_variant_spec(co_path, row.dtype, row.variant)
-                if spec is not None and _device_stale(row, spec, cache):
-                    stale = True
-                    summary["stale_devices"] += 1
+            elif health is DeviceHealth.DRIFTED:
+                stale = True
+                summary["stale_devices"] += 1
+            elif health is DeviceHealth.UNDECLARED:
+                undeclared = True
+                summary["undeclared_devices"] += 1
         entries.append(
             {
                 "type": row.dtype,
@@ -151,6 +154,7 @@ def _gather_devices_all(
                 "status": status,
                 "orphan": orphan,
                 "stale": stale,
+                "undeclared": undeclared,
                 "missing": False,
             }
         )
@@ -201,20 +205,17 @@ def _gather_targets_declared(
                 status = f"error: {e}"
             orphan = stale = missing = False
             if check:
-                reg_row = registry.get_device(co, dtype, variant)
-                if reg_row is None:
-                    if status == "absent":
-                        missing = True
-                        # A missing sim/emulator is provisioned by `splash run`; a
-                        # missing physical `device` is just unplugged — count it
-                        # separately so the footer doesn't tell the user to run a
-                        # command that can't conjure hardware.
-                        key = "missing_hardware" if dtype == "device" else "missing_devices"
-                        summary[key] += 1
-                elif _is_orphan_device(reg_row):
+                health = device_health(registry, co_path, dtype, variant, spec, cache=cache)
+                if dtype == "device" and status == "absent":
+                    missing = True
+                    summary["missing_hardware"] += 1
+                elif health is DeviceHealth.MISSING:
+                    missing = True
+                    summary["missing_devices"] += 1
+                elif health is DeviceHealth.ORPHAN:
                     orphan = True
                     summary["orphan_devices"] += 1
-                elif _device_stale(reg_row, spec, cache):
+                elif health is DeviceHealth.DRIFTED:
                     stale = True
                     summary["stale_devices"] += 1
             entries.append(
@@ -226,6 +227,7 @@ def _gather_targets_declared(
                     "status": status,
                     "orphan": orphan,
                     "stale": stale,
+                    "undeclared": False,
                     "missing": missing,
                 }
             )
@@ -301,6 +303,8 @@ def _emit_status_block_text(block: dict[str, Any], *, show_all: bool) -> None:
             cols.append("[orphan]")
         elif d.get("stale"):
             cols.append("[stale]")
+        elif d.get("undeclared"):
+            cols.append("[undeclared]")
         elif d.get("missing"):
             cols.append("[missing]")
         print("  " + "\t".join(cols), file=sys.stderr)
@@ -322,6 +326,7 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
         "defunct_rows": 0,
         "orphan_devices": 0,
         "stale_devices": 0,
+        "undeclared_devices": 0,
         "missing_devices": 0,
         "missing_hardware": 0,
     }
@@ -341,14 +346,20 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
                 summary["defunct_rows"] += sum(counts.values())
         elif check:
             for row in registry.devices_for(co):
-                if _is_orphan_device(row):
+                spec = _load_variant_spec(Path(co), row.dtype, row.variant)
+                health = device_health(
+                    registry, Path(co), row.dtype, row.variant, spec, cache=os_cache
+                )
+                if health is DeviceHealth.ORPHAN:
                     summary["orphan_devices"] += 1
                     status_label = "orphan"
                     continue
-                spec = _load_variant_spec(Path(co), row.dtype, row.variant)
-                if spec is not None and _device_stale(row, spec, os_cache):
+                if health is DeviceHealth.DRIFTED:
                     summary["stale_devices"] += 1
                     status_label = status_label or "stale"
+                elif health is DeviceHealth.UNDECLARED:
+                    summary["undeclared_devices"] += 1
+                    status_label = status_label or "undeclared"
 
         rows.append(_StatusRow(path_label, summary_str, status_label))
 
@@ -385,9 +396,10 @@ def _print_check_summary(summary: dict[str, int]) -> None:
     defunct = summary.get("defunct_checkouts", 0)
     orphan = summary.get("orphan_devices", 0)
     stale = summary.get("stale_devices", 0)
+    undeclared = summary.get("undeclared_devices", 0)
     missing = summary.get("missing_devices", 0)
     missing_hw = summary.get("missing_hardware", 0)
-    if not (defunct or orphan or stale or missing or missing_hw):
+    if not (defunct or orphan or stale or undeclared or missing or missing_hw):
         print("Summary: all entries verified.", file=sys.stderr)
         return
     print("Summary:", file=sys.stderr)
@@ -405,7 +417,12 @@ def _print_check_summary(summary: dict[str, int]) -> None:
         )
     if stale:
         print(
-            f"  {stale} stale device{'s' if stale != 1 else ''} (newer OS available).",
+            f"  {stale} stale device{'s' if stale != 1 else ''} (declared target drifted).",
+            file=sys.stderr,
+        )
+    if undeclared:
+        print(
+            f"  {undeclared} undeclared device row{'s' if undeclared != 1 else ''}.",
             file=sys.stderr,
         )
     if missing:
@@ -424,8 +441,8 @@ def _print_check_summary(summary: dict[str, int]) -> None:
     # recreate an orphan whose checkout still exists — `target refresh` does.
     if defunct:
         print("  Run `splash gc` to drop dead checkouts.", file=sys.stderr)
-    if orphan or stale:
-        print("  Run `splash target refresh` to recreate.", file=sys.stderr)
+    if orphan or stale or undeclared:
+        print("  Run `splash target refresh` to reconcile.", file=sys.stderr)
     if missing:
         print("  Run `splash run` to provision.", file=sys.stderr)
     if missing_hw:
@@ -467,6 +484,7 @@ def cmd_status(
         "defunct_rows": 0,
         "orphan_devices": 0,
         "stale_devices": 0,
+        "undeclared_devices": 0,
         "missing_devices": 0,
         "missing_hardware": 0,
     }
@@ -577,17 +595,12 @@ def _load_variant_spec(
     cwd: Path, dtype: str, variant: str, glob: GlobalConfig | None = None
 ) -> dict[str, Any] | None:
     """Look up a variant's current spec from a checkout's recipe + local + global
-    config. Returns None if the variant is declared nowhere. A malformed local
-    file degrades to empty (per-checkout, best-effort). The global config is loaded
-    strictly (a malformed one raises, surfaced as a clean `error:` by the CLI) so a
-    typo is caught loudly and consistently across every command — unless a caller
-    passes an already-loaded `glob` (cmd_target_refresh loads it once, up front, so
-    a bad global aborts the whole sweep instead of reaping devices)."""
+    config. Returns None if the variant is declared nowhere. Every existing config
+    is loaded strictly so malformed input can never look like an empty catalog to a
+    destructive caller. `cmd_target_refresh` passes the global config after loading
+    it once for the fleet-wide sweep."""
     recipe = _load_recipe_or_empty(cwd)
-    try:
-        local = LocalConfig.load(cwd / LOCAL_NAME)
-    except ValueError:
-        local = LocalConfig({}, cwd / LOCAL_NAME)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
     if glob is None:
         glob = GlobalConfig.load(_global_config_path())
     return merged_targets(recipe, local, glob).get(dtype, {}).get(variant)
@@ -683,28 +696,6 @@ def cmd_gc(registry: Registry) -> int:
 _PLATFORM_OF_DTYPE = {"simulator": "ios", "emulator": "android"}
 
 
-def _latest_os(dtype: str, cache: dict[str, str]) -> str:
-    """Current latest iOS runtime / Android image, memoized per command run
-    (these shell out, so resolve at most once each)."""
-    key = _PLATFORM_OF_DTYPE.get(dtype, dtype)
-    if key not in cache:
-        if dtype == "simulator":
-            cache[key] = _ios_latest_runtime_version()
-        else:
-            cache[key] = _android_latest_image()
-    return cache[key]
-
-
-def _device_stale(row: DeviceRow, spec: dict[str, Any], cache: dict[str, str]) -> bool:
-    """A present device whose declared-`latest` OS is behind what's now
-    available — the `status --check` signal that `target refresh` will act on.
-    Pinned variants are never stale."""
-    requested = spec.get("ios" if row.dtype == "simulator" else "image", "latest")
-    if requested != "latest":
-        return False
-    return row.ios != _latest_os(row.dtype, cache)
-
-
 def cmd_target_refresh(
     registry: Registry,
     *,
@@ -730,11 +721,19 @@ def cmd_target_refresh(
     # device look undeclared and get destroyed row-by-row below.
     glob = GlobalConfig.load(_global_config_path())
     rows = [r for r in registry.all_devices() if _PLATFORM_OF_DTYPE.get(r.dtype) in platforms]
-    total = len(rows)
-    for i, row in enumerate(rows, 1):
+    resolved_rows = [
+        (
+            row,
+            _load_variant_spec(Path(row.checkout), row.dtype, row.variant, glob=glob)
+            if Path(row.checkout).exists()
+            else None,
+        )
+        for row in rows
+    ]
+    total = len(resolved_rows)
+    for i, (row, spec) in enumerate(resolved_rows, 1):
         _emit_progress("target refresh", i, total)
         cwd = Path(row.checkout)
-        spec = _load_variant_spec(cwd, row.dtype, row.variant, glob=glob) if cwd.exists() else None
         if spec is None:
             # Defunct checkout or undeclared variant: drop it, destroy its sim.
             if row.dtype == "simulator" and _udid_exists(row.udid):
@@ -866,6 +865,8 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
     _dev_run = device_run
     dtype = _infer_dtype(cwd, dtype)
     variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
+    validate_device_run(cwd, recipe, kind)
     info = _fresh_sim(registry, cwd, dtype, variant, spec)
     # Physical devices are already live (discovery returns the running id); only
     # splashdown-owned sims/emulators need booting.

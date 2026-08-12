@@ -104,8 +104,8 @@ def _detect_android_native(cwd: Path) -> bool:
 
 
 class Profile:
-    """Abstract base. Subclasses set `name` and override `detect`, `resources`,
-    and (where relevant) `wiring_checks` / `run`."""
+    """Abstract base. Subclasses set `name` and override the integration rules
+    they support. Runnable profiles additionally satisfy `RunnableProfile`."""
 
     name: str = ""
 
@@ -150,12 +150,6 @@ class Profile:
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
         """Return framework-specific Markdown appended to common port guidance."""
         return []
-
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-        """Build + install + launch the app on the given device. Mobile
-        Profiles override; web/backend Profiles raise (no `splash run` semantics
-        for them — those use `pnpm dev` / `gradle bootRun` / etc. directly)."""
-        raise DeviceError(f"don't know how to run framework `{self.name}`")
 
 
 def _manual_port_guidance(

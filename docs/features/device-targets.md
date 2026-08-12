@@ -46,10 +46,12 @@ lets one checkout host several configs (`default`, `lowest-supported`, …). A p
 avdmanager's `[A-Za-z0-9._-]` (`_resolve_device_name`, `src/splashdown/devices.py:53`;
 `_sanitize_avd_name:46`).
 
-**Reconcile (the heart of UC2 and UC4).** `ensure_fresh_sim` (`src/splashdown/devices.py:539`)
-diffs the registry's recorded instance against the variant spec. The instance is *stale* when its
-registry row is missing, its underlying sim/AVD no longer exists, or its OS image or model has
-drifted from the spec. For `ios = "latest"` the target OS is resolved live
+**Reconcile (the heart of UC2 and UC4).** `device_health` classifies the registry's recorded
+instance as healthy, missing, orphaned, drifted, or undeclared. `ensure_fresh_sim` and
+`splash status --check` consume that same result, so inspection and refresh cannot disagree.
+The instance needs reconciliation when its registry row is missing, its underlying sim/AVD no
+longer exists, or its OS image, model, device profile, or emulator name has drifted from the spec.
+For `ios = "latest"` the target OS is resolved live
 (`_ios_latest_runtime_version`, `src/splashdown/devices.py:108`); for a pinned `ios = "17.0"` the
 target *is* `17.0`, so a stale check never fires on OS — that is what makes pinned variants
 permanent (UC10). When stale, the old sim is destroyed and a fresh one created in place, and the
@@ -57,9 +59,10 @@ new instance is recorded in the machine-wide registry (`registry.set_device`). C
 reconcile leaves the new sim **Shutdown** — it never boots anything, so the OS-imposed
 "too many booted simulators" limit never applies during a fleet-wide refresh.
 
-**Run vs start vs stop vs destroy.** `cmd_run` (`src/splashdown/commands.py:1044`) calls
-`ensure_fresh_sim`, then boots (`ios_boot` / `android_boot`), then builds + launches via
-`device_run`. `cmd_start` (`:1064`) reconciles + boots but skips the build/launch. `cmd_stop`
+**Run vs start vs stop vs destroy.** `cmd_run` validates that the selected profile has a launcher
+(or that `[project] run` supplies one) before it reconciles or boots anything. It then calls
+`ensure_fresh_sim`, boots (`ios_boot` / `android_boot`), and builds + launches via `device_run`.
+`cmd_start` reconciles + boots but skips the build/launch. `cmd_stop`
 (`:1084`) shuts the instance down but preserves it. `cmd_destroy` (`:1109`) deletes the instance
 and its registry row — and now gates the deletion behind a `[y/N]` prompt (`_confirm`,
 `src/splashdown/commands.py:1101`), bypassable with `--yes`. For `type = device`, stop/destroy are
@@ -110,7 +113,8 @@ simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_n
 1. *Lazy*, on `splash run`: `ensure_fresh_sim` recreates the one sim being run if its `latest` OS
    is now behind. This is the zero-effort path the persona hits daily.
 2. *Eager*, fleet-wide: `splash target refresh` → `cmd_target_refresh`
-   (`src/splashdown/commands.py:899`) walks every registry device row, recreates each that is stale
+   walks every registry device row, first loading every relevant live checkout's recipe/local
+   catalog. Any malformed config aborts the entire sweep before mutation. It then recreates each that is stale
    or missing-but-declared (including pinned variants whose sim was hand-deleted), leaves fresh ones
    alone, and drops rows for defunct checkouts or undeclared variants (destroying their sim). Like
    reconcile, it leaves recreated sims **Shutdown**. The recreate decision is taken *before* the

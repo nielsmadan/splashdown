@@ -115,8 +115,10 @@ zero raises a setup hint (`_physical_no_match_msg`, `devices.py:517`), two-or-mo
 
 ### ensure_fresh_sim: reconcile-on-drift
 
-`ensure_fresh_sim` (`devices.py:539`) is the heart of the auto-upgrade behavior and the only
-entry point that touches the registry. It dispatches on `dtype`:
+`device_health` is the shared, read-only reconciliation query. It returns `healthy`, `missing`,
+`orphan`, `drifted`, or `undeclared`, and is consumed by both `status --check` and the actuator so
+inspection cannot diverge from refresh. `ensure_fresh_sim` is the mutation entry point and
+dispatches on `dtype`:
 
 - `device` → delegates to `ensure_physical` (no registry, no reconcile).
 - `simulator` / `emulator` → resolve the target OS image (`latest` expands to the live latest
@@ -164,8 +166,10 @@ root itself matches, else the single declared app's `path`. Both `device_run` an
 resolve it, because wiring checks patch files inside the app directory and launchers shell out
 there — running either at the workspace root silently does nothing useful.
 
-`device_run` (`devices.py:950`) resolves the framework and delegates to
-`PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launcher consumes the `info` dict above
+Runnable profiles structurally implement `RunnableProfile`; web/backend profiles do not expose a
+`run` method. `cmd_run` checks this capability (or a matching custom `[project] run`) before device
+reconciliation or boot. `device_run` repeats the capability check as a defensive boundary, then
+delegates to `PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launcher consumes the `info` dict above
 (`flutter run -d <udid/serial>`, `xcodebuild`/`simctl`, `gradle`, etc.). The generic
 `device_status` / `device_shutdown` / `device_destroy` dispatchers (`devices.py:611`, `:624`,
 `:633`) drive the `splash start/stop/destroy` subcommands by `dtype`.

@@ -304,6 +304,26 @@ def test_target_refresh_aborts_on_malformed_global(tmp_path, registry):
     assert registry.get_device(str(tmp_path), "simulator", "default") is not None
 
 
+def test_target_refresh_preflights_all_local_configs_before_mutation(
+    tmp_path, registry, monkeypatch
+):
+    defunct = tmp_path / "gone"
+    malformed = tmp_path / "malformed"
+    malformed.mkdir()
+    (malformed / sd.LOCAL_NAME).write_text("[targets.simulator.default\n")
+    registry.set_device(str(defunct), "simulator", "default", "UDID-GONE", "iPhone 17", "18.0")
+    registry.set_device(str(malformed), "simulator", "default", "UDID-LIVE", "iPhone 17", "18.0")
+    destroyed: list[str] = []
+    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda udid: True)
+    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
+
+    with pytest.raises(ValueError, match="invalid TOML"):
+        sd.cmd_target_refresh(registry)
+
+    assert destroyed == []
+    assert {row.udid for row in registry.all_devices()} == {"UDID-GONE", "UDID-LIVE"}
+
+
 def test_global_device_does_not_break_inference_in_mobile_project(tmp_path):
     # regression: a global physical device must not make bare `splash run` ambiguous
     # in a project that declares its own simulator.
@@ -366,9 +386,9 @@ def test_target_refresh_keeps_global_sourced_sim(tmp_path, registry, monkeypatch
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('[targets.simulator.gsim]\nmodel = "iPhone 15"\n')
     registry.set_device(str(tmp_path), "simulator", "gsim", "UDID-G", "iPhone 15", "18.0")
-    for mod in (sd.commands, sd.devices):
-        monkeypatch.setattr(mod, "_ios_udid_exists", lambda u: True)
-        monkeypatch.setattr(mod, "_ios_latest_runtime_version", lambda: "18.0")
+    monkeypatch.setattr(sd.commands, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
+    monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.0")
     assert sd.cmd_target_refresh(registry) == 0
     assert registry.get_device(str(tmp_path), "simulator", "gsim") is not None
 
