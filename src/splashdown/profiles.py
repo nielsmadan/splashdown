@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -146,11 +147,52 @@ class Profile:
         existing doctor flow runs these."""
         return []
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        """Return framework-specific Markdown appended to common port guidance."""
+        return []
+
     def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         """Build + install + launch the app on the given device. Mobile
         Profiles override; web/backend Profiles raise (no `splash run` semantics
         for them — those use `pnpm dev` / `gradle bootRun` / etc. directly)."""
         raise DeviceError(f"don't know how to run framework `{self.name}`")
+
+
+def _manual_port_guidance(
+    label: str, command: str, port_name: str, app_path: Path | None
+) -> list[str]:
+    app_path = app_path or Path(".")
+    env_command = command.format(port=f'"${port_name}"')
+    if str(app_path) in {"", "."}:
+        lookup_command = command.format(port=f'"$(splash env get {port_name})"')
+    else:
+        quoted_path = shlex.quote(str(app_path))
+        env_command = f"(cd {quoted_path} && {env_command})"
+        lookup_launch = command.format(port='"$port"')
+        lookup_command = (
+            f'(port="$(splash env get {port_name})" && cd {quoted_path} && {lookup_launch})'
+        )
+    return [
+        f"- Manual {label} launch: {_markdown_command(env_command)}.",
+        f"- Without a loaded environment: {_markdown_command(lookup_command)}.",
+    ]
+
+
+def _markdown_command(command: str) -> str:
+    escaped = (
+        command.replace("<", "&lt;").replace(">", "&gt;").replace("\r", r"\r").replace("\n", r"\n")
+    )
+    longest = max((len(match.group()) for match in re.finditer(r"`+", escaped)), default=0)
+    fence = "`" * max(1, longest + 1)
+    padding = " " if escaped.startswith("`") or escaped.endswith("`") else ""
+    return f"{fence}{padding}{escaped}{padding}{fence}"
+
+
+def _profile_port(port_names: list[str], canonical: str) -> str:
+    return next(
+        (name for name in port_names if name == canonical or name.startswith(f"{canonical}_")),
+        port_names[0],
+    )
 
 
 # A compose file is infrastructure spanning apps, not an app, so it is not matched
@@ -394,6 +436,10 @@ class AstroProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_astro_port_check()]
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "WEB_DEV_PORT")
+        return _manual_port_guidance("Astro", "npx astro dev --port {port}", port, app.project_path)
+
 
 def _astro_port_check() -> WiringCheck:
     return WiringCheck(
@@ -489,6 +535,10 @@ class ViteProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         ports = [name for name, spec in self.resources(app).items() if spec.get("type") == "port"]
         return [_vite_process_env_check(), *(_vite_port_wired_check(p) for p in ports)]
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "WEB_DEV_PORT")
+        return _manual_port_guidance("Vite", "npx vite --port {port}", port, app.project_path)
 
 
 def _vite_port_wired_check(port_var: str) -> WiringCheck:
@@ -592,6 +642,20 @@ class LaravelProfile(Profile):
             return []
         return [_vite_port_wired_check("WEB_DEV_PORT")]
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        server_port = _profile_port(port_names, "SERVER_PORT")
+        lines = _manual_port_guidance(
+            "Laravel", "php artisan serve --port={port}", server_port, app.project_path
+        )
+        web_ports = [name for name in port_names if "WEB_DEV_PORT" in name]
+        if web_ports:
+            lines.extend(
+                _manual_port_guidance(
+                    "Vite", "npx vite --port {port}", web_ports[0], app.project_path
+                )
+            )
+        return lines
+
 
 # Registered ahead of `vite`: Laravel has shipped a vite.config since Laravel 9, so
 # ViteProfile matches every modern Laravel app and would otherwise claim it — leaving
@@ -618,6 +682,10 @@ class NuxtProfile(Profile):
         # claimed by a sibling backend in a monorepo. Skips Nuxt's own 3000.
         return {"NUXT_PORT": {"type": "port", "range": [3001, 3100]}}
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "NUXT_PORT")
+        return _manual_port_guidance("Nuxt", "npx nuxt dev --port {port}", port, app.project_path)
+
 
 # Ahead of `vite` for the same reason as laravel: Nuxt is Vite-based, and while the
 # minimal template ships no vite.config, a project that adds one must still resolve to
@@ -637,6 +705,12 @@ class AngularProfile(Profile):
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_angular_pkg_port_check()]
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "WEB_DEV_PORT")
+        return _manual_port_guidance(
+            "Angular", "npx ng serve --port {port}", port, app.project_path
+        )
 
 
 _NG_SERVE_RE = re.compile(r"\bng\s+serve\b")
@@ -788,6 +862,18 @@ class DenoProfile(Profile):
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_deno_port_check()]
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "PORT")
+        lines = _manual_port_guidance(
+            "Deno", "deno serve --port {port} SCRIPT_PATH", port, app.project_path
+        )
+        return [
+            "- Prefer the configured `deno task` when it already passes the port.",
+            *lines,
+            "- Replace `SCRIPT_PATH` with the app's entrypoint.",
+            "- Keep `--port` before the entrypoint; later arguments go to the script.",
+        ]
 
 
 def _deno_port_check() -> WiringCheck:
@@ -1003,6 +1089,12 @@ class NextJsProfile(Profile):
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [3001, 3100]}}
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "PORT")
+        return _manual_port_guidance(
+            "Next.js", "npx next dev --port {port}", port, app.project_path
+        )
+
 
 PROFILES["nextjs"] = NextJsProfile()
 
@@ -1023,6 +1115,15 @@ class DjangoProfile(Profile):
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [8001, 8100]}}
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "PORT")
+        return _manual_port_guidance(
+            "Django",
+            "python manage.py runserver 127.0.0.1:{port}",
+            port,
+            app.project_path,
+        )
 
 
 PROFILES["django"] = DjangoProfile()
@@ -1065,6 +1166,10 @@ class FlaskProfile(Profile):
         # Only `flask run` reads this; `python app.py` calling app.run() still
         # hardcodes 5000.
         return {"FLASK_RUN_PORT": {"type": "port", "range": [5001, 5100]}}
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "FLASK_RUN_PORT")
+        return _manual_port_guidance("Flask", "flask run --port {port}", port, app.project_path)
 
 
 # Registered after fastapi so a project carrying both deps resolves to fastapi —
@@ -1188,6 +1293,15 @@ class AspNetCoreProfile(Profile):
         if _aspnet_supports_http_ports(app.path):
             return [_aspnet_launch_settings_check()]
         return [_aspnet_legacy_tfm_check()]
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "ASPNETCORE_HTTP_PORTS")
+        return _manual_port_guidance(
+            "ASP.NET Core",
+            "dotnet run --urls http://localhost:{port}",
+            port,
+            app.project_path,
+        )
 
 
 _TFM_RE = re.compile(r"<TargetFrameworks?>([^<]+)</TargetFrameworks?>")
@@ -1339,6 +1453,12 @@ class RailsProfile(Profile):
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [3001, 3100]}}
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "PORT")
+        return _manual_port_guidance(
+            "Rails", "bin/rails server --port {port}", port, app.project_path
+        )
+
 
 PROFILES["rails"] = RailsProfile()
 
@@ -1370,6 +1490,16 @@ class ReactNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return list(_RN_WIRING_CHECKS)
 
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "RCT_METRO_PORT")
+        return [
+            "- Metro must use the allocated port; do not start it on a numeric default.",
+            *_manual_port_guidance(
+                "Metro", "npx react-native start --port {port}", port, app.project_path
+            ),
+            "- Launch with `splash run simulator` or `splash run emulator`.",
+        ]
+
     def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _rn_run(cwd, recipe, info)
 
@@ -1385,6 +1515,16 @@ class ExpoProfile(Profile):
 
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
+
+    def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
+        port = _profile_port(port_names, "RCT_METRO_PORT")
+        return [
+            "- Metro must use the allocated port; do not start it on a numeric default.",
+            *_manual_port_guidance(
+                "Expo Metro", "npx expo start --port {port}", port, app.project_path
+            ),
+            "- Launch with `splash run simulator` or `splash run emulator`.",
+        ]
 
     def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return _expo_run(cwd, recipe, info)

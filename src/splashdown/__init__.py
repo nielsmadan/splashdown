@@ -64,6 +64,7 @@ from pathlib import Path
 
 # Import profiles — this populates PROFILES.
 from . import profiles as _profiles_module
+from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .commands import (
     _cmd_init_legacy_preset,

@@ -13,7 +13,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 - [recipe-and-templates.md](recipe-and-templates.md) — `recipe.py` + `tomlio.py`: recipe/local
   parsing, the AST-sandbox template engine, topo sort, and comment-preserving TOML writes.
 - [scanning-and-extension.md](scanning-and-extension.md) — `scanner.py` + `profiles.py` +
-  `loaders.py`: project detection and the Profile/Loader extension points.
+  `agentdocs.py` + `loaders.py`: project detection, extension points, and generated agent
+  guidance.
 - [devices.md](devices.md) — `devices.py`: sim/emulator/physical-device lifecycle and framework
   launchers.
 - [wiring.md](wiring.md) — `wiring.py`: the `splash doctor` framework-wiring checks and autopatch.
@@ -24,8 +25,10 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 `scanner.py` (detect → `ProjectInventory`) → `profiles.py` (per-framework rules + `PROFILES`) →
 `recipe.py` (parse + template engine) → `provisioning.py` (`provision()` resolves resources) →
 `registry.py` (machine-wide allocation). Alongside: `loaders.py` wires the env loader, `devices.py`
-runs sims/emulators, `wiring.py` patches framework configs, and `cli.py`/`commands.py` are the
-entry + orchestration. `src/splashdown/__init__.py` is the seam that ties them together.
+runs sims/emulators, `wiring.py` patches framework configs, and `agentdocs.py` derives and
+synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, rescan, and deinit.
+`cli.py`/`commands.py` are the entry + orchestration. `src/splashdown/__init__.py` is the seam
+that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)
 - **Re-export hub.** `src/splashdown/__init__.py` defines the path/name constants

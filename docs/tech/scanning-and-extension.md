@@ -2,10 +2,11 @@
 
 The detection + extension layer: how splashdown looks at a repo on disk and decides
 *what* it is (workspace shape, apps, frameworks, shell loader) before any provisioning
-happens. Five modules: `scanner.py` (filesystem walk → inventory), `profiles.py`
+happens. Six modules: `scanner.py` (filesystem walk → inventory), `profiles.py`
 (per-framework detection, resources and wiring checks), `runners.py`
 (build/install/launch behind `Profile.run`), `scaffolds.py` (the preset
-`splashdown.toml` templates, pure data), `loaders.py` (shell-env wiring).
+`splashdown.toml` templates, pure data), `agentdocs.py` (managed framework guidance),
+and `loaders.py` (shell-env wiring).
 
 ## Contents
 
@@ -13,6 +14,7 @@ happens. Five modules: `scanner.py` (filesystem walk → inventory), `profiles.p
 - [How it works (current state)](#how-it-works-current-state)
   - [scanner.py — repo → ProjectInventory](#scannerpy--repo--projectinventory)
   - [profiles.py — the Profile extension point](#profilespy--the-profile-extension-point)
+  - [agentdocs.py — managed instruction-file guidance](#agentdocspy--managed-instruction-file-guidance)
   - [loaders.py — idempotent shell-env wiring](#loaderspy--idempotent-shell-env-wiring)
 - [Key entry points](#key-entry-points)
 - [Gotchas](#gotchas)
@@ -107,16 +109,20 @@ import; `scanner.py` only ever reads it.
 
 ### profiles.py — the Profile extension point
 
-A `Profile` (`profiles.py:246`) is the per-framework integration contract. The base class
-defines five extension points; subclasses override the ones that apply:
+A `Profile` (`profiles.py`) is the per-framework integration contract. The base class
+defines seven extension points and flags; subclasses override the ones that apply:
 
 - `detect(app_path)` (`profiles.py:262`) — filesystem predicate; the Scanner's match key.
 - `resources(app)` (`profiles.py:265`) — `{resource_name: {type, range, ...}}` to merge
   into `[resources.*]`. Names are canonical; the Scanner mangles on collision. Built-in
   port ranges start above the framework's default port so splashdown never allocates the
   conventional default.
+- `targets(app)` — default device targets emitted during scanner-driven init.
 - `wiring_checks(app)` (`profiles.py:272`) — `WiringCheck`s the doctor runs to patch
   consumer configs (see `docs/tech/wiring.md`).
+- `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
+  Init supplies the recipe's actual names after collision mangling. Common guidance is
+  generated automatically for every app that references a port resource.
 - `run(cwd, recipe, info)` (`profiles.py:277`) — build+install+launch on a device. The
   base raises `DeviceError`; only mobile/native profiles override it. Web/backend
   profiles deliberately have no `splash run` (you use `pnpm dev` / `gradle bootRun`).
@@ -233,6 +239,27 @@ registrations across modules would make that ordering implicit in import order �
 laravel-vs-vite bug is what that failure mode looks like. Keeping every
 `PROFILES[...] = ...` line in one readable sequence is worth the file length.
 
+### agentdocs.py — managed instruction-file guidance
+
+`agentdocs.py` turns a validated `Recipe` into concise, per-app Splashdown guidance. It
+reads the import-populated `PROFILES` registry so each profile can add stable launch
+commands through `Profile.agent_guidance`, while the common renderer names every actual
+port resource from the recipe. In monorepos those are the post-mangling names, not the
+profile's canonical defaults.
+
+`commands.py` calls `sync_agent_guidance()` only after successful scanner init, preset
+init, or rescan, including the structure-only deferred-monorepo path. A recipe with no
+port-bearing apps renders no block and removes any previous complete block. Deinit calls
+`remove_agent_guidance()` independently of recipe parsing, so malformed or missing recipes
+cannot strand managed content.
+
+The module mutates only existing root `AGENTS.md` and independent `CLAUDE.md` files. It
+does not create either file, skips symlinks and non-regular files, and owns only the text
+between its HTML sentinels. Complete blocks are replaced or removed idempotently;
+malformed marker pairs are warned about and left unchanged. If `CLAUDE.md` imports an
+existing `AGENTS.md`, synchronization removes any older complete local block before
+leaving Claude to consume the shared file.
+
 ### loaders.py — idempotent shell-env wiring
 
 A `Loader` (`loaders.py:14`) detects an already-adopted shell-env tool and idempotently
@@ -273,8 +300,10 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 - `scanner.py:179` / `scanner.py:203` — collision mangling (`_merge_app_resources`,
   `_app_resource_names`).
 - `scanner.py:172` / `scanner.py:145` — first-match profile / loader resolution.
-- `profiles.py:246` — `Profile` base class (the five extension points at
-  `profiles.py:260-281`).
+- `profiles.py` — `Profile` base class and its seven extension points/flags, including
+  `agent_guidance(app, port_names)`.
+- `agentdocs.py` — `render_agent_guidance()`, `sync_agent_guidance()`, and
+  `remove_agent_guidance()`; invoked by init/rescan/deinit orchestration in `commands.py`.
 - `profiles.py:364-580` — `PROFILES` registration block (precedence order).
 - `profiles.py:758` — `SCAFFOLDS` registry; substituted in `commands.py:1333`.
 - `loaders.py:14` — `Loader` base; subclasses `loaders.py:27/55/85/109`.

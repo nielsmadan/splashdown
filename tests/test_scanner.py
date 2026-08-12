@@ -1312,6 +1312,7 @@ def test_scan_drops_unknown_members_in_workspace(tmp_path):
     inv = sd.Scanner().scan(tmp_path)
     names = {a.name: a.profile for a in inv.apps}
     assert names == {"web": "vite"}
+    assert inv.apps[0].project_path == Path("apps/web")
 
 
 def test_scan_keeps_single_unknown_app(tmp_path):

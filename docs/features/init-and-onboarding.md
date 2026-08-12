@@ -114,6 +114,16 @@ and for any check whose `detect` is not `"ok"` it applies the `autofix` if one e
 failures with a printed `✗` line (`commands.py:1305`–`1318`). This is the same `WiringCheck`
 machinery as `splash doctor` (see UC5 / `wiring.py`).
 
+**Agent guidance.** After the generated recipe validates, every init path parses that recipe
+and derives a sentinel-wrapped Markdown block for port-bearing apps. The block uses each
+`[apps.*].resources` entry's actual name, including monorepo-mangled names, and combines common
+no-numeric-port rules with `Profile.agent_guidance()` launch instructions. Existing root
+`AGENTS.md` and independent `CLAUDE.md` files are updated; neither is created. A `CLAUDE.md`
+that imports `@AGENTS.md` has any previous complete block removed, then is skipped. Complete
+blocks are replaced idempotently, while malformed markers, symlinks, and non-regular files are
+left untouched with a warning. `--rescan` can replace or remove stale guidance, and `deinit`
+removes complete blocks even when the recipe cannot be parsed.
+
 **First sync.** After `cmd_init` returns, the CLI runs the first sync via
 `_cmd_provision_inner` unless `--no-sync` was passed (`cli.py:350`–`353`). That allocates ports
 through the registry, expands templates, writes outputs, and prints the resolved values — the
@@ -177,7 +187,8 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), and the hook target
-  (`lefthook.yml` / `.husky/post-checkout` / `.githooks/post-checkout` + `core.hooksPath`).
+  (`lefthook.yml` / `.husky/post-checkout` / `.githooks/post-checkout` + `core.hooksPath`),
+  and managed blocks in existing root `AGENTS.md` / independent `CLAUDE.md` files.
   `--no-sync` additionally omits `splashdown.env`.
 
 ## Gotchas

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
+from .agentdocs import remove_agent_guidance, sync_agent_guidance
 from .devices import (
     DeviceError,
     _android_avd_exists,
@@ -1097,6 +1098,7 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     if loader.wire(cwd):
         loader.approve(cwd, announce=True)
     _ensure_post_checkout_hook(cwd)
+    sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
 
 def cmd_init(
@@ -1176,6 +1178,7 @@ def cmd_init(
 
     if any(app.profile != "unknown" for app in inv.apps):
         _apply_init_wiring_checks(inv)
+    sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
 
 def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
@@ -1233,6 +1236,7 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
     if framework and _wiring_checks_for_framework(framework, cwd):
         print(f"running framework wiring for `{framework}`...", file=sys.stderr)
         cmd_doctor(cwd, fix=True)
+    sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
 
 def cmd_deinit(cwd: Path, registry: Registry) -> int:
@@ -1294,6 +1298,7 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
     _remove_post_checkout_hook(cwd)
 
     _revert_gitignore(cwd)
+    remove_agent_guidance(cwd)
 
     # Only remove splashdown.local.toml when it's still the untouched skeleton.
     local_path = cwd / LOCAL_NAME
@@ -1347,6 +1352,7 @@ def cmd_refresh_inventory(cwd: Path) -> int:
         f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {n_resources} resource(s)",
         file=sys.stderr,
     )
+    sync_agent_guidance(cwd, Recipe.parse(rebuilt, recipe_path))
     return 0
 
 

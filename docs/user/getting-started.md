@@ -36,12 +36,13 @@ Run this once at the repo root:
 splash init
 ```
 
-Splashdown scans the filesystem, detects your workspace layout and framework, and does four things:
+Splashdown scans the filesystem, detects your workspace layout and framework, and does five things:
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.
 2. Writes `splashdown.local.toml`, a gitignored per-checkout file (empty to start).
 3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, creating the config if the loader is installed but not yet set up here, and installs a `post-checkout` git hook.
-4. Allocates this checkout's resources and writes them to `splashdown.env`.
+4. Adds managed framework and port guidance to an existing root `AGENTS.md` or independent `CLAUDE.md`.
+5. Allocates this checkout's resources and writes them to `splashdown.env`.
 
 Sample output for a small backend:
 
@@ -70,6 +71,14 @@ Pass `--no-sync` to scaffold the files without reserving ports yet.
 | `splashdown.local.toml` | No | Per-checkout additions (gitignored) |
 | `splashdown.env` | No | Generated `KEY=VALUE` file, owned by splashdown (gitignored) |
 | loader config | Yes | Gains one line that sources `splashdown.env`, and is created if absent |
+| `AGENTS.md` / `CLAUDE.md` | Yes | Existing files gain a sentinel-wrapped block telling coding agents which port variables and launch commands to use |
+
+Splashdown never creates an agent-instruction file. If both exist and `CLAUDE.md` imports
+`@AGENTS.md`, only `AGENTS.md` keeps guidance; any older complete block in `CLAUDE.md` is
+removed. `init --rescan` replaces or removes the managed block as detected frameworks change,
+and `deinit` removes the block while leaving the rest of each Markdown file untouched. Symlinks,
+non-regular files, and unpaired or duplicate sentinels are treated as user-owned: Splashdown
+warns and leaves them unchanged.
 
 See [How it works](how-it-works.md) for the full model.
 

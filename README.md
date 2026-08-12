@@ -61,7 +61,7 @@ eval "$(splash completion bash)"
 
 ## Quick start
 
-In any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, wires your loader and the post-checkout hook, then allocates ports for this checkout. Most popular frameworks are auto-detected, nothing to declare:
+In any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, wires your loader and the post-checkout hook, then allocates ports for this checkout. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports. Most popular frameworks are auto-detected, nothing to declare:
 
 ```sh
 splash init
@@ -71,6 +71,7 @@ splash init
 #   apps/web-admin    → vite
 #   shell loader      → mise
 # wrote splashdown.toml + splashdown.local.toml + mise.toml + post-checkout hook
+# updated AGENTS.md
 # allocating ports…  PORT=9081  WEB_DEV_PORT=5174
 # wrote splashdown.env
 ```

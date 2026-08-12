@@ -18,6 +18,7 @@ class AppInventory:
     name: str  # e.g. "api"
     path: Path  # absolute path to the app's root directory
     profile: str  # the Profile name that matched, or "unknown"
+    project_path: Path | None = None
 
 
 @dataclass
@@ -185,7 +186,14 @@ class Scanner:
             # its lone app even when unmatched (a bare directory is still "the app").
             if workspace != "single" and profile_name == "unknown":
                 continue
-            apps.append(AppInventory(name=name, path=path, profile=profile_name))
+            apps.append(
+                AppInventory(
+                    name=name,
+                    path=path,
+                    profile=profile_name,
+                    project_path=path.relative_to(cwd),
+                )
+            )
         return ProjectInventory(workspace=workspace, apps=apps, loader=loader)
 
     def _match_profile(self, app_path: Path) -> str:
