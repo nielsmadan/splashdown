@@ -539,8 +539,7 @@ def test_rn_xcode_autofix_noop_when_already_referencing_splashdown(tmp_path):
     assert (tmp_path / "ios" / ".xcode.env").read_text() == content
 
 
-def test_cmd_init_rn_preset_wires_everything(tmp_path):
-    """`splash init --preset=rn` in an RN-shaped repo scaffolds AND wires."""
+def test_cmd_init_scanned_rn_wires_everything(tmp_path):
     _git_init(tmp_path)
     # RN-shaped repo before splashdown.
     (tmp_path / "package.json").write_text(
@@ -568,7 +567,7 @@ def test_cmd_init_rn_preset_wires_everything(tmp_path):
     )
     # Run init — should scaffold + wire. Force mise so the loader-wiring leg is
     # exercised (the repo has no loader config, so detection now yields "none").
-    sd.cmd_init(tmp_path, preset="rn", loader_override="mise")
+    sd.cmd_init(tmp_path, loader_override="mise")
     # Scaffolding present.
     assert (tmp_path / "splashdown.toml").exists()
     assert (tmp_path / "splashdown.local.toml").exists()

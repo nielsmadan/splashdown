@@ -311,10 +311,11 @@ def test_sync_preserves_crlf_and_utf8_bom(tmp_path):
     assert b"\n" not in data.replace(b"\r\n", b"")
 
 
-def test_named_preset_init_updates_guidance_without_sync(tmp_path):
+def test_scanner_init_updates_guidance_without_sync(tmp_path):
     path = tmp_path / "AGENTS.md"
     path.write_text("# Rules\n")
-    sd.cmd_init(tmp_path, preset="rn", loader_override="none")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    sd.cmd_init(tmp_path, loader_override="none")
     text = path.read_text()
     assert "Framework: `react-native`" in text
     assert "RCT_METRO_PORT" in text
@@ -325,13 +326,13 @@ def test_cli_no_sync_still_updates_guidance(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     path = tmp_path / "AGENTS.md"
     path.write_text("# Rules\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
     assert (
         sd.main(
             [
                 "--cwd",
                 str(tmp_path),
                 "init",
-                "rn",
                 "--loader",
                 "none",
                 "--no-sync",
@@ -390,7 +391,8 @@ def test_deinit_removes_guidance_even_when_recipe_is_invalid(tmp_path, registry)
     claude = tmp_path / "CLAUDE.md"
     agents.write_text("# User rules\n")
     claude.write_text("# Claude rules\n")
-    sd.cmd_init(tmp_path, preset="rn", loader_override="none")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    sd.cmd_init(tmp_path, loader_override="none")
     (tmp_path / sd.RECIPE_NAME).write_text("not valid = toml ===\n")
     assert sd.cmd_deinit(tmp_path, registry) == 0
     assert "# User rules" in agents.read_text()
@@ -403,7 +405,8 @@ def test_deinit_restores_original_whitespace(tmp_path, registry):
     path = tmp_path / "AGENTS.md"
     original = "# Rules\n"
     path.write_text(original)
-    sd.cmd_init(tmp_path, preset="rn", loader_override="none")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    sd.cmd_init(tmp_path, loader_override="none")
     assert sd.cmd_deinit(tmp_path, registry) == 0
     assert path.read_text() == original
 

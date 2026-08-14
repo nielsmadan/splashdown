@@ -548,16 +548,18 @@ def test_target_refresh_keeps_global_sourced_sim(tmp_path, registry, monkeypatch
     assert registry.get_device(str(tmp_path), "simulator", "gsim") is not None
 
 
-def test_rn_preset_declares_default_ios_variant(tmp_path):
-    sd.cmd_init(tmp_path, preset="rn")
+def test_scanner_rn_declares_default_ios_variant(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    sd.cmd_init(tmp_path)
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
     assert "default" in recipe.targets.get("simulator", {})
     assert recipe.targets["simulator"]["default"]["model"]
     assert "SIM_NAME" not in recipe.resources
 
 
-def test_flutter_preset_declares_both_defaults(tmp_path):
-    sd.cmd_init(tmp_path, preset="flutter")
+def test_scanner_flutter_declares_both_defaults(tmp_path):
+    (tmp_path / "pubspec.yaml").write_text("name: demo\n")
+    sd.cmd_init(tmp_path)
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
     assert "default" in recipe.targets.get("simulator", {})
     assert "default" in recipe.targets.get("emulator", {})
@@ -565,7 +567,7 @@ def test_flutter_preset_declares_both_defaults(tmp_path):
 
 
 def test_local_skeleton_documents_additions(tmp_path):
-    sd.cmd_init(tmp_path, preset="rn")
+    sd.cmd_init(tmp_path, preset="minimal")
     text = (tmp_path / "splashdown.local.toml").read_text()
     assert "additional" in text.lower() or "additions" in text.lower()
     assert "simulator" in text
@@ -1104,17 +1106,3 @@ def test_deinit_loader_none_is_noop(tmp_path, registry):
     (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
     sd.cmd_deinit(co, registry)  # NoneLoader.unwire is a no-op; must not raise
     assert not (co / "splashdown.toml").exists()
-
-
-def test_scaffold_presets_include_astro_and_compose(tmp_path):
-    for preset in ("astro", "compose"):
-        assert preset in sd.SCAFFOLDS
-
-
-@pytest.mark.parametrize("preset", ["astro", "compose"])
-def test_new_scaffolds_parse_as_valid_recipes(tmp_path, preset):
-    d = tmp_path / preset
-    d.mkdir()
-    sd.cmd_init(d, preset=preset, loader_override="none")
-    recipe = sd.Recipe.load(d / sd.RECIPE_NAME)
-    assert recipe.resources

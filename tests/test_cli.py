@@ -101,7 +101,8 @@ def test_localconfig_rejects_bad_variant_name(tmp_path):
 
 
 def test_init_writes_recipe_and_local_skeleton(tmp_path):
-    sd.cmd_init(tmp_path, preset="rn")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    sd.cmd_init(tmp_path)
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert "[resources." in recipe
     assert "range = [8082, 8200]" in recipe
@@ -110,19 +111,28 @@ def test_init_writes_recipe_and_local_skeleton(tmp_path):
 
 def test_init_does_not_clobber_existing_local(tmp_path):
     (tmp_path / "splashdown.local.toml").write_text('[targets.mine]\ntype = "simulator"\n')
-    sd.cmd_init(tmp_path, preset="rn")
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    sd.cmd_init(tmp_path)
     assert "targets.mine" in (tmp_path / "splashdown.local.toml").read_text()
 
 
-def test_cli_init_preset_is_positional(tmp_path, monkeypatch):
-    """`splash init rn` (no --preset flag) writes the rn scaffold."""
+def test_cli_init_named_preset_is_positional(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    rc = sd.main(["--cwd", str(tmp_path), "init", "rn"])
+    rc = sd.main(["--cwd", str(tmp_path), "init", "server"])
     assert rc == 0
     recipe = (tmp_path / "splashdown.toml").read_text()
-    # rn preset declares the React Native profile + Metro port resource.
-    assert 'profile = "react-native"' in recipe
-    assert "RCT_METRO_PORT" in recipe
+    assert "[resources.PORT]" in recipe
+    assert "[resources.DATABASE_URL]" in recipe
+
+
+@pytest.mark.parametrize(
+    "preset", ["rn", "react-native", "flutter", "ios-native", "android-native", "nextjs"]
+)
+def test_cli_init_rejects_removed_presets(tmp_path, preset):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["--cwd", str(tmp_path), "init", preset])
+    assert exc.value.code == 2
+    assert not (tmp_path / "splashdown.toml").exists()
 
 
 def test_cli_init_no_arg_runs_scanner(tmp_path, monkeypatch):
@@ -138,8 +148,6 @@ def test_cli_init_no_arg_runs_scanner(tmp_path, monkeypatch):
 
 
 def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
-    """Scanner-driven `splash init` on a react-native project emits the
-    RCT_METRO_PORT port resource, just like the `rn` preset does."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
     rc = sd.main(["--cwd", str(tmp_path), "init"])
@@ -176,15 +184,6 @@ def test_init_server_preset_writes_generic_scaffold(tmp_path):
     assert "range = [3001, 3100]" in recipe
     # Generic — should not name a specific framework.
     assert "Next.js preset" not in recipe
-
-
-def test_init_nextjs_alias_still_works(tmp_path):
-    # `nextjs` is kept as a backward-compat alias for `server`.
-    sd.cmd_init(tmp_path, preset="nextjs")
-    recipe = (tmp_path / "splashdown.toml").read_text()
-    assert "[resources.PORT]" in recipe
-    assert "[resources.DATABASE_URL]" in recipe
-    assert "range = [3001, 3100]" in recipe
 
 
 def test_init_electron_preset_includes_user_data_dir(tmp_path):

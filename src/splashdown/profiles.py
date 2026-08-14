@@ -26,10 +26,6 @@ from .wiring import (
     _yaml_key_regions,
 )
 
-# Named scaffolds for `splash init NAME`. Framework detection, wiring checks,
-# and `splash run` logic live on `Profile` subclasses (below).
-
-
 def _detect_flutter(cwd: Path) -> bool:
     return (cwd / "pubspec.yaml").exists()
 
@@ -1457,9 +1453,8 @@ class RailsProfile(Profile):
 PROFILES["rails"] = RailsProfile()
 
 
-# Default device targets emitted by scanner-driven `splash init`, kept in sync
-# with the preset scaffolds (`_RN_SCAFFOLD` etc.). iOS sim left at implicit
-# `ios = "latest"` (auto-recreate on newer iOS); Android emulator on pixel_9.
+# Default device targets emitted by scanner-driven `splash init`. iOS sim is
+# left at implicit `latest`; Android uses pixel_9.
 _DEFAULT_SIM_TARGET: dict[str, dict[str, dict[str, str]]] = {
     "simulator": {"default": {"model": "iPhone 17"}}
 }
@@ -1578,8 +1573,3 @@ PROFILES["expo"] = ExpoProfile()
 PROFILES["react-native"] = ReactNativeProfile()
 PROFILES["ios-native"] = IosNativeProfile()
 PROFILES["android-native"] = AndroidNativeProfile()
-
-
-# Named scaffolds for `splash init NAME`. Decoupled from PROFILES because some
-# entries (minimal, electron, server) don't have a detectable framework, and
-# some Profiles (vite, springboot, etc.) don't have a stock scaffold.

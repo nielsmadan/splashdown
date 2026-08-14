@@ -458,6 +458,10 @@ def test_all_builtin_scaffolds_validate(tmp_path):
         assert isinstance(recipe.resources, dict)
 
 
+def test_builtin_scaffolds_are_intent_only():
+    assert set(sd.SCAFFOLDS) == {"minimal", "server", "electron"}
+
+
 def test_template_name_schema_tracks_the_render_scope(tmp_path):
     """_TEMPLATE_NAMES is the load-time whitelist; _make_scope is what render
     actually binds. Drift either way is silent: a helper added to the scope is

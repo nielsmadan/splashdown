@@ -152,7 +152,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         nargs="?",
         default=None,
         choices=tuple(SCAFFOLDS),
-        help="named scaffold (default: scan the project)",
+        help="intent preset (default: scan the project)",
     )
     p.add_argument(
         "--loader",
