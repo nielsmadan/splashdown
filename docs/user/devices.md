@@ -9,6 +9,19 @@ splash destroy [type] [variant]    # delete the device + its registry entry
 
 Both `type` and `variant` are optional. `type` is inferred when exactly one target type is declared. Otherwise pass `simulator`, `emulator`, or `device`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
+## Platform support
+
+| Target | macOS | Linux |
+| --- | --- | --- |
+| iOS simulator/device | Xcode required | Unsupported; explicit commands return an actionable error |
+| Android emulator/device | Android SDK required | Android SDK required |
+| Ports, environment, and config | Supported | Supported |
+
+An explicit unsupported target returns exit 1 with the missing host or tool requirement and no
+traceback. Commands that inspect or reconcile both platforms—`target refresh`, `target prune`,
+`gc`, and status inspection—warn once, skip the unavailable platform, and continue supported work.
+Status labels skipped targets `unavailable`; it does not report them as missing or stale.
+
 **Prefix matching** (on by default): you can abbreviate both `type` and `variant` to any unambiguous prefix: `splash run sim` resolves the simulator type, `splash run sim low` the `lowest-supported` variant. A prefix that matches more than one variant errors with the candidates. A type prefix wins over an identically-prefixed variant name. Toggle it off in [Settings](settings.md).
 
 ```sh

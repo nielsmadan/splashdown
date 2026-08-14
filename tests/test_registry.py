@@ -190,6 +190,17 @@ def test_registry_gc_includes_devices(registry, tmp_path, monkeypatch):
     assert udids == {"UDID-A"}
 
 
+def test_registry_gc_can_preserve_device_rows(registry, tmp_path):
+    dead = tmp_path / "dead"
+    registry.allocate_port(str(dead), "PORT", 18920, 18930)
+    registry.set_kv(str(dead), "TOKEN", "value")
+    registry.set_device(str(dead), "simulator", "default", "UDID-DEAD", "iPhone 17", "18.5")
+
+    assert registry.gc(include_devices=False) == 2
+    assert registry.all_for(str(dead)) == {}
+    assert registry.get_device(str(dead), "simulator", "default") is not None
+
+
 def test_registry_all_checkouts_aggregates_three_files(registry, tmp_path):
     # Distinct paths across ports.tsv, kv.tsv, devices.tsv.
     a = tmp_path / "a"

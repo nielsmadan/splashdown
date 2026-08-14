@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .capabilities import require_macos, translate_tool_errors
 from .errors import DeviceError
 from .recipe import Recipe
 
@@ -46,7 +47,8 @@ def _android_component(label: str, value: str) -> str:
 
 def _flutter_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     device_id = (info.get("udid") if info["kind"] == "ios" else info.get("serial")) or ""
-    return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
+    with translate_tool_errors("flutter", "flutter", "install Flutter and add it to PATH"):
+        return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
 
 
 def _rn_ios_flags(recipe: Recipe) -> list[str]:
@@ -133,7 +135,8 @@ def _x86_64_sim_advice() -> str:
 def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if info["kind"] == "ios":
         cmd = ["npx", "react-native", "run-ios", "--udid", info["udid"], *_rn_ios_flags(recipe)]
-        rc = subprocess.call(cmd, cwd=cwd)
+        with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
+            rc = subprocess.call(cmd, cwd=cwd)
         if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
             print(hint, file=sys.stderr)
         return rc
@@ -145,15 +148,18 @@ def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         info["serial"],
         *_rn_android_flags(recipe),
     ]
-    return subprocess.call(cmd, cwd=cwd)
+    with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
+        return subprocess.call(cmd, cwd=cwd)
 
 
 def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     # No scheme/mode forwarding: `expo run:ios --scheme` means a URL scheme, not
     # an Xcode scheme, so `[project.ios] scheme` can't be mapped cleanly here.
     if info["kind"] == "ios":
-        return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
-    return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
+        with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
+            return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
+    with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
+        return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
 
 
 _RUN_PLACEHOLDER = re.compile(r"\{(device_id|device_name|platform)\}")
@@ -229,6 +235,7 @@ def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
 
 
 def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+    require_macos("native build support")
     cfg = recipe.project.get("ios") or {}
     scheme = cfg.get("scheme")
     if not scheme:
@@ -253,17 +260,23 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         "-derivedDataPath",
         str(derived),
     ]
-    rc = subprocess.call([*common, "build"], cwd=cwd)
+    with translate_tool_errors(
+        "ios", "xcodebuild", "install Xcode and select it with xcode-select"
+    ):
+        rc = subprocess.call([*common, "build"], cwd=cwd)
     if rc != 0:
         return rc
 
-    settings = subprocess.run(
-        [*common, "-showBuildSettings", "-json"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with translate_tool_errors(
+        "ios", "xcodebuild", "install Xcode and select it with xcode-select"
+    ):
+        settings = subprocess.run(
+            [*common, "-showBuildSettings", "-json"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     try:
         entries = json.loads(settings.stdout)
         bs = entries[0]["buildSettings"]
@@ -283,19 +296,41 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     if info.get("physical"):
         # Physical iOS devices aren't reachable via simctl (simulator-only);
         # devicectl (Xcode 15+) installs and launches on real hardware.
-        rc = subprocess.call(
-            ["xcrun", "devicectl", "device", "install", "app", "--device", udid, str(app_path)]
-        )
+        with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+            rc = subprocess.call(
+                [
+                    "xcrun",
+                    "devicectl",
+                    "device",
+                    "install",
+                    "app",
+                    "--device",
+                    udid,
+                    str(app_path),
+                ]
+            )
         if rc != 0:
             return rc
-        return subprocess.call(
-            ["xcrun", "devicectl", "device", "process", "launch", "--device", udid, bundle_id]
-        )
+        with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+            return subprocess.call(
+                [
+                    "xcrun",
+                    "devicectl",
+                    "device",
+                    "process",
+                    "launch",
+                    "--device",
+                    udid,
+                    bundle_id,
+                ]
+            )
 
-    rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
+    with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+        rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
     if rc != 0:
         return rc
-    return subprocess.call(["xcrun", "simctl", "launch", udid, bundle_id])
+    with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+        return subprocess.call(["xcrun", "simctl", "launch", udid, bundle_id])
 
 
 def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
@@ -305,22 +340,33 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     serial = info["serial"]
     gradlew = cwd / "gradlew"
     gradle_cmd = [f"./{gradlew.name}"] if gradlew.exists() else ["gradle"]
+    gradle_tool = gradle_cmd[0]
 
     install_task = f":{module}:install{variant[:1].upper()}{variant[1:]}"
     env = {**os.environ, "ANDROID_SERIAL": serial}
-    rc = subprocess.call([*gradle_cmd, install_task], cwd=cwd, env=env)
+    with translate_tool_errors(
+        "gradle",
+        gradle_tool,
+        "install Gradle or add an executable gradlew wrapper",
+    ):
+        rc = subprocess.call([*gradle_cmd, install_task], cwd=cwd, env=env)
     if rc != 0:
         return rc
 
     app_id = cfg.get("application_id")
     if not app_id:
         try:
-            out = subprocess.check_output(
-                [*gradle_cmd, f":{module}:properties", "-q"],
-                cwd=cwd,
-                text=True,
-                env=env,
-            )
+            with translate_tool_errors(
+                "gradle",
+                gradle_tool,
+                "install Gradle or add an executable gradlew wrapper",
+            ):
+                out = subprocess.check_output(
+                    [*gradle_cmd, f":{module}:properties", "-q"],
+                    cwd=cwd,
+                    text=True,
+                    env=env,
+                )
             for line in out.splitlines():
                 if line.startswith("applicationId:"):
                     app_id = line.split(":", 1)[1].strip()
@@ -336,20 +382,35 @@ def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
 
     if activity := cfg.get("launch_activity"):
         activity = _android_component("android launch_activity", activity)
+        with translate_tool_errors(
+            "android", "adb", "install Android SDK platform-tools and add adb to PATH"
+        ):
+            return subprocess.call(
+                [
+                    "adb",
+                    "-s",
+                    serial,
+                    "shell",
+                    "am",
+                    "start",
+                    "-n",
+                    f"{app_id}/{activity}",
+                ],
+            )
+    with translate_tool_errors(
+        "android", "adb", "install Android SDK platform-tools and add adb to PATH"
+    ):
         return subprocess.call(
-            ["adb", "-s", serial, "shell", "am", "start", "-n", f"{app_id}/{activity}"],
+            [
+                "adb",
+                "-s",
+                serial,
+                "shell",
+                "monkey",
+                "-p",
+                app_id,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
         )
-    return subprocess.call(
-        [
-            "adb",
-            "-s",
-            serial,
-            "shell",
-            "monkey",
-            "-p",
-            app_id,
-            "-c",
-            "android.intent.category.LAUNCHER",
-            "1",
-        ],
-    )

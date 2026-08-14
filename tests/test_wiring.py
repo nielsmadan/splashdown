@@ -18,6 +18,16 @@ def test_detect_hook_manager_clean(tmp_path):
     assert sd._detect_hook_manager(tmp_path) == "none"
 
 
+def test_detect_hook_manager_tolerates_permission_denied_git(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        sd.hooks.subprocess,
+        "check_output",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    assert sd._detect_hook_manager(tmp_path) == "none"
+
+
 def test_detect_hook_manager_lefthook_yml(tmp_path):
     (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands: {}\n")
     assert sd._detect_hook_manager(tmp_path) == "lefthook"
@@ -210,6 +220,22 @@ def test_doctor_uses_filesystem_when_no_recipe(tmp_path):
 def test_rn_hook_clean_detect_problem(tmp_path):
     status, _ = sd._rn_hook_detect(tmp_path)
     assert status == "problem"
+
+
+def test_rn_hook_detect_tolerates_permission_denied_git(tmp_path, monkeypatch):
+    (tmp_path / ".githooks").mkdir()
+    (tmp_path / ".githooks" / "post-checkout").write_text("#!/bin/sh\nsplash sync\n")
+    monkeypatch.setattr(sd.wiring, "_detect_hook_manager", lambda cwd: "none")
+    monkeypatch.setattr(
+        sd.wiring.subprocess,
+        "check_output",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    status, detail = sd._rn_hook_detect(tmp_path)
+
+    assert status == "problem"
+    assert "core.hooksPath" in detail
 
 
 def test_rn_hook_clean_autofix_then_ok(tmp_path):
@@ -816,6 +842,18 @@ def test_remove_hook_githooks(tmp_path):
     assert (tmp_path / ".githooks" / "post-checkout").exists()
     sd._remove_post_checkout_hook(tmp_path)
     assert not (tmp_path / ".githooks" / "post-checkout").exists()
+
+
+def test_wire_core_hook_tolerates_permission_denied_git(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        sd.hooks.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    sd._wire_post_checkout_corehookspath(tmp_path)
+
+    assert (tmp_path / ".githooks" / "post-checkout").exists()
 
 
 def test_remove_hook_husky_unmodified(tmp_path):

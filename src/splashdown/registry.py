@@ -391,7 +391,7 @@ class Registry:
             self._write_kv(kept_kv)
         return removed
 
-    def gc(self) -> int:
+    def gc(self, *, include_devices: bool = True) -> int:
         """Drop entries whose abspath no longer exists, then reconcile live
         checkouts against their current recipes. Returns count removed."""
         removed = 0
@@ -405,7 +405,8 @@ class Registry:
             kept_kv = [r for r in rows_kv if Path(r[0]).exists()]
             removed += len(rows_kv) - len(kept_kv)
             self._write_kv(kept_kv)
-        removed += self.gc_devices()
+        if include_devices:
+            removed += self.gc_devices()
         removed += self.reconcile_with_recipes()
         return removed
 

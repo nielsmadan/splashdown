@@ -17,11 +17,13 @@ from . import (
     TARGET_TYPES,
     TARGET_VARIANT_RE,
 )
+from .capabilities import require_macos, translate_tool_errors, warn_capability
 
 # DeviceError is defined in errors.py (dependency-free) and re-exported here for
 # the many `from .devices import DeviceError` call sites; recipe.py imports it
 # straight from errors so it needn't depend on this module. The `as DeviceError`
 # marks it an explicit re-export for mypy strict.
+from .errors import CapabilityError
 from .errors import DeviceError as DeviceError  # noqa: PLC0414 — explicit re-export for mypy
 from .recipe import (
     GLOBAL_SKELETON,
@@ -78,10 +80,10 @@ def _resolve_device_name(
 
 
 def _xcrun_json(args: list[str]) -> Any:
+    require_macos("simulator support")
     try:
-        out = subprocess.check_output(["xcrun", *args], stderr=subprocess.DEVNULL)
-    except FileNotFoundError as e:
-        raise DeviceError("xcrun not found; install Xcode command-line tools") from e
+        with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+            out = subprocess.check_output(["xcrun", *args], stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError as e:
         raise DeviceError(f"xcrun {' '.join(args)} failed: exit {e.returncode}") from e
     return json.loads(out)
@@ -165,6 +167,8 @@ def _ios_udid_exists(udid: str) -> bool:
     """Is `udid` known to xcrun simctl right now?"""
     try:
         data = _xcrun_json(["simctl", "list", "devices", "-j"])
+    except CapabilityError:
+        raise
     except DeviceError:
         return False
     for devs in (data.get("devices") or {}).values():
@@ -199,6 +203,7 @@ def _ios_device_type_identifier(model: str | None) -> str:
 
 def ios_ensure(name: str, model: str | None, ios_version: str | None) -> tuple[str, str]:
     """Find-or-create sim. Returns (udid, state)."""
+    require_macos("simulator support")
     existing = _ios_find_device_by_name(name)
     if existing:
         return existing
@@ -206,14 +211,15 @@ def ios_ensure(name: str, model: str | None, ios_version: str | None) -> tuple[s
     device_type = _ios_device_type_identifier(model)
     print(f"creating iOS sim '{name}' ({device_type} on {runtime})", file=sys.stderr)
     try:
-        udid = (
-            subprocess.check_output(
-                ["xcrun", "simctl", "create", name, device_type, runtime],
-                stderr=subprocess.PIPE,
+        with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+            udid = (
+                subprocess.check_output(
+                    ["xcrun", "simctl", "create", name, device_type, runtime],
+                    stderr=subprocess.PIPE,
+                )
+                .decode()
+                .strip()
             )
-            .decode()
-            .strip()
-        )
     except subprocess.CalledProcessError as e:
         detail = e.stderr.decode().strip()
         raise DeviceError(
@@ -244,35 +250,42 @@ def _ios_create_hint(model: str | None, ios_version: str | None, runtime: str) -
 
 
 def ios_boot(udid: str, state: str) -> None:
+    require_macos("simulator support")
     if state == "Booted":
         return
-    proc = subprocess.run(
-        ["xcrun", "simctl", "boot", udid], capture_output=True, text=True, check=False
-    )
+    with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+        proc = subprocess.run(
+            ["xcrun", "simctl", "boot", udid], capture_output=True, text=True, check=False
+        )
     # A concurrent boot can flip the state between our check and this call; simctl
     # reports that benign race as a non-zero "current state: Booted".
     if proc.returncode != 0 and "current state: Booted" not in proc.stderr:
         raise DeviceError(
             f"simctl boot failed for {udid}: {proc.stderr.strip() or proc.returncode}"
         )
-    subprocess.run(["open", "-a", "Simulator"], check=False)
+    with translate_tool_errors("ios", "open", "restore the macOS open command"):
+        subprocess.run(["open", "-a", "Simulator"], check=False)
 
 
 def ios_shutdown(udid: str) -> None:
+    require_macos("simulator support")
     # simctl errors with code 405 if the sim is already Shutdown — noisy and
     # useless. Skip the call entirely when there's nothing to do.
     if _ios_current_state(udid) == "Shutdown":
         return
-    subprocess.run(["xcrun", "simctl", "shutdown", udid], check=False)
+    with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+        subprocess.run(["xcrun", "simctl", "shutdown", udid], check=False)
 
 
 def ios_destroy(udid: str) -> None:
-    proc = subprocess.run(
-        ["xcrun", "simctl", "delete", udid],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    require_macos("simulator support")
+    with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+        proc = subprocess.run(
+            ["xcrun", "simctl", "delete", udid],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if proc.returncode != 0:
         raise DeviceError(
             f"simctl delete failed for {udid}: {proc.stderr.strip() or proc.returncode}"
@@ -290,8 +303,9 @@ def _android_home() -> Path:
     for c in candidates:
         if c.exists():
             return c
-    raise DeviceError(
-        f"ANDROID_HOME not set and no SDK found at {' or '.join(str(c) for c in candidates)}"
+    raise CapabilityError(
+        "android",
+        "Android SDK not found; set ANDROID_HOME or ANDROID_SDK_ROOT",
     )
 
 
@@ -306,14 +320,21 @@ def _android_bin(name: str) -> str:
     for c in candidates:
         if c.exists():
             return str(c)
-    raise DeviceError(f"{name} not found under {h}")
+    raise CapabilityError(
+        "android",
+        f"{name} not found under {h}; install Android SDK command-line tools",
+    )
 
 
 def _android_avd_exists(name: str) -> bool:
     try:
-        out = subprocess.check_output(
-            [_android_bin("avdmanager"), "list", "avd", "-c"], stderr=subprocess.DEVNULL
-        )
+        with translate_tool_errors(
+            "android", "avdmanager", "install Android SDK command-line tools"
+        ):
+            out = subprocess.check_output(
+                [_android_bin("avdmanager"), "list", "avd", "-c"],
+                stderr=subprocess.DEVNULL,
+            )
     except subprocess.CalledProcessError:
         return False
     return name in [line.strip() for line in out.decode().splitlines()]
@@ -334,9 +355,12 @@ def _android_latest_image() -> str:
     """Pick a sensible default system image. Prefers installed; falls back to a known-good name."""
     sdkmgr = _android_bin("sdkmanager")
     try:
-        out = subprocess.check_output(
-            [sdkmgr, "--list_installed"], stderr=subprocess.DEVNULL
-        ).decode()
+        with translate_tool_errors(
+            "android", "sdkmanager", "install Android SDK command-line tools"
+        ):
+            out = subprocess.check_output(
+                [sdkmgr, "--list_installed"], stderr=subprocess.DEVNULL
+            ).decode()
     except subprocess.CalledProcessError:
         out = ""
     installed = re.findall(r"^\s*(system-images;android-\d+;[^\s|]+)", out, re.M)
@@ -359,12 +383,13 @@ def android_ensure(name: str, device: str | None, image: str | None) -> str:
     device = device or "pixel_9"
     print(f"creating Android AVD '{name}' (device={device}, image={image})", file=sys.stderr)
     avdmgr = _android_bin("avdmanager")
-    proc = subprocess.run(
-        [avdmgr, "create", "avd", "-n", name, "-k", image, "-d", device, "--force"],
-        input=b"\n",  # answer "no" to "create custom hardware profile?"
-        capture_output=True,
-        check=False,
-    )
+    with translate_tool_errors("android", "avdmanager", "install Android SDK command-line tools"):
+        proc = subprocess.run(
+            [avdmgr, "create", "avd", "-n", name, "-k", image, "-d", device, "--force"],
+            input=b"\n",  # answer "no" to "create custom hardware profile?"
+            capture_output=True,
+            check=False,
+        )
     if proc.returncode != 0:
         raise DeviceError(f"avdmanager create failed: {proc.stderr.decode().strip()}")
     return name
@@ -378,7 +403,8 @@ def _android_running_serial(avd_name: str) -> str | None:
     """Match a running emulator to an AVD via `adb -s <serial> emu avd name`."""
     adb = _android_bin("adb")
     try:
-        out = subprocess.check_output([adb, "devices"], stderr=subprocess.DEVNULL).decode()
+        with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
+            out = subprocess.check_output([adb, "devices"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
         return None
     for line in out.splitlines()[1:]:
@@ -390,15 +416,16 @@ def _android_running_serial(avd_name: str) -> str | None:
         ):
             serial = parts[0]
             try:
-                got = (
-                    subprocess.check_output(
-                        [adb, "-s", serial, "emu", "avd", "name"],
-                        stderr=subprocess.DEVNULL,
-                        timeout=2,
+                with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
+                    got = (
+                        subprocess.check_output(
+                            [adb, "-s", serial, "emu", "avd", "name"],
+                            stderr=subprocess.DEVNULL,
+                            timeout=2,
+                        )
+                        .decode()
+                        .splitlines()
                     )
-                    .decode()
-                    .splitlines()
-                )
                 if got and got[0].strip() == avd_name:
                     return serial
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -417,7 +444,10 @@ def android_boot(avd_name: str) -> str:
     log = REGISTRY_DIR / f"emulator-{recipe_slug(avd_name)}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     print(f"booting Android AVD '{avd_name}' (log: {log})", file=sys.stderr)
-    with log.open("ab") as f:
+    with (
+        log.open("ab") as f,
+        translate_tool_errors("android", "emulator", "install the Android SDK emulator"),
+    ):
         subprocess.Popen(
             [emu, "-avd", avd_name],
             stdout=f,
@@ -437,16 +467,18 @@ def android_shutdown(avd_name: str) -> None:
     serial = _android_running_serial(avd_name)
     if not serial:
         return
-    subprocess.run([_android_bin("adb"), "-s", serial, "emu", "kill"], check=False)
+    with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
+        subprocess.run([_android_bin("adb"), "-s", serial, "emu", "kill"], check=False)
 
 
 def android_destroy(avd_name: str) -> None:
-    proc = subprocess.run(
-        [_android_bin("avdmanager"), "delete", "avd", "-n", avd_name],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with translate_tool_errors("android", "avdmanager", "install Android SDK command-line tools"):
+        proc = subprocess.run(
+            [_android_bin("avdmanager"), "delete", "avd", "-n", avd_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if proc.returncode != 0:
         raise DeviceError(
             f"avdmanager delete failed for {avd_name}: {proc.stderr.strip() or proc.returncode}"
@@ -462,13 +494,13 @@ def android_destroy(avd_name: str) -> None:
 def _devicectl_json(args: list[str]) -> Any:
     """Run `xcrun devicectl … --json-output -` and parse stdout. devicectl ships
     with Xcode 15+; raise a pointed error when it's missing or fails."""
+    require_macos("physical-device support")
     try:
-        out = subprocess.check_output(
-            ["xcrun", "devicectl", *args, "--json-output", "-"],
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError as e:
-        raise DeviceError("xcrun not found; install Xcode command-line tools") from e
+        with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+            out = subprocess.check_output(
+                ["xcrun", "devicectl", *args, "--json-output", "-"],
+                stderr=subprocess.DEVNULL,
+            )
     except subprocess.CalledProcessError as e:
         raise DeviceError(
             "xcrun devicectl failed (needs Xcode 15+ for physical-device support); "
@@ -514,7 +546,10 @@ def _android_physical_devices() -> list[dict[str, str]]:
     `emulator` device type."""
     adb = _android_bin("adb")
     try:
-        out = subprocess.check_output([adb, "devices", "-l"], stderr=subprocess.DEVNULL).decode()
+        with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
+            out = subprocess.check_output(
+                [adb, "devices", "-l"], stderr=subprocess.DEVNULL
+            ).decode()
     except subprocess.CalledProcessError as e:
         raise DeviceError(f"adb devices failed: exit {e.returncode}") from e
     devices: list[dict[str, str]] = []
@@ -530,7 +565,9 @@ def _android_physical_devices() -> list[dict[str, str]]:
     return devices
 
 
-def physical_discover(platform: str | None = None) -> list[dict[str, str]]:
+def physical_discover(
+    platform: str | None = None, *, warned: set[str] | None = None
+) -> list[dict[str, str]]:
     """All connected physical devices, optionally scoped to one platform. When
     scanning broadly (platform=None) a missing toolchain for one platform is
     tolerated — an Android-only dev without Xcode still discovers their phone.
@@ -538,24 +575,29 @@ def physical_discover(platform: str | None = None) -> list[dict[str, str]]:
     _ios = _ios_physical_devices
     _android = _android_physical_devices
     out: list[dict[str, str]] = []
+    warning_keys = warned if warned is not None else set()
     if platform in (None, "ios"):
         try:
             out += _ios()
-        except DeviceError:
+        except CapabilityError as error:
             if platform == "ios":
                 raise
+            warn_capability(error, warning_keys)
     if platform in (None, "android"):
         try:
             out += _android()
-        except DeviceError:
+        except CapabilityError as error:
             if platform == "android":
                 raise
+            warn_capability(error, warning_keys)
     return out
 
 
-def _physical_match(spec: dict[str, Any]) -> list[dict[str, str]]:
+def _physical_match(
+    spec: dict[str, Any], *, warned: set[str] | None = None
+) -> list[dict[str, str]]:
     """Discover and filter physical devices by a variant spec's platform/id/name."""
-    devices = physical_discover(spec.get("platform"))
+    devices = physical_discover(spec.get("platform"), warned=warned)
     want_id = spec.get("id")
     want_name = spec.get("name")
     if want_id:
@@ -566,12 +608,12 @@ def _physical_match(spec: dict[str, Any]) -> list[dict[str, str]]:
     return devices
 
 
-def ensure_physical(spec: dict[str, Any]) -> dict[str, str]:
+def ensure_physical(spec: dict[str, Any], *, warned: set[str] | None = None) -> dict[str, str]:
     """Resolve a `device` target (physical hardware) to a connected device.
     Auto-picks the lone device; `id`/`name`/`platform` on the spec narrow the
     selection. Returns the same `info` shape as the sim/emulator path, plus
     `physical: True`."""
-    devices = _physical_match(spec)
+    devices = _physical_match(spec, warned=warned)
     if not devices:
         raise DeviceError(_physical_no_match_msg(spec))
     if len(devices) > 1:
@@ -599,9 +641,9 @@ def _physical_no_match_msg(spec: dict[str, Any]) -> str:
     )
 
 
-def physical_status(spec: dict[str, Any]) -> str:
+def physical_status(spec: dict[str, Any], *, warned: set[str] | None = None) -> str:
     """Liveness for `splash targets`: connected / absent / ambiguous."""
-    devices = _physical_match(spec)
+    devices = _physical_match(spec, warned=warned)
     if not devices:
         return "absent"
     if len(devices) > 1:
@@ -788,6 +830,8 @@ def _ios_current_state(udid: str) -> str:
     """'Booted' / 'Shutdown' / 'Unknown' for the given UDID."""
     try:
         data = _xcrun_json(["simctl", "list", "devices", "-j"])
+    except CapabilityError:
+        raise
     except DeviceError:
         return "Unknown"
     for devs in (data.get("devices") or {}).values():

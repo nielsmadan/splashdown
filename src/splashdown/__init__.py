@@ -63,6 +63,7 @@ ENV_FILE_NAME = "splashdown.env"
 from pathlib import Path
 
 # Import profiles — this populates PROFILES.
+from . import capabilities as capabilities
 from . import profiles as _profiles_module
 from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
@@ -129,6 +130,7 @@ from .devices import (
     target_remove,
     validate_device_run,
 )
+from .errors import CapabilityError
 from .hooks import (
     _detect_hook_manager,
     _ensure_post_checkout_hook,

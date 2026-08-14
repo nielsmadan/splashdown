@@ -1,6 +1,8 @@
 # CLI and Commands
 
-How a `splash` invocation gets from `argv` to a handler: argument parsing and dispatch (`cli.py`), the `cmd_*` orchestration handlers plus git post-checkout hook installation (`commands.py`), and the fail-silent shell completers (`completion.py`).
+How a `splash` invocation gets from `argv` to a handler: argument parsing and dispatch (`cli.py`),
+the `cmd_*` orchestration handlers (`commands.py`), post-checkout integration (`hooks.py`), and the
+fail-silent shell completers (`completion.py`).
 
 For the *user-facing* contract of each command, see the PRD docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
 
@@ -33,7 +35,12 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 
 ## Purpose
 
-`cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to `sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a handler. `commands.py` holds those handlers (`cmd_*`) — the orchestration layer that wires together `scanner`, `profiles`, `provisioning`, `registry`, `loaders`, `devices`, and `wiring` to actually do the work, plus the git-hook installation logic that coexists with an existing hook manager. `completion.py` provides the argcomplete completers, which must never raise or print because they run on every `<Tab>`.
+`cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to
+`sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
+handler. `commands.py` holds those handlers (`cmd_*`) and composes `scanner`, `profiles`,
+`provisioning`, `registry`, `loaders`, `devices`, and `wiring`. `hooks.py` owns post-checkout
+installation and coexistence with other hook managers. `completion.py` provides the argcomplete
+completers, which must never raise or print because they run on every `<Tab>`.
 
 The package is built for a fast hot path: `splash` with no args (what the git post-checkout hook runs on every checkout) must reach `provision()` cheaply. That goal shapes several decisions below — lazy version resolution, lazy completion install, lazy submodule imports inside handlers.
 
@@ -91,6 +98,8 @@ The four device verbs share one parser shape, built in a loop (`cli.py:197`–`2
 The dispatch `try` is wrapped by a single `except (DeviceError, ValueError)`
 (`cli.py:391`). It prints `error: <msg>` to stderr and returns exit 1 — the
 uniform failure path for device/target lifecycle errors and config validation.
+`CapabilityError` is a `DeviceError` subtype, so unsupported hosts and missing
+fixed launchers use the same clean path without a traceback.
 Schema errors arrive as
 `SOURCE: [qualified.path] problem; expected ...`, so representative commands
 fail cleanly without a traceback. A missing recipe (`FileNotFoundError`) is
@@ -134,14 +143,21 @@ load.
 
 #### Git post-checkout hook installation
 
-`_ensure_post_checkout_hook` (`commands.py:267`) wires `post-checkout → splash sync` while *coexisting* with whatever hook manager the project already uses, rather than clobbering it. `_detect_hook_manager` (`commands.py:125`) classifies the project into one of four cases, in priority order:
+`hooks.py` owns post-checkout integration. `_ensure_post_checkout_hook` wires `post-checkout →
+splash sync` while *coexisting* with whatever hook manager the project already uses, rather than
+clobbering it. `_detect_hook_manager` classifies the project into one of four cases, in priority
+order:
 
-1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. Handled by `_wire_post_checkout_lefthook` (`commands.py:168`): idempotently inject a `post-checkout: → commands: → splashdown: → run: splash` block into the YAML (merging into an existing `post-checkout:` section if present), then best-effort run `lefthook install` (`commands.py:210`, trying `yarn`/`npx`/bare in turn) to regenerate the real git hooks.
-2. **`husky`** — a `.husky/` directory exists. `_wire_post_checkout_husky` (`commands.py:239`) drops a `.husky/post-checkout` script (the shared `POST_CHECKOUT_HOOK` body, `commands.py:73`) and `chmod 0o755`.
-3. **`core-hookspath-other`** — `git config core.hooksPath` is set to something *other than* `.githooks`. Splashdown refuses to take over a foreign hooks dir: it prints a warning telling the user to add a `splash sync` hook there themselves (`commands.py:287`) and wires nothing.
-4. **`none`** (the last-resort default) — `_wire_post_checkout_corehookspath` (`commands.py:249`) owns `.githooks/post-checkout` and sets `core.hooksPath .githooks`. This is the only case where splashdown claims `core.hooksPath`, and only when nothing else is using it.
+1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout: → commands: → splashdown: → run: splash` block into the YAML (merging into an existing `post-checkout:` section if present), then best-effort runs `lefthook install` through yarn, npx, or the bare executable.
+2. **`husky`** — a `.husky/` directory exists. `_wire_post_checkout_husky` drops a `.husky/post-checkout` script using the shared `POST_CHECKOUT_HOOK` body and makes it executable.
+3. **`core-hookspath-other`** — `git config core.hooksPath` is set to something *other than* `.githooks`. Splashdown refuses to take over a foreign hooks dir: it prints a warning telling the user to add a `splash sync` hook there themselves and wires nothing.
+4. **`none`** (the last-resort default) — `_wire_post_checkout_corehookspath` owns `.githooks/post-checkout` and sets `core.hooksPath .githooks`. This is the only case where splashdown claims `core.hooksPath`, and only when nothing else is using it.
 
-The shared `POST_CHECKOUT_HOOK` script (`commands.py:73`) is defensive: `cd` to the repo top, exit 0 if there's no `splashdown.toml`, and run `splash sync >&2 || true` (never fail a checkout) if `splash` is on PATH.
+The shared `POST_CHECKOUT_HOOK` script is defensive: `cd` to the repo top, exit 0 if there's no
+`splashdown.toml`, and run `splash sync >&2 || true` (never fail a checkout) if `splash` is on PATH.
+
+Git and hook-manager subprocesses are optional integration probes. Missing and non-executable
+tools fall back to detection results or a setup note rather than escaping as Python exceptions.
 
 #### Status rendering
 
@@ -150,7 +166,13 @@ The shared `POST_CHECKOUT_HOOK` script (`commands.py:73`) is defensive: `cd` to 
 - **`all` (positional scope) without `--verbose` (text)** → `_cmd_status_table` (`commands.py:507`): a compact one-row-per-checkout table (PATH / SUMMARY / optional ISSUE column, where ISSUE only appears if at least one row flags something — `commands.py:551`).
 - **everything else** → per-checkout blocks built by `_gather_status_for_checkout` (`commands.py:425`) and emitted by `_emit_status_block_text` (`commands.py:468`). JSON output uses the same block structure (`commands.py:665`).
 
-The block builder splits device sourcing two ways: `all` mode reads devices straight from the registry (`_gather_devices_all`, `commands.py:328`); default mode reads the recipe+local catalog (`_gather_targets_declared`, `commands.py:370`). `--check` revalidates liveness, accumulating defunct/orphan/stale/missing counts into a shared `summary` dict, and `_print_check_summary` (`commands.py:570`) prints the footer routing each issue class to the command that fixes it (`gc` for defunct, `target refresh` for orphan/stale, `run` for missing). The default-mode footer (no `--check`) instead does a lightweight stale-row count and points out unfilled `set` resources (`commands.py:677`–`708`).
+The block builder splits device sourcing two ways: `all` mode reads devices straight from the
+registry; default mode reads the recipe+local catalog. A shared `_StatusContext` carries repair
+counters, latest-OS lookup cache, and capability-warning keys across checkouts. When a device
+boundary raises `CapabilityError`, status warns once and renders `unavailable` without incrementing
+missing, stale, or orphan counters. Other `DeviceError` values retain the `error: <message>` status.
+`_print_check_summary` routes actual issues to the command that fixes them (`gc` for defunct,
+`target refresh` for orphan/stale, `run` for missing).
 
 #### The no-loader delivery fallback
 
@@ -165,6 +187,13 @@ When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdo
 #### Device lifecycle handlers
 
 `cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy` (`commands.py:1044`/`1064`/`1084`/`1109`) share a prelude: `_infer_dtype` (`commands.py:1130`) resolves an omitted TYPE to the single declared target type (erroring if zero or multiple are declared), and `_resolve_variant_for_cli` (`commands.py:1148`) loads recipe+local, merges, and picks the variant. Each then calls into `devices.py` (`ensure_fresh_sim`, `ios_boot`/`android_boot`, `device_run`, etc.). The bulk of `commands.py` is also the `target` subcommand machinery — `cmd_gc`/`cmd_target_gc` (`commands.py:840`/`786`), `cmd_target_refresh` (`commands.py:899`), `cmd_target_prune` (`commands.py:985`) — all of which iterate registry device rows and reconcile them against the live sims/AVDs.
+
+Explicit platform operations propagate `CapabilityError`. The dispatcher sets `skip_unavailable`
+only for the `all` scope, so unscoped `target refresh` and `target prune` warn once and continue the
+other platform while `target refresh ios` or `target prune ios` returns exit 1. GC performs its own
+capability-aware device sweep, preserves skipped rows, then calls
+`Registry.gc(include_devices=False)` so dead port/key rows are still cleaned without erasing device
+work that could not be attempted.
 
 #### `target` and `env` dispatchers
 
@@ -202,8 +231,8 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:284`
 - `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1316`
 - `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1244`
-- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `commands.py:267` / `:125`
-- `POST_CHECKOUT_HOOK` — the shared hook script body — `commands.py:73`
+- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
+- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py`
 - `cmd_status` — status entry — `commands.py:618`
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1229` / `:1185`
 - `_confirm` — shared `[y/N]` gate — `commands.py:1101`
@@ -229,3 +258,5 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - [init-and-onboarding.md](../features/init-and-onboarding.md) — user-facing `splash init` behavior, the loader/hook wiring, and the onboarding promise.
 - [status-and-inspect.md](../features/status-and-inspect.md) — what `splash status` (and `--all`/`--check`/`--verbose`) reports.
 - [device-targets.md](../features/device-targets.md) — the device-target model behind `run`/`start`/`stop`/`destroy`/`target`.
+- [platform-capabilities.md](platform-capabilities.md) — subprocess classification and host/tool
+  failure semantics.

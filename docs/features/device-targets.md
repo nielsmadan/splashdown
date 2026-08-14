@@ -36,6 +36,12 @@ refresh`/`prune` manage the machine-wide fleet. Physical devices are **discovere
 splashdown hands the connected device's native id to the launcher but never creates or destroys
 hardware.
 
+| Target | macOS | Linux |
+| --- | --- | --- |
+| iOS simulator/device | Xcode required | Unsupported; explicit commands return an actionable error |
+| Android emulator/device | Android SDK required | Android SDK required |
+| Ports, environment, and config | Supported | Supported |
+
 ## How it works (current state)
 
 **Instance naming and isolation.** Every sim/emulator instance is named
@@ -108,6 +114,8 @@ flutter (`flutter run -d <id>`), react-native, expo, ios-native (`xcodebuild bui
 simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_native_run`,
 `src/splashdown/runners.py:213`), and android-native (`./gradlew :module:installVariant` then
 `adb shell am start` — `_android_native_run`, `src/splashdown/runners.py:283`).
+Missing fixed launchers and non-executable SDK tools become actionable errors without a traceback;
+a launcher that starts and exits nonzero keeps its normal exit status.
 
 **Auto-upgrade after an Xcode/SDK bump (UC4).** Two paths:
 1. *Lazy*, on `splash run`: `ensure_fresh_sim` recreates the one sim being run if its `latest` OS
@@ -120,8 +128,11 @@ simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_n
    shut down before deletion, whether teardown comes from reconcile, refresh, GC, or explicit
    removal. Like
    reconcile, it leaves recreated sims **Shutdown**. The recreate decision is taken *before* the
-   call (`_device_needs_recreate`, `:874`) because `ensure_fresh_sim` is a no-op for fresh devices
+   call (`device_needs_recreate`) because `ensure_fresh_sim` is a no-op for fresh devices
    and the AVD name is stable across recreation, so the return value can't reveal what happened.
+   With no platform argument, an unavailable platform is warned about once and skipped while the
+   other platform continues. `target refresh ios` is strict and returns exit 1 when iOS support is
+   unavailable.
 
 **Pruning the template pile (UC4 cleanup).** `splash target prune` → `cmd_target_prune`
 (`src/splashdown/commands.py:985`) destroys every sim/AVD on the machine that splashdown did *not*
@@ -129,14 +140,15 @@ create — the Xcode default-template pile, hand-made sims — by diffing live s
 `registry.managed_udids()` (`_discover_foreign_ios:951`, `_discover_foreign_avds:971`). It prints
 the kill list, honors `--dry-run` (preview only) and `--yes` (skip the `_confirm` prompt), and is
 scoped by an optional `ios|android|all` platform argument.
+The default `all` scope skips an unavailable platform with one warning; an explicit `ios` or
+`android` scope propagates the capability error before destructive work on that platform.
 
 **Committing the lowest-supported sim (UC10).** A pinned variant in the committed recipe (e.g.
 `[targets.simulator.lowest-supported]` with `model = "iPhone 12"`, `ios = "17.0"`) makes the
 backward-compat device part of the repo. `merged_targets` unions the recipe catalog with add-only
 local variants so any checkout — or any agent — resolves the same matrix. Because the OS is pinned,
-neither `ensure_fresh_sim` nor `target refresh` will ever upgrade it; `cmd_target_gc`'s `--all`
-prune of stale `latest` sims explicitly skips anything not declared `latest`
-(`src/splashdown/commands.py:826`).
+neither `ensure_fresh_sim` nor `target refresh` upgrades a healthy instance. A missing pinned
+instance is recreated at its declared version, while GC treats it like any other registered row.
 
 **Physical devices are discovered, not owned.** A `device` target resolves to a *connected* phone
 (`ensure_physical`, `src/splashdown/devices.py:493`; `_physical_match:480` filters by
@@ -287,6 +299,10 @@ splash target remove <type> <variant> [--keep-instance]
   their orphaned sims; it does **not** recreate an orphan whose checkout still exists — `target
   refresh` does. The `status --check` footer routes each issue to the right command
   (`_print_check_summary`, `:570`).
+- **Unavailable is not broken state.** Status and target catalog views render an unsupported or
+  missing platform as `unavailable`, warn once per capability, and do not increment missing,
+  stale, or orphan counters. Fleet GC preserves skipped device rows while still removing portable
+  port and key rows, so cleanup can be retried on a capable host.
 - **A global variant defeats single-variant auto-pick.** `resolve_variant` auto-picks when a type has
   exactly one variant. Add a same-type global variant and the merged catalog has two, so the same
   command that used to work now needs an explicit variant name or a `default` in the recipe. Adding a

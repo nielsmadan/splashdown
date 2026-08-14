@@ -182,16 +182,15 @@ def test_ensure_physical_errors_when_ambiguous(monkeypatch):
         sd.ensure_physical({})
 
 
-def test_physical_discover_tolerates_missing_ios_toolchain(monkeypatch):
+def test_physical_discover_tolerates_missing_ios_toolchain(monkeypatch, capsys):
     def _boom():
-        raise sd.DeviceError("xcrun devicectl failed")
+        raise sd.CapabilityError("ios", "iOS physical-device support requires macOS and Xcode")
 
     monkeypatch.setattr(sd.devices, "_ios_physical_devices", _boom)
     monkeypatch.setattr(sd.devices, "_android_physical_devices", lambda: [_PIXEL])
-    # Broad scan: iOS toolchain error is swallowed, android phone still found.
     assert sd.physical_discover() == [_PIXEL]
-    # Explicit platform=ios: error propagates.
-    with pytest.raises(sd.DeviceError):
+    assert "warning: skipping iOS" in capsys.readouterr().err
+    with pytest.raises(sd.CapabilityError):
         sd.physical_discover("ios")
 
 
@@ -883,6 +882,74 @@ def test_device_destroy_reports_command_failure(monkeypatch, destroy, destroy_ar
         destroy(*destroy_args)
 
 
+def test_ios_status_requires_macos_before_launch(monkeypatch):
+    def fail_if_launched(*args, **kwargs):
+        raise AssertionError(f"unexpected subprocess launch: {args}")
+
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "linux")
+    monkeypatch.setattr(sd.devices.subprocess, "check_output", fail_if_launched)
+
+    with pytest.raises(
+        sd.CapabilityError, match="iOS simulator support requires macOS and Xcode"
+    ) as raised:
+        sd.device_status("simulator", "checkout/default")
+
+    assert raised.value.capability == "ios"
+
+
+def test_cli_ios_start_reports_unsupported_platform(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text(
+        '[targets.simulator.default]\nmodel = "iPhone 17"\n[project]\nframework = "react-native"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "linux")
+
+    rc = sd.main(["--cwd", str(tmp_path), "start", "simulator"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "iOS simulator support requires macOS and Xcode" in err
+    assert "Traceback" not in err
+
+
+def test_android_home_missing_is_capability_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setattr(sd.devices.Path, "home", lambda: tmp_path)
+
+    with pytest.raises(sd.CapabilityError, match="ANDROID_HOME") as raised:
+        sd._android_home()
+
+    assert raised.value.capability == "android"
+
+
+def test_ios_tool_permission_error_is_capability_error(monkeypatch):
+    monkeypatch.setattr(
+        sd.devices.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    with pytest.raises(sd.CapabilityError, match="xcrun is unavailable") as raised:
+        sd.ios_destroy("UDID")
+
+    assert raised.value.capability == "ios"
+
+
+def test_android_tool_permission_error_is_capability_error(monkeypatch):
+    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: name)
+    monkeypatch.setattr(
+        sd.devices.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    with pytest.raises(sd.CapabilityError, match="avdmanager is unavailable") as raised:
+        sd.android_destroy("avd")
+
+    assert raised.value.capability == "android"
+
+
 def test_cli_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         sd.main(["--version"])
@@ -1082,6 +1149,36 @@ def test_device_gc_drops_defunct_emulator_and_destroys_avd(registry, tmp_path, m
     assert list(registry.all_devices()) == []
 
 
+def test_device_gc_drops_live_orphan_without_destroying(registry, checkout, monkeypatch):
+    registry.set_device(str(checkout), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
+    monkeypatch.setattr(sd.commands, "_is_orphan_device", lambda row: True)
+    monkeypatch.setattr(
+        sd.commands,
+        "device_destroy_row",
+        lambda row: pytest.fail(f"orphan row was destroyed: {row}"),
+    )
+
+    assert sd.cmd_target_gc(registry) == 1
+    assert registry.get_device(str(checkout), "simulator", "default") is None
+
+
+def test_device_gc_preserves_live_row_when_capability_unavailable(
+    registry, checkout, monkeypatch, capsys
+):
+    registry.set_device(str(checkout), "simulator", "default", "UDID", "iPhone 17", "18.5")
+    monkeypatch.setattr(
+        sd.commands,
+        "_is_orphan_device",
+        lambda row: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        ),
+    )
+
+    assert sd.cmd_target_gc(registry) == 0
+    assert registry.get_device(str(checkout), "simulator", "default") is not None
+    assert "warning: skipping iOS" in capsys.readouterr().err
+
+
 def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, capsys):
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
@@ -1099,6 +1196,33 @@ def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, caps
     assert lifecycle == [("shutdown", "UDID-DEAD"), ("destroy", "UDID-DEAD")]
     assert reg.get_device(str(dead), "simulator", "default") is None
     assert str(dead) not in reg.all_checkouts()  # port row pruned too
+
+
+def test_gc_preserves_unavailable_device_rows(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    ios = tmp_path / "dead-ios"
+    android = tmp_path / "dead-android"
+    registry = sd.Registry(state / "ports.tsv", state / "kv.tsv", state / "devices.tsv")
+    registry.allocate_port(str(ios), "PORT", 19820, 19830)
+    registry.set_kv(str(android), "TOKEN", "value")
+    registry.set_device(str(ios), "simulator", "default", "UDID-DEAD", "iPhone 17", "18.5")
+    registry.set_device(str(android), "emulator", "default", "AVD-DEAD", "pixel_9", "android-34")
+    destroyed: list[str] = []
+
+    def destroy(row):
+        if row.dtype == "simulator":
+            raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        destroyed.append(row.udid)
+
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroy)
+
+    assert sd.cmd_gc(registry) == 0
+    assert destroyed == ["AVD-DEAD"]
+    assert registry.get_device(str(ios), "simulator", "default") is not None
+    assert registry.get_device(str(android), "emulator", "default") is None
+    assert registry.all_for(str(ios)) == {}
+    assert registry.all_for(str(android)) == {}
+    assert "warning: skipping iOS" in capsys.readouterr().err
 
 
 def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
@@ -1123,6 +1247,56 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     assert rc == 0
     assert lifecycle == [("shutdown", "UDID-OLD"), ("destroy", "UDID-OLD")]
     assert registry.get_device(abspath, "simulator", "default").udid == "UDID-NEW"
+
+
+def test_device_refresh_skips_unavailable_platform(registry, tmp_path, monkeypatch, capsys):
+    ios = tmp_path / "ios"
+    android = tmp_path / "android"
+    ios.mkdir()
+    android.mkdir()
+    (ios / sd.RECIPE_NAME).write_text(
+        '[targets.simulator.default]\nmodel = "iPhone 17"\nios = "18.5"\n'
+    )
+    (android / sd.RECIPE_NAME).write_text(
+        '[targets.emulator.default]\ndevice = "pixel_9"\nimage = "android-34"\n'
+    )
+    registry.set_device(str(ios), "simulator", "default", "UDID", "iPhone 17", "18.5")
+    registry.set_device(str(android), "emulator", "default", "AVD", "pixel_9", "android-34")
+    reconciled: list[str] = []
+
+    def needs_recreate(reg, cwd, dtype, variant, spec, *, cache):
+        if dtype == "simulator":
+            raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        return True
+
+    monkeypatch.setattr(sd.commands, "device_needs_recreate", needs_recreate)
+    monkeypatch.setattr(
+        sd.commands,
+        "ensure_fresh_sim",
+        lambda reg, cwd, dtype, variant, spec, *, cache: reconciled.append(f"{dtype}/{variant}"),
+    )
+
+    assert sd.cmd_target_refresh(registry, skip_unavailable=True) == 0
+    assert reconciled == ["emulator/default"]
+    assert registry.get_device(str(ios), "simulator", "default") is not None
+    assert "warning: skipping iOS" in capsys.readouterr().err
+
+
+def test_device_refresh_explicit_unavailable_platform_fails(registry, checkout, monkeypatch):
+    (checkout / sd.RECIPE_NAME).write_text(
+        '[targets.simulator.default]\nmodel = "iPhone 17"\nios = "18.5"\n'
+    )
+    registry.set_device(str(checkout), "simulator", "default", "UDID", "iPhone 17", "18.5")
+    monkeypatch.setattr(
+        sd.commands,
+        "device_needs_recreate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        ),
+    )
+
+    with pytest.raises(sd.CapabilityError):
+        sd.cmd_target_refresh(registry, platforms=("ios",), skip_unavailable=False)
 
 
 def test_device_refresh_resolves_latest_os_once_across_rows(registry, tmp_path, monkeypatch):
@@ -1254,16 +1428,21 @@ def test_cli_target_refresh_uses_composition_root_registry(tmp_path, monkeypatch
     )
     captured = {}
 
-    def fake_refresh(received, *, platforms):
+    def fake_refresh(received, *, platforms, skip_unavailable):
         captured["registry"] = received
         captured["platforms"] = platforms
+        captured["skip_unavailable"] = skip_unavailable
         return 0
 
     monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
     monkeypatch.setattr(sd.commands, "cmd_target_refresh", fake_refresh)
 
     assert sd.main(["--cwd", str(tmp_path), "target", "refresh", "android"]) == 0
-    assert captured == {"registry": registry, "platforms": ("android",)}
+    assert captured == {
+        "registry": registry,
+        "platforms": ("android",),
+        "skip_unavailable": False,
+    }
 
 
 def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
@@ -1342,6 +1521,51 @@ def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
     assert "`splash run`" in err
 
 
+def test_status_unavailable_does_not_increment_repair_counters(
+    registry, checkout, monkeypatch, capsys
+):
+    (checkout / sd.RECIPE_NAME).write_text(
+        '[targets.simulator.a]\nmodel = "iPhone 17"\n[targets.simulator.b]\nmodel = "iPhone 17"\n'
+    )
+
+    def unavailable(*args, **kwargs):
+        raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+
+    monkeypatch.setattr(sd.commands, "device_status", unavailable)
+    monkeypatch.setattr(sd.commands, "device_health", unavailable)
+
+    assert sd.cmd_status(checkout, registry, "json", check=True) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert [row["status"] for row in payload["targets"]] == [
+        "unavailable",
+        "unavailable",
+    ]
+    assert payload["summary"]["orphan_devices"] == 0
+    assert payload["summary"]["stale_devices"] == 0
+    assert payload["summary"]["missing_devices"] == 0
+    assert captured.err.count("warning: skipping iOS") == 1
+
+
+def test_status_text_and_target_list_render_unavailable(registry, checkout, monkeypatch, capsys):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    monkeypatch.setattr(
+        sd.commands,
+        "device_status",
+        lambda *args: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        ),
+    )
+
+    assert sd.cmd_status(checkout, registry, "text") == 0
+    captured = capsys.readouterr()
+    assert "simulator.default" in captured.err
+    assert "unavailable" in captured.err
+
+    assert sd.cmd_targets_list(checkout, "json") == 0
+    assert json.loads(capsys.readouterr().out)[0]["status"] == "unavailable"
+
+
 def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
     fake_devices = {
         "iOS 18.5": [
@@ -1395,6 +1619,50 @@ def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys)
     assert "nothing" in capsys.readouterr().err.lower()
 
 
+def test_device_prune_skips_unavailable_platform(registry, monkeypatch, capsys):
+    monkeypatch.setattr(
+        sd.commands,
+        "_discover_foreign_ios",
+        lambda managed: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        ),
+    )
+    monkeypatch.setattr(sd.commands, "_discover_foreign_avds", lambda managed: ["foreign-avd"])
+    lifecycle: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sd.commands,
+        "android_shutdown",
+        lambda name: lifecycle.append(("shutdown", name)),
+    )
+    monkeypatch.setattr(
+        sd.commands,
+        "android_destroy",
+        lambda name: lifecycle.append(("destroy", name)),
+    )
+
+    assert sd.cmd_target_prune(registry, yes=True, skip_unavailable=True) == 0
+    assert lifecycle == [("shutdown", "foreign-avd"), ("destroy", "foreign-avd")]
+    assert "warning: skipping iOS" in capsys.readouterr().err
+
+
+def test_device_prune_explicit_unavailable_platform_fails(registry, monkeypatch):
+    monkeypatch.setattr(
+        sd.commands,
+        "_discover_foreign_ios",
+        lambda managed: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        ),
+    )
+
+    with pytest.raises(sd.CapabilityError):
+        sd.cmd_target_prune(
+            registry,
+            yes=True,
+            platforms=("ios",),
+            skip_unavailable=False,
+        )
+
+
 def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
     """`splash device prune ios` should pass platforms=("ios",) only."""
     state = tmp_path / "injected"
@@ -1405,9 +1673,10 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
     )
     captured = {}
 
-    def _fake_prune(reg, *, yes, dry_run, platforms):
+    def _fake_prune(reg, *, yes, dry_run, platforms, skip_unavailable):
         captured["registry"] = reg
         captured["platforms"] = platforms
+        captured["skip_unavailable"] = skip_unavailable
         return 0
 
     monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
@@ -1416,6 +1685,7 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
     assert rc == 0
     assert captured["registry"] is registry
     assert captured["platforms"] == ("ios",)
+    assert captured["skip_unavailable"] is False
 
 
 def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
@@ -1423,14 +1693,16 @@ def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
 
-    def _fake_prune(reg, *, yes, dry_run, platforms):
+    def _fake_prune(reg, *, yes, dry_run, platforms, skip_unavailable):
         captured["platforms"] = platforms
+        captured["skip_unavailable"] = skip_unavailable
         return 0
 
     monkeypatch.setattr(sd.commands, "cmd_target_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios", "android")
+    assert captured["skip_unavailable"] is True
 
 
 def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
@@ -1438,14 +1710,16 @@ def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
 
-    def _fake_prune(reg, *, yes, dry_run, platforms):
+    def _fake_prune(reg, *, yes, dry_run, platforms, skip_unavailable):
         captured["platforms"] = platforms
+        captured["skip_unavailable"] = skip_unavailable
         return 0
 
     monkeypatch.setattr(sd.commands, "cmd_target_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "all", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios", "android")
+    assert captured["skip_unavailable"] is True
 
 
 def test_version_tuple_parses_and_falls_back():

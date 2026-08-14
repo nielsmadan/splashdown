@@ -20,6 +20,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 - [wiring.md](wiring.md) — `wiring.py`: the `splash doctor` framework-wiring checks and autopatch.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `completion.py`: entry,
   parse, dispatch, the `cmd_*` handlers, and git-hook installation.
+- [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
+  audited subprocess-failure contract.
 
 ## Data flow (end to end)
 `scanner.py` (detect → `ProjectInventory`) → `profiles.py` (per-framework rules + `PROFILES`) →

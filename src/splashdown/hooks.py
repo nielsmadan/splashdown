@@ -146,7 +146,7 @@ def _detect_hook_manager(cwd: Path) -> str:
         )
         if out and out != ".githooks":
             return "core-hookspath-other"
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, OSError):
         pass
     return "none"
 
@@ -221,7 +221,7 @@ def _run_lefthook_install(cwd: Path) -> None:
             )
             if r.returncode == 0:
                 return
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
             continue
     print(
         "note: could not run `lefthook install` automatically — run it yourself "
@@ -258,7 +258,7 @@ def _wire_post_checkout_corehookspath(cwd: Path) -> None:
     hook = hooks_dir / "post-checkout"
     hook.write_text(POST_CHECKOUT_HOOK)
     hook.chmod(0o755)
-    with contextlib.suppress(FileNotFoundError):
+    with contextlib.suppress(OSError):
         subprocess.run(
             ["git", "config", "core.hooksPath", ".githooks"],
             cwd=cwd,
@@ -287,7 +287,7 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
                 .decode()
                 .strip()
             )
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, OSError):
             current = "?"
         print(
             f"warning: core.hooksPath is `{current}` — not wiring automatically. "
@@ -345,10 +345,10 @@ def _unwire_post_checkout_corehookspath(cwd: Path) -> None:
                 .decode()
                 .strip()
             )
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, OSError):
             current = ""
         if current == ".githooks":
-            with contextlib.suppress(FileNotFoundError):
+            with contextlib.suppress(OSError):
                 subprocess.run(
                     ["git", "config", "--unset", "core.hooksPath"],
                     cwd=cwd,

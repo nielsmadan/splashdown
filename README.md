@@ -119,6 +119,16 @@ splash gc                             # drop registry entries for checkouts you'
 
 Variants pinned to a fixed version (`ios = "17.0"`) are never touched by `refresh` — they're deliberate version coverage. See [Running and managing devices](https://splashdown.dev/devices/) for the full lifecycle.
 
+| Target | macOS | Linux |
+| --- | --- | --- |
+| iOS simulator/device | Xcode required | Unsupported; explicit commands return an actionable error |
+| Android emulator/device | Android SDK required | Android SDK required |
+| Ports, environment, and config | Supported | Supported |
+
+Unscoped fleet commands (`target refresh`, `target prune`, `gc`, and status inspection) warn once
+and continue when one platform is unavailable. Explicit iOS commands, including `target refresh
+ios`, return exit 1 with the missing macOS/Xcode requirement and no traceback.
+
 ## Documentation
 
 Full guides and reference live at **[splashdown.dev](https://splashdown.dev)**:

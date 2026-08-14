@@ -306,7 +306,7 @@ def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
             )
             if out == ".githooks":
                 return ("ok", ".githooks/post-checkout invokes splash, core.hooksPath set")
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, OSError):
             pass
         return (
             "problem",

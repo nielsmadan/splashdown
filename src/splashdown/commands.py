@@ -10,12 +10,14 @@ from typing import Any, NamedTuple
 
 from . import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .agentdocs import remove_agent_guidance, sync_agent_guidance
+from .capabilities import translate_tool_errors, warn_capability
 from .devices import (
     DeviceError,
     DeviceHealth,
     _android_bin,
     _device_status_for_row,
     _ios_current_state,
+    _is_orphan_device,
     _load_recipe_or_empty,
     _prepare_target_remove,
     _resolve_device_name,
@@ -42,6 +44,7 @@ from .devices import (
     target_add,
     validate_device_run,
 )
+from .errors import CapabilityError
 from .hooks import (
     _ensure_gitignore,
     _ensure_post_checkout_hook,
@@ -112,36 +115,72 @@ def _gather_resource_entries(
     return entries
 
 
+class _StatusContext(NamedTuple):
+    summary: dict[str, int]
+    cache: dict[str, str]
+    warned: set[str]
+
+
+def _new_status_context() -> _StatusContext:
+    return _StatusContext(
+        summary={
+            "defunct_checkouts": 0,
+            "defunct_rows": 0,
+            "orphan_devices": 0,
+            "stale_devices": 0,
+            "undeclared_devices": 0,
+            "missing_devices": 0,
+            "missing_hardware": 0,
+        },
+        cache={},
+        warned=set(),
+    )
+
+
 def _gather_devices_all(
     registry: Registry,
     co: str,
     co_path: Path,
     *,
     check: bool,
-    summary: dict[str, int],
-    cache: dict[str, str],
+    context: _StatusContext,
 ) -> list[dict[str, Any]]:
     """Device rows sourced from the registry (`--all` mode)."""
     co_exists = co_path.exists()
     entries: list[dict[str, Any]] = []
     for row in registry.devices_for(co):
+        health: DeviceHealth | None = None
         try:
-            status = _device_status_for_row(row)
-        except DeviceError as e:
-            status = f"error: {e}"
+            try:
+                status = _device_status_for_row(row)
+            except CapabilityError:
+                raise
+            except DeviceError as error:
+                status = f"error: {error}"
+            if check and co_exists:
+                spec = _load_variant_spec(co_path, row.dtype, row.variant)
+                health = device_health(
+                    registry,
+                    co_path,
+                    row.dtype,
+                    row.variant,
+                    spec,
+                    cache=context.cache,
+                )
+        except CapabilityError as error:
+            warn_capability(error, context.warned)
+            status = "unavailable"
         orphan = stale = undeclared = False
-        if check and co_exists:
-            spec = _load_variant_spec(co_path, row.dtype, row.variant)
-            health = device_health(registry, co_path, row.dtype, row.variant, spec, cache=cache)
+        if health is not None:
             if health is DeviceHealth.ORPHAN:
                 orphan = True
-                summary["orphan_devices"] += 1
+                context.summary["orphan_devices"] += 1
             elif health is DeviceHealth.DRIFTED:
                 stale = True
-                summary["stale_devices"] += 1
+                context.summary["stale_devices"] += 1
             elif health is DeviceHealth.UNDECLARED:
                 undeclared = True
-                summary["undeclared_devices"] += 1
+                context.summary["undeclared_devices"] += 1
         entries.append(
             {
                 "type": row.dtype,
@@ -178,8 +217,7 @@ def _gather_targets_declared(
     co_path: Path,
     *,
     check: bool,
-    summary: dict[str, int],
-    cache: dict[str, str],
+    context: _StatusContext,
 ) -> list[dict[str, Any]]:
     """Device rows sourced from recipe + local + global catalog (default mode)."""
     recipe = _load_recipe_or_empty(co_path)
@@ -194,27 +232,44 @@ def _gather_targets_declared(
                 resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
             else:
                 resolved = _resolve_device_name(spec, co_path, variant, dtype)
+            health: DeviceHealth | None = None
             try:
-                status = (
-                    physical_status(spec) if dtype == "device" else device_status(dtype, resolved)
-                )
-            except DeviceError as e:
-                status = f"error: {e}"
+                try:
+                    status = (
+                        physical_status(spec, warned=context.warned)
+                        if dtype == "device"
+                        else device_status(dtype, resolved)
+                    )
+                except CapabilityError:
+                    raise
+                except DeviceError as error:
+                    status = f"error: {error}"
+                if check:
+                    health = device_health(
+                        registry,
+                        co_path,
+                        dtype,
+                        variant,
+                        spec,
+                        cache=context.cache,
+                    )
+            except CapabilityError as error:
+                warn_capability(error, context.warned)
+                status = "unavailable"
             orphan = stale = missing = False
-            if check:
-                health = device_health(registry, co_path, dtype, variant, spec, cache=cache)
+            if health is not None:
                 if dtype == "device" and status == "absent":
                     missing = True
-                    summary["missing_hardware"] += 1
+                    context.summary["missing_hardware"] += 1
                 elif health is DeviceHealth.MISSING:
                     missing = True
-                    summary["missing_devices"] += 1
+                    context.summary["missing_devices"] += 1
                 elif health is DeviceHealth.ORPHAN:
                     orphan = True
-                    summary["orphan_devices"] += 1
+                    context.summary["orphan_devices"] += 1
                 elif health is DeviceHealth.DRIFTED:
                     stale = True
-                    summary["stale_devices"] += 1
+                    context.summary["stale_devices"] += 1
             entries.append(
                 {
                     "type": dtype,
@@ -237,19 +292,17 @@ def _gather_status_for_checkout(
     *,
     show_all: bool,
     check: bool,
-    summary: dict[str, int],
-    os_cache: dict[str, str] | None = None,
+    context: _StatusContext,
 ) -> dict[str, Any]:
     """Build the per-checkout block consumed by both JSON serialization and
-    text emission. Mutates `summary` with defunct/orphan/stale/missing counts
-    when `check`. `os_cache` memoizes the latest-OS lookups across checkouts."""
-    cache = os_cache if os_cache is not None else {}
+    text emission. The shared context accumulates repair counts, memoized OS
+    lookups, and capability warnings across checkouts."""
     co_path = Path(co)
     co_exists = co_path.exists()
     resources = registry.all_for(co)
     if check and not co_exists:
-        summary["defunct_checkouts"] += 1
-        summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
+        context.summary["defunct_checkouts"] += 1
+        context.summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
 
     res_entries = _gather_resource_entries(co_path, co_exists=co_exists, resources=resources)
 
@@ -257,11 +310,19 @@ def _gather_status_for_checkout(
     # source = recipe + local catalog.
     if show_all:
         dev_entries = _gather_devices_all(
-            registry, co, co_path, check=check, summary=summary, cache=cache
+            registry,
+            co,
+            co_path,
+            check=check,
+            context=context,
         )
     elif co_exists:
         dev_entries = _gather_targets_declared(
-            registry, co, co_path, check=check, summary=summary, cache=cache
+            registry,
+            co,
+            co_path,
+            check=check,
+            context=context,
         )
     else:
         dev_entries = []
@@ -315,20 +376,11 @@ class _StatusRow(NamedTuple):
     status: str
 
 
-def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> int:
+def _cmd_status_table(
+    checkouts: list[str], registry: Registry, check: bool, context: _StatusContext
+) -> int:
     """Compact one-row-per-checkout view for `splash status --all`."""
     rows: list[_StatusRow] = []
-    summary = {
-        "defunct_checkouts": 0,
-        "defunct_rows": 0,
-        "orphan_devices": 0,
-        "stale_devices": 0,
-        "undeclared_devices": 0,
-        "missing_devices": 0,
-        "missing_hardware": 0,
-    }
-    os_cache: dict[str, str] = {}
-
     for co in checkouts:
         counts = registry.summary_for(co)
         path_label = _short_path(co)
@@ -339,23 +391,33 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
         if not co_exists:
             status_label = "defunct"
             if check:
-                summary["defunct_checkouts"] += 1
-                summary["defunct_rows"] += sum(counts.values())
+                context.summary["defunct_checkouts"] += 1
+                context.summary["defunct_rows"] += sum(counts.values())
         elif check:
             for row in registry.devices_for(co):
-                spec = _load_variant_spec(Path(co), row.dtype, row.variant)
-                health = device_health(
-                    registry, Path(co), row.dtype, row.variant, spec, cache=os_cache
-                )
+                try:
+                    spec = _load_variant_spec(Path(co), row.dtype, row.variant)
+                    health = device_health(
+                        registry,
+                        Path(co),
+                        row.dtype,
+                        row.variant,
+                        spec,
+                        cache=context.cache,
+                    )
+                except CapabilityError as error:
+                    warn_capability(error, context.warned)
+                    status_label = status_label or "unavailable"
+                    continue
                 if health is DeviceHealth.ORPHAN:
-                    summary["orphan_devices"] += 1
+                    context.summary["orphan_devices"] += 1
                     status_label = "orphan"
                     continue
                 if health is DeviceHealth.DRIFTED:
-                    summary["stale_devices"] += 1
+                    context.summary["stale_devices"] += 1
                     status_label = status_label or "stale"
                 elif health is DeviceHealth.UNDECLARED:
-                    summary["undeclared_devices"] += 1
+                    context.summary["undeclared_devices"] += 1
                     status_label = status_label or "undeclared"
 
         rows.append(_StatusRow(path_label, summary_str, status_label))
@@ -381,7 +443,7 @@ def _cmd_status_table(checkouts: list[str], registry: Registry, check: bool) -> 
 
     if check:
         print("", file=sys.stderr)
-        _print_check_summary(summary)
+        _print_check_summary(context.summary)
 
     return 0
 
@@ -469,31 +531,22 @@ def cmd_status(
     checkouts = registry.all_checkouts() if show_all else [target]
     if not checkouts:
         checkouts = [target]
+    context = _new_status_context()
 
     # JSON shape is fixed regardless of verbose — consumers want the data, not
     # a table layout. Text branches: --all without --verbose emits a table;
     # everything else falls through to the per-block emitter below.
     if show_all and not verbose and fmt != "json":
-        return _cmd_status_table(checkouts, registry, check)
+        return _cmd_status_table(checkouts, registry, check, context)
 
-    summary = {
-        "defunct_checkouts": 0,
-        "defunct_rows": 0,
-        "orphan_devices": 0,
-        "stale_devices": 0,
-        "undeclared_devices": 0,
-        "missing_devices": 0,
-        "missing_hardware": 0,
-    }
-    os_cache: dict[str, str] = {}
+    summary = context.summary
     blocks = [
         _gather_status_for_checkout(
             co,
             registry,
             show_all=show_all,
             check=check,
-            summary=summary,
-            os_cache=os_cache,
+            context=context,
         )
         for co in checkouts
     ]
@@ -556,6 +609,7 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
         return 0
     rows: list[tuple[str, str, str, str, str]] = []
     _phys_status = physical_status
+    warned: set[str] = set()
     for dtype, variants in catalog.items():
         for variant, spec in variants.items():
             source = _target_source(dtype, variant, recipe, local, glob)
@@ -566,9 +620,16 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
             else:
                 resolved = _resolve_device_name(spec, cwd, variant, dtype)
             try:
-                status = _phys_status(spec) if dtype == "device" else _dev_status(dtype, resolved)
-            except DeviceError as e:
-                status = f"error: {e}"
+                status = (
+                    _phys_status(spec, warned=warned)
+                    if dtype == "device"
+                    else _dev_status(dtype, resolved)
+                )
+            except CapabilityError as error:
+                warn_capability(error, warned)
+                status = "unavailable"
+            except DeviceError as error:
+                status = f"error: {error}"
             rows.append((dtype, variant, source, resolved, status))
     if fmt == "json":
         print(
@@ -622,21 +683,27 @@ def _finish_progress() -> None:
         sys.stderr.flush()
 
 
-def cmd_target_gc(registry: Registry) -> int:
+def cmd_target_gc(registry: Registry, *, warned: set[str] | None = None) -> int:
     """Destroy the sims/AVDs of dead checkouts (whose dir is gone) and drop their
     rows. Returns the number of device rows removed. Reconciling *live* checkouts
     against their recipes — recreating stale/missing devices — is
     `cmd_target_refresh`'s job, not gc's."""
     destroyed_count = 0
+    warning_keys = warned if warned is not None else set()
     rows = list(registry.all_devices())
     total = len(rows)
     for i, row in enumerate(rows, 1):
         _emit_progress("gc", i, total)
-        if Path(row.checkout).exists():
-            continue
-        device_destroy_row(row)
-        registry.remove_device(row.checkout, row.dtype, row.variant)
-        destroyed_count += 1
+        try:
+            if Path(row.checkout).exists():
+                if not _is_orphan_device(row):
+                    continue
+            else:
+                device_destroy_row(row)
+            registry.remove_device(row.checkout, row.dtype, row.variant)
+            destroyed_count += 1
+        except CapabilityError as error:
+            warn_capability(error, warning_keys)
     _finish_progress()
     return destroyed_count
 
@@ -674,10 +741,11 @@ def cmd_completion(shell: str | None) -> int:
 def cmd_gc(registry: Registry) -> int:
     """Drop every dead-checkout entry machine-wide: destroy orphaned sims/AVDs,
     then prune port/kv/device rows and reconcile live checkouts to their recipes."""
-    destroyed = cmd_target_gc(registry)  # destroys orphaned sims + removes their rows
-    n = registry.gc()  # ports/kv/remaining devices + reconcile
+    warned: set[str] = set()
+    reconciled = cmd_target_gc(registry, warned=warned)
+    n = registry.gc(include_devices=False)
     print(
-        f"gc: removed {n} registry entries, destroyed {destroyed} orphaned device(s)",
+        f"gc: removed {n} registry entries, reconciled {reconciled} device row(s)",
         file=sys.stderr,
     )
     return 0
@@ -686,10 +754,19 @@ def cmd_gc(registry: Registry) -> int:
 _PLATFORM_OF_DTYPE = {"simulator": "ios", "emulator": "android"}
 
 
+def _handle_optional_capability(
+    error: CapabilityError, *, skip_unavailable: bool, warned: set[str]
+) -> None:
+    if not skip_unavailable:
+        raise error
+    warn_capability(error, warned)
+
+
 def cmd_target_refresh(
     registry: Registry,
     *,
     platforms: tuple[str, ...] = ("ios", "android"),
+    skip_unavailable: bool = False,
 ) -> int:
     """Eagerly reconcile every splashdown-managed device to its declared spec.
 
@@ -702,6 +779,7 @@ def cmd_target_refresh(
     _fresh_sim = ensure_fresh_sim
     recreated = unchanged = dropped = 0
     cache: dict[str, str] = {}
+    warned: set[str] = set()
     # Load the global config ONCE, up front and unguarded: a malformed global
     # config must abort the whole sweep here, not make every globally-sourced
     # device look undeclared and get destroyed row-by-row below.
@@ -720,24 +798,22 @@ def cmd_target_refresh(
     for i, (row, spec) in enumerate(resolved_rows, 1):
         _emit_progress("target refresh", i, total)
         cwd = Path(row.checkout)
-        if spec is None:
-            # Defunct checkout or undeclared variant: drop it, destroy its sim.
-            device_destroy_row(row)
-            registry.remove_device(row.checkout, row.dtype, row.variant)
-            dropped += 1
-            continue
-        # Decide before the call — ensure_fresh_sim is a no-op for fresh devices,
-        # and the AVD name (Android's udid) is stable across recreation, so we
-        # can't infer it from the return value. Same predicate the actuator uses,
-        # sharing `cache` so the latest-OS lookup shells out at most once per run.
-        will_recreate = device_needs_recreate(
-            registry, cwd, row.dtype, row.variant, spec, cache=cache
-        )
-        _fresh_sim(registry, cwd, row.dtype, row.variant, spec, cache=cache)
-        if will_recreate:
-            recreated += 1
-        else:
-            unchanged += 1
+        try:
+            if spec is None:
+                device_destroy_row(row)
+                registry.remove_device(row.checkout, row.dtype, row.variant)
+                dropped += 1
+                continue
+            will_recreate = device_needs_recreate(
+                registry, cwd, row.dtype, row.variant, spec, cache=cache
+            )
+            _fresh_sim(registry, cwd, row.dtype, row.variant, spec, cache=cache)
+            if will_recreate:
+                recreated += 1
+            else:
+                unchanged += 1
+        except CapabilityError as error:
+            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
     _finish_progress()
     print(
         f"target refresh: recreated {recreated}, unchanged {unchanged}, dropped {dropped}",
@@ -749,11 +825,7 @@ def cmd_target_refresh(
 def _discover_foreign_ios(managed: set[str]) -> list[tuple[str, str, str]]:
     """Available simulators not in the registry, as (udid, name, runtime)."""
     _xcrun = _xcrun_json
-    try:
-        data = _xcrun(["simctl", "list", "devices", "-j"])
-    except DeviceError as e:
-        print(f"warning: skipping iOS sims ({e})", file=sys.stderr)
-        return []
+    data = _xcrun(["simctl", "list", "devices", "-j"])
     foreign: list[tuple[str, str, str]] = []
     for runtime, devs in (data.get("devices") or {}).items():
         for d in devs:
@@ -769,12 +841,15 @@ def _discover_foreign_ios(managed: set[str]) -> list[tuple[str, str, str]]:
 def _discover_foreign_avds(managed: set[str]) -> list[str]:
     """AVD names not in the registry."""
     try:
-        out = subprocess.check_output(
-            [_android_bin("avdmanager"), "list", "avd", "-c"],
-            stderr=subprocess.DEVNULL,
-        )
-    except (DeviceError, subprocess.CalledProcessError, FileNotFoundError):
-        return []
+        with translate_tool_errors(
+            "android", "avdmanager", "install Android SDK command-line tools"
+        ):
+            out = subprocess.check_output(
+                [_android_bin("avdmanager"), "list", "avd", "-c"],
+                stderr=subprocess.DEVNULL,
+            )
+    except subprocess.CalledProcessError as error:
+        raise DeviceError(f"avdmanager list failed: exit {error.returncode}") from error
     return [
         name for line in out.decode().splitlines() if (name := line.strip()) and name not in managed
     ]
@@ -786,6 +861,7 @@ def cmd_target_prune(
     yes: bool = False,
     dry_run: bool = False,
     platforms: tuple[str, ...] = ("ios", "android"),
+    skip_unavailable: bool = False,
 ) -> int:
     """Destroy every sim/AVD on this machine that splashdown did NOT create.
     Picks up the Xcode default-template pile, hand-made sims, etc.
@@ -797,8 +873,19 @@ def cmd_target_prune(
     _avd_shut = android_shutdown
     _avd_del = android_destroy
     managed = registry.managed_udids()
-    foreign_ios = _discover_foreign_ios(managed) if "ios" in platforms else []
-    foreign_avd = _discover_foreign_avds(managed) if "android" in platforms else []
+    warned: set[str] = set()
+    foreign_ios: list[tuple[str, str, str]] = []
+    foreign_avd: list[str] = []
+    if "ios" in platforms:
+        try:
+            foreign_ios = _discover_foreign_ios(managed)
+        except CapabilityError as error:
+            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
+    if "android" in platforms:
+        try:
+            foreign_avd = _discover_foreign_avds(managed)
+        except CapabilityError as error:
+            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
 
     total = len(foreign_ios) + len(foreign_avd)
     if total == 0:
@@ -825,17 +912,23 @@ def cmd_target_prune(
 
     done = 0
     for udid, _name, _runtime in foreign_ios:
-        _ios_shut(udid)
-        _ios_del(udid)
-        done += 1
-        _emit_progress("target prune", done, total)
+        try:
+            _ios_shut(udid)
+            _ios_del(udid)
+            done += 1
+            _emit_progress("target prune", done, total)
+        except CapabilityError as error:
+            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
     for name in foreign_avd:
-        _avd_shut(name)
-        _avd_del(name)
-        done += 1
-        _emit_progress("target prune", done, total)
+        try:
+            _avd_shut(name)
+            _avd_del(name)
+            done += 1
+            _emit_progress("target prune", done, total)
+        except CapabilityError as error:
+            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
     _finish_progress()
-    print(f"target prune: removed {total} device(s)", file=sys.stderr)
+    print(f"target prune: removed {done} device(s)", file=sys.stderr)
     return 0
 
 
@@ -1489,7 +1582,11 @@ def _target_remove(args: Any, cwd: Path, registry: Registry) -> int:
 
 def _target_refresh(args: Any, registry: Registry) -> int:
     platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-    return cmd_target_refresh(registry, platforms=platforms)
+    return cmd_target_refresh(
+        registry,
+        platforms=platforms,
+        skip_unavailable=args.platform == "all",
+    )
 
 
 def _target_prune(args: Any, registry: Registry) -> int:
@@ -1499,6 +1596,7 @@ def _target_prune(args: Any, registry: Registry) -> int:
         yes=args.yes,
         dry_run=args.dry_run,
         platforms=platforms,
+        skip_unavailable=args.platform == "all",
     )
 
 

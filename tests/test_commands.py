@@ -151,6 +151,140 @@ def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
     assert not any("simctl" in c for c in flat)
 
 
+@pytest.mark.parametrize(
+    ("runner", "info", "expected"),
+    [
+        (
+            sd.runners._flutter_run,
+            {"kind": "android", "serial": "emulator-5554"},
+            ("flutter", "install Flutter"),
+        ),
+        (
+            sd.runners._rn_run,
+            {"kind": "android", "serial": "emulator-5554"},
+            ("node", "install Node.js"),
+        ),
+    ],
+)
+def test_framework_missing_launcher_is_capability_error(
+    tmp_path, monkeypatch, runner, info, expected
+):
+    recipe = sd.Recipe({}, tmp_path / sd.RECIPE_NAME)
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing")),
+    )
+
+    capability, message = expected
+    with pytest.raises(sd.CapabilityError, match=message) as raised:
+        runner(tmp_path, recipe, info)
+
+    assert raised.value.capability == capability
+
+
+def test_ios_native_build_requires_macos_before_launch(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / sd.RECIPE_NAME,
+    )
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *args, **kwargs: pytest.fail("xcodebuild launched"),
+    )
+
+    with pytest.raises(
+        sd.CapabilityError, match="iOS native build support requires macOS and Xcode"
+    ):
+        sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "UDID"})
+
+
+def test_ios_native_missing_xcodebuild_is_capability_error(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / sd.RECIPE_NAME,
+    )
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    with pytest.raises(sd.CapabilityError, match="install Xcode") as raised:
+        sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "UDID"})
+
+    assert raised.value.capability == "ios"
+
+
+def test_android_native_missing_gradle_is_capability_error(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {"project": {"android": {"application_id": "com.demo"}}},
+        tmp_path / sd.RECIPE_NAME,
+    )
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("missing")),
+    )
+
+    with pytest.raises(sd.CapabilityError, match="install Gradle or add") as raised:
+        sd.runners._android_native_run(
+            tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
+        )
+
+    assert raised.value.capability == "gradle"
+
+
+def test_android_native_missing_adb_is_capability_error(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {"project": {"android": {"application_id": "com.demo"}}},
+        tmp_path / sd.RECIPE_NAME,
+    )
+
+    def launch(args, **kwargs):
+        if args[0] == "adb":
+            raise FileNotFoundError("missing")
+        return 0
+
+    monkeypatch.setattr(sd.runners.subprocess, "call", launch)
+
+    with pytest.raises(sd.CapabilityError, match="install Android SDK platform-tools") as raised:
+        sd.runners._android_native_run(
+            tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
+        )
+
+    assert raised.value.capability == "android"
+
+
+def test_fixed_launcher_nonzero_exit_is_returned(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *args, **kwargs: 7)
+
+    assert (
+        sd.runners._flutter_run(
+            tmp_path,
+            sd.Recipe({}, tmp_path / sd.RECIPE_NAME),
+            {"kind": "android", "serial": "emulator-5554"},
+        )
+        == 7
+    )
+
+
+def test_custom_run_missing_command_returns_shell_status(tmp_path):
+    recipe = sd.Recipe(
+        {"project": {"run": "splashdown-command-that-does-not-exist"}},
+        tmp_path / sd.RECIPE_NAME,
+    )
+
+    rc = sd.runners.run_custom_command(
+        tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
+    )
+
+    assert rc == 127
+
+
 def test_device_add_writes_nested_table(tmp_path):
     sd.target_add(tmp_path, "simulator", "repro-bug", {"model": "iPhone 16", "ios": "17.5"})
     text = (tmp_path / "splashdown.local.toml").read_text()

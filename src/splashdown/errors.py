@@ -9,3 +9,9 @@ from __future__ import annotations
 
 class DeviceError(RuntimeError):
     pass
+
+
+class CapabilityError(DeviceError):
+    def __init__(self, capability: str, message: str) -> None:
+        self.capability = capability
+        super().__init__(message)

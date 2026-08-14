@@ -11,6 +11,7 @@
   - [Naming: one sim per checkout per variant](#naming-one-sim-per-checkout-per-variant)
   - [iOS via xcrun simctl](#ios-via-xcrun-simctl)
   - [Android via the SDK toolchain](#android-via-the-sdk-toolchain)
+  - [Capability boundaries](#capability-boundaries)
   - [Physical devices: discovered, never created](#physical-devices-discovered-never-created)
   - [ensure_fresh_sim: reconcile-on-drift](#ensure_fresh_sim-reconcile-on-drift)
   - [The info handoff contract](#the-info-handoff-contract)
@@ -49,9 +50,10 @@ never be parsed as a CLI flag by `simctl`/`avdmanager create`.
 
 ### iOS via xcrun simctl
 
-Every iOS read goes through `_xcrun_json` (`devices.py:78`), a thin wrapper that runs
-`xcrun simctl … -j` and `json.loads` the result, translating a missing `xcrun` or non-zero exit
-into a `DeviceError`. On top of it:
+Every iOS read goes through `_xcrun_json`, a thin wrapper that first requires macOS, runs
+`xcrun simctl … -j`, and parses the result. A missing or non-executable `xcrun` becomes a typed
+`CapabilityError`; a `simctl` process that starts and exits nonzero remains a command failure.
+On top of it:
 
 - `_ios_find_device_by_name` (`devices.py:88`) scans every runtime bucket of
   `simctl list devices -j` for an `isAvailable` device with the given name, returning
@@ -77,6 +79,8 @@ into a `DeviceError`. On top of it:
 `_android_home` (`devices.py:214`) resolves the SDK root from `$ANDROID_HOME`/`$ANDROID_SDK_ROOT`
 or the platform defaults, and `_android_bin` (`devices.py:230`) locates each tool
 (`avdmanager`, `sdkmanager`, `emulator`, `adb`) across the known SDK layout directories.
+Missing SDK roots and tools raise `CapabilityError("android", ...)` with the setting or package to
+install. The same implementation supports macOS and Linux.
 
 - `_android_avd_exists` (`devices.py:244`) parses `avdmanager list avd -c`.
 - `_android_latest_image` (`devices.py:265`) parses `sdkmanager --list_installed`, picks the
@@ -93,6 +97,18 @@ or the platform defaults, and `_android_bin` (`devices.py:230`) locates each too
 - `android_shutdown` / `android_destroy` (`devices.py:368`, `:375`) issue `adb emu kill` and
   `avdmanager delete avd`.
 
+### Capability boundaries
+
+`capabilities.py` owns the dependency-free boundary shared by device and launcher code.
+`require_macos` rejects Apple operations before process launch, while `translate_tool_errors`
+converts only launch-time `OSError` into `CapabilityError`. The error carries a stable capability
+key used by `warn_capability` to deduplicate aggregate warnings.
+
+Explicit operations propagate the error to the CLI, which prints `error: ...` and exits 1.
+Fleet operations catch it per row or platform, warn once, and continue supported work. A skipped
+registry row is preserved so cleanup can be retried later on a capable host. See
+[platform-capabilities.md](platform-capabilities.md) for the complete subprocess audit.
+
 ### Physical devices: discovered, never created
 
 Physical hardware cannot be created/booted/destroyed; the only operation is *discovery*.
@@ -104,10 +120,10 @@ until a launch-time tunnel) and excludes `unavailable` tunnels, returning
 `adb devices -l`, skipping `emulator-*` serials (those are the `emulator` dtype), returning
 `{id (serial), name, platform: "android"}`.
 
-`physical_discover` (`devices.py:457`) merges both, and is forgiving by design: with
-`platform=None` a missing toolchain for one platform is swallowed (an Android-only dev with no
-Xcode still finds their phone), but an *explicitly requested* platform re-raises its discovery
-error. `_physical_match` (`devices.py:480`) filters by the spec's `id` (exact) or `name`
+`physical_discover` merges both, and is forgiving by design: with `platform=None` a capability
+failure for one platform produces one warning and the other discovery path still runs. An
+*explicitly requested* platform re-raises its capability error. The optional shared `warned` set
+deduplicates warnings across several target variants. `_physical_match` filters by the spec's `id` (exact) or `name`
 (case-insensitive substring). `ensure_physical` (`devices.py:493`) requires exactly one match —
 zero raises a setup hint (`_physical_no_match_msg`, `devices.py:517`), two-or-more raises an
 "narrow with id/name/platform" error — and returns the `info` dict. `physical_status`
@@ -177,6 +193,11 @@ delegates to `PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launc
 `device_status` / `device_shutdown` / `device_destroy` dispatchers (`devices.py:611`, `:624`,
 `:633`) drive the `splash start/stop/destroy` subcommands by `dtype`.
 
+The fixed launchers in `runners.py` use the same capability boundary for Flutter, `npx`,
+`xcodebuild`, `xcrun`, Gradle/`gradlew`, and `adb`. Native iOS builds require macOS before project
+validation or launch. User-authored `[project] run` commands remain shell boundaries and return
+the shell's exit status.
+
 ## Key entry points
 
 - `ensure_fresh_sim` — `devices.py:539` — the reconcile/allocate path; the only registry writer.
@@ -184,6 +205,8 @@ delegates to `PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launc
 - `_default_sim_name` / `_resolve_device_name` — `devices.py:36`, `:53` — naming.
 - `ios_ensure` / `android_ensure` — `devices.py:162`, `:286` — find-or-create.
 - `physical_discover` — `devices.py:457` — toolchain-tolerant discovery.
+- `CapabilityError` / `require_macos` / `translate_tool_errors` — `errors.py` and
+  `capabilities.py` — typed host/tool availability boundary.
 - `_xcrun_json` / `_devicectl_json` — `devices.py:78`, `:386` — subprocess JSON wrappers.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py:611`, `:624`, `:633`.
 - `detect_framework` / `resolve_app_dir` / `device_run` — `devices.py:899`, `:931`, `:950`.
@@ -233,3 +256,4 @@ to the launcher, never persisted.
   for behavior).
 - `docs/tech/registry.md` — the machine-wide TSV coordinator; `DeviceRow`, `get_device`,
   `set_device`, and the `devices.tsv` schema that `ensure_fresh_sim` reads and writes.
+- `docs/tech/platform-capabilities.md` — host support and subprocess failure classification.
