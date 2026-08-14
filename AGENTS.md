@@ -53,7 +53,7 @@ All source is in `src/splashdown/`. `__init__.py` is a re-export hub: it defines
 
 The data flow, end to end:
 
-1. **`scanner.py`** — `Scanner` walks the filesystem, detects the workspace (single/pnpm/yarn/npm/cargo/gradle), the shell loader (mise/direnv/devbox), and each app's framework, producing a `ProjectInventory` of `AppInventory` entries. Each app maps to a **Profile** by name. Collisions of resource names across apps are mangled here (e.g. `WEB_DEV_PORT_ADMIN`).
+1. **`scanner.py`** — `Scanner` walks the filesystem, detects the workspace (single/pnpm/yarn/npm/cargo/gradle), the shell loader (mise/direnv/devbox), each app's primary framework, and secondary capabilities such as Electron, producing a `ProjectInventory` of `AppInventory` entries. Each app maps to a **Profile** by name. Collisions of resource names across apps are mangled here (e.g. `WEB_DEV_PORT_ADMIN`).
 2. **`profiles.py`** — `Profile` = per-framework integration rules: which resources an app wants, which config files need patching, and any stable agent launch guidance. `PROFILES` is the registry populated at import, and **its insertion order is detection precedence** (see the laravel/vite gotcha below). Launch behavior and the init templates were split out into `runners.py` / `scaffolds.py`.
 3. **`agentdocs.py`** — renders recipe-derived, framework-specific port guidance and synchronizes its sentinel-managed block in existing root `AGENTS.md` / independent `CLAUDE.md` files. Successful init and rescan replace or remove the block; deinit removes it without needing a valid recipe. It reads the import-populated `PROFILES` registry, so it must load after `profiles.py` has registered every profile.
 4. **`recipe.py`** — parses and fully validates `splashdown.toml` (`Recipe`), `splashdown.local.toml` (`LocalConfig`), and the global config before any state mutation. It also owns the template engine (`render_template`, `topo_sort`, `_make_scope`, scope functions like `slug`/`port_hash`/`hash`). `merged_targets` combines recipe + local target variants; `resolve_variant` picks one.
@@ -70,8 +70,8 @@ The data flow, end to end:
 Two satellite modules hang off `profiles.py` rather than sitting in the flow above:
 **`runners.py`** (everything `Profile.run` delegates to — xcodebuild/gradle/adb and the
 `[project] run` custom-command path; imports `DeviceError` from `errors.py` so it has no
-dependency on `devices.py`) and **`scaffolds.py`** (the `splash init <preset>` templates
-plus `SCAFFOLDS`; pure data, zero imports). The dependency arrow is one-way:
+dependency on `devices.py`) and **`scaffolds.py`** (the three explicit intent presets for
+`splash init <preset>` plus `SCAFFOLDS`; pure data, zero imports). The dependency arrow is one-way:
 `profiles -> runners`. Detection helpers stayed in `profiles.py` because they implement
 `Profile.detect`.
 

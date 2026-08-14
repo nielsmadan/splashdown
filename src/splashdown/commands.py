@@ -65,6 +65,7 @@ from .recipe import (
     Recipe,
     TemplateError,
     _global_config_path,
+    _slug,
     load_settings,
     merged_targets,
     resolve_variant,
@@ -1114,8 +1115,10 @@ def _resolve_no_loader_delivery(cwd: Path, inv: ProjectInventory) -> tuple[str |
     elif (cwd / ".env.local").exists():
         target = ".env.local"
 
-    proc_only = [a for a in inv.apps if not reads_dotenv(a.profile)]
-    file_capable = len(proc_only) < len(inv.apps) or not inv.apps
+    proc_only = [
+        app for app in inv.apps if not reads_dotenv(app.profile) or "electron" in app.capabilities
+    ]
+    file_capable = any(reads_dotenv(app.profile) for app in inv.apps) or not inv.apps
 
     if target and file_capable:
         msg = f"no shell loader detected — routing values into {target}"
@@ -1178,20 +1181,86 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
 
+_ELECTRON_PROFILE_RESOURCE = "ELECTRON_PROFILE_ID"
+
+
+def _add_electron_resources(
+    _cwd: Path,
+    inv: ProjectInventory,
+    res_by_app: dict[str, dict[str, dict[str, Any]]],
+    choice: str | None = None,
+) -> bool:
+    electron_apps = [app for app in inv.apps if "electron" in app.capabilities]
+    if choice not in (None, "isolated", "shared"):
+        raise ValueError("electron profile choice must be `isolated` or `shared`")
+    if not electron_apps:
+        if choice is not None:
+            raise ValueError("--electron-profile requires a scanner-detected Electron app")
+        return False
+    if choice == "shared":
+        return False
+    if choice is None:
+        if not sys.stdin.isatty():
+            return False
+        if len(electron_apps) == 1:
+            prompt = "Set up an independent Electron profile for this checkout?"
+        else:
+            names = ", ".join(app.name for app in electron_apps)
+            prompt = f"Set up independent Electron profiles for these checkouts ({names})?"
+        print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
+        try:
+            answer = input()
+        except EOFError:
+            return False
+        if answer.strip().lower() not in ("y", "yes"):
+            return False
+    multiple = len(electron_apps) > 1
+    for app in electron_apps:
+        template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
+        if multiple:
+            template = f"{template}-{_slug(app.name)}"
+        res_by_app[app.name][_ELECTRON_PROFILE_RESOURCE] = {
+            "type": "template",
+            "template": template,
+            "writer": "splashdown-env",
+        }
+    return True
+
+
+def _print_electron_integration(resource_names: list[str]) -> None:
+    print(
+        "  Electron: in each main process, before requestSingleInstanceLock():",
+        file=sys.stderr,
+    )
+    print('    import { mkdirSync } from "node:fs"', file=sys.stderr)
+    for resource in resource_names:
+        print(f"    const profileId = process.env.{resource}", file=sys.stderr)
+        print("    if (profileId) {", file=sys.stderr)
+        print('      const userData = `${app.getPath("userData")}-${profileId}`', file=sys.stderr)
+        print("      mkdirSync(userData, { recursive: true })", file=sys.stderr)
+        print('      app.setPath("userData", userData)', file=sys.stderr)
+        print("    }", file=sys.stderr)
+
+
 def cmd_init(
-    cwd: Path, preset: str | None = None, force: bool = False, loader_override: str | None = None
+    cwd: Path,
+    preset: str | None = None,
+    force: bool = False,
+    loader_override: str | None = None,
+    electron_profile: str | None = None,
 ) -> None:
     """Scaffold splashdown.toml from a project scan (default) or from a named
-    preset (legacy path: `splash init <preset>`)."""
+    intent preset (`splash init <preset>`)."""
 
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
         print(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)", file=sys.stderr)
         sys.exit(2)
 
-    # Legacy path: an explicit preset bypasses the Scanner entirely.
     if preset is not None:
-        return _cmd_init_legacy_preset(cwd, preset, loader_override=loader_override)
+        if electron_profile is not None:
+            raise ValueError("--electron-profile is only valid with scanner-driven `splash init`")
+        return _cmd_init_preset(cwd, preset, loader_override=loader_override)
 
     # Scanner-driven path.
     from .scanner import PROFILES  # noqa: PLC0415
@@ -1209,7 +1278,7 @@ def cmd_init(
         rel = app.path.relative_to(cwd) if app.path != cwd else Path(".")
         print(f"  {rel}\t→ {app.profile}", file=sys.stderr)
     print(f"  shell loader\t→ {inv.loader}", file=sys.stderr)
-
+    # Collect per-app resources, then merge with collision-mangling.
     res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
     for app in inv.apps:
         if app.profile == "unknown":
@@ -1219,6 +1288,7 @@ def cmd_init(
     if _should_defer_monorepo(cwd, res_by_app, inv.apps):
         _write_minimal_monorepo_recipe(cwd, inv)
         return
+    electron_isolated = _add_electron_resources(cwd, inv, res_by_app, electron_profile)
     merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
     # Compose is project-level infrastructure, so its resources are merged in after
     # the per-app pass rather than claimed by any one app.
@@ -1251,6 +1321,15 @@ def cmd_init(
     if no_loader_msg:
         print(f"  {no_loader_msg}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
+    if electron_isolated:
+        resource_names = [
+            name
+            for app in inv.apps
+            if "electron" in app.capabilities
+            for name in app_resource_names[app.name]
+            if name.startswith(_ELECTRON_PROFILE_RESOURCE)
+        ]
+        _print_electron_integration(resource_names)
 
     if any(app.profile != "unknown" for app in inv.apps):
         _apply_init_wiring_checks(inv)
@@ -1276,8 +1355,8 @@ def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
                     print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
 
 
-def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
-    """`splash init NAME` path: write the named scaffold, then wire the
+def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
+    """`splash init NAME` path: write the intent preset, then wire the
     detected (or overridden) shell-env loader and the post-checkout hook."""
     from .scaffolds import SCAFFOLDS  # noqa: PLC0415
 
@@ -1307,6 +1386,8 @@ def _cmd_init_legacy_preset(cwd: Path, preset: str, *, loader_override: str | No
         # a dotenv file here — but we must not leave the user with a silent no-op.
         print(f"  {_NO_LOADER_INSTRUCTIONS}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
+    if preset == "electron":
+        _print_electron_integration([_ELECTRON_PROFILE_RESOURCE])
 
     framework = _resolve_doctor_framework(cwd, None)
     if framework and _wiring_checks_for_framework(framework, cwd):
@@ -1413,6 +1494,10 @@ def cmd_refresh_inventory(cwd: Path) -> int:
             res_by_app[app.name] = {}
             continue
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
+    if any("electron" in app.capabilities for app in inv.apps) and any(
+        name.startswith(_ELECTRON_PROFILE_RESOURCE) for name in existing.resources
+    ):
+        _add_electron_resources(cwd, inv, res_by_app, "isolated")
     profile_emitted, app_resource_names = _build_resource_catalog(res_by_app)
     # Names already in the recipe stay resolvable — refresh_recipe keeps them.
     _prune_unresolvable_templates(profile_emitted, app_resource_names, set(existing.resources))

@@ -68,7 +68,7 @@ from . import profiles as _profiles_module
 from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .commands import (
-    _cmd_init_legacy_preset,
+    _cmd_init_preset,
     _env_dispatch,
     _resolve_no_loader_delivery,
     cmd_completion,

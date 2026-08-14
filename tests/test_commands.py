@@ -632,6 +632,18 @@ def test_no_loader_delivery_mixed_routes_to_file_with_caveat(tmp_path):
     assert "read env from the process" in msg
 
 
+def test_no_loader_next_electron_keeps_profile_id_in_process_environment(tmp_path, capsys):
+    (tmp_path / ".env").write_text("")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16","electron":"43"}}')
+
+    sd.cmd_init(tmp_path, electron_profile="isolated")
+
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.resources["PORT"]["writer"] == "envfile=.env"
+    assert recipe.resources["ELECTRON_PROFILE_ID"]["writer"] == "splashdown-env"
+    assert "main read env from the process" in capsys.readouterr().err
+
+
 def test_no_loader_delivery_warns_when_target_tracked(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".env").write_text("")

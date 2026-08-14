@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .devices import DeviceError
+from .package_json import package_dependencies
 from .recipe import Recipe
 from .runners import (
     _android_native_run,
@@ -26,28 +27,18 @@ from .wiring import (
     _yaml_key_regions,
 )
 
+
 def _detect_flutter(cwd: Path) -> bool:
     return (cwd / "pubspec.yaml").exists()
 
 
-def _read_pkg_deps(cwd: Path) -> dict[str, Any]:
-    pkg = cwd / "package.json"
-    if not pkg.exists():
-        return {}
-    try:
-        data = json.loads(pkg.read_text())
-    except json.JSONDecodeError:
-        return {}
-    return {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
-
-
 def _detect_expo(cwd: Path) -> bool:
-    deps = _read_pkg_deps(cwd)
+    deps = package_dependencies(cwd)
     return "expo" in deps and (cwd / "app.json").exists()
 
 
 def _detect_rn(cwd: Path) -> bool:
-    return "react-native" in _read_pkg_deps(cwd)
+    return "react-native" in package_dependencies(cwd)
 
 
 # `[project] run` (or a `[project.run]` table) overrides the framework's built-in
@@ -416,7 +407,7 @@ class AstroProfile(Profile):
     name = "astro"
 
     def detect(self, app_path: Path) -> bool:
-        return _astro_config_path(app_path) is not None or "astro" in _read_pkg_deps(app_path)
+        return _astro_config_path(app_path) is not None or "astro" in package_dependencies(app_path)
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         # Skips Astro's own 4321 so an unwired app can't accidentally be handed
@@ -665,7 +656,7 @@ class NuxtProfile(Profile):
     def detect(self, app_path: Path) -> bool:
         if any((app_path / n).exists() for n in _NUXT_CONFIG_NAMES):
             return True
-        return "nuxt" in _read_pkg_deps(app_path)
+        return "nuxt" in package_dependencies(app_path)
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         # NUXT_PORT rather than the also-supported PORT: the specific name can't be
@@ -810,15 +801,8 @@ class NodeBackendProfile(Profile):
     reads_dotenv = True
 
     def detect(self, app_path: Path) -> bool:
-        pkg = app_path / "package.json"
-        if not pkg.exists():
-            return False
-        try:
-            data = json.loads(pkg.read_text())
-        except json.JSONDecodeError:
-            return False
-        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
-        return any(d in deps for d in _NODE_BACKEND_DEPS)
+        deps = package_dependencies(app_path)
+        return any(dependency in deps for dependency in _NODE_BACKEND_DEPS)
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [9081, 9100]}}
@@ -1066,15 +1050,7 @@ class NextJsProfile(Profile):
         for name in _NEXTJS_CONFIG_NAMES:
             if (app_path / name).exists():
                 return True
-        pkg = app_path / "package.json"
-        if pkg.exists():
-            try:
-                data = json.loads(pkg.read_text())
-            except json.JSONDecodeError:
-                return False
-            deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
-            return "next" in deps
-        return False
+        return "next" in package_dependencies(app_path)
 
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [3001, 3100]}}

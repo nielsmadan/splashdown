@@ -1,10 +1,10 @@
 # Scanning & Extension Layer
 
 The detection + extension layer: how splashdown looks at a repo on disk and decides
-*what* it is (workspace shape, apps, frameworks, shell loader) before any provisioning
+*what* it is (workspace shape, apps, frameworks, secondary capabilities, shell loader) before any provisioning
 happens. Six modules: `scanner.py` (filesystem walk → inventory), `profiles.py`
 (per-framework detection, resources and wiring checks), `runners.py`
-(build/install/launch behind `Profile.run`), `scaffolds.py` (the preset
+(build/install/launch behind `Profile.run`), `scaffolds.py` (the intent-preset
 `splashdown.toml` templates, pure data), `agentdocs.py` (managed framework guidance),
 and `loaders.py` (shell-env wiring).
 
@@ -31,16 +31,17 @@ into `splashdown.toml`, which consumer-config patches the doctor will offer, and
 `splashdown.env` reaches the running app.
 
 This layer is **pure inspection on the detection side** (the `Scanner` never writes) and a
-**registry/plugin extension point** on the framework side (`PROFILES`, `LOADERS`,
-`SCAFFOLDS`). All three registries are dicts populated at import time, and **insertion
-order is load-bearing** for detection precedence.
+**registry/plugin extension point** on the framework side (`PROFILES`, `LOADERS`). Both
+registries are dicts populated at import time, and **insertion order is load-bearing** for
+detection precedence. `SCAFFOLDS` is a separate, intentionally small registry of explicit
+intent presets, not another list of supported frameworks.
 
 ## How it works (current state)
 
 ### scanner.py — repo → ProjectInventory
 
-`Scanner.scan()` (`scanner.py:163`) is the single public entry. It runs three independent
-detections and assembles a `ProjectInventory` (`scanner.py:24`) of `AppInventory` entries
+`Scanner.scan()` (`scanner.py:163`) is the single public entry. It runs workspace, loader,
+profile, and capability detection, then assembles a `ProjectInventory` (`scanner.py:24`) of `AppInventory` entries
 (`scanner.py:15`). No writes, no caching of significance — the same instance is reusable.
 
 **1. Workspace detection** — `_detect_workspace()` (`scanner.py:37`) returns one of
@@ -56,6 +57,10 @@ detections and assembles a `ProjectInventory` (`scanner.py:24`) of `AppInventory
 The order matters: a pnpm monorepo usually also has a `package.json`, so pnpm is checked
 first. Note JS-workspace detection keys off the *presence* of the `workspaces` field, not
 its contents.
+
+Package metadata consumers share `package_json.py`. Missing, unreadable, malformed, and
+non-object JSON all produce an empty mapping, and only object-shaped dependency tables are
+merged.
 
 **2. App enumeration** — `_enumerate_apps()` (`scanner.py:67`) turns the workspace kind
 into `[(name, path), ...]`:
@@ -83,7 +88,12 @@ workspace manifest to point at app roots, so it never descends into `node_module
 `profile.detect(app_path)` that is truthy, falling back to `"unknown"`. This is the only
 place precedence is consumed; the ordering itself lives in `profiles.py` (see below).
 
-**4. Loader detection** — `_detect_loader()` (`scanner.py:145`) asks each `Loader` in
+**4. Secondary capability detection** — Electron is detected from package dependencies
+without replacing the primary Profile. An Electron/Vite app remains `profile="vite"` and
+also carries `capabilities=("electron",)`. Electron-only workspace members are retained;
+other unmatched workspace members are still treated as shared libraries and omitted.
+
+**5. Loader detection** — `_detect_loader()` (`scanner.py:145`) asks each `Loader` in
 `LOADERS` order whether it `detect()`s, returning the first hit or `"none"`. Same
 first-match-wins pattern as profiles.
 
@@ -95,9 +105,9 @@ name owned by more than one app, mangles every instance to `<NAME>_<APP>` (upper
 `-`→`_`): e.g. `WEB_DEV_PORT` becomes `WEB_DEV_PORT_ADMIN` /
 `WEB_DEV_PORT_CUSTOMER`. Single-owner names stay canonical. The helper returns both the
 flat resource table and the per-app `resources = [...]` lists, deriving each pair from
-the same resolved name so declarations and references cannot diverge. If normalization
-would produce the same key twice (for example, app names `admin-web` and `admin_web`),
-catalog construction fails before init/rescan writes the recipe.
+the same resolved name so declarations and references cannot diverge. If two app names
+normalize to the same suffix, a stable digest disambiguates them while keeping valid
+environment identifiers.
 
 `PROFILES` itself is *declared* empty in `scanner.py:34` and *filled* by `profiles.py` at
 import; `scanner.py` only ever reads it.
@@ -200,13 +210,12 @@ resolves `applicationId` from Gradle properties when not pinned. Recipe-supplied
 positionals passed to these tools go through `_no_flag()` (`profiles.py:22`) to reject
 leading-`-` values that argv would otherwise swallow as tool flags.
 
-**SCAFFOLDS** (`profiles.py:758`) is a separate registry of preset `splashdown.toml`
-templates for `splash init <preset>`. It is deliberately decoupled from `PROFILES`
-(comment at `profiles.py:583`): some presets (`minimal`, `electron`, `server`) have no
-detectable framework, and some profiles (`vite`, `springboot`) have no stock scaffold.
-Each template embeds the literal token `__SPLASH_LOADER__`, which `_cmd_init_legacy_preset`
-substitutes with the detected loader name at write time (`commands.py:1333`). The dict
-includes aliases (`rn`→RN scaffold, `nextjs`→server scaffold) (`profiles.py:758-768`).
+**SCAFFOLDS** in `scaffolds.py` contains exactly `minimal`, `server`, and `electron`.
+Framework-specific and historical alias presets are deliberately absent: framework setup
+comes from scanner-driven init and Profiles. Electron is the boundary case. Its explicit
+preset deterministically requests a renderer port and stable profile identifier, while
+plain init detects Electron as a secondary capability and asks whether to add only the
+optional profile-isolation overlay.
 
 ### runners.py & scaffolds.py — split out of profiles.py
 
@@ -221,8 +230,8 @@ depends on nothing at all.
   validators (`_no_flag`, `_android_component`) since they exist to sanitize values on
   their way into a subprocess. Imports `DeviceError` from `errors.py` directly rather
   than `devices.py`, so it carries no dependency on the device layer.
-- **`scaffolds.py`** — the preset `splashdown.toml` templates and the `SCAFFOLDS` dict.
-  Pure strings, no imports, no logic.
+- **`scaffolds.py`** — the three intent-preset `splashdown.toml` templates and the
+  `SCAFFOLDS` dict. Pure strings, no imports, no logic.
 
 The **detection helpers stayed in `profiles.py`** (`_detect_flutter`, `_read_pkg_deps`,
 `_detect_expo`, `_detect_rn`, `_detect_ios_native`, `_detect_android_native`,
@@ -317,16 +326,16 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
   `package.json`-based detector before a narrow one) will silently shadow later profiles.
   Same hazard for `LOADERS`. The mobile ordering at `profiles.py:572-580` exists precisely
   to avoid this and must be preserved.
-- **Adding a Profile touches several decoupled places.** A new framework needs: the
-  `Profile` subclass, a `PROFILES[...] =` line *at the right precedence position*, and —
-  separately — a `SCAFFOLDS` entry if you want `splash init <name>` to work (the two
-  registries are not linked). If the framework has consumer configs to patch, you also add
+- **Adding a Profile does not imply adding a preset.** A new framework needs the
+  `Profile` subclass and a `PROFILES[...] =` line at the right precedence position.
+  Framework coverage belongs in scanner-driven init. If it has consumer configs to patch, also add
   `WiringCheck`s in `wiring.py` and return them from `wiring_checks()`.
+- **Capabilities do not compete with Profiles.** Electron must remain a secondary
+  capability so it cannot shadow a renderer framework such as Vite or Next.js.
 - **`ReactNativeProfile` and `ExpoProfile` both emit `RCT_METRO_PORT`.** The allocation
   range starts at `8082`, deliberately excluding Metro's framework-default port `8081`.
-- **The two mangling helpers duplicate the owners-then-mangle logic** (`scanner.py:179`
-  and `scanner.py:203`). Change the mangling rule in one and the generated recipe's
-  per-app `resources` list will drift out of sync with the merged `[resources.*]` table.
+- **Resource scoping has one source of truth.** `_build_resource_catalog` derives both
+  declarations and each app's resource references from the same resolved-name map.
 - **Glob expansion only handles one `*`** (`scanner.py:127-137`) and lists a single
   directory level. `apps/**/foo`-style deep globs are not expanded the way a real pnpm/yarn
   matcher would; the scanner assumes the common `apps/*` / `packages/*` shapes.
@@ -353,10 +362,11 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 The detection side is split from the integration side on purpose. `Scanner` is pure,
 side-effect-free inspection so it can be re-run cheaply (init, refresh-inventory, status)
 and unit-tested without touching disk state. The integration side is a **registry/plugin
-pattern**: `PROFILES`, `LOADERS`, and `SCAFFOLDS` are plain dicts filled by import-time
+pattern**: `PROFILES` and `LOADERS` are plain dicts filled by import-time
 side effects, which keeps "add a framework" to "write a subclass + register it" without a
 central switch statement to edit. Insertion-order-as-precedence is the cost of that
-simplicity — there's no priority metadata, so ordering is the only knob.
+simplicity — there's no priority metadata, so ordering is the only knob. `SCAFFOLDS`
+remains a policy-controlled list of intent presets outside that parity.
 
 The split between the *declarative* `PROFILES`/`LOADERS`/`SCAFFOLDS` registries and the
 *imperative* `WiringCheck` lists returned from `wiring_checks()` mirrors the two phases:

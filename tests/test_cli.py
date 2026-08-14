@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import os
+import sys
 import tomllib
 
 import pytest
 
 import splashdown as sd
+
+
+class _TTYInput(io.StringIO):
+    def isatty(self):
+        return True
 
 
 def test_file_name_constants():
@@ -186,14 +193,124 @@ def test_init_server_preset_writes_generic_scaffold(tmp_path):
     assert "Next.js preset" not in recipe
 
 
-def test_init_electron_preset_includes_user_data_dir(tmp_path):
+def test_init_electron_preset_includes_profile_id(tmp_path, capsys):
     sd.cmd_init(tmp_path, preset="electron")
     recipe = (tmp_path / "splashdown.toml").read_text()
     assert "[resources.PORT]" in recipe
-    assert "[resources.ELECTRON_USER_DATA_DIR]" in recipe
+    assert "[resources.ELECTRON_PROFILE_ID]" in recipe
     assert "range = [3001, 3100]" in recipe
-    # Per-checkout — must reference cwd_abs so each worktree gets its own dir.
-    assert "cwd_abs" in recipe
+    assert 'template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"' in recipe
+    err = capsys.readouterr().err
+    assert "const profileId = process.env.ELECTRON_PROFILE_ID" in err
+    assert "mkdirSync(userData, { recursive: true })" in err
+    assert "before requestSingleInstanceLock()" in err
+
+
+def test_init_electron_yes_adds_profile_without_replacing_vite(tmp_path, monkeypatch, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"devDependencies":{"electron":"40"}}')
+    monkeypatch.setattr(sys, "stdin", _TTYInput("y\n"))
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.apps["main"]["profile"] == "vite"
+    assert recipe.resources["ELECTRON_PROFILE_ID"]["template"] == (
+        "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
+    )
+    assert recipe.resources["ELECTRON_PROFILE_ID"]["writer"] == "splashdown-env"
+    assert "WEB_DEV_PORT" in recipe.resources
+    err = capsys.readouterr().err
+    assert "Set up an independent Electron profile for this checkout?" in err
+    assert "const profileId = process.env.ELECTRON_PROFILE_ID" in err
+
+
+def test_init_electron_no_keeps_renderer_resources(tmp_path, monkeypatch, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"40"}}')
+    monkeypatch.setattr(sys, "stdin", _TTYInput("n\n"))
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert set(recipe.resources) == {"WEB_DEV_PORT"}
+    assert "Set up an independent Electron profile for this checkout?" in capsys.readouterr().err
+
+
+def test_init_electron_noninteractive_defaults_to_shared_user_data(tmp_path, monkeypatch, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"40"}}')
+    stdin = io.StringIO("y\n")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert set(recipe.resources) == {"WEB_DEV_PORT"}
+    assert stdin.read() == "y\n"
+    assert (
+        "Set up an independent Electron profile for this checkout?" not in capsys.readouterr().err
+    )
+
+
+def test_init_electron_eof_defaults_to_shared_user_data(tmp_path, monkeypatch):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"40"}}')
+    monkeypatch.setattr(sys, "stdin", _TTYInput())
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert set(recipe.resources) == {"WEB_DEV_PORT"}
+
+
+def test_init_electron_workspace_prompts_once_and_scopes_profile_ids(tmp_path, monkeypatch, capsys):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    for name in ("desktop.app", "studio-web"):
+        app_dir = tmp_path / "apps" / name
+        app_dir.mkdir(parents=True)
+        (app_dir / "package.json").write_text('{"dependencies":{"electron":"40"}}')
+    stdin = _TTYInput("y\nn\n")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.resources["ELECTRON_PROFILE_ID_DESKTOP_APP"]["template"] == (
+        "splashdown-{{ truncate(hash(cwd_abs), 12) }}-desktop-app"
+    )
+    assert recipe.resources["ELECTRON_PROFILE_ID_STUDIO_WEB"]["template"] == (
+        "splashdown-{{ truncate(hash(cwd_abs), 12) }}-studio-web"
+    )
+    assert stdin.read() == "n\n"
+    err = capsys.readouterr().err
+    prompt = "Set up independent Electron profiles for these checkouts (desktop.app, studio-web)?"
+    assert err.count(prompt) == 1
+    assert "process.env.ELECTRON_PROFILE_ID_DESKTOP_APP" in err
+    assert "process.env.ELECTRON_PROFILE_ID_STUDIO_WEB" in err
+
+
+def test_init_electron_profile_flag_works_noninteractively(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"43"}}')
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+
+    assert (
+        sd.main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "init",
+                "--electron-profile",
+                "isolated",
+                "--no-sync",
+            ]
+        )
+        == 0
+    )
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.apps["main"]["resources"] == ["WEB_DEV_PORT", "ELECTRON_PROFILE_ID"]
+
+
+def test_init_electron_shared_flag_skips_profile_noninteractively(tmp_path, monkeypatch):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"43"}}')
+    monkeypatch.setattr(sys, "stdin", io.StringIO("y\n"))
+
+    sd.cmd_init(tmp_path, electron_profile="shared")
+
+    assert set(sd.Recipe.load(tmp_path / "splashdown.toml").resources) == {"WEB_DEV_PORT"}
 
 
 def test_cli_provision_is_default(tmp_path, monkeypatch):

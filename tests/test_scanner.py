@@ -360,19 +360,16 @@ def test_resource_catalog_keeps_declarations_and_references_aligned():
     assert {name for names in consumed.values() for name in names} == set(merged)
 
 
-def test_resource_catalog_rejects_normalized_app_name_collision():
+def test_resource_catalog_disambiguates_normalized_app_name_collision():
     res_by_app = {
         "admin-web": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
         "admin_web": {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
     }
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"`admin-web\.WEB_DEV_PORT` and `admin_web\.WEB_DEV_PORT` both resolve to "
-            r"`WEB_DEV_PORT_ADMIN_WEB`"
-        ),
-    ):
-        sd._build_resource_catalog(res_by_app)
+    merged, consumed = sd._build_resource_catalog(res_by_app)
+    names = {name for app_names in consumed.values() for name in app_names}
+    assert len(names) == 2
+    assert set(merged) == names
+    assert all(sd.ENV_NAME_RE.fullmatch(name) for name in names)
 
 
 def test_resource_catalog_rejects_mangled_name_colliding_with_canonical_name():
@@ -384,7 +381,7 @@ def test_resource_catalog_rejects_mangled_name_colliding_with_canonical_name():
         sd._build_resource_catalog(res_by_app)
 
 
-def test_refresh_inventory_preserves_recipe_on_normalized_app_name_collision(tmp_path, monkeypatch):
+def test_refresh_inventory_disambiguates_normalized_app_name_collision(tmp_path, monkeypatch):
     recipe_path = tmp_path / "splashdown.toml"
     original = '[resources.KEEP]\ntype = "uuid"\n'
     recipe_path.write_text(original)
@@ -392,6 +389,9 @@ def test_refresh_inventory_preserves_recipe_on_normalized_app_name_collision(tmp
     class CollisionProfile:
         def resources(self, app):
             return {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}}
+
+        def agent_guidance(self, app, port_names):
+            return []
 
     inventory = sd.ProjectInventory(
         workspace="pnpm",
@@ -404,9 +404,24 @@ def test_refresh_inventory_preserves_recipe_on_normalized_app_name_collision(tmp
     monkeypatch.setitem(sd.scanner.PROFILES, "collision-test", CollisionProfile())
     monkeypatch.setattr(sd.commands.Scanner, "scan", lambda self, cwd: inventory)
 
-    with pytest.raises(ValueError, match="resource name collision"):
-        sd.cmd_refresh_inventory(tmp_path)
-    assert recipe_path.read_text() == original
+    assert sd.cmd_refresh_inventory(tmp_path) == 0
+    recipe = sd.Recipe.load(recipe_path)
+    names = {name for app in recipe.apps.values() for name in app["resources"]}
+    assert len(names) == 2
+    assert all(sd.ENV_NAME_RE.fullmatch(name) for name in names)
+    assert "KEEP" in recipe.resources
+
+
+def test_resource_name_scoping_disambiguates_equal_sanitized_app_names():
+    res_by_app = {
+        name: {"ELECTRON_PROFILE_ID": {"type": "template", "template": name}}
+        for name in ("desktop-app", "desktop.app")
+    }
+    merged, consumed = sd._build_resource_catalog(res_by_app)
+    names = {name for app_names in consumed.values() for name in app_names}
+    assert len(names) == 2
+    assert all(sd.ENV_NAME_RE.fullmatch(name) for name in names)
+    assert set(merged) == names
 
 
 def test_cmd_init_scans_single_vite_app(tmp_path):
@@ -455,8 +470,6 @@ def test_cmd_init_no_loader_no_dotenv_file_omits_writer_and_prints_instructions(
 
 
 def test_cmd_init_scanner_rn_emits_default_targets(tmp_path):
-    # Scanner-driven init (no preset) on a React Native project must emit default
-    # sim/emulator targets, at parity with the `rn` preset scaffold.
     (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.74"}}')
     sd.cmd_init(tmp_path)
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
@@ -465,15 +478,14 @@ def test_cmd_init_scanner_rn_emits_default_targets(tmp_path):
     assert recipe.targets["simulator"]["default"]["model"]
 
 
-def test_cmd_init_legacy_preset_path_still_works(tmp_path):
+def test_cmd_init_intent_preset_path_works(tmp_path):
     sd.cmd_init(tmp_path, preset="minimal")
     recipe_text = (tmp_path / "splashdown.toml").read_text()
-    # Legacy: writes the minimal scaffold verbatim, no [apps.*] / [project] tables.
     assert "[resources.RUN_ID]" in recipe_text
     assert "[apps.main]" not in recipe_text
 
 
-def test_cmd_init_legacy_preset_no_loader_prints_instructions(tmp_path, capsys):
+def test_cmd_init_intent_preset_no_loader_prints_instructions(tmp_path, capsys):
     # No loader config → the preset path can't route to a dotenv file, but it must
     # not leave the user with a silent no-op.
     sd.cmd_init(tmp_path, preset="minimal")
@@ -580,6 +592,21 @@ def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
     assert "[apps." in text
     # Existing resources are kept verbatim.
     assert "[resources.RUN_ID]" in text
+
+
+def test_refresh_inventory_preserves_electron_profile_associations(tmp_path):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    for name in ("desktop", "studio"):
+        app_dir = tmp_path / "apps" / name
+        app_dir.mkdir(parents=True)
+        (app_dir / "package.json").write_text('{"dependencies":{"electron":"43"}}')
+    sd.cmd_init(tmp_path, electron_profile="isolated")
+
+    assert sd.cmd_refresh_inventory(tmp_path) == 0
+
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.apps["desktop"]["resources"] == ["ELECTRON_PROFILE_ID_DESKTOP"]
+    assert recipe.apps["studio"]["resources"] == ["ELECTRON_PROFILE_ID_STUDIO"]
 
 
 def test_node_backend_profile_detects_hono(tmp_path):
@@ -1359,6 +1386,51 @@ def test_scan_drops_unknown_members_in_workspace(tmp_path):
     names = {a.name: a.profile for a in inv.apps}
     assert names == {"web": "vite"}
     assert inv.apps[0].project_path == Path("apps/web")
+
+
+def test_scanner_keeps_vite_profile_and_detects_electron_capability(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text('{"devDependencies":{"electron":"40"}}')
+    app = sd.Scanner().scan(tmp_path).apps[0]
+    assert app.profile == "vite"
+    assert app.capabilities == ("electron",)
+
+
+def test_scanner_ignores_nonobject_package_json_for_capabilities(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "package.json").write_text("[]")
+    app = sd.Scanner().scan(tmp_path).apps[0]
+    assert app.profile == "vite"
+    assert app.capabilities == ()
+
+
+def test_scanner_keeps_electron_only_workspace_member(tmp_path):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    app_dir = tmp_path / "apps" / "desktop"
+    app_dir.mkdir(parents=True)
+    (app_dir / "package.json").write_text('{"dependencies":{"electron":"40"}}')
+    inv = sd.Scanner().scan(tmp_path)
+    assert [(app.name, app.profile, app.capabilities) for app in inv.apps] == [
+        ("desktop", "unknown", ("electron",))
+    ]
+
+
+def test_init_mixed_workspace_associates_electron_only_with_desktop(tmp_path):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    desktop = tmp_path / "apps" / "desktop"
+    desktop.mkdir(parents=True)
+    (desktop / "vite.config.ts").write_text("export default {}")
+    (desktop / "package.json").write_text('{"dependencies":{"electron":"43"}}')
+    api = tmp_path / "apps" / "api"
+    api.mkdir()
+    (api / "package.json").write_text('{"dependencies":{"express":"5"}}')
+
+    sd.cmd_init(tmp_path, electron_profile="isolated")
+
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.apps["desktop"]["profile"] == "vite"
+    assert recipe.apps["desktop"]["resources"] == ["WEB_DEV_PORT", "ELECTRON_PROFILE_ID"]
+    assert recipe.apps["api"]["resources"] == ["PORT"]
 
 
 def test_scan_keeps_single_unknown_app(tmp_path):

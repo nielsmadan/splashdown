@@ -5,7 +5,8 @@ splash                              # sync this checkout (the post-checkout hook
 splash --version
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [all]                 # resources + targets + which ports are bound right now
-splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]   # scaffold + first sync
+splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
+                    [--electron-profile=isolated|shared]
 splash doctor [--fix] [--framework=…]
 
 splash run     [type] [variant]     # boot target + build + launch
@@ -33,6 +34,29 @@ Named presets are limited to choices that project scanning cannot infer:
 - `minimal` creates a framework-neutral recipe with a generated run id.
 - `server` creates a generic `PORT` and checkout-specific `DATABASE_URL`.
 - `electron` creates a renderer `PORT` and opts into checkout-specific Electron user data.
+
+Plain `splash init` detects Electron in addition to the renderer framework. In an interactive
+terminal, it asks once whether to isolate Electron user data per checkout. The default is No,
+and non-interactive input or EOF also selects No. Automation can make the choice explicit with
+`--electron-profile=isolated|shared`. Choosing isolation adds a stable
+`ELECTRON_PROFILE_ID` and prints the main-process integration to add before
+`requestSingleInstanceLock()`:
+
+```js
+import { mkdirSync } from "node:fs"
+
+const profileId = process.env.ELECTRON_PROFILE_ID
+if (profileId) {
+  const userData = `${app.getPath("userData")}-${profileId}`
+  mkdirSync(userData, { recursive: true })
+  app.setPath("userData", userData)
+}
+```
+
+`splash init electron` is the explicit opt-in for a standalone project. It does not prompt,
+includes both `PORT` and `ELECTRON_PROFILE_ID`, and prints the same integration. This keeps
+profiles beside Electron's normal platform-specific user-data directory instead of inside the
+checkout.
 
 `splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Empty or malformed setup declarations fail during recipe validation, before those changes. An unknown requested name or failed command exits 1 after provisioning; resource/output changes and earlier successful setup commands are not rolled back.
 

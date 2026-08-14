@@ -171,6 +171,11 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         action="store_true",
         help="scaffold only; skip the first sync (don't allocate ports / write splashdown.env)",
     )
+    p.add_argument(
+        "--electron-profile",
+        choices=("isolated", "shared"),
+        help="Electron scanner choice (isolated = independent checkout profile)",
+    )
 
     sub.add_parser("deinit", help=argparse.SUPPRESS)
 
@@ -403,7 +408,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
         if args.cmd == "init":
             if args.rescan:
                 return cmd_refresh_inventory(cwd)
-            cmd_init(cwd, preset=args.preset, force=args.overwrite, loader_override=args.loader)
+            cmd_init(
+                cwd,
+                preset=args.preset,
+                force=args.overwrite,
+                loader_override=args.loader,
+                electron_profile=args.electron_profile,
+            )
             if args.no_sync:
                 return 0
             return _cmd_provision_inner(cwd, registry)

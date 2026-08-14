@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import re
 import tomllib
 from dataclasses import dataclass
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from .loaders import LOADERS
+from .package_json import package_dependencies, read_package_json
 from .recipe import _TEMPLATE_NAMES, Recipe, template_refs
 
 
@@ -19,6 +20,7 @@ class AppInventory:
     path: Path  # absolute path to the app's root directory
     profile: str  # the Profile name that matched, or "unknown"
     project_path: Path | None = None
+    capabilities: tuple[str, ...] = ()
 
 
 @dataclass
@@ -43,19 +45,14 @@ def _detect_workspace(cwd: Path) -> str:
     """Identify the workspace manager. Returns one of: pnpm, yarn, npm, cargo, gradle, single."""
     if (cwd / "pnpm-workspace.yaml").exists():
         return "pnpm"
-    pkg = cwd / "package.json"
-    if pkg.exists():
-        try:
-            data = json.loads(pkg.read_text())
-        except json.JSONDecodeError:
-            data = {}
-        if data.get("workspaces"):
-            if (cwd / "yarn.lock").exists():
-                return "yarn"
-            if (cwd / "package-lock.json").exists():
-                return "npm"
-            # Default for workspace-shaped package.json without a lockfile signal.
+    data = read_package_json(cwd)
+    if data.get("workspaces"):
+        if (cwd / "yarn.lock").exists():
+            return "yarn"
+        if (cwd / "package-lock.json").exists():
             return "npm"
+        # Default for workspace-shaped package.json without a lockfile signal.
+        return "npm"
     if (cwd / "Cargo.toml").exists():
         try:
             text = (cwd / "Cargo.toml").read_text()
@@ -95,7 +92,7 @@ def _enumerate_apps(cwd: Path, workspace: str) -> list[tuple[str, Path]]:
                     break
         return _expand_workspace_globs(cwd, globs)
     if workspace in ("yarn", "npm"):
-        data = json.loads((cwd / "package.json").read_text())
+        data = read_package_json(cwd)
         globs = data.get("workspaces") or []
         if isinstance(globs, dict):
             globs = globs.get("packages") or []
@@ -173,6 +170,10 @@ def _detect_loader(cwd: Path) -> str:
     return "none"
 
 
+def _detect_capabilities(app_path: Path) -> tuple[str, ...]:
+    return ("electron",) if "electron" in package_dependencies(app_path) else ()
+
+
 class Scanner:
     """Inspects the repo and produces a ProjectInventory.
 
@@ -186,10 +187,11 @@ class Scanner:
         apps: list[AppInventory] = []
         for name, path in _enumerate_apps(cwd, workspace):
             profile_name = self._match_profile(path)
+            capabilities = _detect_capabilities(path)
             # In a real workspace, members with no detected framework are shared
             # libraries, not runnable apps — omit them. The single-app case keeps
             # its lone app even when unmatched (a bare directory is still "the app").
-            if workspace != "single" and profile_name == "unknown":
+            if workspace != "single" and profile_name == "unknown" and not capabilities:
                 continue
             apps.append(
                 AppInventory(
@@ -197,6 +199,7 @@ class Scanner:
                     path=path,
                     profile=profile_name,
                     project_path=path.relative_to(cwd),
+                    capabilities=capabilities,
                 )
             )
         return ProjectInventory(workspace=workspace, apps=apps, loader=loader)
@@ -211,20 +214,14 @@ class Scanner:
 def _build_resource_catalog(
     res_by_app: dict[str, dict[str, dict[str, Any]]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
-    owner_counts: dict[str, int] = {}
-    for resources in res_by_app.values():
-        for resource_name in resources:
-            owner_counts[resource_name] = owner_counts.get(resource_name, 0) + 1
-
+    resolved_names = _scoped_resource_names(res_by_app)
     merged: dict[str, dict[str, Any]] = {}
     app_resource_names: dict[str, list[str]] = {}
     sources: dict[str, tuple[str, str]] = {}
     for app_name, resources in res_by_app.items():
         names: list[str] = []
         for resource_name, spec in resources.items():
-            resolved_name = resource_name
-            if owner_counts[resource_name] > 1:
-                resolved_name = f"{resource_name}_{app_name.upper().replace('-', '_')}"
+            resolved_name = resolved_names[app_name, resource_name]
             if previous := sources.get(resolved_name):
                 previous_app, previous_resource = previous
                 raise ValueError(
@@ -237,6 +234,32 @@ def _build_resource_catalog(
             names.append(resolved_name)
         app_resource_names[app_name] = names
     return merged, app_resource_names
+
+
+def _scoped_resource_names(
+    res_by_app: dict[str, dict[str, dict[str, Any]]],
+) -> dict[tuple[str, str], str]:
+    owners: dict[str, list[str]] = {}
+    for app_name, resources in res_by_app.items():
+        for resource_name in resources:
+            owners.setdefault(resource_name, []).append(app_name)
+
+    names: dict[tuple[str, str], str] = {}
+    for resource_name, app_names in owners.items():
+        if len(app_names) == 1:
+            names[app_names[0], resource_name] = resource_name
+            continue
+        suffixes = {
+            app_name: re.sub(r"[^A-Z0-9_]", "_", app_name.upper()) for app_name in app_names
+        }
+        counts = {suffix: list(suffixes.values()).count(suffix) for suffix in suffixes.values()}
+        for app_name in app_names:
+            suffix = suffixes[app_name]
+            if counts[suffix] > 1:
+                digest = hashlib.sha256(app_name.encode()).hexdigest()[:8].upper()
+                suffix = f"{suffix}_{digest}"
+            names[app_name, resource_name] = f"{resource_name}_{suffix}"
+    return names
 
 
 def _prune_unresolvable_templates(

@@ -21,6 +21,48 @@ The scanner-produced `[project]` and `[apps.*]` sections are already correct.
 
 ---
 
+## Electron alongside a renderer
+
+Electron is detected as a secondary capability. An Electron app that uses Vite, Next.js, or
+another renderer keeps that renderer's profile and resources. Plain `splash init` then asks once
+whether to isolate Electron user data per checkout. The default is No. Non-interactive input and
+EOF also select No. Use `--electron-profile=isolated|shared` to make the choice explicit in
+automation.
+
+Choosing Yes gives each detected Electron app a stable profile identifier:
+
+```toml
+[resources.ELECTRON_PROFILE_ID]
+type = "template"
+template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
+writer = "splashdown-env"
+```
+
+If more than one workspace app uses Electron, the resource names are mangled per app, such as
+`ELECTRON_PROFILE_ID_DESKTOP`, and each value also includes the app name. Each `[apps.*]`
+entry lists its matching resource. The identifier always stays in `splashdown.env`, even when a
+renderer resource is routed to an app-specific dotenv file.
+
+Init prints the matching main-process integration for each app:
+
+```js
+import { mkdirSync } from "node:fs"
+
+const profileId = process.env.ELECTRON_PROFILE_ID_DESKTOP
+if (profileId) {
+  const userData = `${app.getPath("userData")}-${profileId}`
+  mkdirSync(userData, { recursive: true })
+  app.setPath("userData", userData)
+}
+```
+
+Set `userData` before calling `requestSingleInstanceLock()`. The derived directory remains next
+to Electron's normal platform-specific profile rather than in the checkout. If init defers to a
+structure-only recipe because the monorepo is ambiguous, it does not prompt or add these resources.
+Add the template resources manually once you have assigned distinct names.
+
+---
+
 ## JS workspace: web + backend
 
 A typical pnpm/yarn/npm monorepo with a Next.js front end and a Node (NestJS / Express /

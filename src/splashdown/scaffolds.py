@@ -42,16 +42,8 @@ template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
 
 _ELECTRON_SCAFFOLD = """\
 # splashdown.toml — Electron preset.
-# Two per-checkout collisions to solve for parallel Electron dev:
-#   1. PORT — the renderer dev server (Vite / Webpack / Parcel / etc.).
-#   2. ELECTRON_USER_DATA_DIR — Electron's userData path. By default every
-#      instance reads/writes ~/Library/Application Support/<productName>; when
-#      two checkouts run side by side they clobber each other's settings,
-#      IndexedDB, and SingleInstanceLock. Wire your main process to honour the
-#      env var (early, before app.whenReady()):
-#         if (process.env.ELECTRON_USER_DATA_DIR) {
-#           app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR)
-#         }
+# PORT isolates the renderer dev server. ELECTRON_PROFILE_ID lets the main
+# process derive an independent sibling of Electron's normal userData path.
 
 [project]
 workspace = "single"
@@ -61,9 +53,10 @@ loader = "__SPLASH_LOADER__"
 type  = "port"
 range = [3001, 3100]
 
-[resources.ELECTRON_USER_DATA_DIR]
+[resources.ELECTRON_PROFILE_ID]
 type     = "template"
-template = "{{ cwd_abs }}/.electron-userdata"
+template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
+writer   = "splashdown-env"
 """
 
 SCAFFOLDS: dict[str, str] = {
