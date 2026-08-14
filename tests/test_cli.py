@@ -10,6 +10,7 @@ import tomllib
 import pytest
 
 import splashdown as sd
+from conftest import _git_init
 
 
 class _TTYInput(io.StringIO):
@@ -510,15 +511,12 @@ def test_cmd_init_does_not_auto_approve_pre_existing_mise_toml(tmp_path, monkeyp
     assert calls == []
 
 
-def test_full_init_trusts_pre_existing_mise_via_provision(tmp_path, monkeypatch):
-    # Full `splash init` = scaffold + first sync; the provision step trusts the
-    # loader config unconditionally, so even a pre-existing mise.toml ends up
-    # trusted and the main checkout loads splashdown.env with no manual step.
+def test_full_init_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "mise.toml").write_text("[env]\n")
     calls = _record_approvals(monkeypatch)
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader", "mise"]) == 0
-    assert ["mise", "trust", str(tmp_path / "mise.toml")] in calls
+    assert calls == []
 
 
 def test_init_no_sync_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
@@ -543,7 +541,7 @@ def test_cmd_init_does_not_auto_approve_pre_existing_envrc(tmp_path, monkeypatch
     assert calls == []
 
 
-def test_sync_auto_approves_mise_toml_on_every_provision(tmp_path, monkeypatch):
+def test_sync_does_not_approve_mise_toml(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "mise.toml").write_text("[env]\n")
     (tmp_path / "splashdown.toml").write_text(
@@ -551,12 +549,10 @@ def test_sync_auto_approves_mise_toml_on_every_provision(tmp_path, monkeypatch):
     )
     calls = _record_approvals(monkeypatch)
     assert sd.main(["--cwd", str(tmp_path)]) == 0
-    assert sd.main(["--cwd", str(tmp_path)]) == 0  # re-approved on every checkout/sync
-    trust = [c for c in calls if c[:2] == ["mise", "trust"]]
-    assert trust == [["mise", "trust", str(tmp_path / "mise.toml")]] * 2
+    assert calls == []
 
 
-def test_sync_approves_silently(tmp_path, monkeypatch, capsys):
+def test_sync_does_not_print_loader_approval(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "mise.toml").write_text("[env]\n")
     (tmp_path / "splashdown.toml").write_text(
@@ -567,20 +563,22 @@ def test_sync_approves_silently(tmp_path, monkeypatch, capsys):
     assert "trusted" not in capsys.readouterr().err  # only `init` announces
 
 
-def test_sync_survives_failing_loader_approval(tmp_path, monkeypatch):
+def test_sync_writes_env_without_loader_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "mise.toml").write_text("[env]\n")
     (tmp_path / "splashdown.toml").write_text(
         '[project]\nloader = "mise"\n\n[resources.PORT]\ntype = "port"\nrange = [18961, 18970]\n'
     )
-    # autouse stub already makes approval fail; sync must still succeed + write env.
+    calls = _record_approvals(monkeypatch)
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     assert (tmp_path / "splashdown.env").exists()
+    assert calls == []
 
 
 def test_init_writes_post_checkout_hook(tmp_path):
+    _git_init(tmp_path)
     sd.cmd_init(tmp_path, preset="minimal")
-    hook = tmp_path / ".githooks" / "post-checkout"
+    hook = tmp_path / ".git" / "hooks" / "post-checkout"
     assert hook.exists()
     assert os.access(hook, os.X_OK)
     assert POST_CHECKOUT_SENTINEL in hook.read_text()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,17 @@ from conftest import (
     _git_init,
     _make_ios,
 )
+
+
+def _native_hook(cwd: Path) -> Path:
+    raw = Path(
+        subprocess.check_output(
+            ["git", "rev-parse", "--git-path", "hooks/post-checkout"],
+            cwd=cwd,
+            text=True,
+        ).strip()
+    )
+    return raw if raw.is_absolute() else cwd / raw
 
 
 def test_detect_hook_manager_clean(tmp_path):
@@ -46,6 +59,12 @@ def test_detect_hook_manager_lefthook_dotted(tmp_path):
 def test_detect_hook_manager_lefthook_via_pkg(tmp_path):
     (tmp_path / "package.json").write_text('{"devDependencies": {"lefthook": "^1.0"}}')
     assert sd._detect_hook_manager(tmp_path) == "lefthook"
+
+
+def test_detect_hook_manager_ignores_nonobject_package_json(tmp_path):
+    (tmp_path / "package.json").write_text('["lefthook"]')
+
+    assert sd._detect_hook_manager(tmp_path) == "none"
 
 
 def test_detect_hook_manager_husky(tmp_path):
@@ -105,23 +124,48 @@ def test_wire_husky_creates_executable_hook(tmp_path):
 def test_ensure_hook_chooses_lefthook(tmp_path):
     (tmp_path / "lefthook.yml").write_text("")
     sd._ensure_post_checkout_hook(tmp_path)
-    # lefthook wiring happened; no .githooks dir created.
     assert "splashdown:" in (tmp_path / "lefthook.yml").read_text()
-    assert not (tmp_path / ".githooks").exists()
 
 
 def test_ensure_hook_chooses_husky(tmp_path):
     (tmp_path / ".husky").mkdir()
     sd._ensure_post_checkout_hook(tmp_path)
     assert (tmp_path / ".husky" / "post-checkout").exists()
-    assert not (tmp_path / ".githooks").exists()
 
 
-def test_ensure_hook_clean_falls_back_to_corehookspath(tmp_path):
+def test_ensure_hook_clean_writes_native_git_hook(tmp_path):
+    _git_init(tmp_path)
     sd._ensure_post_checkout_hook(tmp_path)
-    hook = tmp_path / ".githooks" / "post-checkout"
-    assert hook.exists()
+    hook = _native_hook(tmp_path)
+    assert hook.read_text() == sd.hooks.POST_CHECKOUT_HOOK
     assert os.access(hook, os.X_OK)
+
+
+def test_wire_native_hook_preserves_user_owned_hook(tmp_path, capsys):
+    _git_init(tmp_path)
+    hook = _native_hook(tmp_path)
+    hook.write_text("#!/bin/sh\necho user-hook\n")
+
+    sd._wire_post_checkout_native(tmp_path)
+
+    assert hook.read_text() == "#!/bin/sh\necho user-hook\n"
+    assert "leaving it untouched" in capsys.readouterr().err
+
+
+def test_lefthook_install_does_not_invoke_project_package_managers(tmp_path, monkeypatch):
+    (tmp_path / "package.json").write_text('{"devDependencies":{"lefthook":"1"}}')
+    (tmp_path / "yarn.lock").write_text("")
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(sd.hooks.subprocess, "run", run)
+
+    sd.hooks._run_lefthook_install(tmp_path)
+
+    assert calls == [["lefthook", "install"]]
 
 
 def test_doctor_help_in_cli(capsys):
@@ -223,11 +267,9 @@ def test_rn_hook_clean_detect_problem(tmp_path):
 
 
 def test_rn_hook_detect_tolerates_permission_denied_git(tmp_path, monkeypatch):
-    (tmp_path / ".githooks").mkdir()
-    (tmp_path / ".githooks" / "post-checkout").write_text("#!/bin/sh\nsplash sync\n")
     monkeypatch.setattr(sd.wiring, "_detect_hook_manager", lambda cwd: "none")
     monkeypatch.setattr(
-        sd.wiring.subprocess,
+        sd.hooks.subprocess,
         "check_output",
         lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
     )
@@ -235,7 +277,7 @@ def test_rn_hook_detect_tolerates_permission_denied_git(tmp_path, monkeypatch):
     status, detail = sd._rn_hook_detect(tmp_path)
 
     assert status == "problem"
-    assert "core.hooksPath" in detail
+    assert "not a Git checkout" in detail
 
 
 def test_rn_hook_clean_autofix_then_ok(tmp_path):
@@ -288,7 +330,7 @@ def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
     assert sd.cmd_doctor(tmp_path) == 1  # not wired
     assert sd.cmd_doctor(tmp_path, fix=True) == 0  # now wired
     assert sd.cmd_doctor(tmp_path) == 0  # idempotent re-check
-    assert (tmp_path / ".githooks" / "post-checkout").exists()
+    assert _native_hook(tmp_path).read_text() == sd.hooks.POST_CHECKOUT_HOOK
 
 
 def test_rn_metro_not_applicable_without_config(tmp_path):
@@ -836,23 +878,13 @@ def test_revert_gitignore_noop_when_absent(tmp_path):
     assert not (tmp_path / ".gitignore").exists()
 
 
-def test_remove_hook_githooks(tmp_path):
-    sd._wire_post_checkout_corehookspath(tmp_path)
-    assert (tmp_path / ".githooks" / "post-checkout").exists()
+def test_remove_hook_native(tmp_path):
+    _git_init(tmp_path)
+    sd._wire_post_checkout_native(tmp_path)
+    hook = _native_hook(tmp_path)
+    assert hook.exists()
     sd._remove_post_checkout_hook(tmp_path)
-    assert not (tmp_path / ".githooks" / "post-checkout").exists()
-
-
-def test_wire_core_hook_tolerates_permission_denied_git(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        sd.hooks.subprocess,
-        "run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied")),
-    )
-
-    sd._wire_post_checkout_corehookspath(tmp_path)
-
-    assert (tmp_path / ".githooks" / "post-checkout").exists()
+    assert not hook.exists()
 
 
 def test_remove_hook_husky_unmodified(tmp_path):
@@ -912,13 +944,13 @@ def test_remove_hook_lefthook_preserves_other_hook_named_splashdown(tmp_path):
     assert "post-checkout:" not in text  # only our hook removed
 
 
-def test_remove_hook_githooks_even_when_lefthook_now_present(tmp_path):
-    # init wired the .githooks hook; a lefthook config appeared afterwards.
-    # deinit must still remove splashdown's .githooks hook (it owns it).
-    sd._wire_post_checkout_corehookspath(tmp_path)
+def test_remove_hook_native_even_when_lefthook_now_present(tmp_path):
+    _git_init(tmp_path)
+    sd._wire_post_checkout_native(tmp_path)
+    hook = _native_hook(tmp_path)
     (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands: {}\n")
     sd._remove_post_checkout_hook(tmp_path)
-    assert not (tmp_path / ".githooks" / "post-checkout").exists()
+    assert not hook.exists()
 
 
 def test_revert_gitignore_exact_match_preserves_padded_line(tmp_path):

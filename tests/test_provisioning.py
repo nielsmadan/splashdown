@@ -323,9 +323,39 @@ type = "uuid"
     # --force regenerates RUN_ID, so exactly that var + its writer report.
     assert sd.main(["--cwd", str(tmp_path), "sync", "--force"]) == 0
     err = capsys.readouterr().err
-    assert "RUN_ID=" in err
+    assert "RUN_ID (changed)" in err
     assert f"-> {sd.ENV_FILE_NAME}: 1 vars (changed)" in err
     assert "up to date" not in err
+
+
+def test_provision_text_output_redacts_changed_values(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.API_TOKEN]
+type = "set"
+default = "top-secret"
+""")
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+
+    err = capsys.readouterr().err
+    assert "API_TOKEN (changed)" in err
+    assert "top-secret" not in err
+
+
+def test_provision_json_output_includes_resolved_values_when_explicit(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.API_TOKEN]
+type = "set"
+default = "top-secret"
+""")
+
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json"]) == 0
+
+    assert '"API_TOKEN": "top-secret"' in capsys.readouterr().out
 
 
 def test_cwd_resource_type(registry, tmp_path):

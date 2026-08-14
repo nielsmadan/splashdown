@@ -34,6 +34,12 @@ Checks covered today: the post-checkout hook (`rn-hook`/`hook`), RN
 `metro.config.js`, RN `package.json` scripts, RN `ios/.xcode.env`, Vite config, and
 Spring Boot `application.properties` (report-only).
 
+Electron user-data isolation sits beside this system. Scanner-driven init detects Electron
+as a secondary capability without replacing the primary Profile, optionally adds
+`ELECTRON_PROFILE_ID`, and prints the required main-process integration. There is no Electron
+`WiringCheck`: splashdown cannot safely rewrite arbitrary Electron entrypoints, and
+`app.setPath("userData", ...)` must run before the single-instance lock.
+
 ## How it works (current state)
 
 The unit is `WiringCheck` (`src/splashdown/wiring.py:23`): an `id`, a human
@@ -43,7 +49,7 @@ The unit is `WiringCheck` (`src/splashdown/wiring.py:23`): an `id`, a human
 Checks are owned by **Profiles**, not by `doctor` directly. RN checks accumulate in
 the module-level list `_RN_WIRING_CHECKS` (`src/splashdown/wiring.py:38`) as each
 `rn-*` helper is appended; the shared `_HOOK_WIRING_CHECK`
-(`src/splashdown/wiring.py:453`) is reused by native presets that otherwise have no
+(`src/splashdown/wiring.py:453`) is reused by native Profiles that otherwise have no
 per-checkout wiring. Vite and Spring Boot define their checks inline in their
 Profiles. `cmd_doctor` resolves the active framework (override, else recipe, else
 `detect_framework`) via `_resolve_doctor_framework` (`src/splashdown/wiring.py:41`),
@@ -98,7 +104,7 @@ The individual checks:
 - **`rn-hook` / `hook`** (`src/splashdown/wiring.py:137`, registered at
   `src/splashdown/wiring.py:188` and `:438`) — verifies a `post-checkout` hook fires
   `splash`. Detection branches on the project's hook manager: lefthook config, husky
-  `.husky/post-checkout`, a clean `.githooks` + `core.hooksPath`, or a foreign
+  `.husky/post-checkout`, the native hook in Git's common hooks directory, or any configured
   `core.hooksPath` (reported, not touched). Autofix delegates to
   `_ensure_post_checkout_hook` so it coexists with the project's existing manager.
 - **`rn-metro-config`** (`src/splashdown/wiring.py:216`, registered `:278`) —
@@ -208,13 +214,13 @@ The individual checks:
 
 `init` runs the same checks in fix mode after scaffolding the recipe, wiring the loader,
 and installing the hook: the wiring loop is in `cmd_init`
-(`src/splashdown/commands.py:1305`), and the legacy preset path calls
+(`src/splashdown/commands.py`), and the intent preset path calls
 `cmd_doctor(cwd, fix=True)` directly (`src/splashdown/commands.py:1352`).
 
-The hook-coexistence helpers are shared with `doctor` from `commands.py`:
-`_detect_hook_manager` (`src/splashdown/commands.py:125`), `_lefthook_config_path`
-(`:160`), and `_ensure_post_checkout_hook` (`src/splashdown/commands.py:267`), which
-dispatches to the lefthook/husky/`.githooks` wiring writers.
+The hook-coexistence helpers are shared with `doctor` from `hooks.py`:
+`_detect_hook_manager`, `_lefthook_config_path`, `_native_hook_path`, and
+`_ensure_post_checkout_hook`, which dispatches to the lefthook, husky, or native Git
+common-hook writers while leaving any configured `core.hooksPath` untouched.
 
 ## Key entry points
 
@@ -228,7 +234,8 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
 - `src/splashdown/wiring.py:47`/`:67`/`:136` — `_strip_hash_comments` / `_strip_js_comments` / `_yaml_key_regions`, the lexical helpers every detect uses to read config without a parser.
 - `src/splashdown/wiring.py:194` — `_run_detect`, the guard that turns a raising check into one `✗`.
 - `src/splashdown/cli.py:185` — `doctor` argparse parser (`--fix`, `--framework`); dispatch at `src/splashdown/cli.py:358`.
-- `src/splashdown/commands.py:1305` — `init` post-scaffold wiring loop; `:267` `_ensure_post_checkout_hook` (shared hook coexistence).
+- `src/splashdown/commands.py` — init's post-scaffold wiring loop.
+- `src/splashdown/hooks.py` — `_ensure_post_checkout_hook` and hook-manager coexistence.
 
 ## Configuration
 
@@ -264,8 +271,8 @@ dispatches to the lefthook/husky/`.githooks` wiring writers.
   detectable framework) `doctor` errors and asks for `--framework`
   (`src/splashdown/wiring.py:78`); a framework with no checks exits 0 with a note
   (`src/splashdown/wiring.py:90`).
-- **A foreign `core.hooksPath` is reported, not auto-wired.** If `core.hooksPath` points
-  to a non-`.githooks` directory, the hook check stays a `✗` even under `--fix` and prints
+- **A configured `core.hooksPath` is reported, not auto-wired.** If `core.hooksPath` is set,
+  the hook check stays a `✗` even under `--fix` and prints
   manual instructions (`src/splashdown/wiring.py:151`).
 - **Vite autofix leaves `loadEnv` lines in place.** It only rewrites `env.X` reads to
   `process.env.X`; the `loadEnv` call itself is untouched

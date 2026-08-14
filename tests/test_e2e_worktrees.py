@@ -162,15 +162,15 @@ def test_post_checkout_hook_provisions_new_worktree(tmp_path, monkeypatch):
     _git(main, "config", "user.email", "test@example.com")
     _git(main, "config", "user.name", "Test")
 
-    # Real init installs .githooks/post-checkout + sets core.hooksPath.
+    # Real init installs a post-checkout hook in the common Git directory.
     assert sd.main(["--cwd", str(main), "init"]) == 0
-    # Commit the hook + recipe so a fresh worktree checks them out and the hook
-    # resolves. (splashdown.env / .local.toml are gitignored, so not committed.)
+    # Commit the recipe so the shared native hook sees it in a fresh worktree.
+    # splashdown.env / .local.toml are gitignored, so they are not committed.
     _git(main, "add", "-A")
     _git(main, "commit", "-q", "-m", "init")
 
     wt2 = tmp_path / "wt2"
-    # `git worktree add` performs a checkout, firing the committed hook, which
+    # `git worktree add` performs a checkout, firing the common hook, which
     # runs `splash sync` (splash is on PATH under uv; XDG_STATE_HOME is inherited
     # from os.environ). We never invoke splash in wt2 ourselves.
     _git(main, "worktree", "add", "--detach", str(wt2))
@@ -180,12 +180,7 @@ def test_post_checkout_hook_provisions_new_worktree(tmp_path, monkeypatch):
     assert "PORT=" in env_file.read_text()
 
 
-def test_worktree_provision_trusts_each_worktrees_own_mise_toml(tmp_path, monkeypatch):
-    # Regression for the highest-value case: mise trusts by ABSOLUTE PATH, so a
-    # new worktree's inherited (committed) mise.toml is untrusted at its new path
-    # even though the main checkout was trusted. Each provision must `mise trust`
-    # that worktree's own config. Records approvals in-process (we call `splash`
-    # via sd.main, not the hook subprocess) rather than shelling out to real mise.
+def test_worktree_provision_does_not_trust_inherited_mise_toml(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     calls: list[list[str]] = []
     monkeypatch.setattr(sd.loaders, "_run_ok", lambda argv, cwd: calls.append(list(argv)) or True)
@@ -204,6 +199,4 @@ def test_worktree_provision_trusts_each_worktrees_own_mise_toml(tmp_path, monkey
     assert sd.main(["--cwd", str(main)]) == 0
     assert sd.main(["--cwd", str(wt2)]) == 0
 
-    trusted = [argv[2] for argv in calls if argv[:2] == ["mise", "trust"]]
-    assert str(main / "mise.toml") in trusted
-    assert str(wt2 / "mise.toml") in trusted
+    assert calls == []

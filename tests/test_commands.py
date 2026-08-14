@@ -10,6 +10,7 @@ import pytest
 import splashdown as sd
 from conftest import (
     _IPHONE,
+    _git_init,
     _inv_none,
     _stub_physical,
     _write_physical_recipe,
@@ -938,14 +939,17 @@ def test_declared_target_types_lists_declared(tmp_path):
 
 def test_deinit_round_trips_init(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
     sd.cmd_init(tmp_path, preset="minimal")
     assert (tmp_path / "splashdown.toml").exists()
+    hook = tmp_path / ".git" / "hooks" / "post-checkout"
+    assert hook.exists()
     rc = sd.main(["--cwd", str(tmp_path), "deinit"])
     assert rc == 0
     assert not (tmp_path / "splashdown.toml").exists()
     assert not (tmp_path / "splashdown.local.toml").exists()
     assert not (tmp_path / "mise.toml").exists()
-    assert not (tmp_path / ".githooks" / "post-checkout").exists()
+    assert not hook.exists()
     # init (minimal preset) deterministically creates .gitignore with the two
     # managed lines; deinit must strip them but keep the file.
     gi = tmp_path / ".gitignore"

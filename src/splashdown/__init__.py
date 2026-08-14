@@ -134,12 +134,13 @@ from .errors import CapabilityError
 from .hooks import (
     _detect_hook_manager,
     _ensure_post_checkout_hook,
+    _native_hook_path,
     _remove_mise_file_directive,
     _remove_post_checkout_hook,
     _revert_gitignore,
-    _wire_post_checkout_corehookspath,
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
+    _wire_post_checkout_native,
 )
 from .loaders import LOADERS, Loader
 from .profiles import (

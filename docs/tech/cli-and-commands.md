@@ -109,7 +109,8 @@ stays silent in non-splashdown repos.
 
 ### `commands.py` — the orchestration layer
 
-This is a ~1570-line module that mixes three concerns (hook wiring, status rendering, device lifecycle) — see [Gotchas](#gotchas). Below, the parts grouped by concern.
+This is a broad orchestration module covering onboarding, status rendering, and device
+lifecycle; hook wiring itself lives in `hooks.py`. Below, the parts are grouped by concern.
 
 #### Provision handlers (`sync` / `init`)
 
@@ -139,7 +140,7 @@ stale fields abort the rescan instead of being blessed. This keeps
 generator/profile/loader drift from producing a file that the next sync cannot
 load.
 
-`cmd_init` (`commands.py:1244`) is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → run framework wiring autofixes. An explicit preset short-circuits to `_cmd_init_legacy_preset` (`commands.py:1321`), which writes a `SCAFFOLDS` template verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync` (`cli.py:347`–`353`), and `--rescan` diverts entirely to `cmd_refresh_inventory` (`commands.py:1355`).
+`cmd_init` is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → run framework wiring autofixes. An intent preset short-circuits to `_cmd_init_preset`, which writes one of the three `SCAFFOLDS` templates verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync`, and `--rescan` diverts entirely to `cmd_refresh_inventory`.
 
 #### Git post-checkout hook installation
 
@@ -148,10 +149,10 @@ splash sync` while *coexisting* with whatever hook manager the project already u
 clobbering it. `_detect_hook_manager` classifies the project into one of four cases, in priority
 order:
 
-1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout: → commands: → splashdown: → run: splash` block into the YAML (merging into an existing `post-checkout:` section if present), then best-effort runs `lefthook install` through yarn, npx, or the bare executable.
+1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout: → commands: → splashdown: → run: splash` block into the YAML (merging into an existing `post-checkout:` section if present), then best-effort runs the installed `lefthook` binary. It never executes project-controlled `yarn` or `npx` commands during init.
 2. **`husky`** — a `.husky/` directory exists. `_wire_post_checkout_husky` drops a `.husky/post-checkout` script using the shared `POST_CHECKOUT_HOOK` body and makes it executable.
-3. **`core-hookspath-other`** — `git config core.hooksPath` is set to something *other than* `.githooks`. Splashdown refuses to take over a foreign hooks dir: it prints a warning telling the user to add a `splash sync` hook there themselves and wires nothing.
-4. **`none`** (the last-resort default) — `_wire_post_checkout_corehookspath` owns `.githooks/post-checkout` and sets `core.hooksPath .githooks`. This is the only case where splashdown claims `core.hooksPath`, and only when nothing else is using it.
+3. **`core-hookspath-other`** — `git config core.hooksPath` is set to any nonempty value. Splashdown refuses to take over that hooks directory: it prints a warning telling the user to add a `splash sync` hook there themselves and wires nothing.
+4. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`.
 
 The shared `POST_CHECKOUT_HOOK` script is defensive: `cd` to the repo top, exit 0 if there's no
 `splashdown.toml`, and run `splash sync >&2 || true` (never fail a checkout) if `splash` is on PATH.
@@ -172,17 +173,24 @@ counters, latest-OS lookup cache, and capability-warning keys across checkouts. 
 boundary raises `CapabilityError`, status warns once and renders `unavailable` without incrementing
 missing, stale, or orphan counters. Other `DeviceError` values retain the `error: <message>` status.
 `_print_check_summary` routes actual issues to the command that fixes them (`gc` for defunct,
-`target refresh` for orphan/stale, `run` for missing).
 
 #### The no-loader delivery fallback
 
-When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdown.env` would be written but nothing would source it. `_apply_no_loader_fallback` (`commands.py:1229`) handles this during `init`: `_resolve_no_loader_delivery` (`commands.py:1185`) decides whether to route values into an existing `.env`/`.env.local` (only when at least one app actually reads a dotenv file — checked via each profile's `reads_dotenv`) by injecting an `envfile=<name>` `writer` onto each resource. If no dotenv target fits, it falls back to printing `_NO_LOADER_INSTRUCTIONS` (`commands.py:1160`), telling the user to install a loader or source the file by hand. It also warns when the chosen target isn't gitignored (`_path_git_ignored`, `commands.py:1167`).
+When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdown.env`
+would be written but nothing would source it. `_apply_no_loader_fallback` handles this
+during `init`: `_resolve_no_loader_delivery` decides whether to route values into an
+existing `.env`/`.env.local` when at least one Profile reads dotenv. It adds an
+`envfile=<name>` writer only to resources that do not already declare one, so a capability
+overlay such as Electron can retain process-env delivery independently of the primary
+Profile. If no dotenv target fits, it prints `_NO_LOADER_INSTRUCTIONS`, telling the user
+to install a loader or source the file manually. It also warns when the chosen target is
+not gitignored.
 
 #### `_confirm` and the `cmd_init` refuse path
 
 `_confirm` (`commands.py:1101`) is the shared interactive `[y/N]` gate for destructive ops — used by both `cmd_destroy` (`commands.py:1120`) and `cmd_target_prune` (`commands.py:1024`). `yes=True` (from `--yes`) skips the prompt and returns `True`.
 
-`cmd_init`'s refuse path is the one place a handler exits the process directly rather than returning a code: when `splashdown.toml` already exists and `--overwrite` wasn't passed, it prints and calls `sys.exit(2)` (`commands.py:1253`). `_cmd_init_legacy_preset` does the same for an unknown preset (`commands.py:1330`). This is inconsistent with every other handler, which returns an int (see [Gotchas](#gotchas)).
+`cmd_init`'s refuse path is the one place a handler exits the process directly rather than returning a code: when `splashdown.toml` already exists and `--overwrite` wasn't passed, it prints and calls `sys.exit(2)`. `_cmd_init_preset` does the same for an unknown preset. This is inconsistent with every other handler, which returns an int (see [Gotchas](#gotchas)).
 
 #### Device lifecycle handlers
 
@@ -241,9 +249,14 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Gotchas
 
-- **`commands.py` is a ~1570-line god-module.** It mixes hook-wiring, status rendering, and device lifecycle in one file. There is no clear seam; the section comments (`# ---------- … ----------`) are the only structure. Treat it as several modules wearing a trench coat.
-- **Circular-import dance via lazy imports.** `loaders.py` and `wiring.py` both lazy-import hook helpers back out of `commands.py` rather than importing at module top — `commands.py` imports from them, so a top-level import the other way would be circular. If you move a hook helper, grep for the deferred imports.
-- **`cmd_init` uses `sys.exit`, not a return code.** Unlike every other handler (which returns an int that `main()` returns), `cmd_init` returns `None` and exits the process directly on its refuse path (`sys.exit(2)`, `commands.py:1253`) and on the unknown-preset path (`commands.py:1330`). Callers can't intercept those exits.
+- **`commands.py` remains broad, but hook wiring is no longer inside it.** Status,
+  onboarding, and device lifecycle share the module; git-hook, gitignore, and mise edits
+  live in `hooks.py`. Move those helpers only with the direct imports in `loaders.py`,
+  `wiring.py`, and `commands.py` in view.
+- **`cmd_init` uses `sys.exit`, not a return code.** Unlike every other handler (which
+  returns an int that `main()` returns), `cmd_init` returns `None` and exits directly on
+  its refusal path, while `_cmd_init_preset` exits for an unknown preset. Callers cannot
+  treat either as an ordinary return value.
 - **`KNOWN_CMDS` is a second source of truth.** It is maintained by hand alongside the `add_parser` calls so `_ensure_subcommand` can pre-classify argv. Add a subcommand and you must update both, or bare-`splash` rewriting will misfire on it.
 - **A variant named like a type is unreachable.** Because run/start/stop/destroy drop argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves type-vs-variant by "type names win". A variant literally named `simulator`/`emulator`/`device` can never be selected positionally — the token is always read as the type. Name variants something else.
 - **`--yes` exists only on `destroy`** among the four device verbs. `run`/`start`/`stop` are non-destructive and never prompt, so they have no flag.
@@ -251,7 +264,7 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 ## Why
 
 - **Default-to-`sync` for the hook.** The post-checkout hook runs `splash sync` (and the bare-`splash` rewrite means even a misconfigured hook calling `splash` works). Making `sync` the zero-arg default keeps the hot path — the thing that fires on every `git checkout`/`worktree add` — trivial and fast, with lazy version/completion/submodule imports so it pays for nothing it doesn't use.
-- **Hook-manager coexistence over clobbering.** A project that already uses lefthook or husky has a hooks pipeline a developer depends on; silently overwriting `.git/hooks` or seizing `core.hooksPath` would break it. So splashdown detects the existing manager and *adds* its entry to that manager's config, only claiming `.githooks/` + `core.hooksPath` as a last resort when nothing else owns hooks — and refusing to touch a foreign `core.hooksPath` at all.
+- **Hook-manager coexistence over clobbering.** A project that already uses lefthook or husky has a hooks pipeline a developer depends on; silently overwriting its hook or seizing `core.hooksPath` would break it. Splashdown adds its entry to the detected manager, uses Git's common native hook only when no manager or custom hooks path exists, and refuses to touch any configured `core.hooksPath`.
 
 ## Related
 

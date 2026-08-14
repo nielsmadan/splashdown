@@ -8,18 +8,17 @@ only to dodge an import cycle)."""
 
 from __future__ import annotations
 
-import contextlib
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 from . import ENV_FILE_NAME, LOCAL_NAME
+from .package_json import package_dependencies
 
 POST_CHECKOUT_HOOK = """\
 #!/bin/sh
-# Splashdown per-checkout provisioning. Fires on git checkout / clone / worktree add.
+# Splashdown per-checkout provisioning. Fires on checkout and worktree add.
 set -e
 TOP=$(git rev-parse --show-toplevel) || exit 0
 cd "$TOP"
@@ -37,7 +36,7 @@ def _ensure_gitignore(cwd: Path) -> None:
     path = cwd / ".gitignore"
     existing = path.read_text() if path.exists() else ""
     present = set(existing.splitlines())
-    additions = [e for e in (ENV_FILE_NAME, LOCAL_NAME) if e not in present]
+    additions = [entry for entry in (ENV_FILE_NAME, LOCAL_NAME) if entry not in present]
     if not additions:
         return
     prefix = existing if existing.endswith("\n") or not existing else existing + "\n"
@@ -100,20 +99,21 @@ def _remove_mise_file_directive(cwd: Path) -> None:
 
 
 def _revert_gitignore(cwd: Path) -> None:
-    """Inverse of _ensure_gitignore: drop the two splashdown lines if present.
+    """Inverse of _ensure_gitignore: drop splashdown's exact lines if present.
     Matches the exact lines _ensure_gitignore writes (no strip), so a user's
     differently-formatted line (padding, comment) is left alone. Never delete
     .gitignore — we only ever appended to it."""
     path = cwd / ".gitignore"
     if not path.exists():
         return
-    managed = {ENV_FILE_NAME, LOCAL_NAME}
     lines = path.read_text().splitlines()
+    managed = {ENV_FILE_NAME, LOCAL_NAME}
+    reported = [entry for entry in (ENV_FILE_NAME, LOCAL_NAME) if entry in lines]
     kept = [ln for ln in lines if ln not in managed]
     if len(kept) == len(lines):
         return
     path.write_text("\n".join(kept) + ("\n" if kept else ""))
-    print(f"updated .gitignore (-{', '.join(sorted(managed))})", file=sys.stderr)
+    print(f"updated .gitignore (-{', '.join(reported)})", file=sys.stderr)
 
 
 def _detect_hook_manager(cwd: Path) -> str:
@@ -123,15 +123,8 @@ def _detect_hook_manager(cwd: Path) -> str:
     """
     if any((cwd / n).exists() for n in ("lefthook.yml", "lefthook.yaml", ".lefthook.yml")):
         return "lefthook"
-    pkg = cwd / "package.json"
-    if pkg.exists():
-        try:
-            data = json.loads(pkg.read_text())
-        except (json.JSONDecodeError, OSError):
-            data = {}
-        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
-        if "lefthook" in deps:
-            return "lefthook"
+    if "lefthook" in package_dependencies(cwd):
+        return "lefthook"
     if (cwd / ".husky").is_dir():
         return "husky"
     try:
@@ -144,7 +137,7 @@ def _detect_hook_manager(cwd: Path) -> str:
             .decode()
             .strip()
         )
-        if out and out != ".githooks":
+        if out:
             return "core-hookspath-other"
     except (subprocess.CalledProcessError, OSError):
         pass
@@ -203,26 +196,19 @@ def _wire_post_checkout_lefthook(cwd: Path) -> None:
 
 def _run_lefthook_install(cwd: Path) -> None:
     """Best-effort: regenerate the lefthook-managed git hooks. Silent if unavailable."""
-    candidates: list[list[str]] = []
-    if (cwd / "yarn.lock").exists():
-        candidates.append(["yarn", "lefthook", "install"])
-    if (cwd / "package.json").exists():
-        candidates.append(["npx", "--no-install", "lefthook", "install"])
-    candidates.append(["lefthook", "install"])
-    for cmd in candidates:
-        try:
-            r = subprocess.run(
-                cmd,
-                cwd=cwd,
-                capture_output=True,
-                timeout=30,
-                text=True,
-                check=False,
-            )
-            if r.returncode == 0:
-                return
-        except (OSError, subprocess.TimeoutExpired):
-            continue
+    try:
+        r = subprocess.run(
+            ["lefthook", "install"],
+            cwd=cwd,
+            capture_output=True,
+            timeout=30,
+            text=True,
+            check=False,
+        )
+        if r.returncode == 0:
+            return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     print(
         "note: could not run `lefthook install` automatically — run it yourself "
         "to register the post-checkout hook",
@@ -237,7 +223,7 @@ def _wire_post_checkout_husky(cwd: Path) -> None:
     hook = husky_dir / "post-checkout"
     if hook.exists():
         existing = hook.read_text()
-        # `.husky/post-checkout` is the user's file (unlike our own `.githooks/`).
+        # `.husky/post-checkout` is the user's file.
         # Never clobber a real hook — only (re)write one that's already ours.
         if existing != POST_CHECKOUT_HOOK and "splash sync" not in existing:
             print(
@@ -251,22 +237,41 @@ def _wire_post_checkout_husky(cwd: Path) -> None:
     print("wrote .husky/post-checkout (husky)", file=sys.stderr)
 
 
-def _wire_post_checkout_corehookspath(cwd: Path) -> None:
-    """Default path: own .githooks/ and set core.hooksPath."""
-    hooks_dir = cwd / ".githooks"
-    hooks_dir.mkdir(exist_ok=True)
-    hook = hooks_dir / "post-checkout"
+def _native_hook_path(cwd: Path) -> Path | None:
+    try:
+        raw = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=cwd,
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    common_dir = Path(raw)
+    if not common_dir.is_absolute():
+        common_dir = cwd / common_dir
+    return common_dir.resolve() / "hooks" / "post-checkout"
+
+
+def _wire_post_checkout_native(cwd: Path) -> None:
+    hook = _native_hook_path(cwd)
+    if hook is None:
+        print("note: not a Git checkout; post-checkout hook not installed", file=sys.stderr)
+        return
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    if hook.exists() and hook.read_text() != POST_CHECKOUT_HOOK:
+        print(
+            f"existing {hook} is not splashdown's — leaving it untouched; "
+            "add `splash sync >&2 || true` to enable provisioning",
+            file=sys.stderr,
+        )
+        return
     hook.write_text(POST_CHECKOUT_HOOK)
     hook.chmod(0o755)
-    with contextlib.suppress(OSError):
-        subprocess.run(
-            ["git", "config", "core.hooksPath", ".githooks"],
-            cwd=cwd,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    print("wrote .githooks/post-checkout, set core.hooksPath", file=sys.stderr)
+    print(f"wrote {hook}", file=sys.stderr)
 
 
 def _ensure_post_checkout_hook(cwd: Path) -> None:
@@ -295,7 +300,7 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
             file=sys.stderr,
         )
     else:
-        _wire_post_checkout_corehookspath(cwd)
+        _wire_post_checkout_native(cwd)
 
 
 def _remove_post_checkout_hook(cwd: Path) -> None:
@@ -303,13 +308,12 @@ def _remove_post_checkout_hook(cwd: Path) -> None:
     added, keeping unrelated hooks and leaving a user-modified hook in place.
 
     Unlike `_ensure_*`, this does NOT dispatch on the currently-detected manager:
-    the manager can change between init and deinit (e.g. a project gains lefthook
-    after init wired `.githooks`), which would otherwise orphan the old hook. Each
-    removal is content/marker-guarded, so trying all three only ever touches
-    splashdown-owned content."""
+    the manager can change between init and deinit, which would otherwise orphan
+    the old hook. Each removal is content/marker-guarded, so trying every target
+    only ever touches splashdown-owned content."""
     _unwire_post_checkout_lefthook(cwd)
     _unwire_post_checkout_husky(cwd)
-    _unwire_post_checkout_corehookspath(cwd)
+    _unwire_post_checkout_native(cwd)
 
 
 def _unwire_post_checkout_husky(cwd: Path) -> None:
@@ -323,41 +327,15 @@ def _unwire_post_checkout_husky(cwd: Path) -> None:
         print("note: .husky/post-checkout was modified — left in place", file=sys.stderr)
 
 
-def _unwire_post_checkout_corehookspath(cwd: Path) -> None:
-    hooks_dir = cwd / ".githooks"
-    hook = hooks_dir / "post-checkout"
-    if hook.exists():
-        if hook.read_text() != POST_CHECKOUT_HOOK:
-            print("note: .githooks/post-checkout was modified — left in place", file=sys.stderr)
-            return
-        hook.unlink()
-        print("removed .githooks/post-checkout", file=sys.stderr)
-    # If .githooks is now empty and core.hooksPath still points at it, unset the
-    # config and drop the directory.
-    if hooks_dir.is_dir() and not any(hooks_dir.iterdir()):
-        try:
-            current = (
-                subprocess.check_output(
-                    ["git", "config", "--get", "core.hooksPath"],
-                    cwd=cwd,
-                    stderr=subprocess.DEVNULL,
-                )
-                .decode()
-                .strip()
-            )
-        except (subprocess.CalledProcessError, OSError):
-            current = ""
-        if current == ".githooks":
-            with contextlib.suppress(OSError):
-                subprocess.run(
-                    ["git", "config", "--unset", "core.hooksPath"],
-                    cwd=cwd,
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-        with contextlib.suppress(OSError):
-            hooks_dir.rmdir()
+def _unwire_post_checkout_native(cwd: Path) -> None:
+    hook = _native_hook_path(cwd)
+    if hook is None or not hook.exists():
+        return
+    if hook.read_text() != POST_CHECKOUT_HOOK:
+        print(f"note: {hook} was modified — left in place", file=sys.stderr)
+        return
+    hook.unlink()
+    print(f"removed {hook}", file=sys.stderr)
 
 
 def _unwire_post_checkout_lefthook(cwd: Path) -> None:

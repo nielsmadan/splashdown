@@ -12,8 +12,8 @@ from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
 # splashdown.env when the user enters the project directory. Each loader uses
 # sentinel-wrapped blocks so wire is idempotent and visually obvious. mise and
-# direnv also gate loading behind a trust/allow step, so `approve` runs it for
-# the config splash just wrote.
+# direnv also gate loading behind a trust/allow step, so init approves only a
+# config file it created itself.
 
 
 def _run_ok(argv: list[str], cwd: Path) -> bool:
@@ -44,9 +44,7 @@ class Loader:
     def approve(self, cwd: Path, *, announce: bool = False) -> bool:
         """Run the loader's trust/allow step so it will actually load
         splashdown.env. No-op by default (only mise/direnv gate on trust).
-        Never raises. `announce` prints a one-line result on the init path;
-        the routine provision/hook path leaves it False so re-approvals of an
-        already-trusted config stay silent."""
+        Never raises. `announce` prints a one-line result on the init path."""
         return False
 
     def unwire(self, cwd: Path) -> None:

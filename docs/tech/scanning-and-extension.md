@@ -23,7 +23,7 @@ and `loaders.py` (shell-env wiring).
 
 ## Purpose
 
-`splash init` and `splash refresh-inventory` need to answer, purely by inspecting the
+`splash init` and `splash init --rescan` need to answer, purely by inspecting the
 filesystem: is this a monorepo or a single project? What package/build manager runs it?
 Which apps live inside it, and what framework is each one? Which shell-env loader (if
 any) has the user already adopted? The answers drive which default resources get written
@@ -201,13 +201,13 @@ A couple of profiles carry real integration logic worth noting:
   `None` (`profiles.py:486`) — patching Spring config is too risky to auto-rewrite, so
   it's report-only with manual instructions.
 
-The `run()` overrides delegate to module-level helpers (`_flutter_run`, `_rn_run`,
-`_expo_run`, `_ios_native_run`, `_android_native_run` at `profiles.py:55-235`). The two
+The `run()` overrides delegate to helpers in `runners.py` (`_flutter_run`, `_rn_run`,
+`_expo_run`, `_ios_native_run`, `_android_native_run`). The two
 native runners are the heavy ones — `_ios_native_run` drives `xcodebuild` and reads the
 built `.app`'s `Info.plist` for the bundle id, branching to `devicectl` for physical
 hardware vs `simctl` for simulators; `_android_native_run` drives Gradle install tasks and
 resolves `applicationId` from Gradle properties when not pinned. Recipe-supplied
-positionals passed to these tools go through `_no_flag()` (`profiles.py:22`) to reject
+positionals passed to these tools go through `_no_flag()` in `runners.py` to reject
 leading-`-` values that argv would otherwise swallow as tool flags.
 
 **SCAFFOLDS** in `scaffolds.py` contains exactly `minimal`, `server`, and `electron`.
@@ -233,7 +233,7 @@ depends on nothing at all.
 - **`scaffolds.py`** — the three intent-preset `splashdown.toml` templates and the
   `SCAFFOLDS` dict. Pure strings, no imports, no logic.
 
-The **detection helpers stayed in `profiles.py`** (`_detect_flutter`, `_read_pkg_deps`,
+The **detection helpers stayed in `profiles.py`** (`_detect_flutter`,
 `_detect_expo`, `_detect_rn`, `_detect_ios_native`, `_detect_android_native`,
 `_pbxproj_targets_ios`): they implement `Profile.detect`, so they belong with the
 profile they serve.
@@ -267,13 +267,13 @@ leaving Claude to consume the shared file.
 
 ### loaders.py — idempotent shell-env wiring
 
-A `Loader` (`loaders.py:14`) detects an already-adopted shell-env tool and idempotently
+A `Loader` (`loaders.py`) detects or selects a shell-env tool and idempotently
 wires it to source `splashdown.env` on `cd`. Two methods: `detect(cwd)` and `wire(cwd)`.
 Every `wire` is **idempotent** — re-running it produces no diff — and uses
 sentinel-wrapped blocks so the managed region is visually obvious and machine-findable.
 
-- **MiseLoader** (`loaders.py:27`) detects `mise.toml`/`.mise.toml`; `wire()` delegates to
-  `_ensure_mise_file_directive()` in `commands.py` (lazy-imported, `loaders.py:36`), which
+- **MiseLoader** detects `mise.toml`/`.mise.toml`; `wire()` delegates to
+  `_ensure_mise_file_directive()` in `hooks.py`, which
   adds a `_.file` directive into mise's `[env]` so mise itself loads `splashdown.env`.
 - **DirenvLoader** (`loaders.py:55`) detects `.envrc`/`.envrc.local`; `wire()` appends (or
   regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py:41-52`) a
@@ -293,9 +293,15 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
   only ever *selected* as the fallback, never matched. `wire()` is a no-op — `cmd_init`
   decides whether to route values into a dotenv file or just print instructions.
 
-`LOADERS` (`loaders.py:123`) registers them in precedence order:
+`LOADERS` registers them in precedence order:
 `mise → direnv → devbox → none`. As with profiles, **dict insertion order is the order
-`_detect_loader` probes** — the first `detect()` hit wins.
+`_detect_loader` probes**. A configured loader wins; when none is configured, the first
+installed binary in that order is selected so a fresh repo can be wired. `none` is used
+only when no loader is installed or the user explicitly requests it.
+
+Init calls `approve()` only when `wire()` created a mise or direnv config from nothing.
+It does not trust a pre-existing or inherited config, and sync/post-checkout provisioning
+never runs an approval command.
 
 ## Key entry points
 
@@ -309,11 +315,11 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 - `agentdocs.py` — `render_agent_guidance()`, `sync_agent_guidance()`, and
   `remove_agent_guidance()`; invoked by init/rescan/deinit orchestration in `commands.py`.
 - `profiles.py:364-580` — `PROFILES` registration block (precedence order).
-- `profiles.py:758` — `SCAFFOLDS` registry; substituted in `commands.py:1333`.
+- `scaffolds.py` — `SCAFFOLDS` registry; substituted by `_cmd_init_preset` in `commands.py`.
 - `loaders.py:14` — `Loader` base; subclasses `loaders.py:27/55/85/109`.
 - `loaders.py:123` — `LOADERS` registry (precedence order).
-- Consumers: `commands.py:1262` (`scan()` in init), `commands.py:1284-1285` and
-  `commands.py:1373-1374` (mangling helpers), `commands.py:1326` (`SCAFFOLDS.get`).
+- Consumers: scanner-driven init and rescan in `commands.py`, `_build_resource_catalog`
+  in `scanner.py`, and `_cmd_init_preset` for `SCAFFOLDS`.
 - Registration wiring: `__init__.py:67` imports `profiles` to populate `PROFILES`;
   the comment at `__init__.py:148` documents the dependency-ordered import that must run
   before anything reads `PROFILES`.
@@ -342,14 +348,10 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 - **JS workspace detection is presence-based**, not lockfile-authoritative: a
   `package.json` with a `workspaces` key and *no* lockfile defaults to `npm`
   (`scanner.py:53`).
-- **Loader detection is config-file-only — it never checks `PATH`.** Every
-  `Loader.detect()` probes for a config *file* (`mise.toml`/`.mise.toml`, `.envrc`,
-  `devbox.json`), not an installed binary — a repo with a `mise.toml` but no `mise`
-  on the machine still detects as `mise`. This is also why the no-config default is
-  `none` (`scanner.py:145`) rather than scaffolding mise: the old default returned
-  `"mise"` and scaffolded `mise.toml` unconditionally, so ports were allocated and
-  `splashdown.env` written but — with no mise installed — nothing ever sourced it
-  (silent success, wrong result).
+- **Configured loader beats installed loader.** Every `Loader.detect()` probes for a
+  config file (`mise.toml`/`.mise.toml`, `.envrc`, `devbox.json`) before scanner detection
+  falls back to installed binaries on `PATH`. A repository's chosen loader therefore wins
+  even when another loader appears earlier in PATH fallback order.
 - **mise wiring must not scaffold a second config file.** `MiseLoader.detect` matches
   either `mise.toml` or `.mise.toml` (`loaders.py:27`), so `_ensure_mise_file_directive`
   (`commands.py:101`) prefers an existing `mise.toml`, falls back to an existing

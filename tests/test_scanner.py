@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import splashdown as sd
+from conftest import _git_init
 
 
 def test_detect_framework_flutter(tmp_path):
@@ -545,13 +546,11 @@ def test_cli_init_no_sync_skips_provision(tmp_path, monkeypatch):
 
 
 def test_cmd_init_writes_post_checkout_hook(tmp_path):
-    # The hook wiring is independent of the Scanner-driven flow and must persist.
+    _git_init(tmp_path)
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path)
-    # Either .githooks/post-checkout exists or one of the hook-manager configs
-    # was wired — same contract as today.
-    hook_exists = (tmp_path / ".githooks" / "post-checkout").exists()
-    assert hook_exists
+    hook = tmp_path / ".git" / "hooks" / "post-checkout"
+    assert "splash sync" in hook.read_text()
 
 
 def test_refresh_inventory_updates_project_and_apps(tmp_path):

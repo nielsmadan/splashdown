@@ -20,7 +20,7 @@ Allocating a port doesn't always reach the running process. Most frameworks hard
 
 **A ✓ means the file was read, not that nothing matched.** Checks strip comments before looking, so a commented-out `// server: { port: process.env.WEB_DEV_PORT }` left over from an earlier attempt does not count as wiring. Where a check cannot make sense of a config at all, it reports a ✗ saying so rather than passing it. A check that raises costs one ✗ and the rest of the run continues.
 
-**Hook-manager coexistence.** `splash` detects lefthook (`lefthook.{yml,yaml}` or in `package.json` devDeps), husky (`.husky/`), or an existing `core.hooksPath`, and wires the post-checkout entry in whichever it finds. Only as a last resort does it own `.githooks/` + `core.hooksPath`.
+**Hook-manager coexistence.** `splash` detects lefthook (`lefthook.{yml,yaml}` or in `package.json` devDeps), husky (`.husky/`), or an existing `core.hooksPath`. It adds an entry to lefthook or husky, and invokes only an installed `lefthook` binary to register lefthook changes. With no manager it installs an untracked hook in Git's common hooks directory, which is shared by the repository's worktrees. It never changes `core.hooksPath`. If another hooks path is configured, it leaves it alone and tells you where to add `splash sync`.
 
 ```sh
 splash doctor                    # read-only report (✓/✗ per check)

@@ -21,6 +21,7 @@ git-hook hot path never imports `tomlkit` at all (see [Why](#why)).
   - [merged_targets & resolve_variant](#merged_targets--resolve_variant)
   - [The template engine](#the-template-engine)
   - [Template preflight and dependency ordering](#template-preflight-and-dependency-ordering)
+  - [Named intent presets and scanned overlays](#named-intent-presets-and-scanned-overlays)
   - [_env_quote](#_env_quote)
   - [tomlio: comment-preserving writes](#tomlio-comment-preserving-writes)
 - [Key entry points](#key-entry-points)
@@ -175,6 +176,41 @@ classic **temporary-mark / permanent-mark** scheme:
 as a `ValueError` naming the node), `seen` is the permanent set. The output lists
 referents before referrers, which is exactly the order `provision()` needs.
 
+### Named intent presets and scanned overlays
+
+`scaffolds.py` keeps three complete recipe strings behind `SCAFFOLDS`:
+
+- `minimal` requests a framework-neutral UUID resource;
+- `server` requests a generic port and checkout-specific database URL;
+- `electron` requests a renderer port and a stable checkout-specific Electron profile id.
+
+These are intentionally not one scaffold per Profile. Framework-derived recipes come from
+the scanner and `render_scanned_recipe`; named presets exist only when the requested intent
+cannot be inferred safely from repository contents. React Native, Flutter, native iOS,
+native Android, and Next.js therefore use plain `splash init`; their former names and the
+`nextjs` alias are not `SCAFFOLDS` keys.
+
+The parser's positional choices are built directly from the registry (`cli.py:151-158`).
+The preset path replaces `__SPLASH_LOADER__` with the detected or overridden loader, runs
+`Recipe.parse` against the complete string, and only then writes it (`commands.py:1257-1271`).
+This path bypasses scanning and prompts, so `splash init electron` is the deterministic
+Electron opt-in.
+
+Scanner-driven Electron support is different: `AppInventory.capabilities` records
+Electron alongside the primary Profile, and interactive init may add an
+`ELECTRON_PROFILE_ID` template into that app's normal resource set. The template hashes
+`cwd_abs`, appends an app slug when needed, and explicitly targets `splashdown-env`. The existing merge
+mangles collisions across multiple Electron apps, after which `render_scanned_recipe`
+serializes only apps, primary profiles, and accepted resources. Capabilities are transient
+inventory facts, not recipe schema. Both the explicit preset and an accepted scanner
+overlay print guarded code that derives a sibling of Electron's platform-standard user-data
+directory before the single-instance lock. They do not create or gitignore a checkout-local
+profile directory.
+
+`render_scanned_recipe` also accepts nested project metadata from scanner init. Native iOS
+scheme selection uses that path to persist `[project.ios] scheme` after explicit selection,
+single-scheme discovery, or a TTY prompt.
+
 ### _env_quote
 
 `_env_quote` (`recipe.py:370`) is the dotenv serializer used by the
@@ -189,12 +225,12 @@ neutralize them and are read literally by mise/direnv too.
 
 `tomlio.py` is the *only* module that imports `tomlkit`, and its callers
 (`commands.py`, `devices.py`) lazy-import it inside functions
-(e.g. `devices.py:734`, `commands.py:1376`) so the read hot path never loads it.
+(e.g. `devices.py:734`, `commands.py:1417`) so the read hot path never loads it.
 Every function is a pure `str -> str` (or `str | None`) transform; callers own
 file I/O.
 
 - `render_scanned_recipe` builds a brand-new recipe document (header comment,
-  `[project]`, `[apps.*]`, `[resources.*]`) from scratch. Scanner output and
+  `[project]`, `[apps.*]`, `[resources.*]`, and `[targets.*]`) from scratch. Scanner output and
   built-in preset output are passed through `Recipe.parse` before file I/O.
 - `refresh_recipe` (`tomlio.py:92`) is the re-scan path: it `tomlkit.parse`s the
   existing text, mutates `[project]` in place and replaces `[apps.*]` wholesale
@@ -226,6 +262,10 @@ file I/O.
 - `recipe.py:35` — `_make_scope`.
 - `recipe.py:172` — `template_refs`; `recipe.py:333` — `topo_sort`.
 - `recipe.py:370` — `_env_quote`.
+- `scaffolds.py` — the three named intent templates and `SCAFFOLDS`.
+- `commands.py:1257` — `_cmd_init_preset`, including loader substitution and pre-write
+  validation.
+- `commands.py:1109` — scanner-driven Electron resource overlay.
 - `tomlio.py:92` — `refresh_recipe`; `tomlio.py:152`/`tomlio.py:171` —
   `target_add_text`/`target_remove_text`.
 
@@ -251,6 +291,9 @@ file I/O.
 - **String literals do not create dependency edges.** A resource-looking string
   such as `{{ "PORT" }}` is just a string. Self-references are real edges and
   fail schema validation as a cycle.
+- **A Profile is not a preset.** `SCAFFOLDS` is not expected to mirror `PROFILES`.
+  Framework setup belongs in scanner output; add a named preset only when it represents
+  explicit intent scanning cannot infer.
 - **`slug()` emits lowercase and hyphens, never underscores.** `_slug`
   (`recipe.py:34`) collapses every non-alphanumeric run to `-`, strips the edges
   and lowercases (empty input → `"x"`). A template that mixes a literal

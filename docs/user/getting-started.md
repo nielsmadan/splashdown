@@ -53,8 +53,8 @@ scanning project…
   shell loader → mise
 wrote splashdown.toml
 updated mise.toml (+_.file = "splashdown.env")
-wrote .githooks/post-checkout, set core.hooksPath
-  PORT=9081
+wrote .git/hooks/post-checkout
+  PORT (changed)
   -> splashdown.env: 1 vars (changed)
 ```
 
@@ -104,6 +104,10 @@ splash status         # PORT is 9082 here, not 9081
 ```
 
 Both checkouts can run their dev servers at once without a port clash. The machine-wide registry guarantees it, even across unrelated repos.
+
+mise and direnv treat the inherited loader file at the new path as untrusted. Splashdown does
+not approve project-controlled files from a hook, so review the file and run `mise trust` or
+`direnv allow` in the new worktree if your loader asks.
 
 ## Editing the recipe
 

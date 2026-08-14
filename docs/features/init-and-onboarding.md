@@ -29,7 +29,7 @@ command — a bad first run means abandonment.
 
 Three flag variants reshape that flow:
 
-- `splash init <preset>` — write a named scaffold from `SCAFFOLDS` (legacy/explicit path),
+- `splash init <preset>` — write a named intent scaffold from `SCAFFOLDS`,
   bypassing the scanner entirely.
 - `splash init --no-sync` — scaffold and wire only; skip the first sync (no port allocation,
   no `splashdown.env`).
@@ -92,20 +92,21 @@ and `none` wires nothing. `wire()` returns whether it created the config from no
 init calls the loader's `approve()` (`mise trust` / `direnv allow`) so the freshly-wired
 config actually loads — see the trust-approval note below.
 
-**Git hook.** `_ensure_post_checkout_hook` (`commands.py:267`) installs a `post-checkout`
-hook that fires `splash sync` on checkout/clone/worktree-add. `_detect_hook_manager`
-(`commands.py:125`) classifies the project's existing setup as `lefthook` / `husky` /
+**Git hook.** `_ensure_post_checkout_hook` (`hooks.py`) installs a `post-checkout`
+hook that fires `splash sync` on later checkout and worktree transitions. `_detect_hook_manager`
+(`hooks.py`) classifies the project's existing setup as `lefthook` / `husky` /
 `core-hookspath-other` / `none`, and splashdown **coexists** rather than clobbers:
 
 - **lefthook** → idempotently add a `post-checkout` → `run: splash` entry to the lefthook
-  config and run `lefthook install` best-effort (`_wire_post_checkout_lefthook`,
-  `commands.py:168`).
-- **husky** → drop a `.husky/post-checkout` hook (`commands.py:239`).
-- **core.hooksPath set to something other than `.githooks`** → do **not** touch it; print a
-  warning telling the user to add a `splash sync` hook there themselves (`commands.py:274`).
-- **none** → only as a last resort own `.githooks/` and set `core.hooksPath = .githooks`
-  (`_wire_post_checkout_corehookspath`, `commands.py:249`). The hook body is `POST_CHECKOUT_HOOK`
-  (`commands.py:73`): it `cd`s to the repo top, no-ops if `splashdown.toml` is absent, and runs
+  config and run the installed `lefthook` binary's `lefthook install` command best-effort.
+  Project-controlled `yarn` or `npx` commands are never executed during init.
+- **husky** → drop a `.husky/post-checkout` hook.
+- **any configured `core.hooksPath`** → do **not** touch it; print a warning telling the
+  user to add a `splash sync` hook there themselves.
+- **none** → write the native `post-checkout` hook under Git's common hooks directory.
+  Splashdown never changes `core.hooksPath`, and the common hook is shared by all worktrees.
+  The hook body is `POST_CHECKOUT_HOOK` (`hooks.py`): it `cd`s to the repo top,
+  no-ops if `splashdown.toml` is absent, and runs
   `splash sync` if `splash` is on PATH (otherwise prints a "not on PATH" note).
 
 **Wiring checks.** For each known-profile app, `cmd_init` runs the profile's `wiring_checks`,
@@ -125,10 +126,11 @@ removes complete blocks even when the recipe cannot be parsed.
 
 **First sync.** After `cmd_init` returns, the CLI runs the first sync via
 `_cmd_provision_inner` unless `--no-sync` was passed (`cli.py:350`–`353`). That allocates ports
-through the registry, expands templates, writes outputs, and prints the resolved values — the
+through the registry, expands templates, and writes outputs. Text output names changed keys
+without revealing their values; explicit JSON output includes the resolved values — the
 "checkout has live values in one command" payoff.
 
-**Legacy preset path.** `splash init <preset>` routes to `_cmd_init_legacy_preset`
+**Intent preset path.** `splash init <preset>` routes to `_cmd_init_preset`
 (`commands.py:1321`): it looks the name up in `SCAFFOLDS` (`scaffolds.py:231`; unknown name →
 `sys.exit(2)`), substitutes `__SPLASH_LOADER__`, validates the complete scaffold in memory, then
 writes it. Only after validation does it write the local skeleton, ensure gitignore, wire the
@@ -146,12 +148,12 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 
 - `cmd_init` — orchestrator; refusal guard + `sys.exit(2)`: `src/splashdown/commands.py:1244`
   (guard at `:1251`–`1253`).
-- `_cmd_init_legacy_preset` — `init <preset>` path: `src/splashdown/commands.py:1321`.
+- `_cmd_init_preset` — `init <preset>` path: `src/splashdown/commands.py`.
 - `cmd_refresh_inventory` — `--rescan`: `src/splashdown/commands.py:1355`.
-- `_ensure_post_checkout_hook` / `_detect_hook_manager`:
-  `src/splashdown/commands.py:267` / `:125`.
-- Hook wiring per manager — lefthook/husky/core.hooksPath:
-  `src/splashdown/commands.py:168` / `:239` / `:249`. Hook body `POST_CHECKOUT_HOOK`: `:73`.
+- `_ensure_post_checkout_hook` / `_detect_hook_manager` / `_native_hook_path`:
+  `src/splashdown/hooks.py`.
+- Hook wiring per manager — lefthook/husky/native common hook — and the shared
+  `POST_CHECKOUT_HOOK` body: `src/splashdown/hooks.py`.
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery`:
   `src/splashdown/commands.py:1229` / `:1185`.
 - `_ensure_gitignore`: `src/splashdown/commands.py:89`. `_ensure_mise_file_directive`: `:101`.
@@ -172,8 +174,8 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 
 - **`splash init`** (no args) — scan-driven scaffold + wire + sync.
 - **`splash init <preset>`** — named scaffold; presets are the keys of `SCAFFOLDS`
-  (`scaffolds.py:231`): `minimal`, `react-native`/`rn`, `flutter`, `ios-native`,
-  `android-native`, `electron`, `server`/`nextjs`.
+  (`scaffolds.py`): `minimal`, `server`, and `electron`. Framework integrations come
+  from scanner-driven init rather than one preset per Profile.
 - **`--loader mise|direnv|devbox|none`** — override loader auto-detection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
@@ -186,7 +188,7 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), and the hook target
-  (`lefthook.yml` / `.husky/post-checkout` / `.githooks/post-checkout` + `core.hooksPath`),
+  (`lefthook.yml` / `.husky/post-checkout` / Git's common `hooks/post-checkout`),
   and managed blocks in existing root `AGENTS.md` / independent `CLAUDE.md` files.
   `--no-sync` additionally omits `splashdown.env`.
 
@@ -219,21 +221,20 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
   `[apps.*]`. Combining `--rescan` with `--overwrite`/`--no-sync` is meaningless — rescan
   returns first.
 
-- **`core.hooksPath` already pointing elsewhere is intentionally not touched.** If a project
-  sets `core.hooksPath` to something other than `.githooks`, init only prints a warning and
-  installs nothing (`commands.py:274`) — the user must wire `splash sync` into that hook dir
+- **Any configured `core.hooksPath` is intentionally not touched.** If a project sets
+  `core.hooksPath`, init only prints a warning and installs nothing — the user must wire
+  `splash sync` into that hook directory
   themselves. Silent non-provisioning is the failure mode to watch for.
 
-- **`lefthook install` is best-effort.** If neither a local lefthook binary nor
-  `npx`/`yarn` can run it, the hook entry is written but **not registered** until the user runs
-  `lefthook install` (a note is printed, `commands.py:232`).
+- **`lefthook install` is best-effort.** Splashdown invokes only an installed `lefthook`
+  binary. If it is unavailable or fails, the config entry is written but **not registered**
+  until the user runs `lefthook install`; a note is printed.
 
-- **Loader trust is auto-approved.** mise and direnv only load a config after `mise trust` /
-  `direnv allow`. splashdown runs that itself via `Loader.approve()`: on the init path for a
-  config `wire()` just created, and unconditionally in `_cmd_provision_inner` on every
-  `sync`/hook — so a new worktree (whose inherited config is untrusted at its new path) just
-  works. A *pre-existing* `.envrc`/`mise.toml` edited during `init --no-sync` is left for the
-  user to vet (it may carry their own unreviewed content); the following `sync` approves it.
+- **Only newly-created loader config is auto-approved.** mise and direnv only load a config
+  after `mise trust` / `direnv allow`. During init, splashdown calls `Loader.approve()` only
+  when `wire()` created the loader config from nothing. It never approves pre-existing or
+  inherited config, and `sync`/post-checkout never approves anything; users must review and
+  trust those files themselves.
   `approve()` never fails the run — a missing `mise`/`direnv` binary, non-zero exit, or timeout
   is swallowed (`loaders.py`, `_run_ok`).
 

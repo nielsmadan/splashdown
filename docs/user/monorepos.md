@@ -326,8 +326,9 @@ Drop `container_name:` while you are there. A literal container name defeats
 ✗  compose-hardcoded-ports: compose.yaml hardcodes host ports 5432, 6379; container_name myapp_db
 ```
 
-`splash init compose` scaffolds a recipe with `COMPOSE_PROJECT_NAME` and a `DB_PORT` already
-declared.
+Plain `splash init` detects the Compose file and declares `COMPOSE_PROJECT_NAME`
+automatically. Add `DB_PORT` yourself when the database needs a pinned host port, as in the
+example above.
 
 Splashdown does not allocate a port per service automatically. Which services deserve a pinned
 host port is a judgement call, and inventing resource names for every mapping in the file would

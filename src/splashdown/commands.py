@@ -1292,7 +1292,7 @@ def _resolve_init_ios_scheme(inv: ProjectInventory, explicit: str | None) -> str
     return selected
 
 
-def cmd_init(
+def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional integration
     cwd: Path,
     preset: str | None = None,
     force: bool = False,
@@ -1605,16 +1605,6 @@ def _cmd_provision_inner(
     try:
         resolved = provision(cwd, registry=registry, reprovision=reprovision)
         recipe = Recipe.load(cwd / RECIPE_NAME)
-        # Trust/allow the loader config for this checkout so it actually loads
-        # splashdown.env. Unconditional (not gated on `wire` creating it) because a
-        # fresh worktree inherits the committed config at a NEW path — untrusted
-        # there even though the main checkout was trusted; a committed recipe means
-        # the repo was already accepted once. Silent (announce defaults False) so
-        # routine re-approval of an already-trusted config adds no per-sync noise.
-        loader_name = recipe.project.get("loader")
-        loader = LOADERS.get(loader_name) if loader_name else None
-        if loader is not None:
-            loader.approve(cwd)
         local_path = cwd / LOCAL_NAME
         if not local_path.exists():
             local_path.write_text(LOCAL_SKELETON)
@@ -1653,8 +1643,8 @@ def _cmd_provision_inner(
         )
         return 0
 
-    for k, v in changed_vars.items():
-        print(f"  {k}={v}", file=sys.stderr)
+    for key in changed_vars:
+        print(f"  {key} (changed)", file=sys.stderr)
     for m, changed in writer_results:
         if changed:
             print(f"  -> {m} (changed)", file=sys.stderr)

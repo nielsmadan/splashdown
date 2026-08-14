@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import RECIPE_NAME
 from .devices import DeviceError, detect_framework, resolve_app_dir
-from .hooks import _detect_hook_manager, _ensure_post_checkout_hook, _lefthook_config_path
+from .hooks import (
+    _detect_hook_manager,
+    _ensure_post_checkout_hook,
+    _lefthook_config_path,
+    _native_hook_path,
+)
 from .recipe import Recipe
 
 # The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
@@ -291,34 +295,18 @@ def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
         return ("problem", "husky detected; .husky/post-checkout missing or doesn't invoke splash")
     if manager == "core-hookspath-other":
         return ("problem", "core.hooksPath points to a custom dir; can't auto-wire there")
-    # Clean: expect .githooks + core.hooksPath = .githooks.
-    hook = cwd / ".githooks" / "post-checkout"
-    if hook.exists() and "splash" in _strip_hash_comments(hook.read_text()):
-        try:
-            out = (
-                subprocess.check_output(
-                    ["git", "config", "--get", "core.hooksPath"],
-                    cwd=cwd,
-                    stderr=subprocess.DEVNULL,
-                )
-                .decode()
-                .strip()
-            )
-            if out == ".githooks":
-                return ("ok", ".githooks/post-checkout invokes splash, core.hooksPath set")
-        except (subprocess.CalledProcessError, OSError):
-            pass
-        return (
-            "problem",
-            ".githooks/post-checkout exists but core.hooksPath isn't set to .githooks",
-        )
+    native_hook = _native_hook_path(cwd)
+    if native_hook is None:
+        return ("problem", "not a Git checkout; no post-checkout hook can be installed")
+    if native_hook.exists() and "splash" in native_hook.read_text():
+        return ("ok", "native post-checkout hook invokes splash")
     return ("problem", "no post-checkout hook invokes splash")
 
 
 def _rn_hook_manual(cwd: Path) -> str:
     return (
         "core.hooksPath is set to a non-splashdown directory. Add a post-checkout\n"
-        "hook there that runs `splash` (see examples/.githooks/post-checkout)."
+        "hook there that runs `splash sync >&2 || true`."
     )
 
 
@@ -588,8 +576,6 @@ _RN_WIRING_CHECKS.append(
 )
 
 
-# Shared "post-checkout hook fires `splash`" wiring check — also used by native
-# presets, which otherwise have no per-checkout wiring.
 _HOOK_WIRING_CHECK = WiringCheck(
     id="hook",
     description="post-checkout fires `splash`",
