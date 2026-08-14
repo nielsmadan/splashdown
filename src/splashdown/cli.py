@@ -176,6 +176,10 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         choices=("isolated", "shared"),
         help="Electron scanner choice (isolated = independent checkout profile)",
     )
+    p.add_argument(
+        "--ios-scheme",
+        help="native iOS Xcode scheme (auto-detected when there is exactly one)",
+    )
 
     sub.add_parser("deinit", help=argparse.SUPPRESS)
 
@@ -414,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
                 force=args.overwrite,
                 loader_override=args.loader,
                 electron_profile=args.electron_profile,
+                ios_scheme=args.ios_scheme,
             )
             if args.no_sync:
                 return 0

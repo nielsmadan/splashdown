@@ -183,6 +183,79 @@ def test_cli_init_rescan_updates_inventory(tmp_path, monkeypatch):
     assert called["cwd"] == tmp_path
 
 
+def test_init_native_ios_explicit_scheme_skips_discovery(tmp_path, monkeypatch):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+
+    def fail(_cwd):
+        raise AssertionError("explicit scheme must not run xcodebuild discovery")
+
+    monkeypatch.setattr(sd.commands, "_ios_native_schemes", fail, raising=False)
+
+    sd.cmd_init(tmp_path, ios_scheme="Demo")
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
+
+
+def test_init_native_ios_single_discovered_scheme_is_written(tmp_path, monkeypatch):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    monkeypatch.setattr(
+        sd.commands,
+        "_ios_native_schemes",
+        lambda _cwd: ["Demo"],
+        raising=False,
+    )
+
+    sd.cmd_init(tmp_path)
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
+
+
+def test_init_native_ios_multiple_schemes_prompts_for_exact_name(tmp_path, monkeypatch, capsys):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    monkeypatch.setattr(
+        sd.commands,
+        "_ios_native_schemes",
+        lambda _cwd: ["Demo", "DemoDev"],
+        raising=False,
+    )
+    monkeypatch.setattr(sys, "stdin", _TTYInput("DemoDev\n"))
+
+    sd.cmd_init(tmp_path)
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "DemoDev"
+    assert "Select native iOS scheme (Demo, DemoDev)" in capsys.readouterr().err
+
+
+def test_cli_init_native_ios_scheme_option(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    monkeypatch.setattr(
+        sd.commands,
+        "_ios_native_schemes",
+        lambda _cwd: pytest.fail("explicit scheme must bypass discovery"),
+        raising=False,
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "init", "--ios-scheme", "Demo", "--no-sync"]) == 0
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
+
+
+def test_init_native_ios_ambiguous_noninteractive_fails_before_writing(tmp_path, monkeypatch):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    monkeypatch.setattr(
+        sd.commands,
+        "_ios_native_schemes",
+        lambda _cwd: ["Demo", "DemoDev"],
+        raising=False,
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+
+    with pytest.raises(sd.DeviceError, match="--ios-scheme NAME"):
+        sd.cmd_init(tmp_path)
+
+    assert not (tmp_path / "splashdown.toml").exists()
+
+
 def test_init_server_preset_writes_generic_scaffold(tmp_path):
     sd.cmd_init(tmp_path, preset="server")
     recipe = (tmp_path / "splashdown.toml").read_text()

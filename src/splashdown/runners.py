@@ -234,6 +234,34 @@ def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
     )
 
 
+def _ios_native_schemes(cwd: Path) -> list[str]:
+    argv = ["xcodebuild", *_ios_xcodebuild_args(cwd, {}), "-list", "-json"]
+    try:
+        result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise DeviceError(f"ios-native: couldn't list Xcode schemes: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"xcodebuild exited {result.returncode}"
+        raise DeviceError(f"ios-native: couldn't list Xcode schemes: {detail}")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise DeviceError("ios-native: xcodebuild returned invalid scheme data") from exc
+
+    schemes: list[str] = []
+    if isinstance(data, dict):
+        for container in data.values():
+            if not isinstance(container, dict):
+                continue
+            values = container.get("schemes")
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if isinstance(value, str) and value and value not in schemes:
+                    schemes.append(value)
+    return schemes
+
+
 def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     require_macos("native build support")
     cfg = recipe.project.get("ios") or {}

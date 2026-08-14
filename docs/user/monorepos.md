@@ -247,8 +247,9 @@ device = "pixel_9"
 ```
 
 **What each native app needs in addition.** Only if you drive the app with `splash run simulator`,
-`ios-native` needs a scheme set (it's not required for the recipe to parse or for per-checkout sim
-naming):
+Plain `splash init` records the only shared Xcode scheme automatically. It asks when several
+schemes exist. In a non-interactive setup, pass `splash init --ios-scheme=MyApp`. The resulting
+configuration is:
 
 ```toml
 [project.ios]
@@ -273,9 +274,10 @@ splash run simulator    # xcodebuild build → xcrun simctl install/launch
 splash run emulator     # ./gradlew :app:installDebug → adb shell am start
 ```
 
-See the `ios-native` and `android-native` preset scaffolds (`splash init ios-native` /
-`splash init android-native`) for the standalone-project recipes. The entries above are the
-same fields, merged into a monorepo recipe.
+For a standalone native project, run plain `splash init`. It detects a root Xcode workspace or
+project, or root Gradle build files, and emits the relevant native profile and default target.
+Native directories inside a JS workspace are not auto-claimed, so use the manual app and project
+configuration above for that layout.
 
 ---
 

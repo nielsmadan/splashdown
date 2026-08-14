@@ -1242,12 +1242,63 @@ def _print_electron_integration(resource_names: list[str]) -> None:
         print("    }", file=sys.stderr)
 
 
+def _ios_native_schemes(cwd: Path) -> list[str]:
+    from .runners import _ios_native_schemes as discover  # noqa: PLC0415
+
+    return discover(cwd)
+
+
+def _resolve_init_ios_scheme(inv: ProjectInventory, explicit: str | None) -> str | None:
+    ios_apps = [app for app in inv.apps if app.profile == "ios-native"]
+    if not ios_apps:
+        if explicit is not None:
+            raise ValueError("--ios-scheme requires a scanner-detected native iOS app")
+        return None
+    if len(ios_apps) != 1:
+        raise DeviceError("ios-native: select a single app before choosing its Xcode scheme")
+    if explicit is not None:
+        scheme = explicit.strip()
+        if not scheme:
+            raise ValueError("--ios-scheme must not be empty")
+        if scheme.startswith("-"):
+            raise ValueError("--ios-scheme must not start with `-`")
+        return scheme
+
+    schemes = _ios_native_schemes(ios_apps[0].path)
+    if len(schemes) == 1:
+        return schemes[0]
+    if not schemes:
+        raise DeviceError(
+            "ios-native: no shared Xcode schemes found; rerun `splash init --ios-scheme NAME`"
+        )
+
+    choices = ", ".join(schemes)
+    if not sys.stdin.isatty():
+        raise DeviceError(
+            f"ios-native: multiple shared Xcode schemes found ({choices}); "
+            "rerun `splash init --ios-scheme NAME`"
+        )
+    print(f"Select native iOS scheme ({choices}): ", end="", file=sys.stderr, flush=True)
+    try:
+        selected = input().strip()
+    except EOFError as exc:
+        raise DeviceError(
+            "ios-native: no Xcode scheme selected; rerun `splash init --ios-scheme NAME`"
+        ) from exc
+    if selected not in schemes:
+        raise DeviceError(
+            f"ios-native: unknown Xcode scheme `{selected}`; choose one of: {choices}"
+        )
+    return selected
+
+
 def cmd_init(
     cwd: Path,
     preset: str | None = None,
     force: bool = False,
     loader_override: str | None = None,
     electron_profile: str | None = None,
+    ios_scheme: str | None = None,
 ) -> None:
     """Scaffold splashdown.toml from a project scan (default) or from a named
     intent preset (`splash init <preset>`)."""
@@ -1260,6 +1311,8 @@ def cmd_init(
     if preset is not None:
         if electron_profile is not None:
             raise ValueError("--electron-profile is only valid with scanner-driven `splash init`")
+        if ios_scheme is not None:
+            raise ValueError("--ios-scheme is only valid with scanner-driven `splash init`")
         return _cmd_init_preset(cwd, preset, loader_override=loader_override)
 
     # Scanner-driven path.
@@ -1301,10 +1354,19 @@ def cmd_init(
         print(f"  skipped {name}: template references a resource no app declares", file=sys.stderr)
 
     no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
+    resolved_ios_scheme = _resolve_init_ios_scheme(inv, ios_scheme)
 
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
-    rendered = render_scanned_recipe(inv, merged_resources, app_resource_names, cwd, merged_targets)
+    project_metadata = {"ios": {"scheme": resolved_ios_scheme}} if resolved_ios_scheme else None
+    rendered = render_scanned_recipe(
+        inv,
+        merged_resources,
+        app_resource_names,
+        cwd,
+        merged_targets,
+        project_metadata,
+    )
     Recipe.parse(rendered, recipe_path)
     recipe_path.write_text(rendered)
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)

@@ -267,6 +267,10 @@ For `react-native`, `[project.ios] scheme` is **optional** but often necessary: 
 builds the scheme named after the Xcode project (usually Release/prod). If the scheme selects the
 build environment (e.g. a `*Dev` scheme that copies `.env.development`), set it here.
 
+For a detected `ios-native` app, `splash init` queries shared Xcode schemes. It writes the sole
+scheme automatically, prompts for an exact choice on a TTY, or accepts `--ios-scheme=NAME`.
+Ambiguous non-interactive init fails before writing rather than leaving the required field absent.
+
 CLI surface:
 
 ```sh
@@ -329,8 +333,9 @@ splash target remove <type> <variant> [--keep-instance]
 - **Physical-device verbs differ.** For `type = device`, `stop`/`destroy` are no-op messages and
   `start` just confirms connectivity (`src/splashdown/commands.py:1073`, `:1089`, `:1114`); nothing
   is ever written to the registry.
-- **ios-native needs a scheme.** Without `[project.ios] scheme`, `run` errors
-  (`src/splashdown/profiles.py`, `_ios_native_run`). For `react-native` the scheme is optional but
+- **ios-native needs a scheme.** Scanner-driven init normally writes it, but a hand-authored
+  recipe without `[project.ios] scheme` still errors at run time (`_ios_native_run` in
+  `src/splashdown/profiles.py`). For `react-native` the scheme is optional but
   forwards to `run-ios --scheme` when set; Android resolves `application_id` from Gradle if unset, but
   that costs a Gradle round-trip — set it explicitly to skip it.
 - **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/runners.py:92`)

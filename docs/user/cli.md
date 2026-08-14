@@ -6,7 +6,7 @@ splash --version
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [all]                 # resources + targets + which ports are bound right now
 splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
-                    [--electron-profile=isolated|shared]
+                    [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash doctor [--fix] [--framework=…]
 
 splash run     [type] [variant]     # boot target + build + launch
@@ -57,6 +57,10 @@ if (profileId) {
 includes both `PORT` and `ELECTRON_PROFILE_ID`, and prints the same integration. This keeps
 profiles beside Electron's normal platform-specific user-data directory instead of inside the
 checkout.
+
+For a detected native iOS project, init records the sole shared Xcode scheme automatically. If
+several schemes exist, it asks for an exact choice in a terminal. Non-interactive callers must
+pass `--ios-scheme=NAME` when the choice is ambiguous.
 
 `splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Empty or malformed setup declarations fail during recipe validation, before those changes. An unknown requested name or failed command exits 1 after provisioning; resource/output changes and earlier successful setup commands are not rolled back.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 
 import pytest
 
@@ -11,6 +12,25 @@ import splashdown as sd
 from conftest import (
     _capture_profile_calls,
 )
+
+
+def test_ios_native_schemes_reads_detected_workspace(tmp_path, monkeypatch):
+    (tmp_path / "Demo.xcworkspace").mkdir()
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps({"workspace": {"schemes": ["Demo", "DemoDev"]}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(sd.runners.subprocess, "run", run)
+
+    assert sd.runners._ios_native_schemes(tmp_path) == ["Demo", "DemoDev"]
+    assert calls == [["xcodebuild", "-workspace", "Demo.xcworkspace", "-list", "-json"]]
 
 
 def test_flutter_run_builds_argv(tmp_path, monkeypatch):

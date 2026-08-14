@@ -53,7 +53,7 @@ Framework auto-detected for `run`:
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`. Optional `[project.ios] scheme`/`mode` and `[project.android] mode` forward `--scheme`/`--mode` to select the Xcode scheme / build variant (e.g. a `*Dev` scheme that copies `.env.development`).
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
-- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). Needs `[project.ios] scheme = "..."`.
+- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). `splash init` records the sole shared scheme automatically, prompts for a choice when interactive, or accepts `--ios-scheme=NAME`.
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
 - Override via `[project] framework = "..."`
 

@@ -72,6 +72,7 @@ def render_scanned_recipe(
     app_resource_names: dict[str, list[str]],
     cwd: Path,
     merged_targets: dict[str, dict[str, dict[str, str]]] | None = None,
+    project_metadata: Mapping[str, Mapping[str, str]] | None = None,
 ) -> str:
     """Render a fresh recipe (header comment, [project], [apps.*], [resources.*],
     [targets.*])."""
@@ -82,6 +83,11 @@ def render_scanned_recipe(
     proj = table()
     proj["workspace"] = inv.workspace
     proj["loader"] = inv.loader
+    for name, fields in (project_metadata or {}).items():
+        nested = table()
+        for field, value in fields.items():
+            nested[field] = value
+        proj[name] = nested
     doc["project"] = proj
     _set_apps(doc, inv, app_resource_names, cwd)
     if merged_resources:
