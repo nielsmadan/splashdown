@@ -45,9 +45,9 @@ checkout's **own** resources on demand.
 
 Port allocation is the hot path that runs on every `splash`/`sync` (and thus on the
 post-checkout git hook). `Registry.allocate_port` calls `busy_ports(gc=True)`
-(`src/splashdown/registry.py:143`), which reads every port row, skips any whose checkout
+(`src/splashdown/registry.py:149`), which reads every port row, skips any whose checkout
 directory no longer exists, and rewrites `ports.tsv` if anything was dropped
-(`src/splashdown/registry.py:119`). So a dead worktree's port is reclaimed the next time
+(`src/splashdown/registry.py:118`). So a dead worktree's port is reclaimed the next time
 *any* checkout allocates a port in that range — no command, no human. This is why UC7 is
 "occasional, low stakes": the common case self-heals.
 
@@ -58,15 +58,18 @@ abspath and never matched by a live checkout), but they do persist.
 
 ### `splash gc` (explicit, also sims + recipe reconcile)
 
-`cmd_gc` (`src/splashdown/commands.py:840`) is the full machine-wide sweep, in two parts:
+`cmd_gc` (`src/splashdown/commands.py:742`) is the full machine-wide sweep, in two parts:
 
-- `cmd_target_gc` (`src/splashdown/commands.py:786`) iterates every device row; for any
-  whose checkout directory is gone, it destroys the underlying sim/AVD (`xcrun simctl
-  delete` / `avdmanager delete avd`) and removes the registry row.
-- `Registry.gc` (`src/splashdown/registry.py:392`) then drops dead-checkout **port** and
-  **kv** rows, calls `gc_devices` (drops device rows whose checkout is gone *or* whose
-  sim/AVD was hand-deleted — an "orphan", `src/splashdown/registry.py:312`), and finally
-  `reconcile_with_recipes` (`src/splashdown/registry.py:352`).
+- `cmd_target_gc` (`src/splashdown/commands.py:687`) iterates every device row. For a dead
+  checkout it destroys the underlying sim/AVD before removing the row; for a live checkout
+  it also drops a row whose instance was already deleted by hand. A platform
+  `CapabilityError` warns once and preserves that row because splashdown could not verify or
+  destroy it.
+- `Registry.gc(include_devices=False)` (`src/splashdown/registry.py:394`) then drops
+  dead-checkout **port** and **kv** rows and runs `reconcile_with_recipes`
+  (`src/splashdown/registry.py:354`). Device cleanup is explicitly disabled here because the
+  capability-aware command sweep has already handled every device row; a second generic
+  `gc_devices` pass could erase a row that the first pass deliberately preserved.
 
 `reconcile_with_recipes` is a subtler form of cleanup: it drops port/kv entries for
 checkouts that **still exist** but whose current recipe no longer declares that key (e.g. a
@@ -74,41 +77,45 @@ leftover `DART_PORT` after a profile stopped emitting it). Critically, a checkou
 recipe is missing or won't parse is left **untouched** — an unloadable recipe must never be
 read as "declares nothing" and nuke live entries.
 
-Orphan detection (`_is_orphan_device`, `src/splashdown/devices.py:254`) covers the case
+Orphan detection (`_is_orphan_device`, `src/splashdown/devices.py:343`) covers the case
 where the user ran `xcrun simctl delete` / `avdmanager delete avd` by hand, leaving the
 registry pointing at a ghost; `gc` removes those rows.
 
 ### `splash target prune [ios|android]` (foreign sims splashdown didn't create)
 
-`cmd_target_prune` (`src/splashdown/commands.py:985`) is *not* about dead checkouts. It
+`cmd_target_prune` (`src/splashdown/commands.py:859`) is *not* about dead checkouts. It
 computes `registry.managed_udids()` (every sim/AVD splashdown created) and discovers every
 device on the machine **not** in that set:
 
-- `_discover_foreign_ios` (`src/splashdown/commands.py:951`) lists available sims via
+- `_discover_foreign_ios` (`src/splashdown/commands.py:826`) lists available sims via
   `xcrun simctl list devices -j`, excluding managed UDIDs.
-- `_discover_foreign_avds` (`src/splashdown/commands.py:971`) lists AVDs via `avdmanager
+- `_discover_foreign_avds` (`src/splashdown/commands.py:842`) lists AVDs via `avdmanager
   list avd -c`, excluding managed names.
 
-It prints the kill list, then gates on `_confirm` (`src/splashdown/commands.py:1101`, an
+It prints the kill list, then gates on `_confirm` (`src/splashdown/commands.py:995`, an
 interactive `[y/N]` prompt). `--dry-run` lists and exits without destroying; `--yes` skips
 the prompt. The platform arg (`ios` | `android` | `all`, default `all`) scopes which
 discovery runs. Splashdown-managed devices in the registry are always preserved — this is
-the command that clears the Xcode default-template pile (UC4).
+the command that clears the Xcode default-template pile (UC4). When the default `all` scope
+hits an unavailable platform, the dispatcher warns and continues with the other platform;
+an explicit `target prune ios` or `target prune android` is strict and returns an error
+instead (`src/splashdown/commands.py:1729`).
 
 ### `splash env release [KEY]` (this checkout's own allocations)
 
-Handled in `_env_dispatch` (`src/splashdown/commands.py:1563`). The target checkout is
+Handled in `_env_dispatch` (`src/splashdown/commands.py:1800`). The target checkout is
 `str(cwd.resolve())` by default, or `--checkout` to point at another checkout's entries —
 normalized the same way `provision()` keys the registry, so symlinked/relative invocations
 don't silently miss.
 
 - `splash env release KEY` → `remove_kv(target, KEY)` + `remove_port(target, KEY)`
-  (`src/splashdown/registry.py:222`, `:158`): frees one resource by key.
+  (`src/splashdown/registry.py:226`, `:164`): frees one resource by key.
 - `splash env release` (no key) → `registry.release(target)`
-  (`src/splashdown/registry.py:168`): removes **all** port, kv, and device rows for the
+  (`src/splashdown/registry.py:174`): removes **all** port, kv, and device rows for the
   checkout in one pass and reports the count. Note `release` does *not* destroy the
-  underlying sim/AVD — it only drops the registry rows; the sim itself is reclaimed by a
-  later `gc`/`gc_devices` orphan sweep, or by `target prune` once it's no longer managed.
+  underlying sim/AVD — it only drops the registry rows. The instance then becomes foreign
+  and is discoverable by a later `target prune`; `gc` cannot associate it with the checkout
+  after the row is gone.
 
 All registry mutations take the relevant `fcntl` file lock, so concurrent agents in
 sibling worktrees can't corrupt the TSVs.
@@ -117,19 +124,20 @@ sibling worktrees can't corrupt the TSVs.
 
 | Concern | Location |
 | --- | --- |
-| Lazy GC of port rows on allocation | `src/splashdown/registry.py:119` (`busy_ports`), `:143` (caller) |
-| Full machine-wide registry GC | `src/splashdown/registry.py:392` (`Registry.gc`) |
-| Device-row GC (gone checkout + orphans) | `src/splashdown/registry.py:312` (`gc_devices`) |
-| Recipe reconcile for live checkouts | `src/splashdown/registry.py:352` (`reconcile_with_recipes`) |
-| Free one key for a checkout | `src/splashdown/registry.py:158` (`remove_port`), `:222` (`remove_kv`) |
-| Free everything for a checkout | `src/splashdown/registry.py:168` (`Registry.release`) |
-| `splash gc` orchestration | `src/splashdown/commands.py:840` (`cmd_gc`), `:786` (`cmd_target_gc`) |
-| `splash target prune` | `src/splashdown/commands.py:985` (`cmd_target_prune`) |
-| Foreign-device discovery | `src/splashdown/commands.py:951` (`_discover_foreign_ios`), `:971` (`_discover_foreign_avds`) |
-| Confirmation prompt | `src/splashdown/commands.py:1101` (`_confirm`) |
-| `splash env release` dispatch | `src/splashdown/commands.py:1563` |
-| Orphan-device test | `src/splashdown/devices.py:254` (`_is_orphan_device`) |
-| CLI parsers (`gc`, `target prune`, `env release`) | `src/splashdown/cli.py:183`, `:231`, `:179` |
+| Lazy GC of port rows on allocation | `src/splashdown/registry.py:118` (`busy_ports`), `:149` (caller) |
+| Full machine-wide registry GC | `src/splashdown/registry.py:394` (`Registry.gc`) |
+| Device-row GC (gone checkout + live orphan rows) | `src/splashdown/commands.py:687` (`cmd_target_gc`) |
+| Generic device-row GC helper | `src/splashdown/registry.py:314` (`gc_devices`; not called by `cmd_gc`) |
+| Recipe reconcile for live checkouts | `src/splashdown/registry.py:354` (`reconcile_with_recipes`) |
+| Free one key for a checkout | `src/splashdown/registry.py:164` (`remove_port`), `:226` (`remove_kv`) |
+| Free everything for a checkout | `src/splashdown/registry.py:174` (`Registry.release`) |
+| `splash gc` orchestration | `src/splashdown/commands.py:742` (`cmd_gc`), `:687` (`cmd_target_gc`) |
+| `splash target prune` | `src/splashdown/commands.py:859` (`cmd_target_prune`) |
+| Foreign-device discovery | `src/splashdown/commands.py:826` (`_discover_foreign_ios`), `:842` (`_discover_foreign_avds`) |
+| Confirmation prompt | `src/splashdown/commands.py:995` (`_confirm`) |
+| `splash env release` dispatch | `src/splashdown/commands.py:1800` |
+| Orphan-device test | `src/splashdown/devices.py:343` (`_is_orphan_device`) |
+| CLI parsers (`gc`, `target prune`, `env release`) | `src/splashdown/cli.py:199`, `:254`, `:186` |
 
 ## Configuration
 
@@ -137,13 +145,13 @@ There is no config to enable cleanup — it is built into the registry. The rele
 are command flags:
 
 - `splash target prune [ios|android|all]` — `--dry-run` (preview, no destroy), `--yes`
-  (skip the confirm prompt). Parser: `src/splashdown/cli.py:231`.
+  (skip the confirm prompt). Parser: `src/splashdown/cli.py:254`.
 - `splash env release [KEY]` — optional positional `KEY`; `--checkout PATH` to target a
-  different checkout. Parser: `src/splashdown/cli.py:179`.
-- `splash gc` takes no flags. Parser: `src/splashdown/cli.py:183`.
+  different checkout. Parser: `src/splashdown/cli.py:186`.
+- `splash gc` takes no flags. Parser: `src/splashdown/cli.py:199`.
 
 Registry location follows `$XDG_STATE_HOME` (default `~/.local/state`), resolved at
-`Registry` instantiation (`src/splashdown/registry.py:62`) so tests can override it.
+`Registry` instantiation (`src/splashdown/registry.py:44`) so tests can override it.
 
 ## Gotchas
 
@@ -159,8 +167,8 @@ Registry location follows `$XDG_STATE_HOME` (default `~/.local/state`), resolved
   until an explicit `splash gc`. Harmless but persistent.
 - **`env release` drops rows, not sims.** `registry.release()` removes device rows but does
   not call `xcrun simctl delete` / `avdmanager delete avd`. The sim becomes an unmanaged
-  device that only `gc` (orphan path) or `target prune` (foreign path) will actually
-  destroy. Don't expect `env release` to free a simulator's disk.
+  device that only `target prune` can later discover and destroy. Don't expect `env release`
+  to free a simulator's disk.
 - **`reconcile_with_recipes` deliberately skips unparseable recipes.** If a checkout's
   `splashdown.toml` is missing or invalid, its rows are *kept*, not pruned — a parse error
   must never be misread as "declares no resources." Expect stale-looking rows to linger for
@@ -168,6 +176,10 @@ Registry location follows `$XDG_STATE_HOME` (default `~/.local/state`), resolved
 - **`target prune` is destructive and machine-wide.** It deletes *every* sim/AVD splashdown
   didn't create, across all projects — not just this checkout's. Always `--dry-run` first;
   the `_confirm` gate is the only safety net when `--yes` is absent.
+- **Unscoped platform cleanup is best-effort; explicit cleanup is strict.** Bare
+  `target prune`/`target refresh` warn and skip an unavailable iOS or Android toolchain so the
+  other platform can still be processed. An explicit platform argument propagates the
+  capability error instead of reporting a partial platform-specific success.
 - **A bound port pin is kept, not GC'd.** `allocate_port` keeps an existing in-range pin
   even if the port is currently bound (it's almost always this checkout's own dev server).
   Lazy GC only removes rows for checkouts whose *directory* is gone, not for live-but-bound

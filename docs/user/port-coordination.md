@@ -1,3 +1,8 @@
+---
+title: Global port coordination
+description: Learn how splashdown allocates sticky, collision-free ports across every checkout.
+---
+
 # Global port coordination
 
 The registry at `~/.local/state/splashdown/{ports.tsv,kv.tsv}` is **machine-wide**, not per-repo. When any checkout allocates a port, the allocator considers:

@@ -1,3 +1,8 @@
+---
+title: Running and managing devices
+description: Run, boot, refresh, and manage per-checkout simulators, emulators, and physical devices.
+---
+
 # Running and managing devices
 
 ```sh

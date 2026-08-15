@@ -1,3 +1,8 @@
+---
+title: The splashdown recipe
+description: Reference for splashdown.toml projects, apps, resources, setup commands, and device targets.
+---
+
 # The recipe: `splashdown.toml`
 
 The committed file. Its top-level sections are `[project]`, `[apps.*]`, `[resources.*]`, `[targets.*]` (for mobile), and `[setup.*]`. The scanner produces a working version.

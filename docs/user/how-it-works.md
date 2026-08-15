@@ -1,3 +1,8 @@
+---
+title: How it works
+description: Understand splashdown's recipe, local config, generated environment, loader, and Git hook.
+---
+
 # How it works
 
 Splashdown is the glue between git and your env loader (mise, direnv, devbox). It installs a `post-checkout` git hook, coexisting with lefthook/husky if you already use a hook manager, that fires `splash` whenever you check out a branch or add a worktree, so each checkout's free ports (and other resources) are allocated and handed to your loader automatically.

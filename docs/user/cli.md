@@ -1,3 +1,8 @@
+---
+title: CLI reference
+description: Reference for every splash command, option, target action, and environment operation.
+---
+
 # CLI reference
 
 ```
@@ -7,6 +12,7 @@ splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splas
 splash status [all]                 # resources + targets + which ports are bound right now
 splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
                     [--electron-profile=isolated|shared] [--ios-scheme=NAME]
+splash deinit                       # reverse init + sync for this checkout
 splash doctor [--fix] [--framework=…]
 
 splash run     [type] [variant]     # boot target + build + launch
@@ -61,6 +67,18 @@ checkout.
 For a detected native iOS project, init records the sole shared Xcode scheme automatically. If
 several schemes exist, it asks for an exact choice in a terminal. Non-interactive callers must
 pass `--ios-scheme=NAME` when the choice is ambiguous.
+
+## Remove splashdown
+
+`splash deinit` surgically reverses init and clears the state created by sync and device runs. It
+destroys simulator and emulator instances owned by this checkout, releases its registry entries,
+removes `splashdown.env`, clears splashdown-managed keys from `envfile=` and `envrc` destinations,
+and unwires the loader, post-checkout hook, `.gitignore` entries, and managed agent instructions.
+It then removes `splashdown.toml` and an untouched `splashdown.local.toml` skeleton.
+
+User-owned content is preserved: a modified local config or hook is left with a note, unrelated
+dotenv keys remain, physical devices are never destroyed, and framework changes made by
+`splash doctor --fix` are not reverted because they have no recoverable original.
 
 `splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Empty or malformed setup declarations fail during recipe validation, before those changes. An unknown requested name or failed command exits 1 after provisioning; resource/output changes and earlier successful setup commands are not rolled back.
 

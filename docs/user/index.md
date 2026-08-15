@@ -1,3 +1,8 @@
+---
+title: Home
+description: Pin dev ports, environment values, simulators, and emulators independently for every Git checkout.
+---
+
 <div align="center">
   <img src="assets/logo.svg" alt="splashdown" width="220">
   <h1>splashdown</h1>

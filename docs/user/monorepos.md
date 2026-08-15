@@ -1,3 +1,8 @@
+---
+title: Monorepos
+description: Configure splashdown for JavaScript workspaces, mobile apps, native projects, and Compose services.
+---
+
 # Monorepos
 
 Setting up splashdown in a multi-app workspace (JS workspaces, React Native / Expo, polyglot
@@ -119,6 +124,13 @@ the translation in each app's own `dev` script.
 app's orchestrator script re-exports the right one as `PORT` just before the framework
 process starts.
 
+!!! warning "Keep CORS origins on the allocated web port"
+    If the backend validates `CORS_ORIGINS`, a static `http://localhost:3000` or
+    `http://localhost:5173` fails as soon as splashdown allocates another port. Include the
+    actual browser origin, or declare `CORS_ORIGINS` as a template that references the web
+    resource, for example `http://localhost:{{ WEB_PORT }}`. A dev proxy hides this during
+    normal `/api/` calls, but direct browser requests to the backend still enforce CORS.
+
 ---
 
 ## RN/Expo + web + backend
@@ -180,7 +192,7 @@ splash run emulator       # Android AVD
 `splash run` executes at the **repo root** and detects the framework there. In a
 monorepo where the mobile app lives in a subdir (`apps/mobile`) and uses yarn/pnpm
 rather than `npx`, set a custom run command so the launch happens in the right
-place with the right tool (see the "Custom run command" section in `README.md`):
+place with the right tool (see [Custom run command](devices.md#custom-run-command)):
 
 ```toml
 [project.run]
@@ -246,10 +258,10 @@ model = "iPhone 17"
 device = "pixel_9"
 ```
 
-**What each native app needs in addition.** Only if you drive the app with `splash run simulator`,
-Plain `splash init` records the only shared Xcode scheme automatically. It asks when several
-schemes exist. In a non-interactive setup, pass `splash init --ios-scheme=MyApp`. The resulting
-configuration is:
+**What each native app needs in addition.** If you drive an `ios-native` app with
+`splash run simulator`, `[project.ios] scheme` is required. Plain `splash init` records the only
+shared Xcode scheme automatically and asks when several schemes exist. In a non-interactive
+setup, pass `splash init --ios-scheme=MyApp`. The resulting configuration is:
 
 ```toml
 [project.ios]

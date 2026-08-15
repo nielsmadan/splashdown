@@ -1,3 +1,8 @@
+---
+title: CI integration
+description: Decide when CI needs splashdown and configure fixed service ports without local allocation.
+---
+
 # CI integration
 
 Splashdown's job is to hand each *concurrent* checkout its own free ports so they never collide. A CI runner has neither problem. It runs one job at a time, and its service containers listen on fixed, well-known ports (Postgres on 5432, Redis on 6379). There is nothing to coordinate, so **CI usually does not need splashdown at all**.
@@ -19,10 +24,13 @@ jobs:
       REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
-      - run: <your test command>
+      - run: uv run pytest
 ```
 
-Or keep the values in a committed `.env.test` and load that. Either way your app reads the same variable names it reads locally (`DATABASE_URL`, and so on), just pointed at fixed ports instead of splashdown-allocated ones.
+Replace `uv run pytest` with the project's normal test command. Or keep the values in a
+committed `.env.test` and load that. Either way your app reads the same variable names it reads
+locally (`DATABASE_URL`, and so on), just pointed at fixed ports instead of
+splashdown-allocated ones.
 
 ## Why not install and run `splash` in CI?
 

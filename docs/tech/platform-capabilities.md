@@ -43,7 +43,7 @@ instance. `cmd_gc` therefore performs capability-aware device cleanup before cal
 | Category | Modules and sites | Required behavior |
 | --- | --- | --- |
 | Required fixed tool | `devices.py`: `xcrun`, `open`, `avdmanager`, `sdkmanager`, `emulator`, `adb`; `runners.py`: Flutter, `npx`, `xcodebuild`, `xcrun`, Gradle/`gradlew`, `adb`; `commands.py`: foreign-AVD discovery | Apply a host guard where applicable. Convert launch-time `OSError` to `CapabilityError`. Preserve nonzero exits as real tool failures. |
-| Best-effort integration or probe | `recipe.py`: Git metadata; `hooks.py`: Git, lefthook, yarn, and npx hook integration; `wiring.py`: Git hook check; `loaders.py`: loader approval; `commands.py`: gitignore probe | Return the existing fallback, warning, or boolean result. Missing or non-executable tools must not crash the command. |
+| Best-effort integration or probe | `recipe.py`: Git metadata; `hooks.py`: Git, gitignore, and the installed lefthook binary; `wiring.py`: Git hook check; `loaders.py`: loader approval | Return the existing fallback, warning, or boolean result. Missing or non-executable tools must not crash the command. |
 | User-authored shell | `provisioning.py`: `run_setup`; `runners.py`: `run_custom_command` | Preserve shell semantics. Setup failures reach the existing clean runtime-error renderer; custom launch commands return the shell exit status. |
 
 This inventory covers every `subprocess.call`, `run`, `check_output`, and `Popen` site under

@@ -1,3 +1,8 @@
+---
+title: Shell completion
+description: Enable native splash command completion for zsh and bash.
+---
+
 # Shell completion
 
 `splash` ships bash/zsh tab-completion (subcommands, device types, and dynamic device-variant names).

@@ -1,3 +1,8 @@
+---
+title: Per-checkout overrides
+description: Add local and machine-wide target variants without changing the committed recipe.
+---
+
 # Per-checkout overrides: `splashdown.local.toml`
 
 A **gitignored**, per-checkout file. Use it to **add** extra target variants on top of what the recipe declares (never to override or repeat). Each checkout has its own copy. What you add here is local to this worktree/clone.

@@ -3,7 +3,7 @@
 **What each splashdown feature does**, kept in sync with the implementation. This is the
 behavior reference for contributors and coding agents *building* splashdown: terse, pointer-first
 (`file:line`), not a usage tutorial. For human how-to walkthroughs see
-[`../user/`](../user/overview.md); for internals see [`../tech/`](../tech/overview.md). Owned by
+[`../user/`](../user/index.md); for internals see [`../tech/`](../tech/overview.md). Owned by
 the `doc` skill; run `doc --update` after feature work to keep it current.
 
 Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](../product/use-cases.md).

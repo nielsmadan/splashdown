@@ -1,3 +1,8 @@
+---
+title: Getting started
+description: Install splashdown, initialize a project, and provision collision-free checkout resources.
+---
+
 # Getting started
 
 Splashdown pins per-checkout system resources (dev ports, env vars, and mobile simulators or emulators) and coordinates them across every git checkout on your machine, so two worktrees of the same project never collide. This page walks through a first setup for a web or backend project. For a mobile app, see [Getting started with mobile](getting-started-mobile.md).

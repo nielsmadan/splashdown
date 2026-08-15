@@ -1,3 +1,8 @@
+---
+title: Framework wiring
+description: Use splash doctor to detect and repair framework configuration that ignores allocated ports.
+---
+
 # Framework wiring (`splash doctor`)
 
 Allocating a port doesn't always reach the running process. Most frameworks hardcode the port in one or two config files that override the env var, so splashdown carries per-framework wiring checks that detect those hardcoded points and (where safe) auto-patch them. `splash init` runs the wiring after scaffolding. `splash doctor` re-runs it anytime to verify, and `splash doctor --fix` re-applies the autofixes.

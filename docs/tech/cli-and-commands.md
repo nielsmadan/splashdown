@@ -21,6 +21,7 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
     - [Top-level exception handler](#top-level-exception-handler)
   - [`commands.py` — the orchestration layer](#commandspy--the-orchestration-layer)
     - [Provision handlers (`sync` / `init`)](#provision-handlers-sync--init)
+    - [`deinit` teardown](#deinit-teardown)
     - [Git post-checkout hook installation](#git-post-checkout-hook-installation)
     - [Status rendering](#status-rendering)
     - [The no-loader delivery fallback](#the-no-loader-delivery-fallback)
@@ -50,53 +51,53 @@ The package is built for a fast hot path: `splash` with no args (what the git po
 
 #### `main()` flow
 
-`main()` (`cli.py:328`) is the whole control flow:
+`main()` (`cli.py:389`) is the whole control flow:
 
-1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py:331`) to inject a `sync` token if no subcommand is present.
-2. Build the parser (`_build_parser`, `cli.py:333`).
-3. Install completion (`cli.py:336`–`338`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
-4. `parse_args`, then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d) and construct the shared `Registry` (`cli.py:341`–`342`).
-5. A `try` block holds a flat dispatch table — one `if args.cmd == …: return cmd_…(…)` per subcommand (`cli.py:344`–`390`). The final fall-through is `sync` (the default), so both bare `splash` and explicit `splash sync` land on `_cmd_provision`.
+1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py:392`) to inject a `sync` token if no subcommand is present.
+2. Build the parser (`_build_parser`, `cli.py:394`).
+3. Install completion (`cli.py:395`–`399`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
+4. `parse_args`, then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d) and construct the shared `Registry` (`cli.py:400`–`407`).
+5. A `try` block holds a flat dispatch table — one `if args.cmd == …: return cmd_…(…)` per subcommand (`cli.py:409`–`465`). The final fall-through is `sync` (the default), so both bare `splash` and explicit `splash sync` land on `_cmd_provision`.
 
 The handler signature shows the orchestration boundary: `main()` resolves `cwd` and `registry` once and threads them in; the `cmd_*` functions own the work. Each branch returns the process exit code.
 
 #### `_ensure_subcommand` — bare `splash` defaults to `sync`
 
-`_ensure_subcommand` (`cli.py:303`) makes `splash` (no subcommand) behave as `splash sync`, which is what the post-checkout hook relies on. It cannot just prepend `sync`, because top-level flags must still parse at the root parser level — `splash --cwd /path` has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since `sync` has no `--cwd`).
+`_ensure_subcommand` (`cli.py:364`) makes `splash` (no subcommand) behave as `splash sync`, which is what the post-checkout hook relies on. It cannot just prepend `sync`, because top-level flags must still parse at the root parser level — `splash --cwd /path` has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since `sync` has no `--cwd`).
 
-The walk: bail early if `-h`/`--help`/`--version` is present (`cli.py:307`) — those are root actions and inserting `sync` would shadow them. Otherwise scan from the front, skipping leading top-level flags: a `--cwd PATH`/`--format json` consumes two slots (the flag set is `_TOP_LEVEL_VALUE_FLAGS`, `cli.py:300`), a `--flag=value` consumes one. The moment a token is a known subcommand (`KNOWN_CMDS`), return `argv` unchanged. The first non-flag, non-subcommand token is where `sync` gets inserted (`cli.py:321`), so the flags stay ahead of it.
+The walk: bail early if `-h`/`--help`/`--version` is present (`cli.py:368`) — those are root actions and inserting `sync` would shadow them. Otherwise scan from the front, skipping leading top-level flags: a `--cwd PATH`/`--format json` consumes two slots (the flag set is `_TOP_LEVEL_VALUE_FLAGS`, `cli.py:361`), a `--flag=value` consumes one. The moment a token is a known subcommand (`KNOWN_CMDS`), return `argv` unchanged. The first non-flag, non-subcommand token is where `sync` gets inserted (`cli.py:381-382`), so the flags stay ahead of it.
 
 #### `KNOWN_CMDS` and the parser
 
-`KNOWN_CMDS` (`cli.py:90`) is the hand-maintained set of subcommand names. It exists only so `_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs — it is a second source of truth alongside the `sub.add_parser(...)` calls and must be kept in sync with them.
+`KNOWN_CMDS` (`cli.py:93`) is the hand-maintained set of subcommand names. It exists only so `_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs — it is a second source of truth alongside the `sub.add_parser(...)` calls and must be kept in sync with them.
 
-`_build_parser` (`cli.py:105`) is a single flat parser (deliberately, hence the `PLR0915` noqa) with one `add_parser` block per subcommand. Every subparser is registered with `help=argparse.SUPPRESS` so the auto-generated command list is hidden — the curated tiered overview in `_HELP_EPILOG` (`cli.py:68`) carries the help text instead. Top-level flags (`--cwd`, `--format`, `--version`) live on the root parser (`cli.py:115`–`117`).
+`_build_parser` (`cli.py:110`) is a single flat parser (deliberately, hence the `PLR0915` noqa) with one `add_parser` block per subcommand. Every subparser is registered with `help=argparse.SUPPRESS` so the auto-generated command list is hidden — the curated tiered overview in `_HELP_EPILOG` (`cli.py:70`) carries the help text instead. Top-level flags (`--cwd`, `--format`, `--version`) live on the root parser (`cli.py:120`–`122`).
 
 #### Tiered `--help`: `_EpilogOnlyFormatter`
 
-`_EpilogOnlyFormatter` (`cli.py:31`) is a `RawDescriptionHelpFormatter` subclass whose `_format_action` returns an empty string for the subparsers action (`argparse._SubParsersAction`, a private type argparse exposes no public name for). That suppresses argparse's flat `{sync,init,env,…}` dump. The actual command overview is the epilog (`_HELP_EPILOG`), hand-grouped into tiers — "Run on a device", "This checkout", "Set up a project", "More" — so `splash --help` reads as a task-oriented menu rather than an alphabetical list.
+`_EpilogOnlyFormatter` (`cli.py:33`) is a `RawDescriptionHelpFormatter` subclass whose `_format_action` returns an empty string for the subparsers action (`argparse._SubParsersAction`, a private type argparse exposes no public name for). That suppresses argparse's flat `{sync,init,env,…}` dump. The actual command overview is the epilog (`_HELP_EPILOG`), hand-grouped into tiers — "Run on a device", "This checkout", "Set up a project", "More" — so `splash --help` reads as a task-oriented menu rather than an alphabetical list.
 
 #### Lazy `--version`: `_VersionAction`
 
-`_VersionAction` (`cli.py:41`) reimplements argparse's built-in version action so the version string is resolved *only* when `--version` is actually passed. Its `__call__` lazy-imports `_resolve_version` and prints (`cli.py:62`–`65`). The motivation is the hot path: `importlib.metadata.version(...)` costs ~20ms, which every silent hook-triggered `splash sync` would otherwise pay for a string it never prints.
+`_VersionAction` (`cli.py:43`) reimplements argparse's built-in version action so the version string is resolved *only* when `--version` is actually passed. Its `__call__` lazy-imports `_resolve_version` and prints (`cli.py:64`–`67`). The motivation is the hot path: `importlib.metadata.version(...)` costs ~20ms, which every silent hook-triggered `splash sync` would otherwise pay for a string it never prints.
 
 #### The run/start/stop/destroy parser loop
 
-The four device verbs share one parser shape, built in a loop (`cli.py:197`–`215`):
+The four device verbs share one parser shape, built in a loop (`cli.py:220`–`238`):
 
 - Each gets an optional positional `dtype` (`TYPE`) and an optional positional `variant`.
-- **Crucially, `dtype` has no argparse `choices`** (`cli.py:203`). This is intentional: with `choices=TARGET_TYPES`, a lone variant token like `splash run small-screen` would be rejected as an invalid TYPE. Dropping `choices` lets that token land in the `dtype` slot, to be re-interpreted by `_normalize_device_args` after parsing.
+- **Crucially, `dtype` has no argparse `choices`** (`cli.py:226`). This is intentional: with `choices=TARGET_TYPES`, a lone variant token like `splash run small-screen` would be rejected as an invalid TYPE. Dropping `choices` lets that token land in the `dtype` slot, to be re-interpreted by `_normalize_device_args` after parsing.
 - The two completers are attached here: `device_arg_completer` on `dtype`, `variant_completer` on `variant`.
-- **`--yes` is added only to `destroy`** (`cli.py:214`) — it is the only one of the four that is destructive (deletes the sim/AVD), so it is the only one with a confirmation prompt to skip. `run`/`start`/`stop` never prompt.
+- **`--yes` is added only to `destroy`** (`cli.py:237`) — it is the only one of the four that is destructive (deletes the sim/AVD), so it is the only one with a confirmation prompt to skip. `run`/`start`/`stop` never prompt.
 
 #### `_normalize_device_args`
 
-`_normalize_device_args` (`cli.py:284`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs (`cli.py:345`).
+`_normalize_device_args` (`cli.py:328`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs (`cli.py:410`).
 
 #### Top-level exception handler
 
 The dispatch `try` is wrapped by a single `except (DeviceError, ValueError)`
-(`cli.py:391`). It prints `error: <msg>` to stderr and returns exit 1 — the
+(`cli.py:466`). It prints `error: <msg>` to stderr and returns exit 1 — the
 uniform failure path for device/target lifecycle errors and config validation.
 `CapabilityError` is a `DeviceError` subtype, so unsupported hosts and missing
 fixed launchers use the same clean path without a traceback.
@@ -114,7 +115,7 @@ lifecycle; hook wiring itself lives in `hooks.py`. Below, the parts are grouped 
 
 #### Provision handlers (`sync` / `init`)
 
-`_cmd_provision` (`cli.py:438` → `commands.py:1302`) is a thin shim over `_cmd_provision_inner` (`commands.py:1316`), the shared engine for both `splash sync` and the tail of `splash init`.
+`_cmd_provision` (`cli.py:465` → `commands.py:1581`) is a thin shim over `_cmd_provision_inner` (`commands.py:1595`), the shared engine for both `splash sync` and the tail of `splash init`.
 
 `_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before*
 provisioning so it can report only what changed, calls `provision()`
@@ -142,6 +143,23 @@ load.
 
 `cmd_init` is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → run framework wiring autofixes. An intent preset short-circuits to `_cmd_init_preset`, which writes one of the three `SCAFFOLDS` templates verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync`, and `--rescan` diverts entirely to `cmd_refresh_inventory`.
 
+#### `deinit` teardown
+
+`cmd_deinit` (`commands.py:1461`) is the reverse-orchestration path for state splashdown
+owns or marks explicitly. It reads the recipe before deleting it so it can discover the
+loader and writer destinations, but a malformed recipe only disables those recipe-dependent
+steps; it does not block the rest of teardown.
+
+The handler destroys every registered simulator/emulator for the checkout (hardware rows are
+not owned), releases all remaining registry rows, removes the wholly-owned `splashdown.env`,
+and asks `clear_writer_destinations` to remove only splashdown keys from user-owned
+`envfile=`/`envrc` outputs. It then calls the loader's `unwire`, removes the managed
+post-checkout integration, reverts splashdown's gitignore entries and agent-guidance block,
+and removes `splashdown.local.toml` only when it still equals `LOCAL_SKELETON`. A modified
+local file is preserved with a note; `splashdown.toml` is deleted last. Framework files
+patched by `doctor --fix` are outside this reversal because they have no sentinels or saved
+originals.
+
 #### Git post-checkout hook installation
 
 `hooks.py` owns post-checkout integration. `_ensure_post_checkout_hook` wires `post-checkout →
@@ -162,17 +180,19 @@ tools fall back to detection results or a setup note rather than escaping as Pyt
 
 #### Status rendering
 
-`cmd_status` (`commands.py:618`) is the entry; the rendering is spread across several helpers. The branching:
+`cmd_status` (`commands.py:515`) is the entry; the rendering is spread across several helpers. The branching:
 
-- **`all` (positional scope) without `--verbose` (text)** → `_cmd_status_table` (`commands.py:507`): a compact one-row-per-checkout table (PATH / SUMMARY / optional ISSUE column, where ISSUE only appears if at least one row flags something — `commands.py:551`).
-- **everything else** → per-checkout blocks built by `_gather_status_for_checkout` (`commands.py:425`) and emitted by `_emit_status_block_text` (`commands.py:468`). JSON output uses the same block structure (`commands.py:665`).
+- **`all` (positional scope) without `--verbose` (text)** → `_cmd_status_table` (`commands.py:380`): a compact one-row-per-checkout table (PATH / SUMMARY / optional ISSUE column, where ISSUE only appears if at least one row flags something — `commands.py:431`).
+- **everything else** → per-checkout blocks built by `_gather_status_for_checkout` (`commands.py:290`) and emitted by `_emit_status_block_text` (`commands.py:339`). JSON output uses the same block structure (`commands.py:555`).
 
 The block builder splits device sourcing two ways: `all` mode reads devices straight from the
-registry; default mode reads the recipe+local catalog. A shared `_StatusContext` carries repair
+registry; default mode reads the recipe+local+global catalog. A shared `_StatusContext` carries repair
 counters, latest-OS lookup cache, and capability-warning keys across checkouts. When a device
 boundary raises `CapabilityError`, status warns once and renders `unavailable` without incrementing
-missing, stale, or orphan counters. Other `DeviceError` values retain the `error: <message>` status.
-`_print_check_summary` routes actual issues to the command that fixes them (`gc` for defunct,
+missing, stale, orphan, undeclared, or hardware counters. Other `DeviceError` values retain the
+`error: <message>` status. `_print_check_summary` routes actual issues to the action that fixes
+them: `gc` for defunct checkouts, `target refresh` for orphan/stale/undeclared rows, `run` for
+missing managed targets, and reconnect/pairing guidance for missing physical hardware.
 
 #### The no-loader delivery fallback
 
@@ -188,13 +208,13 @@ not gitignored.
 
 #### `_confirm` and the `cmd_init` refuse path
 
-`_confirm` (`commands.py:1101`) is the shared interactive `[y/N]` gate for destructive ops — used by both `cmd_destroy` (`commands.py:1120`) and `cmd_target_prune` (`commands.py:1024`). `yes=True` (from `--yes`) skips the prompt and returns `True`.
+`_confirm` (`commands.py:995`) is the shared interactive `[y/N]` gate for destructive ops — used by both `cmd_destroy` (`commands.py:1003`) and `cmd_target_prune` (`commands.py:859`). `yes=True` (from `--yes`) skips the prompt and returns `True`.
 
 `cmd_init`'s refuse path is the one place a handler exits the process directly rather than returning a code: when `splashdown.toml` already exists and `--overwrite` wasn't passed, it prints and calls `sys.exit(2)`. `_cmd_init_preset` does the same for an unknown preset. This is inconsistent with every other handler, which returns an int (see [Gotchas](#gotchas)).
 
 #### Device lifecycle handlers
 
-`cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy` (`commands.py:1044`/`1064`/`1084`/`1109`) share a prelude: `_infer_dtype` (`commands.py:1130`) resolves an omitted TYPE to the single declared target type (erroring if zero or multiple are declared), and `_resolve_variant_for_cli` (`commands.py:1148`) loads recipe+local, merges, and picks the variant. Each then calls into `devices.py` (`ensure_fresh_sim`, `ios_boot`/`android_boot`, `device_run`, etc.). The bulk of `commands.py` is also the `target` subcommand machinery — `cmd_gc`/`cmd_target_gc` (`commands.py:840`/`786`), `cmd_target_refresh` (`commands.py:899`), `cmd_target_prune` (`commands.py:985`) — all of which iterate registry device rows and reconcile them against the live sims/AVDs.
+`cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy` (`commands.py:936`/`:958`/`:978`/`:1003`) share a prelude: `_infer_dtype` (`commands.py:1038`) resolves an omitted TYPE to the single project-declared target type (falling back to global only when the project declares none), and `_resolve_variant_for_cli` (`commands.py:1056`) loads the full recipe+local+global catalog and picks the variant. Each then calls into `devices.py` (`ensure_fresh_sim`, `ios_boot`/`android_boot`, `device_run`, etc.). The bulk of `commands.py` is also the `target` subcommand machinery — `cmd_gc`/`cmd_target_gc` (`commands.py:742`/`:687`), `cmd_target_refresh` (`commands.py:766`), `cmd_target_prune` (`commands.py:859`) — all of which iterate registry device rows and reconcile them against the live sims/AVDs.
 
 Explicit platform operations propagate `CapabilityError`. The dispatcher sets `skip_unavailable`
 only for the `all` scope, so unscoped `target refresh` and `target prune` warn once and continue the
@@ -221,31 +241,32 @@ return exit 2 without mutating the registry.
 
 ### `completion.py` — fail-silent completers
 
-The completers run on every `<Tab>`, so the module's contract is: **never raise, never print**. Both completers wrap their body in `except Exception: return []` (`completion.py:47`, `:64`) — a malformed recipe or a collision yields no suggestions rather than a traceback that would corrupt the shell line.
+The completers run on every `<Tab>`, so the module's contract is: **never raise, never print**. Both completers wrap their body in `except Exception: return []` (`completion.py:53`, `:76`) — a malformed recipe or a collision yields no suggestions rather than a traceback that would corrupt the shell line.
 
-- `variant_completer` (`completion.py:33`) offers variant names for the typed-or-inferred type (slot 2).
-- `device_arg_completer` (`completion.py:51`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
+- `variant_completer` (`completion.py:39`) offers variant names for the typed-or-inferred type (slot 2).
+- `device_arg_completer` (`completion.py:57`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
 - Both share `_catalog` (`completion.py:21`), which mirrors `cli._resolve_cwd` (honour an already-typed `--cwd`, else `$PWD`, then `.resolve()`).
 
-`install` (`completion.py:68`) is a no-op — and imports nothing — unless `_ARGCOMPLETE` is in the environment, so the normal CLI and hook paths pay zero cost. Only an active completion triggers the `import argcomplete` + `autocomplete()`. This is why `main()` calls `install` immediately before `parse_args`: `autocomplete()` parses `COMP_LINE` itself and exits the process before `parse_args` ever returns.
+`install` (`completion.py:80`) is a no-op — and imports nothing — unless `_ARGCOMPLETE` is in the environment, so the normal CLI and hook paths pay zero cost. Only an active completion triggers the `import argcomplete` + `autocomplete()`. This is why `main()` calls `install` immediately before `parse_args`: `autocomplete()` parses `COMP_LINE` itself and exits the process before `parse_args` ever returns.
 
 ## Key entry points
 
-- `main()` — process entry / dispatch table — `cli.py:328`
-- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py:303`
-- `_build_parser` — the single flat parser — `cli.py:105`
-- `_EpilogOnlyFormatter` — suppress argparse's command dump — `cli.py:31`
-- `_VersionAction` — lazy `--version` — `cli.py:41`
-- `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:284`
-- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1316`
-- `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1244`
-- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
-- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py`
-- `cmd_status` — status entry — `commands.py:618`
-- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1229` / `:1185`
-- `_confirm` — shared `[y/N]` gate — `commands.py:1101`
-- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py`
-- `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:33` / `:51` / `:68`
+- `main()` — process entry / dispatch table — `cli.py:389`
+- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py:364`
+- `_build_parser` — the single flat parser — `cli.py:110`
+- `_EpilogOnlyFormatter` — suppress argparse's command dump — `cli.py:33`
+- `_VersionAction` — lazy `--version` — `cli.py:43`
+- `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:328`
+- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1595`
+- `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1295`
+- `cmd_deinit` — teardown orchestrator — `commands.py:1461`
+- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py:277` / `:119`
+- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py:19`
+- `cmd_status` — status entry — `commands.py:515`
+- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1141` / `:1095`
+- `_confirm` — shared `[y/N]` gate — `commands.py:995`
+- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1740` / `:1800`
+- `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:39` / `:57` / `:80`
 
 ## Gotchas
 

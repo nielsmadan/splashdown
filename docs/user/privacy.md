@@ -1,3 +1,8 @@
+---
+title: Privacy policy
+description: Privacy information for the splashdown documentation site and hosted assets.
+---
+
 # Privacy policy
 
 Privacy information in accordance with the General Data Protection Regulation (GDPR).

@@ -12,17 +12,17 @@ For the *user-facing* contract (what gets pinned, what `splashdown.env` looks li
 
 ### `provision()` — resolve loop
 
-Entry: `provision()` at `provisioning.py:27`.
+Entry: `provision()` at `provisioning.py:25`.
 
-1. Locate `splashdown.toml` in `cwd`. **If it's missing, raise `FileNotFoundError`** (`provisioning.py:34`). Callers in `commands.py` catch this and turn it into a no-op exit 0, so the post-checkout hook is silent in non-splashdown repos (see Gotchas).
+1. Locate `splashdown.toml` in `cwd`. **If it's missing, raise `FileNotFoundError`** (`provisioning.py:31-33`). Callers in `commands.py` catch this and turn it into a no-op exit 0, so the post-checkout hook is silent in non-splashdown repos (see Gotchas).
 2. Load and validate the complete recipe, then resolve `cwd` to an absolute path
    (the registry key for this checkout) and read the current git branch via
    `_current_branch` (used by template scopes). `Recipe.load` checks every
    section, resource, writer, setup, target, app reference, and template before
    this function can call a registry method. A schema error therefore causes no
    allocation and no output-file mutation.
-3. Iterate `topo_sort(recipe)` (`provisioning.py:41`). The topo sort orders resources so any `template` that references another resource is resolved *after* its dependency; `resolved` accumulates values as we go and is passed into each template's scope. Dependency analysis and the sort live in `recipe.py` — see [recipe-and-templates.md](./recipe-and-templates.md).
-4. Dispatch on `spec["type"]` — one branch per resource type (`provisioning.py:44`–`83`):
+3. Iterate `topo_sort(recipe)` (`provisioning.py:39`). The topo sort orders resources so any `template` that references another resource is resolved *after* its dependency; `resolved` accumulates values as we go and is passed into each template's scope. Dependency analysis and the sort live in `recipe.py` — see [recipe-and-templates.md](./recipe-and-templates.md).
+4. Dispatch on `spec["type"]` — one branch per resource type (`provisioning.py:41-81`):
 
 | type | behavior | persisted to registry? |
 |------|----------|------------------------|
@@ -33,27 +33,27 @@ Entry: `provision()` at `provisioning.py:27`.
 | `template` | render `template` against the current scope on every sync | yes (kv), refreshed every sync |
 | `set` | reuse stored value, else fall back to `default`; **error if neither exists** | yes (kv) when defaulted |
 
-   Unknown types raise `ValueError` (`provisioning.py:83`).
+   Unknown types raise `ValueError` (`provisioning.py:81`).
 
-5. Each resolved value lands in `resolved[name]`; the dict is returned (`provisioning.py:84`).
+5. Each resolved value lands in `resolved[name]`; the dict is returned (`provisioning.py:82-83`).
 
 **The internal `reprovision` flag** (CLI `--force`) forces new allocations for otherwise-sticky values:
-- `port`: `registry.remove_port` first, so the port is re-allocated (may change) instead of pinned (`provisioning.py:49`).
-- `uuid`: skip the registry lookup so a fresh uuid is minted (`provisioning.py:53`).
+- `port`: `registry.remove_port` first, so the port is re-allocated (may change) instead of pinned (`provisioning.py:47-49`).
+- `uuid`: skip the registry lookup so a fresh uuid is minted (`provisioning.py:51-53`).
 - `template`: unaffected because templates already re-render from current inputs on every sync.
 - `set` is unaffected — it always reads the stored value (or default); `reprovision=True` does not reset a user-set value.
 
 ### `write_outputs()` — group and emit
 
-Entry: `write_outputs()` at `provisioning.py:91`.
+Entry: `write_outputs()` at `provisioning.py:86`.
 
-1. Group `resolved` by each resource's `writer` field, defaulting to `splashdown-env` (`provisioning.py:97`).
-2. **Truncate guard**: if no resource targets `splashdown-env` anymore but the file still exists on disk, inject an empty group for it so the stale file gets emptied rather than left lying with values that contradict the recipe (`provisioning.py:103`).
-3. For each `(writer, items)` group, dispatch (`provisioning.py:107`):
+1. Group `resolved` by each resource's `writer` field, defaulting to `splashdown-env` (`provisioning.py:90-93`).
+2. **Truncate guard**: if no resource targets `splashdown-env` anymore but the file still exists on disk, inject an empty group for it so the stale file gets emptied rather than left lying with values that contradict the recipe (`provisioning.py:95-99`).
+3. For each `(writer, items)` group, dispatch (`provisioning.py:101-132`):
    - `splashdown-env` → `write_splashdown_env(cwd/splashdown.env, items)`. Splashdown owns this file wholesale and rewrites it entirely.
    - `envfile=<path>` → `write_envfile`, creating missing parent directories. The schema already requires a
      non-empty relative path with no `..` component. A defensive **containment
-     guard** (`provisioning.py:119`) also requires the resolved target to be
+     guard** (`provisioning.py:114`) also requires the resolved target to be
      `is_relative_to(cwd)`. The recipe is committed and auto-run by the
      post-checkout hook, so an `envfile=` value is untrusted input — without
      these checks an absolute path or `../` escape is an arbitrary-file-write
@@ -66,15 +66,15 @@ Entry: `write_outputs()` at `provisioning.py:91`.
 
 ### Writers and change detection
 
-`_write_if_changed()` (`provisioning.py:141`) is the common gate: it reads the existing file and writes only if the contents differ, returning whether it wrote. This is what makes re-running `sync` a no-op when nothing changed (and keeps mtimes stable for `cd`-triggered loaders).
+`_write_if_changed()` (`provisioning.py:136`) is the common gate: it reads the existing file and writes only if the contents differ, returning whether it wrote. This is what makes re-running `sync` a no-op when nothing changed (and keeps mtimes stable for `cd`-triggered loaders).
 
-- `write_splashdown_env` (`provisioning.py:150`): builds `K=_env_quote(V)` lines and replaces the whole file. Empty `items` → empty file.
-- `write_envfile` (`provisioning.py:163`): *surgical merge* into a foreign file. Reads existing lines, drops any line whose `KEY=` is one splashdown manages (regex `^\s*([A-Za-z_]\w*)\s*=`), trims trailing blanks, then appends the managed `K=_env_quote(V)` lines (same quoting as `splashdown.env`). Non-managed lines are preserved, and missing parent directories are created before the file is written.
-- `write_envrc` (`provisioning.py:178`): same merge strategy but matches `export KEY=` and emits `export K=<single-quoted V>`. Uses shell single-quote escaping (`'\''`) rather than `_env_quote`, since `.envrc` is sourced by a shell (direnv).
+- `write_splashdown_env` (`provisioning.py:145`): builds `K=_env_quote(V)` lines and replaces the whole file. Empty `items` → empty file.
+- `write_envfile` (`provisioning.py:158`): *surgical merge* into a foreign file. Reads existing lines, drops any line whose `KEY=` is one splashdown manages (regex `^\s*([A-Za-z_]\w*)\s*=`), trims trailing blanks, then appends the managed `K=_env_quote(V)` lines (same quoting as `splashdown.env`). Non-managed lines are preserved, and missing parent directories are created before the file is written.
+- `write_envrc` (`provisioning.py:177`): same merge strategy but matches `export KEY=` and emits `export K=<single-quoted V>`. Uses shell single-quote escaping (`'\''`) rather than `_env_quote`, since `.envrc` is sourced by a shell (direnv).
 
 ### `run_setup()` — `[setup.*]` hooks
 
-Entry: `run_setup()` at `provisioning.py:246`. The shape of *every* declared
+Entry: `run_setup()` at `provisioning.py:242`. The shape of *every* declared
 setup was already validated by `Recipe.load`, before provisioning. When a setup
 is requested, `run_setup` selects it and runs each command via
 `subprocess.run(..., shell=True)` with `cwd` set to the checkout and env =
@@ -89,30 +89,30 @@ causes no allocation or output write.
 
 ## Key entry points
 
-- `provision()` — resolve loop / per-type dispatch: `provisioning.py:27`
-- Missing-recipe `FileNotFoundError`: `provisioning.py:34`
-- Topo-sorted iteration: `provisioning.py:41`
-- `set`-type missing-value error: `provisioning.py:74`
-- `write_outputs()` — writer grouping + dispatch: `provisioning.py:91`
-- `splashdown-env` truncate guard: `provisioning.py:103`
-- envfile path-containment guard: `provisioning.py:119`
-- `_write_if_changed()`: `provisioning.py:141`
-- `write_splashdown_env` / `write_envfile` / `write_envrc`: `provisioning.py:150` / `:163` / `:178`
-- `run_setup()`: `provisioning.py:246`
+- `provision()` — resolve loop / per-type dispatch: `provisioning.py:25`
+- Missing-recipe `FileNotFoundError`: `provisioning.py:31-33`
+- Topo-sorted iteration: `provisioning.py:39`
+- `set`-type missing-value error: `provisioning.py:71-75`
+- `write_outputs()` — writer grouping + dispatch: `provisioning.py:86`
+- `splashdown-env` truncate guard: `provisioning.py:95-99`
+- envfile path-containment guard: `provisioning.py:114`
+- `_write_if_changed()`: `provisioning.py:136`
+- `write_splashdown_env` / `write_envfile` / `write_envrc`: `provisioning.py:145` / `:158` / `:177`
+- `run_setup()`: `provisioning.py:242`
 
 ## Gotchas
 
 - **Templates are derived; uuids are stable.** A template re-renders on every sync and overwrites its kv row, so dependency or expression changes propagate immediately. A `uuid` resource remains persisted until `splash sync --force` (`reprovision=True` internally). Calling `uuid()` directly inside a template produces a fresh value on every sync; declare a separate uuid resource and reference it when the composed result must be stable.
-- **`set`-type resources have no value until you give them one.** A `set` resource with neither a stored value nor a `default` raises `ValueError` telling you to run `splash env set NAME=VALUE` or add `default = ...` (`provisioning.py:74`). They're the "user must decide" escape hatch.
+- **`set`-type resources have no value until you give them one.** A `set` resource with neither a stored value nor a `default` raises `ValueError` telling you to run `splash env set NAME=VALUE` or add `default = ...` (`provisioning.py:71-75`). They're the "user must decide" escape hatch.
 - **The missing-recipe error is load-bearing.** `provision()` raises `FileNotFoundError` rather than silently succeeding; the no-op-in-non-splashdown-repo behavior of the git hook depends on `commands.py` catching it and returning 0. Don't "fix" this by returning `{}` here — callers distinguish the cases.
 - **Schema errors are pre-mutation.** `Recipe.load` validates the entire
   document, including late-declared resources, setups, templates, and writers,
   before the first registry access. Do not move schema checks into the resolve
   loop or writer dispatch; doing so would reintroduce partial allocation.
-- **`envfile=<path>` is untrusted.** The containment guard (`provisioning.py:119`) is a security boundary, not a convenience check. The recipe runs automatically on checkout, so a malicious `envfile=/etc/...` or `envfile=../../x` would otherwise write outside the project. `envrc` has no `=<path>` form, so it isn't exposed to this.
+- **`envfile=<path>` is untrusted.** The containment guard (`provisioning.py:114`) is a security boundary, not a convenience check. The recipe runs automatically on checkout, so a malicious `envfile=/etc/...` or `envfile=../../x` would otherwise write outside the project. `envrc` has no `=<path>` form, so it isn't exposed to this.
 - **`envfile`/`envrc` merge by KEY, not by ownership marker.** They strip any line matching a *currently managed* key and re-append it. A managed var that you later remove from the recipe will stop being stripped and any hand-added stale line for it survives — splashdown only owns keys it's actively writing in those foreign files (unlike `splashdown.env`, which it owns wholesale).
 - **`reprovision` does not reset `set` values.** It re-rolls ports and uuids only; a user-set value persists across `splash sync --force`, while templates already track current inputs.
-- **An app's `resources = [...]` list is cosmetic for allocation.** `provision()` iterates the recipe's `[resources.*]` tables via `topo_sort(recipe)` / `recipe.resources` (`provisioning.py:41`–`42`) — it never reads any `[apps.<name>]` `resources` list. Setting `resources = []` on an app does **not** stop its ports being allocated: as long as a `[resources.*]` table declares the resource, it is provisioned. Keep the per-app list aligned for format consistency, but it is not load-bearing here.
+- **An app's `resources = [...]` list is cosmetic for allocation.** `provision()` iterates the recipe's `[resources.*]` tables via `topo_sort(recipe)` / `recipe.resources` (`provisioning.py:39-40`) — it never reads any `[apps.<name>]` `resources` list. Setting `resources = []` on an app does **not** stop its ports being allocated: as long as a `[resources.*]` table declares the resource, it is provisioned. Keep the per-app list aligned for format consistency, but it is not load-bearing here.
 
 ## Why
 

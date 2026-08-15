@@ -10,7 +10,7 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   (ports/kv/devices), port allocation, lazy GC, row-forgery prevention.
 - [provisioning.md](provisioning.md) — `provisioning.py`: `provision()` resource resolution and
   the output writers.
-- [recipe-and-templates.md](recipe-and-templates.md) — `recipe.py` + `tomlio.py`: recipe/local
+- [recipe-and-templates.md](recipe-and-templates.md) — `recipe.py` + `tomlio.py`: recipe/local/global
   parsing, the AST-sandbox template engine, topo sort, and comment-preserving TOML writes.
 - [scanning-and-extension.md](scanning-and-extension.md) — `scanner.py` + `profiles.py` +
   `agentdocs.py` + `loaders.py`: project detection, extension points, and generated agent
@@ -18,8 +18,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 - [devices.md](devices.md) — `devices.py`: sim/emulator/physical-device lifecycle and framework
   launchers.
 - [wiring.md](wiring.md) — `wiring.py`: the `splash doctor` framework-wiring checks and autopatch.
-- [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `completion.py`: entry,
-  parse, dispatch, the `cmd_*` handlers, and git-hook installation.
+- [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `hooks.py` +
+  `completion.py`: entry, parse, dispatch, the `cmd_*` handlers, and git-hook installation.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
   audited subprocess-failure contract.
 
@@ -29,8 +29,9 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 `registry.py` (machine-wide allocation). Alongside: `loaders.py` wires the env loader, `devices.py`
 runs sims/emulators, `wiring.py` patches framework configs, and `agentdocs.py` derives and
 synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, rescan, and deinit.
-`cli.py`/`commands.py` are the entry + orchestration. `src/splashdown/__init__.py` is the seam
-that ties them together.
+`hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
+`loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
+`src/splashdown/__init__.py` is the seam that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)
 - **Re-export hub.** `src/splashdown/__init__.py` defines the path/name constants
@@ -40,8 +41,10 @@ that ties them together.
   and the test suite.
 - **Import order matters.** Submodules import shared constants from the package root
   (`from . import RECIPE_NAME`); `__init__.py` is ordered so `PROFILES` is populated before use.
-  Several real backward edges (registry↔devices↔recipe, loaders→commands, wiring→scanner/commands)
-  are broken with **in-function lazy imports** — moving one to module scope risks an `ImportError`.
+  Several real backward edges (registry↔devices↔recipe, plus selected scanner/profile/TOML writer
+  calls from orchestration) are broken with **in-function lazy imports** — moving one to module
+  scope risks an `ImportError`. Hook helpers are no longer such an edge: `loaders.py` and
+  `wiring.py` import `hooks.py` directly, and `commands.py` consumes the same module.
 - **Hot-path discipline.** Bare `splash` (the post-checkout hook) runs `provision()`/`status`,
   which only *read* TOML via stdlib `tomllib`. `tomlkit` (TOML *writing*) is imported at
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,

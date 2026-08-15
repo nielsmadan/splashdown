@@ -1,3 +1,8 @@
+---
+title: How splashdown compares
+description: Compare splashdown with worktree tools, reverse proxies, and adjacent development utilities.
+---
+
 # How splashdown compares
 
 Git worktrees isolate your *code*, but not your *runtime*. Two checkouts of the same project still fight over the same dev port, the same simulator, the same env. Several tools address parts of that gap, mostly aimed at running parallel AI-coding-agent worktrees. This page is an honest look at where splashdown sits among them.

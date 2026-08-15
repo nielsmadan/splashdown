@@ -1,3 +1,8 @@
+---
+title: Legal notice
+description: Legal and contact information for the splashdown documentation site.
+---
+
 # Legal notice
 
 Information pursuant to § 5 of the German Digital Services Act (DDG) and § 18(1) of the German State Media Treaty (MStV).

@@ -7,13 +7,13 @@ Map of the `docs/` tree. `README.md` (repo root) is the authoritative user-facin
 ## Two audiences
 
 - **Using splashdown** (you run `splash`): start at `README.md`; deeper walkthroughs in
-  [`user/`](user/overview.md). Verbose, task-oriented, example-driven.
+  [`user/`](user/index.md). Verbose, task-oriented, example-driven.
 - **Building splashdown** (contributors + coding agents): [`features/`](features/overview.md)
   for *what* each feature does (a terse behavior reference) and [`tech/`](tech/overview.md) for
   *how* it's implemented. Concise, pointer-first (`file:line`).
 
 ## Sections
-- [user/](user/overview.md): how-to guides for people using the tool (e.g. monorepo setup).
+- [user/](user/index.md): how-to guides for people using the tool (e.g. monorepo setup).
   README links here. Human-format; agents don't load these by default.
 - [features/](features/overview.md): what each feature does, kept in sync with the code. The
   behavior reference for contributors and agents. Owned by the `doc` skill.

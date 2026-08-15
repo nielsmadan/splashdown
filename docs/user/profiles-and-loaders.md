@@ -1,3 +1,8 @@
+---
+title: Profiles and loaders
+description: Understand framework profiles, shell environment loaders, and resource writer behavior.
+---
+
 # Profiles and loaders
 
 Two extension points decide what `splash init` produces.

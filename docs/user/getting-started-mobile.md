@@ -1,3 +1,8 @@
+---
+title: Getting started with mobile
+description: Set up per-checkout iOS simulators, Android emulators, and physical test devices.
+---
+
 # Getting started with mobile
 
 For a mobile app, splashdown gives each checkout its own simulator and emulator instances, so worktrees never fight over one device, and it can boot, build, and launch in a single command. This page assumes you have read [Getting started](getting-started.md) for the basics of `splash init` and the env loader.

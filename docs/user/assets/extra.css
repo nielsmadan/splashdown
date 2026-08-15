@@ -23,10 +23,10 @@
   --md-typeset-a-color: #8ecae6 !important;
 }
 
-/* Light mode: baby blue is too pale on white — drop to medium blue for links. */
+/* Light mode: use a deeper blue so normal-size links pass WCAG AA on white. */
 [data-md-color-scheme="default"] {
-  --md-accent-fg-color: #219ebc !important;
-  --md-typeset-a-color: #219ebc !important;
+  --md-accent-fg-color: #08728a !important;
+  --md-typeset-a-color: #08728a !important;
 }
 
 /* Zensical's default "modern" header uses --md-default-bg-color (a translucent

@@ -1,3 +1,8 @@
+---
+title: Settings
+description: Configure splashdown command behavior and machine-wide target defaults.
+---
+
 # Settings
 
 Behavior toggles live in a `[settings]` table. Two places can set them, highest priority first:
