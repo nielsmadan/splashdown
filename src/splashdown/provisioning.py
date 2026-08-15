@@ -6,7 +6,7 @@ import subprocess
 import uuid as uuid_mod
 from pathlib import Path
 
-from . import ENV_FILE_NAME, RECIPE_NAME
+from .constants import ENV_FILE_NAME, RECIPE_NAME
 from .recipe import (
     Recipe,
     _current_branch,

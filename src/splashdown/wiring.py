@@ -6,15 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import RECIPE_NAME
-from .devices import DeviceError, detect_framework, resolve_app_dir
 from .hooks import (
     _detect_hook_manager,
     _ensure_post_checkout_hook,
     _lefthook_config_path,
     _native_hook_path,
 )
-from .recipe import Recipe
 
 # The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
 # per-framework spec shipped with the tool. Each WiringCheck names
@@ -172,108 +169,6 @@ def _yaml_key_regions(text: str, key: str, *, indent: int | None = None) -> list
             block.append(line)
         regions.append("\n".join(block))
     return regions
-
-
-def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
-    """Pick the framework for doctor to check. Returns None if undetectable."""
-    try:
-        return _resolve_doctor_target(cwd, override)[0]
-    except DeviceError:
-        return None
-
-
-def _resolve_doctor_target(cwd: Path, override: str | None) -> tuple[str, Path]:
-    """The framework to check and the directory to check it in. Raises DeviceError
-    with a specific reason when nothing resolves."""
-    if override:
-        return (override, cwd)
-    recipe_path = cwd / RECIPE_NAME
-    recipe = Recipe.load(recipe_path) if recipe_path.exists() else Recipe({}, recipe_path)
-    framework = detect_framework(cwd, recipe)
-    return (framework, resolve_app_dir(cwd, recipe, framework))
-
-
-def _run_detect(check: WiringCheck, cwd: Path) -> tuple[str, str]:
-    """A detect() that raises costs one ✗, not the whole doctor run — and never a ✓:
-    an unreadable file is precisely the case where the check knows nothing."""
-    try:
-        return check.detect(cwd)
-    except Exception as e:  # noqa: BLE001 - report rather than crash whole run
-        return ("problem", f"check could not run: {e}")
-
-
-def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]:
-    """Resolve the doctor's check list for a framework name. Profiles take an
-    AppInventory; synthesize one rooted at cwd."""
-    from .scanner import PROFILES, AppInventory  # noqa: PLC0415
-
-    if framework in PROFILES:
-        app = AppInventory(name="main", path=cwd, profile=framework)
-        checks: list[WiringCheck] = PROFILES[framework].wiring_checks(app)
-        return checks
-    return []
-
-
-def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None = None) -> int:
-    """Run framework-aware wiring checks. With fix=True, apply safe autofixes."""
-    import sys  # noqa: PLC0415
-
-    try:
-        framework, app_dir = _resolve_doctor_target(cwd, framework_override)
-    except DeviceError as e:
-        print(f"doctor: {e}", file=sys.stderr)
-        print("  pass --framework=NAME to check a specific framework.", file=sys.stderr)
-        return 1
-    if app_dir != cwd:
-        print(f"doctor: checking {app_dir.relative_to(cwd)} (`{framework}`)", file=sys.stderr)
-    from .profiles import compose_wiring_checks  # noqa: PLC0415
-
-    # Project-level checks run against the repo root regardless of which framework
-    # resolved — a compose file is infrastructure, not an app.
-    targets = [(check, app_dir) for check in _wiring_checks_for_framework(framework, app_dir)]
-    targets += [(check, cwd) for check in compose_wiring_checks(cwd)]
-    if not targets:
-        from .scanner import PROFILES  # noqa: PLC0415
-
-        profile = PROFILES.get(framework)
-        if profile is not None and profile.env_only:
-            print(f"  ✓  no wiring checks needed for `{framework}` (env-only)", file=sys.stderr)
-        else:
-            print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
-        return 0
-
-    bad = 0
-    for check, check_dir in targets:
-        if not check.applies(check_dir):
-            print(f"  -  {check.id}: not applicable", file=sys.stderr)
-            continue
-        status, detail = _run_detect(check, check_dir)
-        if status == "ok":
-            print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
-            continue
-        if fix and check.autofix is not None:
-            try:
-                check.autofix(check_dir)
-            except Exception as e:  # noqa: BLE001 - report rather than crash whole run
-                print(f"  ✗  {check.id}: autofix failed: {e}", file=sys.stderr)
-                bad += 1
-                continue
-            status_after, detail_after = _run_detect(check, check_dir)
-            if status_after == "ok":
-                print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
-                continue
-            print(f"  ✗  {check.id}: still problem after autofix: {detail_after}", file=sys.stderr)
-            if check.manual_instructions is not None:
-                for line in check.manual_instructions(check_dir).splitlines():
-                    print(f"        {line}", file=sys.stderr)
-            bad += 1
-            continue
-        print(f"  ✗  {check.id}: {detail}", file=sys.stderr)
-        if check.manual_instructions is not None:
-            for line in check.manual_instructions(check_dir).splitlines():
-                print(f"        {line}", file=sys.stderr)
-        bad += 1
-    return 0 if bad == 0 else 1
 
 
 def _rn_hook_detect(cwd: Path) -> tuple[str, str]:

@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-from . import TARGET_TYPES
 from .commands import (
     _cmd_provision,
     _cmd_provision_inner,
@@ -24,10 +23,11 @@ from .commands import (
     cmd_status,
     cmd_stop,
 )
+from .constants import TARGET_TYPES
 from .devices import DeviceError
+from .doctor import cmd_doctor
 from .recipe import load_settings
 from .registry import Registry
-from .wiring import cmd_doctor
 
 
 class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
@@ -61,9 +61,9 @@ class _VersionAction(argparse.Action):
         values: object,
         option_string: str | None = None,
     ) -> None:
-        from . import _resolve_version  # noqa: PLC0415
+        from ._version import resolve_version  # noqa: PLC0415
 
-        print(f"splashdown {_resolve_version()}")
+        print(f"splashdown {resolve_version()}")
         parser.exit()
 
 

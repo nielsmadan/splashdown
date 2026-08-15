@@ -7,8 +7,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .catalog import PROFILES
+from .inventory import AppInventory
 from .recipe import Recipe
-from .scanner import PROFILES, AppInventory
 
 _GUIDANCE_START = "<!-- >>> splashdown-managed agent-guidance >>> -->"
 _GUIDANCE_END = "<!-- <<< splashdown-managed agent-guidance <<< -->"

@@ -109,8 +109,7 @@ def _x86_64_sim_advice() -> str:
         "simulator — Apple dropped x86_64 from the iOS 26 runtimes.\n"
         '  If the build failed with "Unable to find a destination...", '
     )
-    # Lazy: devices.py imports this module for `run_custom_command`, so a
-    # module-level import here would close the cycle.
+    # Lazy: architecture advice is the only runner dependency on device lifecycle.
     from .devices import ios_x86_64_target  # noqa: PLC0415
 
     target = ios_x86_64_target()

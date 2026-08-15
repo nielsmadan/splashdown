@@ -11,7 +11,7 @@ This file is the single source of truth for coding-agent guidance in this reposi
 Tasks run through `just` (see `Justfile`). CI runs `just check`.
 
 ```sh
-just check          # everything CI runs: ruff check + ruff format --check + mypy + pytest
+just check          # everything CI runs: ruff + format + import cycles + mypy + pytest
 just test           # pytest -q
 just lint           # ruff check
 just fmt            # ruff format (writes)
@@ -31,14 +31,14 @@ Release: `just tag-release-patch|minor|major` bumps `version` in `pyproject.toml
 
 ## Before declaring done
 
-Run the full gate, not just `pytest`: `just check` (ruff check + ruff format --check + mypy + pytest). Work has twice been called verified after `pytest` alone and then failed CI on lint/type errors. For anything touching deps or the release recipe, also simulate the release Test step in a clean venv (`pip install build pytest .`) so runtime deps like `argcomplete`/`tomlkit` are present.
+Run the full gate, not just `pytest`: `just check` (ruff check + ruff format --check + Pylint circular-import check + mypy + pytest). Work has twice been called verified after `pytest` alone and then failed CI on lint/type errors. For anything touching deps or the release recipe, also simulate the release Test step in a clean venv (`pip install build pytest .`) so runtime deps like `argcomplete`/`tomlkit` are present.
 
 ## Dev tooling
 
 How the local checks, hooks, and release flow fit together (the recipe list is under Commands; this is the behavior and gotchas behind them).
 
 - **Coverage floor is `fail_under = 80`** in `[tool.coverage.report]` (`pyproject.toml`) — the single source of truth, enforced on every `--cov` path: CI's test step and the pre-push lefthook (`uv run pytest -q --cov`). `just check` stays plain/fast and does **not** run coverage; only the `--cov` paths do. Real coverage runs ~84%, so the 80 floor has headroom for normal churn but still trips on a genuinely untested chunk.
-- **This repo's own git hooks** live in `lefthook.yml` (install with `just hooks`): pre-commit runs `ruff format --check` + `ruff check` in parallel over staged `*.py`; pre-push runs `mypy` + `pytest` + a globbed `zensical build --strict` docs check (only when `docs/user/**`, `mkdocs.yml`, or `README.md` changed); all via `uv run`. This repo does **not** wire a `post-checkout` hook and has no `splashdown.toml` — it doesn't dogfood splashdown's own provisioning. (Don't confuse this with the *managed* post-checkout hook splashdown installs into consumer repos; the `lefthook install` / post-checkout gotchas elsewhere are about that managed hook.)
+- **This repo's own git hooks** live in `lefthook.yml` (install with `just hooks`): pre-commit runs `ruff format --check` + `ruff check` in parallel over staged `*.py`; pre-push runs Pylint's circular-import check + `mypy` + `pytest` + a globbed `zensical build --strict` docs check (only when `docs/user/**`, `mkdocs.yml`, or `README.md` changed); all via `uv run`. This repo does **not** wire a `post-checkout` hook and has no `splashdown.toml` — it doesn't dogfood splashdown's own provisioning. (Don't confuse this with the *managed* post-checkout hook splashdown installs into consumer repos; the `lefthook install` / post-checkout gotchas elsewhere are about that managed hook.)
 
 ### Release flow
 

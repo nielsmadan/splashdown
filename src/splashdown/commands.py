@@ -8,9 +8,10 @@ import tomllib
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .agentdocs import remove_agent_guidance, sync_agent_guidance
 from .capabilities import translate_tool_errors, warn_capability
+from .catalog import PROFILES
+from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
 from .devices import (
     DeviceError,
     DeviceHealth,
@@ -31,7 +32,6 @@ from .devices import (
     device_destroy_row,
     device_health,
     device_needs_recreate,
-    device_run,
     device_shutdown,
     device_status,
     ensure_fresh_sim,
@@ -42,8 +42,8 @@ from .devices import (
     ios_shutdown,
     physical_status,
     target_add,
-    validate_device_run,
 )
+from .doctor import _resolve_doctor_framework, _wiring_checks_for_framework, cmd_doctor
 from .errors import CapabilityError
 from .hooks import (
     _ensure_gitignore,
@@ -51,6 +51,8 @@ from .hooks import (
     _remove_post_checkout_hook,
     _revert_gitignore,
 )
+from .inventory import ProjectInventory
+from .launching import device_run, validate_device_run
 from .loaders import LOADERS
 from .provisioning import (
     clear_writer_destinations,
@@ -72,18 +74,12 @@ from .recipe import (
 )
 from .registry import Registry
 from .scanner import (
-    ProjectInventory,
     Scanner,
     _build_resource_catalog,
     _detect_loader,
     _merge_app_targets,
     _prune_unresolvable_templates,
     _should_defer_monorepo,
-)
-from .wiring import (
-    _resolve_doctor_framework,
-    _wiring_checks_for_framework,
-    cmd_doctor,
 )
 
 
@@ -1101,7 +1097,6 @@ def _resolve_no_loader_delivery(cwd: Path, inv: ProjectInventory) -> tuple[str |
     None, meaning: keep generating `splashdown.env` and tell the user how to make
     it reach their processes. `message` is always printed.
     """
-    from .scanner import PROFILES  # noqa: PLC0415
 
     def reads_dotenv(profile: str) -> bool:
         if profile == "unknown":
@@ -1316,8 +1311,6 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
         return _cmd_init_preset(cwd, preset, loader_override=loader_override)
 
     # Scanner-driven path.
-    from .scanner import PROFILES  # noqa: PLC0415
-
     inv = Scanner().scan(cwd)
     if loader_override:
         inv = ProjectInventory(workspace=inv.workspace, apps=inv.apps, loader=loader_override)
@@ -1400,8 +1393,6 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
 
 def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
     """Apply autofix wiring checks for every known-profile app found during init."""
-    from .scanner import PROFILES  # noqa: PLC0415
-
     for app in inv.apps:
         if app.profile == "unknown":
             continue
@@ -1541,8 +1532,6 @@ def cmd_refresh_inventory(cwd: Path) -> int:
     """Re-scan and rewrite [project] / [apps.*] in splashdown.toml; preserve
     [resources.*] sections verbatim. Used both for picking up new apps and for
     upgrading legacy recipes to the new shape."""
-    from .scanner import PROFILES  # noqa: PLC0415
-
     recipe_path = cwd / RECIPE_NAME
     if not recipe_path.exists():
         print(f"no {RECIPE_NAME} in {cwd}; run `splash init` instead", file=sys.stderr)

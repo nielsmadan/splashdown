@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import LOCAL_NAME
+from .constants import LOCAL_NAME
 from .devices import _load_recipe_or_empty
 from .recipe import GlobalConfig, LocalConfig, _global_config_path, merged_targets
 

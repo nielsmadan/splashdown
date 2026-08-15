@@ -10,6 +10,8 @@ pre-commit:
 
 pre-push:
   commands:
+    pylint:
+      run: uv run pylint src/splashdown
     mypy:
       run: uv run mypy
     tests:

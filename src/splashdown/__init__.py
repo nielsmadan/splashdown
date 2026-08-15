@@ -7,34 +7,29 @@ registry so concurrent checkouts don't collide.
 
 Python 3.13+ (reads TOML via stdlib tomllib). Two runtime dependencies: argcomplete
 (shell completion) and tomlkit (comment-preserving TOML writing). tomlkit is
-lazy-imported by writer functions only (see tomlio.py), so the git-hook hot path —
+isolated in a lazily imported module (see tomlio.py), so the git-hook hot path —
 which only reads TOML — never loads it.
 """
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 
-
-def _resolve_version() -> str:
-    """Resolve the version from installed package metadata (single source of
-    truth: pyproject.toml). Falls back to reading pyproject directly for an
-    uninstalled source checkout (e.g. the test suite). Called lazily — never on
-    the hot path — because a metadata lookup costs ~20ms."""
-    from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
-
-    try:
-        return version("splashdown")
-    except PackageNotFoundError:
-        import tomllib  # noqa: PLC0415
-
-        try:
-            pyproject = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
-            return str(tomllib.loads(pyproject.read_text())["project"]["version"])
-        except Exception:  # noqa: BLE001 — best-effort fallback; never block on version
-            return "0.0.0+unknown"
+from ._version import resolve_version as _resolve_version
+from .constants import (
+    DEVICE_REGISTRY,
+    ENV_FILE_NAME,
+    ENV_NAME_RE,
+    GLOBAL_CONFIG_NAME,
+    KV_REGISTRY,
+    LOCAL_NAME,
+    PORT_REGISTRY,
+    RECIPE_NAME,
+    REGISTRY_DIR,
+    STATE_HOME,
+    TARGET_TYPES,
+    TARGET_VARIANT_RE,
+)
 
 
 def __getattr__(name: str) -> object:
@@ -45,27 +40,11 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-REGISTRY_DIR = STATE_HOME / "splashdown"
-PORT_REGISTRY = REGISTRY_DIR / "ports.tsv"
-KV_REGISTRY = REGISTRY_DIR / "kv.tsv"
-DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"
-
-ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-TARGET_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-TARGET_TYPES = ("simulator", "emulator", "device")
-RECIPE_NAME = "splashdown.toml"
-LOCAL_NAME = "splashdown.local.toml"
-GLOBAL_CONFIG_NAME = "config.toml"
-ENV_FILE_NAME = "splashdown.env"
-
-# Re-export Path so tests can do `sd.Path` and monkeypatch it.
-from pathlib import Path
-
 # Import profiles — this populates PROFILES.
 from . import capabilities as capabilities
 from . import profiles as _profiles_module
 from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
+from .catalog import PROFILES
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .commands import (
     _cmd_init_preset,
@@ -106,12 +85,10 @@ from .devices import (
     android_destroy,
     android_ensure,
     android_shutdown,
-    detect_framework,
     device_destroy,
     device_destroy_row,
     device_health,
     device_needs_recreate,
-    device_run,
     device_shutdown,
     device_status,
     ensure_fresh_sim,
@@ -125,11 +102,10 @@ from .devices import (
     ios_x86_64_target,
     physical_discover,
     physical_status,
-    resolve_app_dir,
     target_add,
     target_remove,
-    validate_device_run,
 )
+from .doctor import cmd_doctor
 from .errors import CapabilityError
 from .hooks import (
     _detect_hook_manager,
@@ -141,6 +117,13 @@ from .hooks import (
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
     _wire_post_checkout_native,
+)
+from .inventory import AppInventory, ProjectInventory, RunnableProfile
+from .launching import (
+    detect_framework,
+    device_run,
+    resolve_app_dir,
+    validate_device_run,
 )
 from .loaders import LOADERS, Loader
 from .profiles import (
@@ -174,15 +157,10 @@ from .recipe import (
     topo_sort,
 )
 
-# Import submodules in dependency order so PROFILES gets populated before
-# anything tries to use it (profiles.py imports scanner.PROFILES and fills it).
+# The profile module above populates the shared catalog before these consumers load.
 from .registry import DeviceRow, Registry, _port_in_use
 from .scaffolds import SCAFFOLDS
 from .scanner import (
-    PROFILES,
-    AppInventory,
-    ProjectInventory,
-    RunnableProfile,
     Scanner,
     _build_resource_catalog,
     _detect_loader,
@@ -206,5 +184,4 @@ from .wiring import (
     _rn_xcode_applies,
     _rn_xcode_autofix,
     _rn_xcode_detect,
-    cmd_doctor,
 )

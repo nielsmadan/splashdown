@@ -1,6 +1,6 @@
-# Framework wiring engine (`wiring.py`)
+# Framework wiring engine (`wiring.py` + `doctor.py`)
 
-> Tech doc for `src/splashdown/wiring.py` — the `splash doctor` framework-wiring
+> Tech doc for `src/splashdown/wiring.py` and `src/splashdown/doctor.py` — the `splash doctor` framework-wiring
 > engine. HOW the code works (internals). For the user-facing model (what each
 > check does, why wiring matters), see [`docs/features/framework-wiring.md`](../features/framework-wiring.md).
 
@@ -14,7 +14,7 @@
   - [The individual checks](#the-individual-checks)
   - [Why Electron integration is not a WiringCheck](#why-electron-integration-is-not-a-wiringcheck)
   - [Idempotency: sentinel-wrapped patches](#idempotency-sentinel-wrapped-patches)
-  - [Import direction and the remaining lazy edge](#import-direction-and-the-remaining-lazy-edge)
+  - [Dependency direction](#dependency-direction)
 - [Key entry points](#key-entry-points)
 - [Gotchas](#gotchas)
 - [Why](#why)
@@ -25,10 +25,11 @@
 Allocating a free port is only half the job. Most frameworks hardcode the dev
 port — or override the env var — in one or two config files, so the value
 splashdown writes into `splashdown.env` is silently ignored and the server boots
-on its old default. `wiring.py` is the engine behind `splash doctor`: a
+on its old default. `wiring.py` defines the checks behind `splash doctor`: a
 per-framework registry of small, inspectable facts about a project ("does
 `metro.config.js` read `RCT_METRO_PORT`?") that the tool can detect and, where the
-rewrite is safe and mechanical, auto-patch. `doctor` (no flag) is a read-only
+rewrite is safe and mechanical, auto-patch. `doctor.py` selects and executes those
+checks. `doctor` (no flag) is a read-only
 `✓`/`✗` report; `doctor --fix` applies the safe autofixes and prints manual
 snippets for the rest; scanner-driven `init` runs each detected app's safe fixes after
 scaffolding so a fresh setup lands wired. Intent presets bypass the scanner and run
@@ -38,7 +39,7 @@ scaffolding so a fresh setup lands wired. Intent presets bypass the scanner and 
 
 ### The `WiringCheck` contract
 
-`WiringCheck` (`wiring.py:25`) is a `NamedTuple` carrying everything `doctor` needs
+`WiringCheck` (`wiring.py:22`) is a `NamedTuple` carrying everything `doctor` needs
 to handle one fact: an `id`, a human `description`, `applies(cwd) -> bool`,
 `detect(cwd) -> ("ok"|"problem", detail)`, an optional `autofix(cwd) -> None`, and
 `manual_instructions(cwd) -> str`. The contract is deliberately three-state per
@@ -53,10 +54,10 @@ also `Optional` in the type but every shipped check supplies one.
 ### The two registries and their import-order coupling
 
 Checks are owned by **Profiles**, not by `doctor` directly. The RN checks live in
-a module-level list `_RN_WIRING_CHECKS` (`wiring.py:40`) that is populated by a
+a module-level list `_RN_WIRING_CHECKS` (`wiring.py:37`) that is populated by a
 sequence of top-level `.append(...)` calls as each `rn-*` helper is defined
-(`wiring.py:317`, `:407`, `:485`, `:567`). The shared `_HOOK_WIRING_CHECK`
-(`wiring.py:579`) is a single check reused by native Profiles that otherwise have no
+(`wiring.py:212`, `:302`, `:380`, `:462`). The shared `_HOOK_WIRING_CHECK`
+(`wiring.py:474`) is a single check reused by native Profiles that otherwise have no
 per-checkout wiring.
 
 This is **order-dependent**, and the coupling runs through `profiles.py`:
@@ -76,27 +77,27 @@ than going through these registries (`profiles.py:516`, `:1162`).
 
 ### `cmd_doctor`: resolve → run loop
 
-`cmd_doctor` (`wiring.py:217`) first resolves which framework to check via
-`_resolve_doctor_framework` (`wiring.py:177`): an explicit `--framework` override
+`cmd_doctor` (`doctor.py`) first resolves which framework to check via
+`_resolve_doctor_framework` (`doctor.py:16`): an explicit `--framework` override
 wins; else it loads the recipe (or an empty one) and calls `detect_framework`;
 `DeviceError` collapses to `None`. A `None` framework prints a "pass `--framework`"
-error and exits 1 (`wiring.py:221-226`). It then pulls the check list through
-`_wiring_checks_for_framework` (`wiring.py:205`), which synthesizes an
+error and exits 1. It then pulls the check list through
+`_wiring_checks_for_framework` (`doctor.py:39`), which synthesizes an
 `AppInventory` rooted at `cwd` and calls that Profile's `wiring_checks`; a
-framework with no checks exits 0 with a note (`wiring.py:235-243`).
+framework with no checks exits 0 with a note.
 
-The run loop (`wiring.py:245`) walks each check:
+The run loop in `doctor.py:67` walks each check:
 
 1. `applies(cwd)` false → print "not applicable", skip.
 2. `detect` returns `ok` → print `✓`.
 3. `problem` **and** `--fix` **and** `autofix is not None` → call `autofix` (wrapped
    in `try/except` so one check failing reports rather than crashing the run,
-   `wiring.py:255`), then re-`detect`. On `ok` print `✓ (fixed)`; otherwise print
+   `doctor.py:78`), then re-`detect`. On `ok` print `✓ (fixed)`; otherwise print
    `✗ still problem after autofix` and the manual snippet, count it bad.
 4. Otherwise (problem with no fix requested/available) → print `✗` plus the manual
    snippet, count it bad.
 
-Exit code is 0 only when nothing is left in the `problem` state (`wiring.py:276`).
+Exit code is 0 only when nothing is left in the `problem` state.
 Scanner-driven init uses `_apply_init_wiring_checks` to run the same Profile-owned safe
 autofixes per app. The intent-preset path resolves a framework from the checkout and calls
 `cmd_doctor(cwd, fix=True)` only when checks exist (see
@@ -186,28 +187,25 @@ literal-export regex `_XCODE_LITERAL_EXPORT_RE` (`wiring.py:521`) matches only a
 *static* `export RCT_METRO_PORT=<digits>` with no variable references, kept narrow
 on purpose so a hand-written conditional/shell-substitution wiring is not mangled.
 
-### Import direction and the remaining lazy edge
+### Dependency direction
 
-Hook integration now lives below both orchestration layers in `hooks.py`, so `wiring.py`
-imports `_detect_hook_manager`, `_lefthook_config_path`, and
-`_ensure_post_checkout_hook` directly at module load (`wiring.py:11`). It no longer reaches
-back into `commands.py`.
-
-The scanner edge remains lazy: `_wiring_checks_for_framework` imports
-`PROFILES`/`AppInventory` inside the function (`wiring.py:208`) because `profiles.py` imports
-the wiring registries while it populates `PROFILES`. `sys` also stays function-local on
-the print-heavy paths so ordinary imports avoid that cold-path work.
+`wiring.py` owns the `WiringCheck` contract and concrete file checks. Profiles depend on
+those definitions, but wiring never imports profiles, scanner, commands, or the package root.
+`doctor.py` is the higher orchestration layer: it reads the profile catalog, resolves launch
+context through `launching.py`, combines app and project checks, and renders results. This makes
+the direction `doctor → profiles → wiring → hooks`; no function-local import is needed to hide a
+backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph in CI.
 
 ## Key entry points
 
-- `wiring.py:25` — `WiringCheck` NamedTuple (the check contract).
-- `wiring.py:40` — `_RN_WIRING_CHECKS` registry; `:579` `_HOOK_WIRING_CHECK`.
-- `wiring.py:217` — `cmd_doctor` (resolve framework, run loop, `--fix`, manual).
-- `wiring.py:177` — `_resolve_doctor_framework`; `:205` `_wiring_checks_for_framework`.
-- `wiring.py:279`/`:345`/`:448`/`:531` — `rn-hook`, `rn-metro-config`,
+- `wiring.py:22` — `WiringCheck` NamedTuple (the check contract).
+- `wiring.py:37` — `_RN_WIRING_CHECKS` registry; `:474` `_HOOK_WIRING_CHECK`.
+- `doctor.py` — `cmd_doctor`, `_resolve_doctor_framework`, and
+  `_wiring_checks_for_framework`.
+- `wiring.py:174`/`:240`/`:343`/`:426` — `rn-hook`, `rn-metro-config`,
   `rn-pkg-port`, `rn-xcode-env` detect helpers.
-- `wiring.py:356` — `_rn_metro_inject` (object-literal brace-aware injection).
-- `wiring.py:498`–`:523` — `ios/.xcode.env` sentinel block and its regexes.
+- `wiring.py:251` — `_rn_metro_inject` (object-literal brace-aware injection).
+- `wiring.py:393`–`:418` — `ios/.xcode.env` sentinel block and its regexes.
 - `profiles.py:1455`/`:1520` — Profiles snapshot/reuse the registries via `list(...)` /
   `[_HOOK_WIRING_CHECK]`.
 - `profiles.py:516`/`:1162` — `vite-config-process-env` and

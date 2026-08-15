@@ -2,7 +2,8 @@
 
 How a `splash` invocation gets from `argv` to a handler: argument parsing and dispatch (`cli.py`),
 the `cmd_*` orchestration handlers (`commands.py`), post-checkout integration (`hooks.py`), and the
-fail-silent shell completers (`completion.py`).
+fail-silent shell completers (`completion.py`). Framework launch dispatch lives in `launching.py`;
+`doctor.py` orchestrates checks defined in `wiring.py`.
 
 For the *user-facing* contract of each command, see the PRD docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
 
@@ -39,7 +40,7 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 `cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to
 `sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
 handler. `commands.py` holds those handlers (`cmd_*`) and composes `scanner`, `profiles`,
-`provisioning`, `registry`, `loaders`, `devices`, and `wiring`. `hooks.py` owns post-checkout
+`provisioning`, `registry`, `loaders`, `devices`, `launching`, and `doctor`. `hooks.py` owns post-checkout
 installation and coexistence with other hook managers. `completion.py` provides the argcomplete
 completers, which must never raise or print because they run on every `<Tab>`.
 
@@ -79,7 +80,11 @@ The walk: bail early if `-h`/`--help`/`--version` is present (`cli.py:368`) — 
 
 #### Lazy `--version`: `_VersionAction`
 
-`_VersionAction` (`cli.py:43`) reimplements argparse's built-in version action so the version string is resolved *only* when `--version` is actually passed. Its `__call__` lazy-imports `_resolve_version` and prints (`cli.py:64`–`67`). The motivation is the hot path: `importlib.metadata.version(...)` costs ~20ms, which every silent hook-triggered `splash sync` would otherwise pay for a string it never prints.
+`_VersionAction` reimplements argparse's built-in version action so the version string is resolved
+*only* when `--version` is actually passed. Its `__call__` lazy-imports
+`_version.resolve_version` and prints it. The motivation is the hot path:
+`importlib.metadata.version(...)` costs ~20ms, which every silent hook-triggered `splash sync`
+would otherwise pay for a string it never prints.
 
 #### The run/start/stop/destroy parser loop
 
@@ -110,8 +115,9 @@ stays silent in non-splashdown repos.
 
 ### `commands.py` — the orchestration layer
 
-This is a broad orchestration module covering onboarding, status rendering, and device
-lifecycle; hook wiring itself lives in `hooks.py`. Below, the parts are grouped by concern.
+This is a large orchestration module spanning status rendering, device lifecycle, onboarding,
+provisioning presentation, and nested dispatch. Hook wiring lives in `hooks.py`, while doctor
+orchestration lives in `doctor.py`; see [Gotchas](#gotchas).
 
 #### Provision handlers (`sync` / `init`)
 
@@ -214,7 +220,12 @@ not gitignored.
 
 #### Device lifecycle handlers
 
-`cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy` (`commands.py:936`/`:958`/`:978`/`:1003`) share a prelude: `_infer_dtype` (`commands.py:1038`) resolves an omitted TYPE to the single project-declared target type (falling back to global only when the project declares none), and `_resolve_variant_for_cli` (`commands.py:1056`) loads the full recipe+local+global catalog and picks the variant. Each then calls into `devices.py` (`ensure_fresh_sim`, `ios_boot`/`android_boot`, `device_run`, etc.). The bulk of `commands.py` is also the `target` subcommand machinery — `cmd_gc`/`cmd_target_gc` (`commands.py:742`/`:687`), `cmd_target_refresh` (`commands.py:766`), `cmd_target_prune` (`commands.py:859`) — all of which iterate registry device rows and reconcile them against the live sims/AVDs.
+`cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy` share a prelude: `_infer_dtype` resolves an
+omitted TYPE to the single project-declared target type (falling back to global only when the
+project declares none), and `_resolve_variant_for_cli` loads the full recipe/local/global catalog
+and picks the variant. Each calls `devices.py` for target reconciliation and boot, then
+`launching.py` for framework preflight and final app dispatch. The target subcommand machinery
+iterates registry device rows and reconciles them against live sims/AVDs.
 
 Explicit platform operations propagate `CapabilityError`. The dispatcher sets `skip_unavailable`
 only for the `all` scope, so unscoped `target refresh` and `target prune` warn once and continue the
@@ -270,14 +281,12 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Gotchas
 
-- **`commands.py` remains broad, but hook wiring is no longer inside it.** Status,
-  onboarding, and device lifecycle share the module; git-hook, gitignore, and mise edits
-  live in `hooks.py`. Move those helpers only with the direct imports in `loaders.py`,
-  `wiring.py`, and `commands.py` in view.
-- **`cmd_init` uses `sys.exit`, not a return code.** Unlike every other handler (which
-  returns an int that `main()` returns), `cmd_init` returns `None` and exits directly on
-  its refusal path, while `_cmd_init_preset` exits for an unknown preset. Callers cannot
-  treat either as an ordinary return value.
+- **`commands.py` remains a large orchestration module.** Hook and doctor wiring have clear owners,
+  but status, fleet commands, onboarding, and provisioning presentation still share this file.
+- **Circular imports are a CI invariant.** Shared constants, catalogs, and inventory types live in
+  dependency-free modules; Pylint's `cyclic-import` checker analyzes the whole package and reports
+  the concrete path when a cycle is introduced.
+- **`cmd_init` uses `sys.exit`, not a return code.** Unlike every other handler (which returns an int that `main()` returns), `cmd_init` returns `None` and exits the process directly on its refusal and unknown-preset paths. Callers cannot treat those as ordinary return values.
 - **`KNOWN_CMDS` is a second source of truth.** It is maintained by hand alongside the `add_parser` calls so `_ensure_subcommand` can pre-classify argv. Add a subcommand and you must update both, or bare-`splash` rewriting will misfire on it.
 - **A variant named like a type is unreachable.** Because run/start/stop/destroy drop argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves type-vs-variant by "type names win". A variant literally named `simulator`/`emulator`/`device` can never be selected positionally — the token is always read as the type. Name variants something else.
 - **`--yes` exists only on `destroy`** among the four device verbs. `run`/`start`/`stop` are non-destructive and never prompt, so they have no flag.

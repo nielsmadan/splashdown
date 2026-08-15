@@ -1069,7 +1069,7 @@ def test_doctor_reports_a_raising_check_instead_of_crashing(tmp_path, capsys, mo
         autofix=None,
         manual_instructions=None,
     )
-    monkeypatch.setattr(sd.wiring, "_wiring_checks_for_framework", lambda f, c: [broken])
+    monkeypatch.setattr(sd.doctor, "_wiring_checks_for_framework", lambda f, c: [broken])
     rc = sd.cmd_doctor(tmp_path, framework_override="react-native", fix=False)
     err = capsys.readouterr().err
     assert rc != 0

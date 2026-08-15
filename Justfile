@@ -24,6 +24,10 @@ cov:
 lint:
     @uv run ruff check
 
+# Check the package for circular imports with Pylint.
+lint-imports:
+    @uv run pylint src/splashdown
+
 # Format the codebase with ruff.
 fmt:
     @uv run ruff format
@@ -36,6 +40,7 @@ typecheck:
 check:
     @uv run ruff check
     @uv run ruff format --check
+    @uv run pylint src/splashdown
     @uv run mypy
     @uv run pytest -q
 

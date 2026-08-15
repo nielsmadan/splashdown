@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, ClassVar, NoReturn, Self
 
-from . import (
+from .catalog import PROFILES
+from .constants import (
     ENV_NAME_RE,
     GLOBAL_CONFIG_NAME,
     LOCAL_NAME,
@@ -349,8 +350,6 @@ def _enum(value: Any, choices: set[str], *, source: str, path: str) -> str:
 
 
 def _known_profiles() -> set[str]:
-    from .scanner import PROFILES  # noqa: PLC0415
-
     return set(PROFILES)
 
 

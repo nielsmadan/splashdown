@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .devices import DeviceError
+from .catalog import PROFILES
+from .errors import DeviceError
+from .inventory import AppInventory
 from .package_json import package_dependencies
 from .recipe import Recipe
 from .runners import (
@@ -17,7 +19,6 @@ from .runners import (
     _ios_native_run,
     _rn_run,
 )
-from .scanner import PROFILES, AppInventory
 from .wiring import (
     _HOOK_WIRING_CHECK,
     _RN_WIRING_CHECKS,

@@ -283,7 +283,6 @@ framework = "react-native"
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.devices, "device_run", _fake_run)
     monkeypatch.setattr(sd.commands, "device_run", _fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "run", "simulator"])
     assert rc == 0
@@ -311,7 +310,6 @@ framework = "react-native"
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.devices, "device_run", _fake_run)
     monkeypatch.setattr(sd.commands, "device_run", _fake_run)
     sd.main(["--cwd", str(tmp_path), "run", "simulator", "small-screen"])
     assert captured["info"]["name"].endswith("/small-screen")
@@ -350,7 +348,6 @@ framework = "react-native"
         called["device_run"] = True
         return 0
 
-    monkeypatch.setattr(sd.devices, "device_run", fake_run)
     monkeypatch.setattr(sd.commands, "device_run", fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "start", "simulator"])
     assert rc == 0
@@ -409,7 +406,6 @@ framework = "react-native"
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.devices, "device_run", _fake_run)
     monkeypatch.setattr(sd.commands, "device_run", _fake_run)
     # No TYPE given — should resolve to the only declared type (simulator).
     rc = sd.main(["--cwd", str(tmp_path), "run"])
@@ -1961,7 +1957,7 @@ def test_device_run_no_custom_command_uses_framework(tmp_path, monkeypatch):
     # and launch via the profile — a regression that returned 0/"" instead of
     # None from run_custom_command would silently break every normal run.
     recipe = sd.Recipe({}, tmp_path / "splashdown.toml")
-    monkeypatch.setattr(sd.devices, "detect_framework", lambda cwd, r: "flutter")
+    monkeypatch.setattr(sd.launching, "detect_framework", lambda cwd, r: "flutter")
     called = {}
 
     def _fw_run(cwd, r, info):

@@ -10,7 +10,7 @@ You need [uv](https://docs.astral.sh/uv/) and [just](https://github.com/casey/ju
 ```sh
 uv sync --group dev        # install dev dependencies
 just hooks                 # install the git hooks (lefthook)
-just check                 # ruff + format-check + mypy + tests: the full CI gate
+just check                 # ruff + import cycles + format-check + mypy + tests
 ```
 
 `just check` is exactly what CI runs. Keep it green before opening a pull request.

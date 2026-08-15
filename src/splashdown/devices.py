@@ -10,14 +10,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from . import (
+from .capabilities import require_macos, translate_tool_errors, warn_capability
+from .constants import (
     LOCAL_NAME,
     RECIPE_NAME,
     REGISTRY_DIR,
     TARGET_TYPES,
     TARGET_VARIANT_RE,
 )
-from .capabilities import require_macos, translate_tool_errors, warn_capability
 
 # DeviceError is defined in errors.py (dependency-free) and re-exported here for
 # the many `from .devices import DeviceError` call sites; recipe.py imports it
@@ -1007,86 +1007,3 @@ def global_target_remove(dtype: str, variant: str) -> Path:
         raise DeviceError(f"no target `{dtype}.{variant}` in {path}")
     path.write_text(new_text)
     return path
-
-
-def detect_framework(cwd: Path, recipe: Recipe) -> str:
-    from .scanner import PROFILES  # noqa: PLC0415
-
-    override = recipe.project.get("framework")
-    if override and override != "auto":
-        return str(override)
-    for name, profile in PROFILES.items():
-        if profile.detect(cwd):
-            return name
-    # Root detection misses workspaces whose app lives in a subdirectory, but the
-    # recipe already records each app's resolved profile. Key by app name, not by
-    # profile — two apps sharing a profile are still two apps.
-    declared = {
-        name: str(spec["profile"])
-        for name, spec in recipe.apps.items()
-        if spec.get("profile") != "unknown"
-    }
-    if len(declared) == 1:
-        return next(iter(declared.values()))
-    if declared:
-        listed = ", ".join(f"`{n}` → `{p}`" for n, p in sorted(declared.items()))
-        raise DeviceError(
-            f"ambiguous project framework; apps declare {listed} — "
-            f"set `[project] framework` in {RECIPE_NAME}"
-        )
-    raise DeviceError(
-        "could not detect project framework; set `[project] framework = "
-        + "|".join(f'"{n}"' for n in PROFILES)
-        + f"` in {RECIPE_NAME}"
-    )
-
-
-def resolve_app_dir(cwd: Path, recipe: Recipe, framework: str) -> Path:
-    """Where the app using `framework` lives. Wiring checks patch files inside the
-    app directory, so a workspace whose app sits in a subdirectory must not be
-    checked (or run) at its root."""
-    from .scanner import PROFILES  # noqa: PLC0415
-
-    profile = PROFILES.get(framework)
-    if profile is not None and profile.detect(cwd):
-        return cwd
-    matches = [
-        str(spec["path"]) for spec in recipe.apps.values() if spec.get("profile") == framework
-    ]
-    if len(matches) == 1:
-        candidate = cwd / matches[0]
-        if candidate.is_dir():
-            return candidate
-    return cwd
-
-
-def validate_device_run(cwd: Path, recipe: Recipe, kind: str | None) -> None:
-    from .runners import _resolve_custom_run  # noqa: PLC0415
-    from .scanner import PROFILES, RunnableProfile  # noqa: PLC0415
-
-    if kind is not None and _resolve_custom_run(recipe, kind) is not None:
-        return
-    if kind is None and recipe.project.get("run"):
-        return
-    framework = detect_framework(cwd, recipe)
-    profile = PROFILES.get(framework)
-    if not isinstance(profile, RunnableProfile):
-        raise DeviceError(f"framework `{framework}` does not support `splash run`")
-
-
-def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    """Build + install + run the app on the given device. Returns exit code."""
-    from .runners import run_custom_command  # noqa: PLC0415
-    from .scanner import PROFILES, RunnableProfile  # noqa: PLC0415
-
-    # A custom `[project] run` command overrides the framework launcher (and
-    # bypasses detection), so it works even on a project with no matching profile.
-    rc = run_custom_command(cwd, recipe, info)
-    if rc is not None:
-        return rc
-
-    fw = detect_framework(cwd, recipe)
-    profile = PROFILES.get(fw)
-    if not isinstance(profile, RunnableProfile):
-        raise DeviceError(f"framework `{fw}` does not support `splash run`")
-    return int(profile.run(resolve_app_dir(cwd, recipe, fw), recipe, info))

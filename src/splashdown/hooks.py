@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import ENV_FILE_NAME, LOCAL_NAME
+from .constants import ENV_FILE_NAME, LOCAL_NAME
 from .package_json import package_dependencies
 
 POST_CHECKOUT_HOOK = """\

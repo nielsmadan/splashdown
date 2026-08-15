@@ -28,7 +28,7 @@ classifiers = [
 splash = "splashdown:main"
 
 [dependency-groups]
-dev = ["pytest>=9.1.1", "pytest-cov>=5", "ruff>=0.16.1", "mypy>=2.3.0"]
+dev = ["pytest>=9.1.1", "pytest-cov>=5", "ruff>=0.16.1", "pylint>=4.0.7", "mypy>=2.3.0"]
 docs = ["zensical"]
 
 [tool.coverage.run]
@@ -69,12 +69,19 @@ max-statements = 60
 max-args = 6
 
 [tool.ruff.lint.per-file-ignores]
-# Re-export hub: keeps unused imports, and imports follow module constants to
-# avoid circular imports (submodules do `from . import RECIPE_NAME`).
+# Re-export hub: keeps unused imports while internal modules depend on the
+# acyclic constants/catalog/inventory seams instead of importing the package root.
 "**/__init__.py" = ["F401", "E402"]
 # Tests use `setup; assert` one-liners, asserts, private access, /tmp paths,
 # local imports, unchecked subprocess, and literal expected values.
 "tests/*" = ["S101", "SLF001", "S108", "E702", "E402", "PLC0415", "PLW1510", "PLR2004"]
+
+[tool.pylint."messages control"]
+disable = ["all"]
+enable = ["cyclic-import"]
+
+[tool.pylint.reports]
+score = false
 
 [tool.mypy]
 python_version = "3.11"

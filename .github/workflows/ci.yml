@@ -27,6 +27,9 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check
 
+      - name: Check circular imports
+        run: uv run pylint src/splashdown
+
       - name: Type check
         run: uv run mypy
 

@@ -60,7 +60,7 @@ abspath and never matched by a live checkout), but they do persist.
 
 `cmd_gc` (`src/splashdown/commands.py:742`) is the full machine-wide sweep, in two parts:
 
-- `cmd_target_gc` (`src/splashdown/commands.py:687`) iterates every device row. For a dead
+- `cmd_target_gc` (`src/splashdown/commands.py:683`) iterates every device row. For a dead
   checkout it destroys the underlying sim/AVD before removing the row; for a live checkout
   it also drops a row whose instance was already deleted by hand. A platform
   `CapabilityError` warns once and preserves that row because splashdown could not verify or
@@ -69,7 +69,9 @@ abspath and never matched by a live checkout), but they do persist.
   dead-checkout **port** and **kv** rows and runs `reconcile_with_recipes`
   (`src/splashdown/registry.py:354`). Device cleanup is explicitly disabled here because the
   capability-aware command sweep has already handled every device row; a second generic
-  `gc_devices` pass could erase a row that the first pass deliberately preserved.
+  `gc_devices` pass could erase a row that the first pass deliberately preserved. Device
+  probing stays in the orchestration layer, so the persistence module never imports platform
+  lifecycle code.
 
 `reconcile_with_recipes` is a subtler form of cleanup: it drops port/kv entries for
 checkouts that **still exist** but whose current recipe no longer declares that key (e.g. a
@@ -126,16 +128,16 @@ sibling worktrees can't corrupt the TSVs.
 | --- | --- |
 | Lazy GC of port rows on allocation | `src/splashdown/registry.py:118` (`busy_ports`), `:149` (caller) |
 | Full machine-wide registry GC | `src/splashdown/registry.py:394` (`Registry.gc`) |
-| Device-row GC (gone checkout + live orphan rows) | `src/splashdown/commands.py:687` (`cmd_target_gc`) |
+| Device-row GC (gone checkout + live orphan rows) | `src/splashdown/commands.py:683` (`cmd_target_gc`) |
 | Generic device-row GC helper | `src/splashdown/registry.py:314` (`gc_devices`; not called by `cmd_gc`) |
 | Recipe reconcile for live checkouts | `src/splashdown/registry.py:354` (`reconcile_with_recipes`) |
 | Free one key for a checkout | `src/splashdown/registry.py:164` (`remove_port`), `:226` (`remove_kv`) |
 | Free everything for a checkout | `src/splashdown/registry.py:174` (`Registry.release`) |
-| `splash gc` orchestration | `src/splashdown/commands.py:742` (`cmd_gc`), `:687` (`cmd_target_gc`) |
-| `splash target prune` | `src/splashdown/commands.py:859` (`cmd_target_prune`) |
-| Foreign-device discovery | `src/splashdown/commands.py:826` (`_discover_foreign_ios`), `:842` (`_discover_foreign_avds`) |
-| Confirmation prompt | `src/splashdown/commands.py:995` (`_confirm`) |
-| `splash env release` dispatch | `src/splashdown/commands.py:1800` |
+| `splash gc` orchestration | `src/splashdown/commands.py:738` (`cmd_gc`), `:683` (`cmd_target_gc`) |
+| `splash target prune` | `src/splashdown/commands.py:855` (`cmd_target_prune`) |
+| Foreign-device discovery | `src/splashdown/commands.py:822` (`_discover_foreign_ios`), `:838` (`_discover_foreign_avds`) |
+| Confirmation prompt | `src/splashdown/commands.py:991` (`_confirm`) |
+| `splash env release` dispatch | `src/splashdown/commands.py:1789` |
 | Orphan-device test | `src/splashdown/devices.py:343` (`_is_orphan_device`) |
 | CLI parsers (`gc`, `target prune`, `env release`) | `src/splashdown/cli.py:199`, `:254`, `:186` |
 

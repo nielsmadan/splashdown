@@ -174,7 +174,7 @@ def test_device_registry_release_clears_devices_too(registry, checkout):
     assert registry.get_device(str(checkout), "simulator", "default") is None
 
 
-def test_registry_gc_includes_devices(registry, tmp_path, monkeypatch):
+def test_registry_gc_includes_devices(registry, tmp_path):
     a = tmp_path / "alive"
     a.mkdir()
     b = tmp_path / "dead"
@@ -182,9 +182,6 @@ def test_registry_gc_includes_devices(registry, tmp_path, monkeypatch):
     registry.set_device(str(a), "simulator", "default", "UDID-A", "iPhone 17", "18.5")
     registry.set_device(str(b), "simulator", "default", "UDID-B", "iPhone 17", "18.5")
     b.rmdir()
-    # gc() now also drops orphan-UDID rows; pretend both UDIDs are live in xcrun
-    # so this test isolates the defunct-checkout sweep.
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
     registry.gc()
     udids = {r.udid for r in registry.all_devices()}
     assert udids == {"UDID-A"}
@@ -234,7 +231,7 @@ def test_registry_gc_drops_orphan_device_rows(registry, tmp_path, monkeypatch):
     a.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: False)
-    removed = registry.gc()
+    removed = registry.gc(device_orphan_check=sd.devices._is_orphan_device)
     assert removed >= 1
     assert registry.get_device(str(a), "simulator", "default") is None
 
@@ -244,7 +241,7 @@ def test_registry_gc_keeps_present_device_rows(registry, tmp_path, monkeypatch):
     a.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-OK", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
-    registry.gc()
+    registry.gc(device_orphan_check=sd.devices._is_orphan_device)
     assert registry.get_device(str(a), "simulator", "default") is not None
 
 
@@ -253,7 +250,7 @@ def test_registry_gc_drops_orphan_android_avd_rows(registry, tmp_path, monkeypat
     a.mkdir()
     registry.set_device(str(a), "emulator", "default", "AVD-NAME", "pixel_9", "android-34")
     monkeypatch.setattr(sd.devices, "_android_avd_exists", lambda name: False)
-    registry.gc()
+    registry.gc(device_orphan_check=sd.devices._is_orphan_device)
     assert registry.get_device(str(a), "emulator", "default") is None
 
 

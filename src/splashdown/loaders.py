@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import ENV_FILE_NAME
+from .constants import ENV_FILE_NAME
 from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive
 
 # A Loader wires the shell-env tool (mise / direnv / devbox) so it sources

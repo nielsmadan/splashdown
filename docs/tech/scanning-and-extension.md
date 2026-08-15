@@ -2,11 +2,10 @@
 
 The detection + extension layer: how splashdown looks at a repo on disk and decides
 *what* it is (workspace shape, apps, frameworks, secondary capabilities, shell loader) before any provisioning
-happens. Six modules: `scanner.py` (filesystem walk → inventory), `profiles.py`
-(per-framework detection, resources and wiring checks), `runners.py`
-(build/install/launch behind `Profile.run`), `scaffolds.py` (the intent-preset
-`splashdown.toml` templates, pure data), `agentdocs.py` (managed framework guidance),
-and `loaders.py` (shell-env wiring).
+happens. `inventory.py` defines scan results, `catalog.py` owns the shared ordered profile
+registry, `scanner.py` performs filesystem detection, `profiles.py` supplies framework rules,
+`runners.py` and `launching.py` own launch behavior, `scaffolds.py` holds preset data,
+`agentdocs.py` renders framework guidance, and `loaders.py` wires shell environments.
 
 ## Contents
 
@@ -40,9 +39,10 @@ intent presets, not another list of supported frameworks.
 
 ### scanner.py — repo → ProjectInventory
 
-`Scanner.scan()` (`scanner.py:184`) is the single public entry. It runs workspace, loader,
-profile, and capability detection, then assembles a `ProjectInventory` (`scanner.py:27`) of `AppInventory` entries
-(`scanner.py:16`). No writes, no caching of significance — the same instance is reusable.
+`Scanner.scan()` (`scanner.py:156`) is the single public entry. It runs workspace, loader,
+profile, and capability detection, then assembles the `ProjectInventory` and `AppInventory`
+records defined in `inventory.py`. No writes, no caching of significance — the same instance
+is reusable.
 
 **1. Workspace detection** — `_detect_workspace()` (`scanner.py:44`) returns one of
 `pnpm | yarn | npm | cargo | gradle | single` by probing marker files in a fixed order:
@@ -109,8 +109,9 @@ the same resolved name so declarations and references cannot diverge. If two app
 normalize to the same suffix, a stable digest disambiguates them while keeping valid
 environment identifiers.
 
-`PROFILES` itself is *declared* empty in `scanner.py:41` and *filled* by `profiles.py` at
-import; `scanner.py` only ever reads it.
+`PROFILES` is declared in dependency-free `catalog.py`, filled in precedence order by
+`profiles.py` at import, and read by scanner, recipe validation, launch dispatch, doctor,
+and agent guidance. Those consumers share the catalog without importing one another.
 
 ### profiles.py — the Profile extension point
 
@@ -217,19 +218,21 @@ preset deterministically requests a renderer port and stable profile identifier,
 plain init detects Electron as a secondary capability and asks whether to add only the
 optional profile-isolation overlay.
 
-### runners.py & scaffolds.py — split out of profiles.py
+### runners.py, launching.py & scaffolds.py — split out of profiles.py
 
-`profiles.py` had grown to ~1490 lines holding three unrelated concerns. Two were
-extracted; the dependency arrow points one way, `profiles -> runners`, and `scaffolds`
-depends on nothing at all.
+`profiles.py` had grown to ~1490 lines holding unrelated concerns. Launch implementations,
+launch orchestration, and scaffold data now have separate owners.
 
 - **`runners.py`** — everything `Profile.run` delegates to: `_rn_run`, `_expo_run`,
   `_flutter_run`, `_ios_native_run`, `_android_native_run`, the xcodebuild/gradle
-  argument builders, and the `[project] run` custom-command path
-  (`run_custom_command`, imported lazily by `devices.py`). It also owns the two argv
+  argument builders, and the `[project] run` custom-command path. It also owns the two argv
   validators (`_no_flag`, `_android_component`) since they exist to sanitize values on
-  their way into a subprocess. Imports `DeviceError` from `errors.py` directly rather
-  than `devices.py`, so it carries no dependency on the device layer.
+  their way into a subprocess. Its only device-layer dependency is the iOS runtime query
+  used to produce architecture advice, imported lazily at the point of use; `DeviceError`
+  comes directly from dependency-free `errors.py`, and devices never imports runners.
+- **`launching.py`** — framework detection, workspace app-directory resolution, runnable-profile
+  preflight, custom-command selection, and final `Profile.run` dispatch. It depends on the
+  profile catalog and runners, while `devices.py` remains solely below it.
 - **`scaffolds.py`** — the three intent-preset `splashdown.toml` templates and the
   `SCAFFOLDS` dict. Pure strings, no imports, no logic.
 
@@ -305,24 +308,25 @@ never runs an approval command.
 
 ## Key entry points
 
-- `scanner.py:184` — `Scanner.scan()`, the one public detection entry.
-- `scanner.py:44` / `scanner.py:69` / `scanner.py:123` — workspace detect, app enumerate,
+- `scanner.py:156` — `Scanner.scan()`, the one public detection entry.
+- `scanner.py:16` / `scanner.py:41` / `scanner.py:95` — workspace detect, app enumerate,
   glob expand.
 - `scanner.py` — collision mangling and per-app references (`_build_resource_catalog`).
-- `scanner.py:207` / `scanner.py:156` — first-match profile / loader resolution.
+- `scanner.py:179` / `scanner.py:149` — first-match profile / loader resolution.
 - `profiles.py` — `Profile` base class and its seven extension points/flags, including
   `agent_guidance(app, port_names)`.
 - `agentdocs.py` — `render_agent_guidance()`, `sync_agent_guidance()`, and
   `remove_agent_guidance()`; invoked by init/rescan/deinit orchestration in `commands.py`.
-- `profiles.py:472-1551` — `PROFILES` registrations (precedence order).
+- `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py:473-1552`
+  populates it in precedence order.
 - `scaffolds.py` — `SCAFFOLDS` registry; substituted by `_cmd_init_preset` in `commands.py`.
 - `loaders.py:30` — `Loader` base; subclasses `loaders.py:56/93/149/201`.
 - `loaders.py:215` — `LOADERS` registry (precedence order).
 - Consumers: scanner-driven init and rescan in `commands.py`, `_build_resource_catalog`
   in `scanner.py`, and `_cmd_init_preset` for `SCAFFOLDS`.
-- Registration wiring: `__init__.py:67` imports `profiles` to populate `PROFILES`;
-  the comment at `__init__.py:177` documents the dependency-ordered import that must run
-  before anything reads `PROFILES`.
+- Registration wiring: `catalog.py` owns the dictionary and `__init__.py` imports
+  `profiles` first to populate it before public consumers are re-exported. Internal modules
+  import the catalog directly and never depend back on the package root.
 
 ## Gotchas
 
@@ -369,6 +373,9 @@ side effects, which keeps "add a framework" to "write a subclass + register it" 
 central switch statement to edit. Insertion-order-as-precedence is the cost of that
 simplicity — there's no priority metadata, so ordering is the only knob. `SCAFFOLDS`
 remains a policy-controlled list of intent presets outside that parity.
+
+The import graph itself is a build invariant. Pylint's `cyclic-import` checker analyzes the
+package as a whole and fails the local and CI gates with `R0401` when a cycle is introduced.
 
 The split between the *declarative* `PROFILES`/`LOADERS`/`SCAFFOLDS` registries and the
 *imperative* `WiringCheck` lists returned from `wiring_checks()` mirrors the two phases:

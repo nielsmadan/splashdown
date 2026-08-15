@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`Registry` (`src/splashdown/registry.py`) is the machine-wide coordinator that pins per-checkout resources — allocated ports, key/value entries (uuids, template results, `set` values), and managed sim/AVD devices — so concurrent checkouts never collide. It is the single source of truth that port allocation, provisioning, and cleanup all read and mutate under a file lock.
+`Registry` (`src/splashdown/registry.py`) is the machine-wide coordinator that pins per-checkout resources — allocated ports, key/value entries (uuids, template results, `set` values), and managed sim/AVD devices — so concurrent checkouts never collide. Mutations take a per-file lock; inspection reads take an unlocked snapshot.
 
 ## Table of contents
 
@@ -70,8 +70,8 @@ Devices track sims/AVDs splashdown created. Lookups: `get_device`/`devices_for`/
 
 GC is **lazy** — it piggybacks on reads rather than running on a timer. `busy_ports(gc=True)` prunes dead-checkout port rows on every allocation. The explicit cleanup paths:
 
-- `gc()` (`registry.py:394-411`) — drop port/kv rows whose `abspath` no longer exists, then fold in `gc_devices()` and `reconcile_with_recipes()`. Returns total removed.
-- `gc_devices()` (`registry.py:314-324`) — drop device rows whose checkout dir is gone **or** whose sim/AVD has been deleted out from under us, via `_is_orphan_device` (lazy-imported from `devices` to break the `registry ← devices ← registry` cycle).
+- `gc()` — drop port/kv rows whose `abspath` no longer exists, optionally fold in `gc_devices()`, then run `reconcile_with_recipes()`. Returns total removed.
+- `gc_devices(orphan_check=None)` — always drops device rows whose checkout dir is gone. A higher orchestration layer may supply an external-resource predicate, but Registry never imports the device lifecycle layer. The CLI performs live sim/AVD reconciliation through `cmd_target_gc` before registry cleanup.
 - `reconcile_with_recipes()` (`registry.py:354-392`) — for each live checkout, load its `splashdown.toml` and drop port/kv rows for keys the current recipe no longer declares (e.g. a leftover `DART_PORT`). Crucially, a recipe that is **missing or won't parse yields `None`, which means skip pruning that checkout** (`registry.py:365-379`) — an unloadable recipe must never be read as "declares nothing" and nuke live entries. Results are cached per path within the call.
 - `release(abspath)` (`registry.py:174-192`) — remove *all* rows for one checkout across all three files; returns count removed. Used by `splash env release` (no key) — *not* by `splash destroy`, which drops a single device row via `remove_device`.
 
@@ -98,7 +98,7 @@ GC is **lazy** — it piggybacks on reads rather than running on a timer. `busy_
 - **Malformed rows vanish silently.** A wrong-width or non-int-port row is dropped on read with no warning (`registry.py:95-97`, `99-102`). A future rewrite will not preserve it.
 - **No escaping means writes can raise.** Any field with a tab/newline/CR makes the mutator throw `ValueError` mid-operation; the file is rewritten only after all fields pass, so a partial write won't land — but the caller sees the exception.
 - **`reconcile_with_recipes` swallows recipe load errors by design** (`registry.py:374-377`, bare-except `noqa`) — that's the "don't prune on unloadable recipe" guarantee, not an oversight.
-- **Lazy imports inside `gc_devices`/`reconcile_with_recipes`** exist solely to break import cycles (`registry.py:318`, `361-363`); keep them function-local.
+- **`reconcile_with_recipes` imports recipe parsing lazily** because GC is a cold path. The dependency is one-way and is covered by Pylint's `cyclic-import` gate.
 
 ## Why
 

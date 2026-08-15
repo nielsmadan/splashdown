@@ -172,9 +172,9 @@ launcher:
 The key for the native id is `udid` on iOS and `serial` on Android — chosen per platform
 (`devices.py:626-632`, `:755`, `:766`). Consumers must know which to read based on `kind`.
 
-### Framework launch
+### Framework launch (`launching.py`)
 
-`detect_framework` (`devices.py:1012`) honors a `[project] framework` override (`"auto"` means the
+`detect_framework` (`launching.py`) honors a `[project] framework` override (`"auto"` means the
 same as omitting it), else probes every registered `Profile.detect` in `PROFILES` insertion order.
 Runner validation later rejects a detected profile that is not runnable. Failing root detection,
 it falls back to the recipe's declared app profiles: exactly one app with a profile other than
@@ -183,14 +183,14 @@ it falls back to the recipe's declared app profiles: exactly one app with a prof
 profiles — two apps sharing a profile are still two apps, and collapsing them would resolve an
 ambiguous workspace as if it were unambiguous.
 
-`resolve_app_dir` (`devices.py:1044`) then answers *where* that framework lives: `cwd` when the
+`resolve_app_dir` (`launching.py`) then answers *where* that framework lives: `cwd` when the
 root itself matches, else the single declared app's `path`. Both `device_run` and `cmd_doctor`
 resolve it, because wiring checks patch files inside the app directory and launchers shell out
 there — running either at the workspace root silently does nothing useful.
 
 Runnable profiles structurally implement `RunnableProfile`; web/backend profiles do not expose a
 `run` method. `cmd_run` checks this capability (or a matching custom `[project] run`) before device
-reconciliation or boot. `device_run` repeats the capability check as a defensive boundary, then
+reconciliation or boot. `launching.device_run` repeats the capability check as a defensive boundary, then
 delegates to `PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launcher consumes the `info` dict above
 (`flutter run -d <udid/serial>`, `xcodebuild`/`simctl`, `gradle`, etc.). The generic
 `device_status` / `device_shutdown` / `device_destroy` dispatchers (`devices.py:776`, `:789`,
@@ -212,7 +212,7 @@ the shell's exit status.
   `capabilities.py` — typed host/tool availability boundary.
 - `_xcrun_json` / `_devicectl_json` — `devices.py:82`, `:494` — subprocess JSON wrappers.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py:776`, `:789`, `:798`.
-- `detect_framework` / `resolve_app_dir` / `device_run` — `devices.py:1012`, `:1044`, `:1077`.
+- `detect_framework` / `resolve_app_dir` / `device_run` — `launching.py:13`, `:40`, `:65`.
 - `target_add` / `target_remove` — `devices.py:913`, `:965` — local-file variant writers.
 
 ## Gotchas

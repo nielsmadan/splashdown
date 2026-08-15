@@ -16,35 +16,38 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   `agentdocs.py` + `loaders.py`: project detection, extension points, and generated agent
   guidance.
 - [devices.md](devices.md) — `devices.py`: sim/emulator/physical-device lifecycle and framework
-  launchers.
-- [wiring.md](wiring.md) — `wiring.py`: the `splash doctor` framework-wiring checks and autopatch.
+  device operations; `launching.py` owns framework selection and launch dispatch.
+- [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
+  `doctor.py` owns check selection, execution, and rendering.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `hooks.py` +
   `completion.py`: entry, parse, dispatch, the `cmd_*` handlers, and git-hook installation.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
   audited subprocess-failure contract.
 
 ## Data flow (end to end)
-`scanner.py` (detect → `ProjectInventory`) → `profiles.py` (per-framework rules + `PROFILES`) →
+`scanner.py` (detect → `ProjectInventory`) → `profiles.py` (per-framework rules registered in
+`catalog.py`) →
 `recipe.py` (parse + template engine) → `provisioning.py` (`provision()` resolves resources) →
 `registry.py` (machine-wide allocation). Alongside: `loaders.py` wires the env loader, `devices.py`
-runs sims/emulators, `wiring.py` patches framework configs, and `agentdocs.py` derives and
+runs sims/emulators, `launching.py` dispatches app launchers, `wiring.py` defines framework checks,
+`doctor.py` orchestrates them, and `agentdocs.py` derives and
 synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, rescan, and deinit.
 `hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
 `loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
 `src/splashdown/__init__.py` is the seam that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)
-- **Re-export hub.** `src/splashdown/__init__.py` defines the path/name constants
-  (`RECIPE_NAME`, `LOCAL_NAME`, `ENV_FILE_NAME`, registry paths) and re-exports nearly every
+- **Re-export hub.** `src/splashdown/__init__.py` re-exports the path/name constants from
+  `constants.py` (`RECIPE_NAME`, `LOCAL_NAME`, `ENV_FILE_NAME`, registry paths) and nearly every
   symbol — including private `_`-prefixed helpers — so tests reach internals as `sd.<name>` and
   monkeypatch them. Consequence: renaming a private helper is a breaking change to the hub list
   and the test suite.
-- **Import order matters.** Submodules import shared constants from the package root
-  (`from . import RECIPE_NAME`); `__init__.py` is ordered so `PROFILES` is populated before use.
-  Several real backward edges (registry↔devices↔recipe, plus selected scanner/profile/TOML writer
-  calls from orchestration) are broken with **in-function lazy imports** — moving one to module
-  scope risks an `ImportError`. Hook helpers are no longer such an edge: `loaders.py` and
-  `wiring.py` import `hooks.py` directly, and `commands.py` consumes the same module.
+- **Acyclic internal imports.** Internal modules never import the package root. Dependency-free
+  `constants.py`, `catalog.py`, and `inventory.py` provide shared seams; `launching.py` sits above
+  runners/profiles, and `doctor.py` sits above profiles/wiring. Pylint's `cyclic-import` checker
+  analyzes the whole package and fails CI if a backward edge is introduced. `__init__.py` still
+  imports `profiles.py` first so the ordered profile catalog is populated before public consumers
+  are re-exported, but no submodule depends back on it.
 - **Hot-path discipline.** Bare `splash` (the post-checkout hook) runs `provision()`/`status`,
   which only *read* TOML via stdlib `tomllib`. `tomlkit` (TOML *writing*) is imported at
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,

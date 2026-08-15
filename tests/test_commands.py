@@ -33,7 +33,6 @@ def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.devices, "device_run", _fake_run)
     monkeypatch.setattr(sd.commands, "device_run", _fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "run", "device"])
     assert rc == 0

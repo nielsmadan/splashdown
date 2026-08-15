@@ -4,7 +4,7 @@ import errno
 import fcntl
 import os
 import socket
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -311,15 +311,15 @@ class Registry:
     def managed_udids(self) -> set[str]:
         return {r.udid for r in self._read_devices()}
 
-    def gc_devices(self) -> int:
-        """Drop device rows whose checkout dir no longer exists OR whose
-        sim/AVD has been deleted out from under us. Returns count removed."""
-        # Lazy import to avoid circular: registry ← devices ← registry.
-        from .devices import _is_orphan_device as _orphan_check  # noqa: PLC0415
-
+    def gc_devices(self, orphan_check: Callable[[DeviceRow], bool] | None = None) -> int:
+        """Drop device rows for missing checkouts and optionally missing devices."""
         with self._lock(self.device_file):
             rows = self._read_devices()
-            kept = [r for r in rows if Path(r.checkout).exists() and not _orphan_check(r)]
+            kept = [
+                row
+                for row in rows
+                if Path(row.checkout).exists() and not (orphan_check and orphan_check(row))
+            ]
             self._write_devices(kept)
             return len(rows) - len(kept)
 
@@ -359,7 +359,7 @@ class Registry:
         read as "declares nothing" and nuke live entries. Returns count
         removed."""
         # Lazy import to avoid circular: registry ← recipe ← registry.
-        from . import RECIPE_NAME  # noqa: PLC0415
+        from .constants import RECIPE_NAME  # noqa: PLC0415
         from .recipe import Recipe  # noqa: PLC0415
 
         cache: dict[str, set[str] | None] = {}
@@ -391,7 +391,12 @@ class Registry:
             self._write_kv(kept_kv)
         return removed
 
-    def gc(self, *, include_devices: bool = True) -> int:
+    def gc(
+        self,
+        *,
+        include_devices: bool = True,
+        device_orphan_check: Callable[[DeviceRow], bool] | None = None,
+    ) -> int:
         """Drop entries whose abspath no longer exists, then reconcile live
         checkouts against their current recipes. Returns count removed."""
         removed = 0
@@ -406,7 +411,7 @@ class Registry:
             removed += len(rows_kv) - len(kept_kv)
             self._write_kv(kept_kv)
         if include_devices:
-            removed += self.gc_devices()
+            removed += self.gc_devices(device_orphan_check)
         removed += self.reconcile_with_recipes()
         return removed
 

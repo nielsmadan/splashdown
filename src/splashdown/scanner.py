@@ -3,42 +3,14 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
+from .catalog import PROFILES
+from .inventory import AppInventory, ProjectInventory
 from .loaders import LOADERS
 from .package_json import package_dependencies, read_package_json
-from .recipe import _TEMPLATE_NAMES, Recipe, template_refs
-
-
-@dataclass
-class AppInventory:
-    """One consumer (app) inside the project that splashdown will wire."""
-
-    name: str  # e.g. "api"
-    path: Path  # absolute path to the app's root directory
-    profile: str  # the Profile name that matched, or "unknown"
-    project_path: Path | None = None
-    capabilities: tuple[str, ...] = ()
-
-
-@dataclass
-class ProjectInventory:
-    """What the Scanner found about the repo as a whole."""
-
-    workspace: str  # "pnpm" | "yarn" | "npm" | "cargo" | "gradle" | "single"
-    apps: list[AppInventory]
-    loader: str  # "mise" | "direnv" | "devbox" | "none"
-
-
-@runtime_checkable
-class RunnableProfile(Protocol):
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int: ...
-
-
-# profiles.py populates this at import time.
-PROFILES: dict[str, Any] = {}
+from .recipe import _TEMPLATE_NAMES, template_refs
 
 
 def _detect_workspace(cwd: Path) -> str:
