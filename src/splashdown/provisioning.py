@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import uuid as uuid_mod
 from pathlib import Path
@@ -133,31 +134,75 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[t
     return msgs
 
 
-def _write_if_changed(path: Path, text: str) -> bool:
-    """Write `text` to `path` only if it differs from the current contents. Returns
-    True when the file was (re)written, False when it already matched."""
-    if path.exists() and path.read_text() == text:
+def _read_output_file(path: Path) -> tuple[str, int] | None:
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ValueError(f"could not inspect output file `{path}`: {error}") from error
+    if stat.S_ISLNK(entry.st_mode):
+        raise ValueError(f"refusing to write `{path}`: destination is a symlink")
+    if not stat.S_ISREG(entry.st_mode):
+        raise ValueError(f"refusing to write `{path}`: destination is not a regular file")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, encoding="utf-8") as file:
+            opened = os.fstat(file.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                raise ValueError(f"refusing to write `{path}`: destination is not a regular file")
+            text = file.read()
+    except OSError as error:
+        raise ValueError(f"could not safely access output file `{path}`: {error}") from error
+    return text, stat.S_IMODE(opened.st_mode)
+
+
+def _create_output_temp(path: Path) -> tuple[int, Path]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for _ in range(10):
+        temp_path = path.with_name(f".{path.name}.{uuid_mod.uuid4().hex}.tmp")
+        try:
+            return os.open(temp_path, flags, 0o666), temp_path
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise ValueError(f"could not create output file beside `{path}`: {error}") from error
+    raise ValueError(f"could not create a unique output file beside `{path}`")
+
+
+def _write_if_changed(path: Path, text: str, *, mode: int | None = None) -> bool:
+    """Safely replace a regular output file when its contents or required mode differ."""
+    current = _read_output_file(path)
+    if current is not None and current[0] == text and (mode is None or current[1] == mode):
         return False
-    path.write_text(text)
+
+    output_mode = mode if mode is not None else (current[1] if current is not None else None)
+    fd, temp_path = _create_output_temp(path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+            if output_mode is not None:
+                os.fchmod(file.fileno(), output_mode)
+            file.write(text)
+        os.replace(temp_path, path)
+    except OSError as error:
+        raise ValueError(f"could not safely write output file `{path}`: {error}") from error
+    finally:
+        temp_path.unlink(missing_ok=True)
     return True
 
 
 def write_splashdown_env(path: Path, items: dict[str, str]) -> bool:
     """Write the generated env file wholesale. Splashdown owns this file."""
     lines = [f"{k}={_env_quote(v)}" for k, v in items.items()]
-    changed = _write_if_changed(path, "\n".join(lines) + ("\n" if lines else ""))
-    # Resolved values can include secrets (set-type resources, templated
-    # DATABASE_URLs). Keep the file owner-only rather than umask-default 0644 so
-    # other local users on a shared host can't read it. Applied every write in
-    # case an older 0644 file predates this.
-    if path.exists():
-        path.chmod(0o600)
-    return changed
+    return _write_if_changed(path, "\n".join(lines) + ("\n" if lines else ""), mode=0o600)
 
 
 def write_envfile(path: Path, items: dict[str, str]) -> bool:
     try:
-        existing = path.read_text().splitlines() if path.exists() else []
+        current = _read_output_file(path)
+        existing = current[0].splitlines() if current is not None else []
         managed = set(items.keys())
         kept = []
         for line in existing:
@@ -170,12 +215,13 @@ def write_envfile(path: Path, items: dict[str, str]) -> bool:
         new = kept + [f"{k}={_env_quote(v)}" for k, v in items.items()]
         path.parent.mkdir(parents=True, exist_ok=True)
         return _write_if_changed(path, "\n".join(new) + "\n")
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise ValueError(f"could not write envfile `{path}`: {error}") from error
 
 
 def write_envrc(path: Path, items: dict[str, str]) -> bool:
-    existing = path.read_text().splitlines() if path.exists() else []
+    current = _read_output_file(path)
+    existing = current[0].splitlines() if current is not None else []
     managed = set(items.keys())
     kept = []
     for line in existing:
@@ -228,9 +274,15 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
         target = cwd / relpath
         # Mirror write_outputs' containment guard: never touch a path a committed
         # recipe points outside the checkout.
-        if not target.exists() or not target.resolve().is_relative_to(cwd.resolve()):
+        if not target.resolve().is_relative_to(cwd.resolve()):
             continue
-        remaining = _strip_managed_keys(target.read_text(), keys, export=export)
+        try:
+            current = _read_output_file(target)
+        except ValueError:
+            continue
+        if current is None:
+            continue
+        remaining = _strip_managed_keys(current[0], keys, export=export)
         if remaining is None:
             target.unlink()
             changed.append((relpath, "removed"))

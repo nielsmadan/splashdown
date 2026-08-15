@@ -167,6 +167,72 @@ def test_splashdown_env_writer_overwrites_wholesale(tmp_path):
     assert text.strip() == "PORT=8082"
 
 
+@pytest.mark.parametrize(
+    ("writer", "filename"),
+    [("splashdown-env", "splashdown.env"), ("envrc", ".envrc.local")],
+)
+def test_fixed_output_writer_rejects_symlink_without_touching_target(checkout, writer, filename):
+    outside = checkout.parent / f"outside-{filename}"
+    outside.write_text("ORIGINAL=keep\n")
+    outside.chmod(0o644)
+    (checkout / filename).symlink_to(outside)
+    recipe = sd.Recipe.parse(
+        f'[resources.VALUE]\ntype = "template"\ntemplate = "changed"\nwriter = "{writer}"\n',
+        checkout / sd.RECIPE_NAME,
+    )
+
+    with pytest.raises(ValueError, match="destination is a symlink"):
+        sd.write_outputs(checkout, recipe, {"VALUE": "changed"})
+
+    assert outside.read_text() == "ORIGINAL=keep\n"
+    assert outside.stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize(
+    ("writer", "filename"),
+    [("splashdown-env", "splashdown.env"), ("envrc", ".envrc.local")],
+)
+def test_fixed_output_writer_rejects_non_regular_destination(checkout, writer, filename):
+    (checkout / filename).mkdir()
+    recipe = sd.Recipe.parse(
+        f'[resources.VALUE]\ntype = "template"\ntemplate = "changed"\nwriter = "{writer}"\n',
+        checkout / sd.RECIPE_NAME,
+    )
+
+    with pytest.raises(ValueError, match="destination is not a regular file"):
+        sd.write_outputs(checkout, recipe, {"VALUE": "changed"})
+
+
+def test_envfile_writer_rejects_in_checkout_symlink(checkout):
+    real = checkout / "real.env"
+    real.write_text("ORIGINAL=keep\n")
+    (checkout / ".env").symlink_to(real.name)
+    recipe = sd.Recipe.parse(
+        '[resources.VALUE]\ntype = "template"\ntemplate = "changed"\nwriter = "envfile=.env"\n',
+        checkout / sd.RECIPE_NAME,
+    )
+
+    with pytest.raises(ValueError, match="destination is a symlink"):
+        sd.write_outputs(checkout, recipe, {"VALUE": "changed"})
+
+    assert real.read_text() == "ORIGINAL=keep\n"
+
+
+def test_splashdown_env_writer_replaces_hardlink_without_touching_other_name(tmp_path):
+    outside = tmp_path / "outside.env"
+    outside.write_text("ORIGINAL=keep\n")
+    outside.chmod(0o644)
+    target = tmp_path / "splashdown.env"
+    target.hardlink_to(outside)
+
+    sd.write_splashdown_env(target, {"VALUE": "changed"})
+
+    assert outside.read_text() == "ORIGINAL=keep\n"
+    assert outside.stat().st_mode & 0o777 == 0o644
+    assert target.read_text() == "VALUE=changed\n"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
 def test_envfile_writer(registry, checkout):
     _write_recipe(
         checkout,
@@ -282,8 +348,11 @@ def test_writer_reports_changed_then_unchanged(tmp_path):
 
 def test_envfile_writer_reports_changed(tmp_path):
     target = tmp_path / ".env.local"
+    target.write_text("UNMANAGED=keep\n")
+    target.chmod(0o640)
     assert sd.write_envfile(target, {"MY_VAR": "hello"}) is True
     assert sd.write_envfile(target, {"MY_VAR": "hello"}) is False
+    assert target.stat().st_mode & 0o777 == 0o640
 
 
 def test_envfile_writer_quotes_unsafe_values(tmp_path):
