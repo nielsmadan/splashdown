@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tomllib
 from contextlib import suppress
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -27,39 +26,20 @@ from .bootstrap import (
     revoke_trust,
     trusted_execution,
 )
-from .capabilities import translate_tool_errors, warn_capability
+from .capabilities import warn_capability
 from .catalog import PROFILES
-from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
-from .device_types import AndroidDestination, IOSDestination, as_launch_destination
+from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME
 from .devices import (
     DeviceError,
     DeviceHealth,
-    _android_bin,
     _device_status_for_row,
-    _ios_current_state,
-    _is_orphan_device,
-    _load_recipe_or_empty,
-    _prepare_target_remove,
     _resolve_device_name,
     _short_path,
     _summary_string,
-    _xcrun_json,
-    android_boot,
-    android_destroy,
-    android_shutdown,
     device_destroy_row,
     device_health,
-    device_needs_recreate,
-    device_shutdown_row,
     device_status,
-    ensure_fresh_sim,
-    global_target_add,
-    global_target_remove,
-    ios_boot,
-    ios_destroy,
-    ios_shutdown,
     physical_status,
-    target_add,
 )
 from .doctor import _resolve_doctor_framework, _wiring_checks_for_framework, cmd_doctor
 from .errors import CapabilityError
@@ -70,7 +50,6 @@ from .hooks import (
     _revert_gitignore,
 )
 from .inventory import ProjectInventory
-from .launching import device_run, validate_device_run
 from .loaders import LOADERS
 from .provisioning import (
     clear_writer_destinations,
@@ -87,9 +66,7 @@ from .recipe import (
     TemplateError,
     _global_config_path,
     _slug,
-    load_settings,
     merged_targets,
-    resolve_variant,
 )
 from .registry import Registry
 from .scanner import (
@@ -100,6 +77,18 @@ from .scanner import (
     _prune_unresolvable_templates,
     _should_defer_monorepo,
 )
+from .target_commands import _load_variant_spec
+from .target_commands import cmd_destroy as cmd_destroy  # noqa: PLC0414
+from .target_commands import cmd_gc as cmd_gc  # noqa: PLC0414
+from .target_commands import cmd_run as cmd_run  # noqa: PLC0414
+from .target_commands import cmd_start as cmd_start  # noqa: PLC0414
+from .target_commands import cmd_stop as cmd_stop  # noqa: PLC0414
+from .target_commands import cmd_target_gc as cmd_target_gc  # noqa: PLC0414
+from .target_commands import cmd_target_prune as cmd_target_prune  # noqa: PLC0414
+from .target_commands import cmd_target_refresh as cmd_target_refresh  # noqa: PLC0414
+from .target_commands import cmd_targets_list as cmd_targets_list  # noqa: PLC0414
+from .targets import _load_recipe_or_empty
+from .targets import target_source as _target_source
 
 
 def _create_local_skeleton(cwd: Path) -> bool:
@@ -254,20 +243,6 @@ def _gather_devices_all(
             }
         )
     return entries
-
-
-def _target_source(
-    dtype: str, variant: str, recipe: Recipe, local: LocalConfig, glob: GlobalConfig
-) -> str:
-    """Which scope a merged variant came from, annotating a project variant that
-    shadows a same-named global one (the project always wins the collision)."""
-    if variant in recipe.targets.get(dtype, {}):
-        base = "recipe"
-    elif variant in local.targets.get(dtype, {}):
-        base = "local"
-    else:
-        return "global"
-    return f"{base} (shadows global)" if variant in glob.targets.get(dtype, {}) else base
 
 
 def _gather_targets_declared(
@@ -656,121 +631,6 @@ def cmd_status(
     return 0
 
 
-def cmd_targets_list(cwd: Path, fmt: str) -> int:
-    """List declared device variants and their live instance state."""
-    _dev_status = device_status
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-    glob = GlobalConfig.load(_global_config_path())
-    catalog = merged_targets(recipe, local, glob)
-    if not catalog:
-        print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
-        return 0
-    rows: list[tuple[str, str, str, str, str]] = []
-    _phys_status = physical_status
-    warned: set[str] = set()
-    for dtype, variants in catalog.items():
-        for variant, spec in variants.items():
-            source = _target_source(dtype, variant, recipe, local, glob)
-            if dtype == "device":
-                # Hardware has no created instance name; show its selector
-                # (id/name/platform or "auto") and live connection state.
-                resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
-            else:
-                resolved = _resolve_device_name(spec, cwd, variant, dtype)
-            try:
-                status = (
-                    _phys_status(spec, warned=warned)
-                    if dtype == "device"
-                    else _dev_status(dtype, resolved)
-                )
-            except CapabilityError as error:
-                warn_capability(error, warned)
-                status = "unavailable"
-            except DeviceError as error:
-                status = f"error: {error}"
-            rows.append((dtype, variant, source, resolved, status))
-    if fmt == "json":
-        print(
-            json.dumps(
-                [
-                    dict(
-                        zip(("type", "variant", "source", "device_name", "status"), r, strict=False)
-                    )
-                    for r in rows
-                ],
-                indent=2,
-            )
-        )
-    else:
-        for dtype, variant, source, resolved, status in rows:
-            print(f"{dtype}\t{variant}\t{source}\t{resolved}\t{status}")
-    return 0
-
-
-def _load_variant_spec(
-    cwd: Path, dtype: str, variant: str, glob: GlobalConfig | None = None
-) -> dict[str, Any] | None:
-    """Look up a variant's current spec from a checkout's recipe + local + global
-    config. Returns None if the variant is declared nowhere. Every existing config
-    is loaded strictly so malformed input can never look like an empty catalog to a
-    destructive caller. `cmd_target_refresh` passes the global config after loading
-    it once for the fleet-wide sweep."""
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-    if glob is None:
-        glob = GlobalConfig.load(_global_config_path())
-    return merged_targets(recipe, local, glob).get(dtype, {}).get(variant)
-
-
-def _emit_progress(label: str, current: int, total: int) -> None:
-    """Single-line progress on a TTY ('label: 3/12'). On a non-TTY (CI, pipe)
-    print one line per call instead, so logs aren't a single mash of carriage
-    returns. Caller should _finish_progress() after the loop to drop a newline."""
-    width = len(str(total))
-    msg = f"{label}: {current:>{width}}/{total}"
-    if sys.stderr.isatty():
-        sys.stderr.write(f"\r{msg}")
-    else:
-        sys.stderr.write(f"{msg}\n")
-    sys.stderr.flush()
-
-
-def _finish_progress() -> None:
-    if sys.stderr.isatty():
-        sys.stderr.write("\n")
-        sys.stderr.flush()
-
-
-def cmd_target_gc(registry: Registry, *, warned: set[str] | None = None) -> int:
-    """Destroy the sims/AVDs of dead checkouts (whose dir is gone) and drop their
-    rows. Returns the number of device rows removed. Reconciling *live* checkouts
-    against their recipes — recreating stale/missing devices — is
-    `cmd_target_refresh`'s job, not gc's."""
-    destroyed_count = 0
-    warning_keys = warned if warned is not None else set()
-    rows = list(registry.all_devices())
-    total = len(rows)
-    for i, row in enumerate(rows, 1):
-        _emit_progress("gc", i, total)
-        try:
-            with registry.operation_lock(row.checkout):
-                current = registry.get_device(row.checkout, row.dtype, row.variant)
-                if current is None:
-                    continue
-                if Path(current.checkout).exists():
-                    if not _is_orphan_device(current):
-                        continue
-                else:
-                    device_destroy_row(current)
-                registry.remove_device(current.checkout, current.dtype, current.variant)
-                destroyed_count += 1
-        except CapabilityError as error:
-            warn_capability(error, warning_keys)
-    _finish_progress()
-    return destroyed_count
-
-
 _COMPLETION_SHELLS = ("bash", "zsh")
 
 
@@ -799,364 +659,6 @@ def cmd_completion(shell: str | None) -> int:
     code = argcomplete.shellcode(["splash"], shell=shell)  # type: ignore[attr-defined]
     print(code)
     return 0
-
-
-def cmd_gc(registry: Registry) -> int:
-    """Drop every dead-checkout entry machine-wide: destroy orphaned sims/AVDs,
-    then prune port/kv/device rows and reconcile live checkouts to their recipes."""
-    warned: set[str] = set()
-    reconciled = cmd_target_gc(registry, warned=warned)
-    n = registry.gc(include_devices=False)
-    print(
-        f"gc: removed {n} registry entries, reconciled {reconciled} device row(s)",
-        file=sys.stderr,
-    )
-    return 0
-
-
-_PLATFORM_OF_DTYPE = {"simulator": "ios", "emulator": "android"}
-
-
-def _handle_optional_capability(
-    error: CapabilityError, *, skip_unavailable: bool, warned: set[str]
-) -> None:
-    if not skip_unavailable:
-        raise error
-    warn_capability(error, warned)
-
-
-def cmd_target_refresh(
-    registry: Registry,
-    *,
-    platforms: tuple[str, ...] = ("ios", "android"),
-    skip_unavailable: bool = False,
-) -> int:
-    """Eagerly reconcile every splashdown-managed device to its declared spec.
-
-    Recreates each sim/AVD that is stale (declared `latest`, older OS now
-    available) or missing-but-declared (incl. pinned variants whose sim was
-    hand-deleted). Fresh ones are left alone. Rows for defunct checkouts or
-    variants no longer declared are dropped (their sim destroyed). Recreation
-    leaves the new sim Shutdown — nothing is booted, so no concurrency limits
-    apply."""
-    _fresh_sim = ensure_fresh_sim
-    recreated = unchanged = dropped = 0
-    cache: dict[str, str] = {}
-    warned: set[str] = set()
-    # Load the global config ONCE, up front and unguarded: a malformed global
-    # config must abort the whole sweep here, not make every globally-sourced
-    # device look undeclared and get destroyed row-by-row below.
-    glob = GlobalConfig.load(_global_config_path())
-    rows = [r for r in registry.all_devices() if _PLATFORM_OF_DTYPE.get(r.dtype) in platforms]
-    for row in rows:
-        if Path(row.checkout).exists():
-            _load_variant_spec(Path(row.checkout), row.dtype, row.variant, glob=glob)
-    total = len(rows)
-    for i, row in enumerate(rows, 1):
-        _emit_progress("target refresh", i, total)
-        try:
-            with registry.operation_lock(row.checkout):
-                current = registry.get_device(row.checkout, row.dtype, row.variant)
-                if current is None:
-                    continue
-                cwd = Path(current.checkout)
-                spec = (
-                    _load_variant_spec(cwd, current.dtype, current.variant, glob=glob)
-                    if cwd.exists()
-                    else None
-                )
-                if spec is None:
-                    device_destroy_row(current)
-                    registry.remove_device(current.checkout, current.dtype, current.variant)
-                    dropped += 1
-                    continue
-                will_recreate = device_needs_recreate(
-                    registry, cwd, current.dtype, current.variant, spec, cache=cache
-                )
-                _fresh_sim(
-                    registry,
-                    cwd,
-                    current.dtype,
-                    current.variant,
-                    spec,
-                    cache=cache,
-                )
-                if will_recreate:
-                    recreated += 1
-                else:
-                    unchanged += 1
-        except CapabilityError as error:
-            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
-    _finish_progress()
-    print(
-        f"target refresh: recreated {recreated}, unchanged {unchanged}, dropped {dropped}",
-        file=sys.stderr,
-    )
-    return 0
-
-
-def _discover_foreign_ios(managed: set[str]) -> list[tuple[str, str, str]]:
-    """Available simulators not in the registry, as (udid, name, runtime)."""
-    _xcrun = _xcrun_json
-    data = _xcrun(["simctl", "list", "devices", "-j"])
-    foreign: list[tuple[str, str, str]] = []
-    for runtime, devs in (data.get("devices") or {}).items():
-        for d in devs:
-            udid = d.get("udid")
-            if not udid or udid in managed:
-                continue
-            if not d.get("isAvailable", True):
-                continue
-            foreign.append((udid, d.get("name", "?"), runtime))
-    return foreign
-
-
-def _discover_foreign_avds(managed: set[str]) -> list[str]:
-    """AVD names not in the registry."""
-    try:
-        with translate_tool_errors(
-            "android", "avdmanager", "install Android SDK command-line tools"
-        ):
-            out = subprocess.check_output(
-                [_android_bin("avdmanager"), "list", "avd", "-c"],
-                stderr=subprocess.DEVNULL,
-            )
-    except subprocess.CalledProcessError as error:
-        raise DeviceError(f"avdmanager list failed: exit {error.returncode}") from error
-    return [
-        name for line in out.decode().splitlines() if (name := line.strip()) and name not in managed
-    ]
-
-
-def cmd_target_prune(
-    registry: Registry,
-    *,
-    yes: bool = False,
-    dry_run: bool = False,
-    platforms: tuple[str, ...] = ("ios", "android"),
-    skip_unavailable: bool = False,
-) -> int:
-    """Destroy every sim/AVD on this machine that splashdown did NOT create.
-    Picks up the Xcode default-template pile, hand-made sims, etc.
-
-    Splashdown-managed entries (those in the registry) are always preserved.
-    Use --dry-run to preview, --yes to skip the prompt."""
-    _ios_shut = ios_shutdown
-    _ios_del = ios_destroy
-    _avd_shut = android_shutdown
-    _avd_del = android_destroy
-    managed = registry.managed_udids()
-    warned: set[str] = set()
-    foreign_ios: list[tuple[str, str, str]] = []
-    foreign_avd: list[str] = []
-    if "ios" in platforms:
-        try:
-            foreign_ios = _discover_foreign_ios(managed)
-        except CapabilityError as error:
-            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
-    if "android" in platforms:
-        try:
-            foreign_avd = _discover_foreign_avds(managed)
-        except CapabilityError as error:
-            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
-
-    total = len(foreign_ios) + len(foreign_avd)
-    if total == 0:
-        print(
-            "target prune: nothing to remove (every sim/AVD is splashdown-managed)", file=sys.stderr
-        )
-        return 0
-
-    print(
-        f"About to remove {total} {'/'.join(platforms)} device(s) not managed by splashdown:",
-        file=sys.stderr,
-    )
-    for udid, name, runtime in foreign_ios:
-        print(f"  simulator     {name}  ({runtime})  {udid}", file=sys.stderr)
-    for name in foreign_avd:
-        print(f"  android     {name}", file=sys.stderr)
-
-    if dry_run:
-        print("target prune: --dry-run, nothing destroyed", file=sys.stderr)
-        return 0
-    if not _confirm("Continue?", yes=yes):
-        print("target prune: aborted", file=sys.stderr)
-        return 1
-
-    done = 0
-    for udid, _name, _runtime in foreign_ios:
-        try:
-            _ios_shut(udid)
-            _ios_del(udid)
-            done += 1
-            _emit_progress("target prune", done, total)
-        except CapabilityError as error:
-            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
-    for name in foreign_avd:
-        try:
-            _avd_shut(name)
-            _avd_del(name)
-            done += 1
-            _emit_progress("target prune", done, total)
-        except CapabilityError as error:
-            _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
-    _finish_progress()
-    print(f"target prune: removed {done} device(s)", file=sys.stderr)
-    return 0
-
-
-def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
-    """Reconcile the sim, boot it, then build + launch the app via the framework's CLI."""
-    _fresh_sim = ensure_fresh_sim
-    _boot_ios = ios_boot
-    _ios_state = _ios_current_state
-    _boot_android = android_boot
-    _dev_run = device_run
-    abspath = str(cwd.resolve())
-    with registry.operation_lock(abspath):
-        dtype = _infer_dtype(cwd, dtype)
-        variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-        kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
-        validate_device_run(cwd, recipe, kind)
-        info = as_launch_destination(_fresh_sim(registry, cwd, dtype, variant, spec))
-        # Physical devices are already live (discovery returns the running id); only
-        # splashdown-owned sims/emulators need booting.
-        if info.owned:
-            if isinstance(info, IOSDestination):
-                _boot_ios(info.identifier, _ios_state(info.identifier))
-            elif isinstance(info, AndroidDestination):
-                info = replace(info, identifier=_boot_android(info.name))
-    return int(_dev_run(cwd, recipe, info))
-
-
-def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
-    """Reconcile the sim, then boot it. No build/launch."""
-    _fresh_sim = ensure_fresh_sim
-    _boot_ios = ios_boot
-    _ios_state = _ios_current_state
-    _boot_android = android_boot
-    abspath = str(cwd.resolve())
-    with registry.operation_lock(abspath):
-        dtype = _infer_dtype(cwd, dtype)
-        variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-        info = as_launch_destination(_fresh_sim(registry, cwd, dtype, variant, spec))
-        if not info.owned:
-            print(f"{dtype}.{variant} connected ({info.name})", file=sys.stderr)
-            return 0
-        if isinstance(info, IOSDestination):
-            _boot_ios(info.identifier, _ios_state(info.identifier))
-        elif isinstance(info, AndroidDestination):
-            info = replace(info, identifier=_boot_android(info.name))
-    print(f"started {dtype}.{variant} ({info.name})", file=sys.stderr)
-    return 0
-
-
-def cmd_stop(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
-    """Shut down the sim/emulator (preserves it for next start)."""
-    abspath = str(cwd.resolve())
-    with registry.operation_lock(abspath):
-        dtype = _infer_dtype(cwd, dtype)
-        variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-        if dtype == "device":
-            print(
-                f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop",
-                file=sys.stderr,
-            )
-            return 0
-        row = registry.get_device(abspath, dtype, variant)
-        if row is None:
-            print(f"{dtype}.{variant} has no managed instance; nothing to stop", file=sys.stderr)
-            return 0
-        device_shutdown_row(row)
-    print(f"stopped {dtype}.{variant} ({row.identifier})", file=sys.stderr)
-    return 0
-
-
-def _confirm(prompt: str, *, yes: bool) -> bool:
-    """Interactive [y/N] gate for destructive ops. `yes=True` skips the prompt."""
-    if yes:
-        return True
-    print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
-    return input().strip().lower() in ("y", "yes")
-
-
-def cmd_destroy(
-    cwd: Path,
-    registry: Registry,
-    dtype: str | None,
-    variant_arg: str | None,
-    *,
-    yes: bool = False,
-) -> int:
-    """Delete the sim/emulator and its registry entry."""
-    dtype = _infer_dtype(cwd, dtype)
-    variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-    if dtype == "device":
-        print(
-            f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to destroy",
-            file=sys.stderr,
-        )
-        return 0
-    if not _confirm(f"Destroy {dtype}.{variant}?", yes=yes):
-        print(f"destroy {dtype}.{variant}: aborted", file=sys.stderr)
-        return 1
-    abspath = str(cwd.resolve())
-    with registry.operation_lock(abspath):
-        variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant)
-        row = registry.get_device(abspath, dtype, variant)
-        if row is None:
-            print(f"{dtype}.{variant} has no managed instance; nothing to destroy", file=sys.stderr)
-            return 0
-        device_destroy_row(row)
-        registry.remove_device(abspath, dtype, variant)
-    print(f"destroyed {dtype}.{variant} ({row.identifier})", file=sys.stderr)
-    return 0
-
-
-def _declared_target_types(cwd: Path, *, include_global: bool = True) -> list[str]:
-    """The target types this checkout has variants for. With `include_global` (the
-    default) global config folds in — used where a global device should be
-    resolvable. Pass `include_global=False` for TYPE inference and type-prefix
-    matching, which must stay scoped to the project's *own* types: an
-    always-available global `device` must not make bare `splash run` ambiguous in
-    every mobile project, nor claim a short token (`splash run d`) in a sim-only
-    repo."""
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-    glob = GlobalConfig.load(_global_config_path()) if include_global else None
-    return [t for t, variants in merged_targets(recipe, local, glob).items() if variants]
-
-
-def _infer_dtype(cwd: Path, dtype: str | None) -> str:
-    """Resolve an unspecified TYPE arg to the single device type to act on. Scoped
-    to the project's own declared types first; only when the project declares none
-    do globally-available types count (so bare `splash run` still resolves a lone
-    global physical device in an otherwise target-less repo)."""
-    if dtype:
-        return dtype
-    declared = _declared_target_types(cwd, include_global=False) or _declared_target_types(cwd)
-    if len(declared) == 1:
-        return declared[0]
-    if not declared:
-        raise DeviceError(f"no targets declared in {RECIPE_NAME} or {LOCAL_NAME}")
-    raise DeviceError(
-        f"multiple target types declared ({', '.join(sorted(declared))}); "
-        f"specify one: {' | '.join(TARGET_TYPES)}"
-    )
-
-
-def _resolve_variant_for_cli(
-    cwd: Path, dtype: str, variant_arg: str | None
-) -> tuple[str, dict[str, Any], Recipe]:
-    """Common prelude for `splash run`/`start`/`stop`/`destroy`: load recipe+local,
-    merge, pick variant."""
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(cwd / LOCAL_NAME)
-    glob = GlobalConfig.load(_global_config_path())
-    catalog = merged_targets(recipe, local, glob).get(dtype, {})
-    prefix_match = load_settings(cwd).prefix_match
-    variant, spec = resolve_variant(catalog, variant_arg, prefix_match=prefix_match)
-    return variant, spec, recipe
 
 
 _NO_LOADER_INSTRUCTIONS = (
@@ -2002,116 +1504,6 @@ def cmd_post_checkout_hook(
         print(f"  -> {message}", file=sys.stderr)
     print("splashdown: bootstrap complete", file=sys.stderr)
     return 0
-
-
-def _target_add(args: Any, cwd: Path, registry: Registry) -> int:
-    fields = {
-        "model": args.model,
-        "ios": args.ios,
-        "device": args.device,
-        "image": args.image,
-        "name": args.sim_name,
-        "id": args.device_id,
-        "platform": args.platform,
-    }
-    if getattr(args, "global_scope", False):
-        path = global_target_add(args.dtype, args.variant, fields)
-        print(f"added target `{args.dtype}.{args.variant}` to {path}", file=sys.stderr)
-        return 0
-    with registry.operation_lock(str(cwd.resolve())):
-        target_add(cwd, args.dtype, args.variant, fields)
-    print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
-    return 0
-
-
-def _target_remove(args: Any, cwd: Path, registry: Registry) -> int:
-    if getattr(args, "global_scope", False):
-        path = global_target_remove(args.dtype, args.variant)
-        print(
-            f"removed target `{args.dtype}.{args.variant}` from {path}; run "
-            "`splash target refresh` to reap any now-undeclared instances",
-            file=sys.stderr,
-        )
-        return 0
-    checkout = str(cwd.resolve())
-    with registry.operation_lock(checkout):
-        return _target_remove_locked(args, cwd, registry, checkout)
-
-
-def _target_remove_locked(args: Any, cwd: Path, registry: Registry, checkout: str) -> int:
-    variant = args.variant
-    recipe = _load_recipe_or_empty(cwd)
-    try:
-        local = LocalConfig.load(cwd / LOCAL_NAME)
-    except ValueError:
-        local = LocalConfig({}, cwd / LOCAL_NAME)
-    in_project = variant in recipe.targets.get(args.dtype, {}) or variant in local.targets.get(
-        args.dtype, {}
-    )
-    if not in_project and variant in GlobalConfig.load(_global_config_path()).targets.get(
-        args.dtype, {}
-    ):
-        raise DeviceError(
-            f"`{args.dtype}.{variant}` is a global variant; "
-            "remove it with `splash target remove … --global`"
-        )
-    _spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant)
-    destroyed = False
-    missing = False
-    if not args.keep_instance and args.dtype != "device":
-        row = registry.get_device(checkout, args.dtype, variant)
-        if row is not None:
-            device_destroy_row(row)
-        else:
-            missing = True
-        local_path.write_text(new_local_text)
-        registry.remove_device(checkout, args.dtype, variant)
-        destroyed = row is not None
-    else:
-        local_path.write_text(new_local_text)
-    if destroyed:
-        suffix = " (and destroyed the instance)"
-    elif missing:
-        suffix = " (no managed instance found)"
-    else:
-        suffix = ""
-    print(f"removed target `{args.dtype}.{variant}` from {LOCAL_NAME}{suffix}", file=sys.stderr)
-    return 0
-
-
-def _target_refresh(args: Any, registry: Registry) -> int:
-    platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-    return cmd_target_refresh(
-        registry,
-        platforms=platforms,
-        skip_unavailable=args.platform == "all",
-    )
-
-
-def _target_prune(args: Any, registry: Registry) -> int:
-    platforms = ("ios", "android") if args.platform == "all" else (args.platform,)
-    return cmd_target_prune(
-        registry,
-        yes=args.yes,
-        dry_run=args.dry_run,
-        platforms=platforms,
-        skip_unavailable=args.platform == "all",
-    )
-
-
-def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
-    if args.target_cmd is None:
-        return cmd_targets_list(cwd, _resolve_format_arg(args))
-    if args.target_cmd == "add":
-        return _target_add(args, cwd, registry)
-    if args.target_cmd == "remove":
-        return _target_remove(args, cwd, registry)
-    if args.target_cmd == "refresh":
-        return _target_refresh(args, registry)
-    if args.target_cmd == "prune":
-        return _target_prune(args, registry)
-    print(f"splash target {args.target_cmd}: unknown action", file=sys.stderr)
-    return 2
 
 
 def _env_set(assignment: str, target: str, registry: Registry) -> int:

@@ -261,7 +261,6 @@ def test_android_physical_devices_excludes_emulators(monkeypatch):
         b"ZZZ                 unauthorized\n"
     )
     monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/adb")
-    monkeypatch.setattr(sd.commands, "_android_bin", lambda name: "/fake/adb")
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: out)
     devices = sd._android_physical_devices()
     assert devices == [{"id": "PXL1234", "name": "Pixel_7", "platform": "android"}]
@@ -284,7 +283,7 @@ framework = "react-native"
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.commands, "device_run", _fake_run)
+    monkeypatch.setattr(sd.target_commands, "device_run", _fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "run", "simulator"])
     assert rc == 0
     assert captured["info"]["udid"] == "UDID-NEW"
@@ -311,7 +310,7 @@ framework = "react-native"
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.commands, "device_run", _fake_run)
+    monkeypatch.setattr(sd.target_commands, "device_run", _fake_run)
     sd.main(["--cwd", str(tmp_path), "run", "simulator", "small-screen"])
     assert captured["info"]["name"] == sd._default_sim_name(tmp_path, "small-screen")
 
@@ -349,7 +348,7 @@ framework = "react-native"
         called["device_run"] = True
         return 0
 
-    monkeypatch.setattr(sd.commands, "device_run", fake_run)
+    monkeypatch.setattr(sd.target_commands, "device_run", fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "start", "simulator"])
     assert rc == 0
     assert called["device_run"] is False
@@ -363,7 +362,7 @@ def test_cli_devices_shows_recipe_and_local(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Stub status checks to avoid hitting xcrun.
     monkeypatch.setattr(sd.devices, "device_status", lambda dtype, name: "absent")
-    monkeypatch.setattr(sd.commands, "device_status", lambda dtype, name: "absent")
+    monkeypatch.setattr(sd.target_commands, "device_status", lambda dtype, name: "absent")
     rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 0
 
@@ -382,7 +381,7 @@ framework = "react-native"
         str(tmp_path.resolve()), "simulator", "default", "UDID-STORED", "iPhone 17", "18.5"
     )
     captured = []
-    monkeypatch.setattr(sd.commands, "device_shutdown_row", captured.append)
+    monkeypatch.setattr(sd.target_commands, "device_shutdown_row", captured.append)
     rc = sd.main(["--cwd", str(tmp_path), "stop", "simulator"])
     assert rc == 0
     assert captured[0].identifier == "UDID-STORED"
@@ -394,7 +393,7 @@ def test_cli_stop_without_registry_row_does_not_resolve_external_name(
     (tmp_path / "splashdown.toml").write_text('[targets.emulator.default]\nname = "unowned-avd"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands, "device_shutdown_row", lambda row: pytest.fail(f"shut down {row}")
+        sd.target_commands, "device_shutdown_row", lambda row: pytest.fail(f"shut down {row}")
     )
 
     assert sd.main(["--cwd", str(tmp_path), "stop", "emulator"]) == 0
@@ -416,7 +415,7 @@ def test_cli_destroy_uses_registered_emulator_name(tmp_path, monkeypatch):
         "android-34",
     )
     destroyed = []
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
 
     assert sd.main(["--cwd", str(tmp_path), "destroy", "emulator", "--yes"]) == 0
     assert isinstance(destroyed[0], sd.EmulatorRecord)
@@ -440,7 +439,7 @@ framework = "react-native"
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.commands, "device_run", _fake_run)
+    monkeypatch.setattr(sd.target_commands, "device_run", _fake_run)
     # No TYPE given — should resolve to the only declared type (simulator).
     rc = sd.main(["--cwd", str(tmp_path), "run"])
     assert rc == 0
@@ -554,7 +553,7 @@ def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys
         called["prune"] = True
         return 0
 
-    monkeypatch.setattr(sd.commands, "cmd_target_prune", _fail)
+    monkeypatch.setattr(sd.target_commands, "cmd_target_prune", _fail)
     with pytest.raises(SystemExit) as exc:
         sd.main(["--cwd", str(tmp_path), "target", "prune", "mac"])
     assert exc.value.code == 2
@@ -1008,7 +1007,7 @@ def test_cli_bare_device_lists(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(sd.devices, "device_status", lambda dtype, name: "absent")
-    monkeypatch.setattr(sd.commands, "device_status", lambda dtype, name: "absent")
+    monkeypatch.setattr(sd.target_commands, "device_status", lambda dtype, name: "absent")
     rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 0
 
@@ -1020,7 +1019,7 @@ def test_cli_device_remove_without_registry_row_is_safe_noop(tmp_path, monkeypat
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands, "device_destroy_row", lambda row: pytest.fail(f"destroyed {row}")
+        sd.target_commands, "device_destroy_row", lambda row: pytest.fail(f"destroyed {row}")
     )
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
     assert rc == 0
@@ -1035,7 +1034,7 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     destroyed = []
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
     rc = sd.main(
         [
             "--cwd",
@@ -1056,7 +1055,7 @@ def test_cli_device_remove_recipe_variant_does_not_destroy(tmp_path, monkeypatch
     (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     destroyed = []
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "default"])
     assert rc == 1
     assert destroyed == []
@@ -1081,7 +1080,7 @@ def test_cli_device_remove_failure_keeps_local_variant(tmp_path, monkeypatch, ca
     def fail_destroy(row):
         raise sd.DeviceError(f"could not destroy {row.dtype} {row.udid}")
 
-    monkeypatch.setattr(sd.commands, "device_destroy_row", fail_destroy)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", fail_destroy)
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
     assert rc == 1
     assert "[targets.simulator.repro]" in local.read_text()
@@ -1104,7 +1103,7 @@ def test_cli_device_remove_destroys_registered_instance(tmp_path, monkeypatch):
         "18.5",
     )
     destroyed = []
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
 
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
 
@@ -1128,7 +1127,7 @@ def test_cli_target_remove_uses_composition_root_registry(tmp_path, monkeypatch)
     checkout = str(tmp_path.resolve())
     registry.set_device(checkout, "simulator", "repro", "UDID", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
-    monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: None)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", lambda row: None)
 
     assert sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"]) == 0
     assert registry.get_device(checkout, "simulator", "repro") is None
@@ -1165,7 +1164,9 @@ def test_device_gc_rereads_row_after_checkout_lock(registry, tmp_path, monkeypat
         yield
 
     monkeypatch.setattr(registry, "operation_lock", replace_before_entry)
-    monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: destroyed.append(row.udid))
+    monkeypatch.setattr(
+        sd.target_commands, "device_destroy_row", lambda row: destroyed.append(row.udid)
+    )
 
     assert sd.cmd_target_gc(registry) == 1
     assert destroyed == ["UDID-NEW"]
@@ -1188,9 +1189,9 @@ def test_device_gc_drops_defunct_emulator_and_destroys_avd(registry, tmp_path, m
 
 def test_device_gc_drops_live_orphan_without_destroying(registry, checkout, monkeypatch):
     registry.set_device(str(checkout), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
-    monkeypatch.setattr(sd.commands, "_is_orphan_device", lambda row: True)
+    monkeypatch.setattr(sd.target_commands, "_is_orphan_device", lambda row: True)
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "device_destroy_row",
         lambda row: pytest.fail(f"orphan row was destroyed: {row}"),
     )
@@ -1204,7 +1205,7 @@ def test_device_gc_preserves_live_row_when_capability_unavailable(
 ):
     registry.set_device(str(checkout), "simulator", "default", "UDID", "iPhone 17", "18.5")
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "_is_orphan_device",
         lambda row: (_ for _ in ()).throw(
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
@@ -1251,7 +1252,7 @@ def test_gc_preserves_unavailable_device_rows(tmp_path, monkeypatch, capsys):
             raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
         destroyed.append(row.udid)
 
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroy)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroy)
 
     assert sd.cmd_gc(registry) == 0
     assert destroyed == ["AVD-DEAD"]
@@ -1278,7 +1279,7 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
         sd.devices, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot")
     )
     monkeypatch.setattr(
-        sd.commands, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot")
+        sd.target_commands, "ios_boot", lambda *a, **k: pytest.fail("refresh must not boot")
     )
     rc = sd.cmd_target_refresh(registry)
     assert rc == 0
@@ -1299,7 +1300,9 @@ def test_device_refresh_rereads_row_after_checkout_lock(registry, tmp_path, monk
         yield
 
     monkeypatch.setattr(registry, "operation_lock", replace_before_entry)
-    monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: destroyed.append(row.udid))
+    monkeypatch.setattr(
+        sd.target_commands, "device_destroy_row", lambda row: destroyed.append(row.udid)
+    )
 
     assert sd.cmd_target_refresh(registry, platforms=("ios",)) == 0
     assert destroyed == ["UDID-NEW"]
@@ -1325,9 +1328,9 @@ def test_device_refresh_skips_unavailable_platform(registry, tmp_path, monkeypat
             raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
         return True
 
-    monkeypatch.setattr(sd.commands, "device_needs_recreate", needs_recreate)
+    monkeypatch.setattr(sd.target_commands, "device_needs_recreate", needs_recreate)
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "ensure_fresh_sim",
         lambda reg, cwd, dtype, variant, spec, *, cache: reconciled.append(f"{dtype}/{variant}"),
     )
@@ -1344,7 +1347,7 @@ def test_device_refresh_explicit_unavailable_platform_fails(registry, checkout, 
     )
     registry.set_device(str(checkout), "simulator", "default", "UDID", "iPhone 17", "18.5")
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "device_needs_recreate",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
@@ -1491,7 +1494,7 @@ def test_cli_target_refresh_uses_composition_root_registry(tmp_path, monkeypatch
         return 0
 
     monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
-    monkeypatch.setattr(sd.commands, "cmd_target_refresh", fake_refresh)
+    monkeypatch.setattr(sd.target_commands, "cmd_target_refresh", fake_refresh)
 
     assert sd.main(["--cwd", str(tmp_path), "target", "refresh", "android"]) == 0
     assert captured == {
@@ -1612,6 +1615,13 @@ def test_status_text_and_target_list_render_unavailable(registry, checkout, monk
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
         ),
     )
+    monkeypatch.setattr(
+        sd.target_commands,
+        "device_status",
+        lambda *args: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
+        ),
+    )
 
     assert sd.cmd_status(checkout, registry, "text") == 0
     captured = capsys.readouterr()
@@ -1636,7 +1646,7 @@ def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
         ]
     }
     monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": fake_devices})
-    monkeypatch.setattr(sd.commands, "_xcrun_json", lambda args: {"devices": fake_devices})
+    monkeypatch.setattr(sd.target_commands, "_xcrun_json", lambda args: {"devices": fake_devices})
     registry.set_device("/tmp/something", "simulator", "default", "MANAGED", "iPhone 17", "18.5")
     rc = sd.cmd_target_prune(registry, yes=False, dry_run=True, platforms=("ios",))
     assert rc == 0
@@ -1654,13 +1664,13 @@ def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
         ]
     }
     monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": fake_devices})
-    monkeypatch.setattr(sd.commands, "_xcrun_json", lambda args: {"devices": fake_devices})
+    monkeypatch.setattr(sd.target_commands, "_xcrun_json", lambda args: {"devices": fake_devices})
     destroyed: list[str] = []
     shut: list[str] = []
     monkeypatch.setattr(sd.devices, "ios_destroy", destroyed.append)
-    monkeypatch.setattr(sd.commands, "ios_destroy", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "ios_destroy", destroyed.append)
     monkeypatch.setattr(sd.devices, "ios_shutdown", shut.append)
-    monkeypatch.setattr(sd.commands, "ios_shutdown", shut.append)
+    monkeypatch.setattr(sd.target_commands, "ios_shutdown", shut.append)
     rc = sd.cmd_target_prune(registry, yes=True, dry_run=False, platforms=("ios",))
     assert rc == 0
     assert destroyed == ["FOREIGN"]
@@ -1669,7 +1679,7 @@ def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
 
 def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys):
     monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": {}})
-    monkeypatch.setattr(sd.commands, "_xcrun_json", lambda args: {"devices": {}})
+    monkeypatch.setattr(sd.target_commands, "_xcrun_json", lambda args: {"devices": {}})
     rc = sd.cmd_target_prune(registry, yes=True, dry_run=False, platforms=("ios",))
     assert rc == 0
     assert "nothing" in capsys.readouterr().err.lower()
@@ -1677,21 +1687,23 @@ def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys)
 
 def test_device_prune_skips_unavailable_platform(registry, monkeypatch, capsys):
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "_discover_foreign_ios",
         lambda managed: (_ for _ in ()).throw(
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
         ),
     )
-    monkeypatch.setattr(sd.commands, "_discover_foreign_avds", lambda managed: ["foreign-avd"])
+    monkeypatch.setattr(
+        sd.target_commands, "_discover_foreign_avds", lambda managed: ["foreign-avd"]
+    )
     lifecycle: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "android_shutdown",
         lambda name: lifecycle.append(("shutdown", name)),
     )
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "android_destroy",
         lambda name: lifecycle.append(("destroy", name)),
     )
@@ -1703,7 +1715,7 @@ def test_device_prune_skips_unavailable_platform(registry, monkeypatch, capsys):
 
 def test_device_prune_explicit_unavailable_platform_fails(registry, monkeypatch):
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "_discover_foreign_ios",
         lambda managed: (_ for _ in ()).throw(
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
@@ -1736,7 +1748,7 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
-    monkeypatch.setattr(sd.commands, "cmd_target_prune", _fake_prune)
+    monkeypatch.setattr(sd.target_commands, "cmd_target_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "ios", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["registry"] is registry
@@ -1754,7 +1766,7 @@ def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
         captured["skip_unavailable"] = skip_unavailable
         return 0
 
-    monkeypatch.setattr(sd.commands, "cmd_target_prune", _fake_prune)
+    monkeypatch.setattr(sd.target_commands, "cmd_target_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios", "android")
@@ -1771,7 +1783,7 @@ def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
         captured["skip_unavailable"] = skip_unavailable
         return 0
 
-    monkeypatch.setattr(sd.commands, "cmd_target_prune", _fake_prune)
+    monkeypatch.setattr(sd.target_commands, "cmd_target_prune", _fake_prune)
     rc = sd.main(["--cwd", str(tmp_path), "target", "prune", "all", "--yes", "--dry-run"])
     assert rc == 0
     assert captured["platforms"] == ("ios", "android")
@@ -2009,7 +2021,7 @@ def test_cli_run_rejects_non_runnable_profile_before_device_mutation(tmp_path, m
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "ensure_fresh_sim",
         lambda *args, **kwargs: pytest.fail("device mutation must not start"),
     )

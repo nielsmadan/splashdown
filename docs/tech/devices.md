@@ -30,9 +30,9 @@ whose native id is then handed to a framework launcher. The three device types a
 asymmetric: sims and emulators are *created/destroyed/reconciled* and tracked in the registry;
 physical devices are only *discovered* and never persisted.
 
-It also hosts the `splash target add/remove` writers and the `splash status --all` summary
-formatting helpers — colocated here because they are about device variants, not because they are
-device-lifecycle proper.
+Target catalog writers live in `targets.py`, while lifecycle and fleet command composition lives
+in `target_commands.py`. Compatibility re-exports remain in this module for existing extensions.
+The `splash status --all` summary formatting helpers remain here until status extraction.
 
 ## How it works (current state)
 
@@ -220,7 +220,7 @@ the shell's exit status.
 - `_xcrun_json` / `_devicectl_json` — `devices.py:82`, `:494` — subprocess JSON wrappers.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py:776`, `:789`, `:798`.
 - `detect_framework` / `resolve_app_dir` / `device_run` — `launching.py:13`, `:40`, `:65`.
-- `target_add` / `target_remove` — `devices.py:913`, `:965` — local-file variant writers.
+- `target_add` / `target_remove` — `targets.py` — local-file variant writers, re-exported here for compatibility.
 
 ## Gotchas
 

@@ -72,13 +72,13 @@ reconcile leaves the new sim **Shutdown** — it never boots anything, so the OS
 `cmd_start` reconciles + boots but skips the build/launch. `cmd_stop`
 shuts the registered instance down but preserves it. `cmd_destroy` deletes the registered instance
 and its registry row, gated behind a `[y/N]` prompt (`_confirm`,
-`src/splashdown/commands.py:995`), bypassable with `--yes`. For `type = device`, stop/destroy are
+`src/splashdown/target_commands.py`), bypassable with `--yes`. For `type = device`, stop/destroy are
 no-ops with an explanatory message because splashdown owns no hardware. Managed teardown uses the
 persisted simulator UDID or AVD name; if no registry row exists it reports a no-op and never falls
 back to a recipe-derived name.
 
 **Type and variant inference.** When the user omits `TYPE`, `_infer_dtype`
-(`src/splashdown/commands.py:1038`) resolves it to the single declared target type, or errors with
+(`src/splashdown/target_commands.py`) resolves it to the single declared target type, or errors with
 the list when there are zero or several. `_resolve_variant_for_cli` (`:1056`) loads the full
 recipe + local + global catalog and picks the variant (`resolve_variant`): an explicit arg,
 else `default`, else the sole declared variant.
@@ -86,7 +86,7 @@ else `default`, else the sole declared variant.
 **Global targets are a *resolution*-scope concept, never an *inference*-scope one.** Type inference
 and type-prefix matching call `_declared_target_types(cwd, include_global=False)` — the project's own
 recipe + local types only — and fall back to the global-inclusive list only when the project declares
-none (`src/splashdown/commands.py:1024`, `:1038`; `src/splashdown/cli.py:345`). Resolution
+none (`src/splashdown/target_commands.py`; `src/splashdown/cli.py`). Resolution
 (`_resolve_variant_for_cli`, `_gather_targets_declared`) always uses the full merged catalog. Folding
 the always-available global `device` type into inference instead would make bare
 `splash run`/`start`/`stop`/`destroy` fail with `multiple target types declared (device, simulator)`
@@ -139,7 +139,7 @@ a launcher that starts and exits nonzero keeps its normal exit status.
    unavailable.
 
 **Pruning the template pile (UC4 cleanup).** `splash target prune` → `cmd_target_prune`
-(`src/splashdown/commands.py:859`) destroys every sim/AVD on the machine that splashdown did *not*
+(`src/splashdown/target_commands.py`) destroys every sim/AVD on the machine that splashdown did *not*
 create — the Xcode default-template pile, hand-made sims — by diffing live sims/AVDs against
 `registry.managed_udids()` (`_discover_foreign_ios:826`, `_discover_foreign_avds:842`). It prints
 the kill list, honors `--dry-run` (preview only) and `--yes` (skip the `_confirm` prompt), and is
@@ -157,12 +157,12 @@ instance is recreated at its declared version, while GC treats it like any other
 **Physical devices are discovered, not owned.** A `device` target resolves to a *connected* phone
 (`ensure_physical`, `src/splashdown/devices.py:611`; `_physical_match:596` filters by
 `platform`/`id`/`name`). `cmd_run` skips booting for `info["physical"]` and goes straight to the
-launcher (`src/splashdown/commands.py:936`). Physical devices are never written to the registry;
+launcher (`src/splashdown/target_commands.py`). Physical devices are never written to the registry;
 `status`/`target` show `connected` / `absent` / `ambiguous` (`physical_status:644`).
 
 **Declaring variants programmatically.** `splash target add` writes an add-only
 `[targets.<type>.<variant>]` table into the gitignored local file (`target_add`,
-`src/splashdown/devices.py:913`). Before writing, it applies the same type-specific target schema
+`src/splashdown/targets.py`). Before writing, it applies the same type-specific target schema
 used for recipe, local, and global files, rejects incompatible CLI flags, renders the new document
 in memory, and validates the complete result. `splash target remove` first verifies that the variant
 belongs to the local file and computes the edited TOML, then destroys the instance, writes the
@@ -179,13 +179,13 @@ Adding a variant that already exists in the recipe is an error.
 | Instance name `<parent>/<cwd>/<variant>-<path-hash>` | `src/splashdown/devices.py` (`_default_sim_name`); override resolution in `_resolve_device_name` |
 | Reconcile (create / recreate-on-drift / pin) | `src/splashdown/devices.py:729` (`ensure_fresh_sim`) |
 | Latest-iOS lookup driving auto-upgrade | `src/splashdown/devices.py:117` (`_ios_latest_runtime_version`); Android `:354` (`_android_latest_image`) |
-| `splash run` (reconcile + boot + build + launch) | `src/splashdown/commands.py:936` (`cmd_run`) |
-| `splash start` / `stop` / `destroy` | `src/splashdown/commands.py:958` / `:978` / `:1003` |
-| Destroy confirmation gate | `src/splashdown/commands.py:995` (`_confirm`), used at `:1014` |
-| TYPE / variant inference | `src/splashdown/commands.py:1038` (`_infer_dtype`), `:1056` (`_resolve_variant_for_cli`) |
-| Fleet refresh (eager auto-upgrade) | `src/splashdown/commands.py:766` (`cmd_target_refresh`); recreate decision `:808` |
-| Prune foreign (non-managed) sims/AVDs | `src/splashdown/commands.py:859` (`cmd_target_prune`) |
-| `target add` / `remove` (local variants) | `src/splashdown/devices.py`; orchestration `src/splashdown/commands.py` (`_target_add` / `_target_remove`) |
+| `splash run` (reconcile + boot + build + launch) | `src/splashdown/target_commands.py` (`cmd_run`) |
+| `splash start` / `stop` / `destroy` | `src/splashdown/target_commands.py` |
+| Destroy confirmation gate | `src/splashdown/target_commands.py` (`_confirm`) |
+| TYPE / variant inference | `src/splashdown/target_commands.py` (`_infer_dtype`, `_resolve_variant_for_cli`) |
+| Fleet refresh (eager auto-upgrade) | `src/splashdown/target_commands.py` (`cmd_target_refresh`) |
+| Prune foreign (non-managed) sims/AVDs | `src/splashdown/target_commands.py` (`cmd_target_prune`) |
+| `target add` / `remove` (local variants) | Catalog edits in `src/splashdown/targets.py`; orchestration in `src/splashdown/target_commands.py` |
 | Framework launcher selection | `src/splashdown/devices.py:1012` (`detect_framework`), `:1077` (`device_run`) |
 | iOS-native / Android-native launch | `src/splashdown/runners.py:265` / `:364` |
 | Physical-device discovery | `src/splashdown/devices.py:611` (`ensure_physical`), `:596` (`_physical_match`) |
@@ -210,11 +210,11 @@ device lifecycle work or file mutation.
 scopes together. Recipe-vs-local collisions are a hard error; global variants then fold in on top:
 physical `device` variants unconditionally (they create nothing — see below), `simulator`/`emulator`
 only for types the project already declares, and a project variant silently wins any name collision
-with a global one. `_target_source` (`src/splashdown/commands.py`) labels the winner
+with a global one. `target_source` (`src/splashdown/targets.py`) labels the winner
 `recipe (shadows global)` so the shadow is visible in `splash target`. `cmd_target_refresh` loads the
 global config once, up front and unguarded, so a malformed global file aborts the whole sweep instead
 of making every globally-sourced sim/emulator look undeclared and get reaped. `--global` on
-`target add`/`remove` (`global_target_add`/`global_target_remove` in `devices.py`) edits the machine
+`target add`/`remove` (`global_target_add`/`global_target_remove` in `targets.py`) edits the machine
 file instead of the local one.
 
 ```toml
@@ -290,20 +290,20 @@ splash target remove <type> <variant> [--keep-instance]
 ## Gotchas
 
 - **`refresh` and reconcile never boot.** Recreated sims are left **Shutdown**
-  (`src/splashdown/commands.py:766` docstring, `ensure_fresh_sim`). A fleet-wide `target refresh`
+  (`src/splashdown/target_commands.py`, `ensure_fresh_sim`). A fleet-wide `target refresh`
   across many checkouts therefore won't trip the OS's max-booted-simulators limit — but it also
   means `refresh` alone does not make an app appear; you still need `splash run`/`start`.
 - **Pinned vs `latest` is the whole UC4/UC10 distinction.** `ios = "latest"` (the default) is
   reconciled on every run and by `refresh`; a pinned `ios = "17.0"` is *deliberately* frozen and is
   skipped by auto-upgrade when its declared version is still present. Forgetting to pin a
   backward-compat variant means it silently rides the latest OS.
-- **`destroy` now prompts.** Interactive `[y/N]` via `_confirm` (`commands.py:995`); scripts/agents must pass
+- **`destroy` now prompts.** Interactive `[y/N]` via `_confirm` (`target_commands.py`); scripts/agents must pass
   `--yes`. `--yes` exists *only* on `destroy` among the four verbs (`src/splashdown/cli.py:237`) and
   on `target prune` (`:262`) — not on `stop`/`start`/`run`.
 - **`prune` is machine-wide and aggressive.** It destroys every sim/AVD *not* in splashdown's
   registry — including hand-made sims you care about. Use `--dry-run` first; the kill list is
   printed before the prompt.
-- **`target refresh`/`prune` are not `gc`.** `gc` (`cmd_gc`, `commands.py:742`) drops dead-checkout
+- **`target refresh`/`prune` are not `gc`.** `gc` (`cmd_gc`, `target_commands.py`) drops dead-checkout
   instances and rows plus live orphan rows; it does **not** recreate an orphan whose checkout still
   exists — `target refresh` does. The `status --check` footer routes each issue to the right command
   (`_print_check_summary`, `commands.py:452`).
@@ -318,7 +318,7 @@ splash target remove <type> <variant> [--keep-instance]
   physical `device` variants, which surface everywhere, are the intended use.
 - **`target remove` without `--global` refuses a global-only variant up front.** The dispatcher checks
   recipe + local first and raises "`is a global variant; remove it with … --global`" before any
-  teardown (`src/splashdown/commands.py:1675`), so a mistyped scope can no longer destroy the instance
+  teardown (`src/splashdown/target_commands.py`), so a mistyped scope can no longer destroy the instance
   and drop the registry row on its way to failing validation. The `--global` path edits
   `~/.config/splashdown/config.toml` only and tells you to run `splash target refresh` to reap
   instances the removal just made undeclared.
@@ -331,12 +331,12 @@ splash target remove <type> <variant> [--keep-instance]
   a later `splash target refresh` treats that now-undeclared row as defunct and destroys the
   retained instance.
 - **`splashdown.local.toml` is add-only.** A variant name that collides with a recipe-declared one
-  is an error (`target_add`, `src/splashdown/devices.py:913`); pick a different name.
+  is an error (`target_add`, `src/splashdown/targets.py`); pick a different name.
 - **The shared CLI parser does not make flags interchangeable.** `target add` shows every target
   flag, but the selected type determines which ones are legal. Incompatible flags and invalid
   values fail before either local or global config is written.
 - **Physical-device verbs differ.** For `type = device`, `stop`/`destroy` are no-op messages and
-  `start` just confirms connectivity (`src/splashdown/commands.py:967`, `:983`, `:1008`); nothing
+  `start` just confirms connectivity (`src/splashdown/target_commands.py`); nothing
   is ever written to the registry.
 - **ios-native needs a scheme.** Scanner-driven init normally writes it, but a hand-authored
   recipe without `[project.ios] scheme` still errors at run time (`_ios_native_run` in

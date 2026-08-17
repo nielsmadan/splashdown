@@ -46,25 +46,25 @@ are used:
 
 The CLI side:
 
-- `add` validates, then writes the variant. `_target_add` (`src/splashdown/commands.py:1656`) collects
+- `add` validates, then writes the variant. `_target_add` (`src/splashdown/target_commands.py`) collects
   the `--model/--ios/--device/--image/--name/--id/--platform` flags into a field dict and
-  calls `target_add` (`src/splashdown/devices.py:913`). It rejects flags that do not belong
+  calls `target_add` (`src/splashdown/targets.py`). It rejects flags that do not belong
   to the selected target type, validates field values, re-checks for collisions against
   *both* the recipe and any existing local variant, renders the edit in memory, then parses
   the complete result as `LocalConfig` before writing. A bad flag or malformed existing
   document therefore leaves the file untouched. The tomlkit writer preserves comments and
   unrelated valid tables.
 - `remove` preflights the variant and computes the edited TOML through
-  `_prepare_target_remove` (`src/splashdown/devices.py:945`) before any lifecycle action. Unless `--keep-instance` is set or the
+  `_prepare_target_remove` (`src/splashdown/targets.py`) before any lifecycle action. Unless `--keep-instance` is set or the
   type is a physical `device`, it destroys the registry row's actual simulator UDID/AVD name when
-  one exists, falling back to the currently resolved name only for an unprovisioned target. It
+  one exists; an unprovisioned target is a safe no-op and never falls back to a derived name. It
   then writes the prepared TOML and drops the registry row. `target_remove_text`
   (`src/splashdown/tomlio.py`) prunes now-empty parent tables. Recipe-owned or missing variants
   and malformed config fail before destruction; if the lifecycle step raises, the registry row
   and local declaration remain intact. An already-absent registered instance is accepted.
 - Consumers read the union the same way everywhere: `cmd_targets_list` and
-  `_load_variant_spec` (`src/splashdown/commands.py:653`) both go through
-  `merged_targets`, and `_resolve_variant_for_cli` (`src/splashdown/commands.py:1056`)
+  `_load_variant_spec` (`src/splashdown/target_commands.py`) both go through
+  `merged_targets`, and `_resolve_variant_for_cli` (`src/splashdown/target_commands.py`)
   feeds it into `resolve_variant`.
 
 ## Key entry points
@@ -75,11 +75,9 @@ The CLI side:
   file is first created.
 - `src/splashdown/recipe.py:988` — `merged_targets` (the union + collision error).
 - `src/splashdown/recipe.py:1028` — `resolve_variant`.
-- `src/splashdown/commands.py:1740` — `_target_dispatch` routes to `_target_add` / `_target_remove`.
-- `src/splashdown/commands.py:653` — `_load_variant_spec` (union lookup used by target refresh).
-- `src/splashdown/devices.py:913` — `target_add` (collision re-check + write).
-- `src/splashdown/devices.py:945` — `_prepare_target_remove` (removal ownership and TOML preflight).
-- `src/splashdown/devices.py:965` — `target_remove` (local-file edit).
+- `src/splashdown/target_commands.py` — `_target_dispatch`, lifecycle commands, and fleet orchestration.
+- `src/splashdown/target_commands.py` — `_load_variant_spec` (union lookup used by target refresh).
+- `src/splashdown/targets.py` — `target_add`, `_prepare_target_remove`, and `target_remove`.
 - `src/splashdown/tomlio.py:205` / `src/splashdown/tomlio.py:214` — tomlkit writers.
 - `src/splashdown/cli.py:267` — `target add` parser and its
   `--model/--ios/--device/--image/--name/--id/--platform` flags.
@@ -156,7 +154,7 @@ and to the `Settings` dataclass.
   the entry exists. (Matches README "Gotchas".)
 - **Add-only, by hard rule.** A local variant whose name duplicates a recipe variant is an
   error in three places — at write time in `target_add`
-  (`src/splashdown/devices.py:913`), at read time in `merged_targets`
+  (`src/splashdown/targets.py`), at read time in `merged_targets`
   (`src/splashdown/recipe.py:988`), and `_prepare_target_remove` refuses to select a recipe
   variant for removal. To change a shared target, edit `splashdown.toml`; to shadow one locally,
   pick a different variant name.

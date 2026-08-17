@@ -25,7 +25,7 @@ def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
         sd.devices, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
     )
     monkeypatch.setattr(
-        sd.commands, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
+        sd.target_commands, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
     )
     captured = {}
 
@@ -33,7 +33,7 @@ def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
         captured["info"] = info
         return 0
 
-    monkeypatch.setattr(sd.commands, "device_run", _fake_run)
+    monkeypatch.setattr(sd.target_commands, "device_run", _fake_run)
     rc = sd.main(["--cwd", str(tmp_path), "run", "device"])
     assert rc == 0
     assert captured["info"]["udid"] == "00008-PHONE"
@@ -48,7 +48,7 @@ def test_cli_start_physical_reports_connected_without_boot(tmp_path, monkeypatch
         sd.devices, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
     )
     monkeypatch.setattr(
-        sd.commands, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
+        sd.target_commands, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
     )
     rc = sd.main(["--cwd", str(tmp_path), "start", "device"])
     assert rc == 0
@@ -59,7 +59,9 @@ def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands, "device_shutdown_row", lambda row: pytest.fail("should not touch hardware")
+        sd.target_commands,
+        "device_shutdown_row",
+        lambda row: pytest.fail("should not touch hardware"),
     )
     rc = sd.main(["--cwd", str(tmp_path), "stop", "device"])
     assert rc == 0
@@ -69,7 +71,9 @@ def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands, "device_destroy_row", lambda row: pytest.fail("should not touch hardware")
+        sd.target_commands,
+        "device_destroy_row",
+        lambda row: pytest.fail("should not touch hardware"),
     )
     rc = sd.main(["--cwd", str(tmp_path), "destroy", "device"])
     assert rc == 0
@@ -83,7 +87,7 @@ def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
     registry.set_device(
         str(tmp_path.resolve()), "simulator", "default", "UDID-STORED", "iPhone 15", "18.5"
     )
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
 
     # Declining at the prompt aborts without touching the device.
     monkeypatch.setattr("builtins.input", lambda: "n")
@@ -123,19 +127,19 @@ def test_run_releases_operation_lock_before_launch(tmp_path, registry, monkeypat
         return 0
 
     monkeypatch.setattr(registry, "operation_lock", track_lock)
-    monkeypatch.setattr(sd.commands, "_infer_dtype", lambda *_args: "simulator")
+    monkeypatch.setattr(sd.target_commands, "_infer_dtype", lambda *_args: "simulator")
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "_resolve_variant_for_cli",
         lambda *_args: ("default", {"model": "iPhone 17"}, recipe),
     )
-    monkeypatch.setattr(sd.commands, "validate_device_run", lambda *_args: None)
-    monkeypatch.setattr(sd.commands, "ensure_fresh_sim", reconcile)
-    monkeypatch.setattr(sd.commands, "_ios_current_state", lambda *_args: "Shutdown")
-    monkeypatch.setattr(sd.commands, "ios_boot", boot)
-    monkeypatch.setattr(sd.commands, "device_run", launch)
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(sd.target_commands, "ensure_fresh_sim", reconcile)
+    monkeypatch.setattr(sd.target_commands, "_ios_current_state", lambda *_args: "Shutdown")
+    monkeypatch.setattr(sd.target_commands, "ios_boot", boot)
+    monkeypatch.setattr(sd.target_commands, "device_run", launch)
 
-    assert sd.commands.cmd_run(tmp_path, registry, None, None) == 0
+    assert sd.target_commands.cmd_run(tmp_path, registry, None, None) == 0
     target = str(tmp_path.resolve())
     assert events == [("enter", target), ("exit", target)]
 
@@ -162,33 +166,33 @@ def test_short_device_lifecycle_actions_hold_operation_lock(
         mutations.append(action)
 
     monkeypatch.setattr(registry, "operation_lock", track_lock)
-    monkeypatch.setattr(sd.commands, "_infer_dtype", lambda *_args: "simulator")
+    monkeypatch.setattr(sd.target_commands, "_infer_dtype", lambda *_args: "simulator")
     monkeypatch.setattr(
-        sd.commands,
+        sd.target_commands,
         "_resolve_variant_for_cli",
         lambda *_args: ("default", {"model": "iPhone 17"}, recipe),
     )
     if action == "start":
         monkeypatch.setattr(
-            sd.commands,
+            sd.target_commands,
             "ensure_fresh_sim",
             lambda *_args, **_kwargs: {"kind": "ios", "udid": "UDID", "name": "sim"},
         )
-        monkeypatch.setattr(sd.commands, "_ios_current_state", lambda *_args: "Shutdown")
-        monkeypatch.setattr(sd.commands, "ios_boot", mutate)
-        assert sd.commands.cmd_start(tmp_path, registry, None, None) == 0
+        monkeypatch.setattr(sd.target_commands, "_ios_current_state", lambda *_args: "Shutdown")
+        monkeypatch.setattr(sd.target_commands, "ios_boot", mutate)
+        assert sd.target_commands.cmd_start(tmp_path, registry, None, None) == 0
     elif action == "stop":
         registry.set_device(
             str(tmp_path.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5"
         )
-        monkeypatch.setattr(sd.commands, "device_shutdown_row", mutate)
-        assert sd.commands.cmd_stop(tmp_path, registry, None, None) == 0
+        monkeypatch.setattr(sd.target_commands, "device_shutdown_row", mutate)
+        assert sd.target_commands.cmd_stop(tmp_path, registry, None, None) == 0
     else:
         registry.set_device(
             str(tmp_path.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5"
         )
-        monkeypatch.setattr(sd.commands, "device_destroy_row", mutate)
-        assert sd.commands.cmd_destroy(tmp_path, registry, None, None, yes=True) == 0
+        monkeypatch.setattr(sd.target_commands, "device_destroy_row", mutate)
+        assert sd.target_commands.cmd_destroy(tmp_path, registry, None, None, yes=True) == 0
 
     assert mutations == [action]
 
@@ -545,8 +549,8 @@ def test_global_device_resolves_in_repo_with_no_targets(tmp_path):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
     # a repo declaring no targets at all still sees the global physical device
-    assert sd.commands._declared_target_types(tmp_path) == ["device"]
-    variant, spec, _ = sd.commands._resolve_variant_for_cli(tmp_path, "device", None)
+    assert sd.target_commands._declared_target_types(tmp_path) == ["device"]
+    variant, spec, _ = sd.target_commands._resolve_variant_for_cli(tmp_path, "device", None)
     assert variant == "my-iphone"
     assert spec["platform"] == "ios"
 
@@ -588,7 +592,7 @@ def test_global_device_does_not_break_inference_in_mobile_project(tmp_path):
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
-    assert sd.commands._infer_dtype(tmp_path, None) == "simulator"
+    assert sd.target_commands._infer_dtype(tmp_path, None) == "simulator"
 
 
 def test_global_device_type_prefix_stays_project_scoped(tmp_path):
@@ -611,7 +615,7 @@ def test_remove_global_sourced_sim_without_global_flag_does_not_destroy(
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     sd.global_target_add("simulator", "gsim", {"model": "iPhone 15"})
     destroyed: list = []
-    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "gsim"])
     assert rc == 1
     assert destroyed == []  # the global-only variant's instance is NOT torn down
@@ -625,7 +629,7 @@ def test_load_variant_spec_loud_on_malformed_global(tmp_path):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("[targets.bogus.x]\n")
     with pytest.raises(ValueError, match="unknown target type"):
-        sd.commands._load_variant_spec(tmp_path, "simulator", "default")
+        sd.target_commands._load_variant_spec(tmp_path, "simulator", "default")
 
 
 def test_target_list_annotates_local_shadowing_global(tmp_path, monkeypatch, capsys):
@@ -1007,7 +1011,7 @@ _TWO_VARIANT_RECIPE = (
 def test_resolve_variant_for_cli_prefix_resolves(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     (tmp_path / sd.RECIPE_NAME).write_text(_TWO_VARIANT_RECIPE)
-    variant, spec, _ = sd.commands._resolve_variant_for_cli(tmp_path, "simulator", "lar")
+    variant, spec, _ = sd.target_commands._resolve_variant_for_cli(tmp_path, "simulator", "lar")
     assert variant == "large-screen"
     assert spec["model"] == "iPhone 17 Pro Max"
 
@@ -1019,14 +1023,14 @@ def test_resolve_variant_for_cli_prefix_disabled_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     (tmp_path / sd.RECIPE_NAME).write_text(_TWO_VARIANT_RECIPE)
     with pytest.raises(sd.DeviceError, match="no variant `lar`"):
-        sd.commands._resolve_variant_for_cli(tmp_path, "simulator", "lar")
+        sd.target_commands._resolve_variant_for_cli(tmp_path, "simulator", "lar")
 
 
 def test_resolve_variant_for_cli_short_variant_prefix_resolves(tmp_path):
     # `splash run d` in a sim-only project: `d` stays a variant token (not the
     # `device` type) and resolves the `default` variant by prefix.
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
-    variant, _, _ = sd.commands._resolve_variant_for_cli(tmp_path, "simulator", "d")
+    variant, _, _ = sd.target_commands._resolve_variant_for_cli(tmp_path, "simulator", "d")
     assert variant == "default"
 
 
@@ -1034,7 +1038,10 @@ def test_declared_target_types_lists_declared(tmp_path):
     (tmp_path / sd.RECIPE_NAME).write_text(
         '[targets.simulator.default]\nmodel = "iPhone 17"\n[targets.emulator.default]\n'
     )
-    assert sorted(sd.commands._declared_target_types(tmp_path)) == ["emulator", "simulator"]
+    assert sorted(sd.target_commands._declared_target_types(tmp_path)) == [
+        "emulator",
+        "simulator",
+    ]
 
 
 def test_deinit_round_trips_init(tmp_path, monkeypatch):

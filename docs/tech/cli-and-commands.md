@@ -1,9 +1,10 @@
 # CLI and Commands
 
 How a `splash` invocation gets from `argv` to a handler: argument parsing and dispatch (`cli.py`),
-the `cmd_*` orchestration handlers (`commands.py`), post-checkout integration (`hooks.py`), and the
-fail-silent shell completers (`completion.py`). Framework launch dispatch lives in `launching.py`;
-`doctor.py` orchestrates checks defined in `wiring.py`.
+checkout orchestration (`commands.py`), target orchestration (`target_commands.py`), target catalog
+edits (`targets.py`), post-checkout integration (`hooks.py`), and fail-silent shell completion
+(`completion.py`). Framework launch dispatch lives in `launching.py`; `doctor.py` orchestrates
+checks defined in `wiring.py`.
 
 For the *user-facing* contract of each command, see the PRD docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
 
@@ -38,9 +39,10 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 ## Purpose
 
 `cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to
-`sync`, and dispatches each subcommand to a
-handler. `commands.py` holds those handlers (`cmd_*`) and composes `scanner`, `profiles`,
-`provisioning`, `registry`, `loaders`, `devices`, `launching`, and `doctor`. `hooks.py` owns post-checkout
+`sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
+handler. `commands.py` owns trust/bootstrap, init, sync, deinit, status, and env orchestration. `target_commands.py`
+owns run/start/stop/destroy, fleet maintenance, and the nested target dispatcher; `targets.py` owns
+local/global catalog edits. `hooks.py` owns post-checkout
 installation and coexistence with other hook managers. `completion.py` provides the argcomplete
 completers, which must never raise or print because they run on every `<Tab>`.
 
@@ -129,9 +131,9 @@ stays silent in non-splashdown repos.
 
 ### `commands.py` — the orchestration layer
 
-This is a large orchestration module spanning status rendering, device lifecycle, onboarding,
-provisioning presentation, and nested dispatch. Hook wiring lives in `hooks.py`, while doctor
-orchestration lives in `doctor.py`; see [Gotchas](#gotchas).
+This module spans status rendering, onboarding, provisioning presentation, and env dispatch. Target
+lifecycle and fleet operations live in `target_commands.py`; hook wiring lives in `hooks.py`, while
+doctor orchestration lives in `doctor.py`; see [Gotchas](#gotchas).
 
 #### Provision handlers (`sync` / `init`)
 
@@ -244,13 +246,15 @@ not gitignored.
 
 #### `_confirm` and the `cmd_init` refuse path
 
-`_confirm` (`commands.py:995`) is the shared interactive `[y/N]` gate for destructive ops — used by both `cmd_destroy` (`commands.py:1003`) and `cmd_target_prune` (`commands.py:859`). `yes=True` (from `--yes`) skips the prompt and returns `True`.
+`_confirm` in `target_commands.py` is the shared interactive `[y/N]` gate for `cmd_destroy` and
+`cmd_target_prune`. `yes=True` (from `--yes`) skips the prompt and returns `True`.
 
 `cmd_init`'s refuse path is the one place a handler exits the process directly rather than returning a code: when `splashdown.toml` already exists and `--overwrite` wasn't passed, it prints and calls `sys.exit(2)`. `_cmd_init_preset` does the same for an unknown preset. This is inconsistent with every other handler, which returns an int (see [Gotchas](#gotchas)).
 
 #### Device lifecycle handlers
 
-`cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy` share a prelude: `_infer_dtype` resolves an
+`target_commands.py` owns `cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy`. They share a prelude:
+`_infer_dtype` resolves an
 omitted TYPE to the single project-declared target type (falling back to global only when the
 project declares none), and `_resolve_variant_for_cli` loads the full recipe/local/global catalog
 and picks the variant. Each calls `devices.py` for target reconciliation and boot, then
@@ -268,7 +272,8 @@ work that could not be attempted.
 
 The `target` and `env` subcommands have their own nested subparser actions, so
 they get sub-dispatchers rather than a single handler: `_target_dispatch` and
-`_env_dispatch`. Both treat a bare invocation (`splash target` / `splash env`)
+`_env_dispatch`. The target dispatcher lives in `target_commands.py`; env dispatch remains in
+`commands.py`. Both treat a bare invocation (`splash target` / `splash env`)
 as "list" (mirroring bare `splash` → sync). `_target_dispatch` routes to focused
 add/remove/refresh/prune handlers and receives the registry constructed by
 `main()`, so every registry-using target handler shares the composition-root dependency.
@@ -292,27 +297,26 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Key entry points
 
-- `main()` — process entry / dispatch table — `cli.py:415`
-- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py:390`
-- `_build_parser` — the single flat parser — `cli.py:121`
-- `_EpilogOnlyFormatter` — suppress argparse's command dump — `cli.py:37`
-- `_VersionAction` — lazy `--version` — `cli.py:47`
-- `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:354`
-- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1702`
-- `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1311`
-- `cmd_deinit` — teardown orchestrator — `commands.py:1477`
-- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py:395` / `:146`
-- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py:34`
-- `cmd_status` — status entry — `commands.py:531`
-- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1157` / `:1111`
-- `_confirm` — shared `[y/N]` gate — `commands.py:1011`
-- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1977` / `:2037`
+- `main()` — process entry / dispatch table — `cli.py`
+- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py`
+- `_build_parser` — the single flat parser — `cli.py`
+- `_EpilogOnlyFormatter` / `_VersionAction` — help and lazy version presentation — `cli.py`
+- `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py`
+- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py`
+- `cmd_trust` / `cmd_untrust` / `cmd_bootstrap` / `cmd_post_checkout_hook` — trust and bootstrap orchestration — `commands.py`
+- `cmd_init` / `cmd_deinit` — onboarding and teardown orchestration — `commands.py`
+- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
+- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py`
+- `cmd_status` — status entry — `commands.py`
+- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py`
+- `_confirm` — shared target `[y/N]` gate — `target_commands.py`
+- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `target_commands.py` / `commands.py`
 - `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:39` / `:57` / `:80`
 
 ## Gotchas
 
-- **`commands.py` remains a large orchestration module.** Hook and doctor wiring have clear owners,
-  but status, fleet commands, onboarding, and provisioning presentation still share this file.
+- **`commands.py` remains a large orchestration module.** Hook, doctor, and target orchestration
+  have clear owners, but status, onboarding, and provisioning presentation still share this file.
 - **Circular imports are a CI invariant.** Shared constants, catalogs, and inventory types live in
   dependency-free modules; Pylint's `cyclic-import` checker analyzes the whole package and reports
   the concrete path when a cycle is introduced.

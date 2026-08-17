@@ -65,14 +65,9 @@ from .commands import (
     _resolve_no_loader_delivery,
     cmd_completion,
     cmd_deinit,
-    cmd_gc,
     cmd_init,
     cmd_refresh_inventory,
     cmd_status,
-    cmd_target_gc,
-    cmd_target_prune,
-    cmd_target_refresh,
-    cmd_targets_list,
 )
 from .device_types import (
     AndroidDestination,
@@ -115,8 +110,6 @@ from .devices import (
     device_status,
     ensure_fresh_sim,
     ensure_physical,
-    global_target_add,
-    global_target_remove,
     ios_boot,
     ios_destroy,
     ios_ensure,
@@ -124,8 +117,6 @@ from .devices import (
     ios_x86_64_target,
     physical_discover,
     physical_status,
-    target_add,
-    target_remove,
 )
 from .doctor import cmd_doctor
 from .errors import CapabilityError
@@ -192,6 +183,18 @@ from .scanner import (
     _enumerate_apps,
     _expand_workspace_globs,
 )
+from .target_commands import (
+    cmd_destroy,
+    cmd_gc,
+    cmd_run,
+    cmd_start,
+    cmd_stop,
+    cmd_target_gc,
+    cmd_target_prune,
+    cmd_target_refresh,
+    cmd_targets_list,
+)
+from .targets import global_target_add, global_target_remove, target_add, target_remove
 from .wiring import (
     _RN_WIRING_CHECKS,
     _XCODE_BEGIN,

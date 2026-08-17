@@ -12,13 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import require_macos, translate_tool_errors, warn_capability
-from .constants import (
-    LOCAL_NAME,
-    RECIPE_NAME,
-    REGISTRY_DIR,
-    TARGET_TYPES,
-    TARGET_VARIANT_RE,
-)
+from .constants import REGISTRY_DIR
 from .device_types import (
     AndroidDestination,
     EmulatorRecord,
@@ -34,19 +28,12 @@ from .device_types import (
 # marks it an explicit re-export for mypy strict.
 from .errors import CapabilityError
 from .errors import DeviceError as DeviceError  # noqa: PLC0414 — explicit re-export for mypy
-from .recipe import (
-    GLOBAL_SKELETON,
-    LOCAL_SKELETON,
-    GlobalConfig,
-    LocalConfig,
-    Recipe,
-    _current_branch,
-    _global_config_path,
-    _make_scope,
-    render_template,
-    validate_target_spec,
-)
+from .recipe import _current_branch, _make_scope, render_template
 from .registry import Registry
+from .targets import global_target_add as global_target_add  # noqa: PLC0414
+from .targets import global_target_remove as global_target_remove  # noqa: PLC0414
+from .targets import target_add as target_add  # noqa: PLC0414
+from .targets import target_remove as target_remove  # noqa: PLC0414
 
 
 def _default_sim_name(cwd: Path, variant: str) -> str:
@@ -897,123 +884,3 @@ def _summary_string(counts: dict[str, int]) -> str:
         elif n > 1:
             parts.append(f"{n} {plur}")
     return ", ".join(parts) if parts else "—"
-
-
-def _load_recipe_or_empty(cwd: Path) -> Recipe:
-    path = cwd / RECIPE_NAME
-    return Recipe.load(path) if path.exists() else Recipe({}, path)
-
-
-def _validate_target_fields(
-    dtype: str,
-    variant: str,
-    fields: dict[str, str | None],
-) -> dict[str, str]:
-    try:
-        return validate_target_spec(
-            dtype,
-            fields,
-            source="command line",
-            path=f"targets.{dtype}.{variant}",
-        )
-    except ValueError as error:
-        raise DeviceError(str(error)) from error
-
-
-def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None]) -> None:
-    """Append a [targets.<type>.<variant>] table to splashdown.local.toml. Errors
-    if the (type, variant) pair already exists in either the recipe or the local
-    file — pick a different variant name."""
-    if dtype not in TARGET_TYPES:
-        raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
-    if not TARGET_VARIANT_RE.match(variant):
-        raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
-    validated_fields = _validate_target_fields(dtype, variant, fields)
-
-    path = cwd / LOCAL_NAME
-    existing_text = path.read_text() if path.exists() else LOCAL_SKELETON
-
-    recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(path)
-    if variant in recipe.targets.get(dtype, {}):
-        raise DeviceError(
-            f"target `{dtype}.{variant}` is declared in the recipe; "
-            f"edit {RECIPE_NAME} or pick a different variant name"
-        )
-    if variant in local.targets.get(dtype, {}):
-        raise DeviceError(
-            f"target `{dtype}.{variant}` already exists in {LOCAL_NAME}; remove it first"
-        )
-
-    from .tomlio import target_add_text  # noqa: PLC0415
-
-    rendered = target_add_text(existing_text, dtype, variant, validated_fields)
-    LocalConfig.parse(rendered, path)
-    path.write_text(rendered)
-
-
-def _prepare_target_remove(cwd: Path, dtype: str, variant: str) -> tuple[dict[str, Any], Path, str]:
-    recipe = _load_recipe_or_empty(cwd)
-    if variant in recipe.targets.get(dtype, {}):
-        raise DeviceError(
-            f"`{dtype}.{variant}` is declared in the recipe; edit {RECIPE_NAME} to remove it"
-        )
-    path = cwd / LOCAL_NAME
-    if not path.exists():
-        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
-    spec = LocalConfig.load(path).targets.get(dtype, {}).get(variant)
-    if spec is None:
-        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
-    from .tomlio import target_remove_text  # noqa: PLC0415
-
-    new_text = target_remove_text(path.read_text(), dtype, variant)
-    if new_text is None:
-        raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
-    return spec, path, new_text
-
-
-def target_remove(cwd: Path, dtype: str, variant: str) -> None:
-    """Delete the [targets.<type>.<variant>] table from splashdown.local.toml.
-    Refuses to touch recipe-declared variants (those you remove by editing the recipe)."""
-    _spec, path, new_text = _prepare_target_remove(cwd, dtype, variant)
-    path.write_text(new_text)
-
-
-def global_target_add(dtype: str, variant: str, fields: dict[str, str | None]) -> Path:
-    """Append a [targets.<type>.<variant>] table to the machine-wide config
-    (~/.config/splashdown/config.toml), making the variant available to every
-    project. Errors if the (type, variant) pair already exists there. Returns the
-    config path so the caller can name it in a message."""
-    if dtype not in TARGET_TYPES:
-        raise DeviceError(f"target type `{dtype}` must be one of: {', '.join(TARGET_TYPES)}")
-    if not TARGET_VARIANT_RE.match(variant):
-        raise DeviceError(f"variant `{variant}` must match [A-Za-z][A-Za-z0-9_-]*")
-    validated_fields = _validate_target_fields(dtype, variant, fields)
-
-    path = _global_config_path()
-    existing_text = path.read_text() if path.exists() else GLOBAL_SKELETON
-    if variant in GlobalConfig.load(path).targets.get(dtype, {}):
-        raise DeviceError(f"target `{dtype}.{variant}` already exists in {path}; remove it first")
-
-    from .tomlio import target_add_text  # noqa: PLC0415
-
-    rendered = target_add_text(existing_text, dtype, variant, validated_fields)
-    GlobalConfig.parse(rendered, path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered)
-    return path
-
-
-def global_target_remove(dtype: str, variant: str) -> Path:
-    """Delete the [targets.<type>.<variant>] table from the machine-wide config.
-    Returns the config path."""
-    from .tomlio import target_remove_text  # noqa: PLC0415
-
-    path = _global_config_path()
-    if not path.exists() or variant not in GlobalConfig.load(path).targets.get(dtype, {}):
-        raise DeviceError(f"no target `{dtype}.{variant}` in {path}")
-    new_text = target_remove_text(path.read_text(), dtype, variant)
-    if new_text is None:
-        raise DeviceError(f"no target `{dtype}.{variant}` in {path}")
-    path.write_text(new_text)
-    return path

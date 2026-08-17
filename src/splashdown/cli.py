@@ -9,21 +9,14 @@ from pathlib import Path
 from .commands import (
     _cmd_provision,
     _cmd_provision_inner,
-    _declared_target_types,
     _env_dispatch,
-    _target_dispatch,
     cmd_bootstrap,
     cmd_completion,
     cmd_deinit,
-    cmd_destroy,
-    cmd_gc,
     cmd_init,
     cmd_post_checkout_hook,
     cmd_refresh_inventory,
-    cmd_run,
-    cmd_start,
     cmd_status,
-    cmd_stop,
     cmd_trust,
     cmd_untrust,
 )
@@ -32,6 +25,15 @@ from .devices import DeviceError
 from .doctor import cmd_doctor
 from .recipe import load_settings
 from .registry import Registry
+from .target_commands import (
+    _declared_target_types,
+    _target_dispatch,
+    cmd_destroy,
+    cmd_gc,
+    cmd_run,
+    cmd_start,
+    cmd_stop,
+)
 
 
 class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
