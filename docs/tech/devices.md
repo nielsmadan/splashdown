@@ -142,15 +142,14 @@ dispatches on `dtype`:
   verbatim, i.e. *pinned*). It reads the registry row for `(checkout, dtype, variant)` and
   asks `device_health` for the shared result. Simulator drift compares runtime and model;
   emulator drift compares AVD name, image, and device profile. A missing underlying instance
-  is `orphan`, while a missing registry row is `missing`. (`row.ios` doubles as the image
-  column for both platforms.)
+  is `orphan`, while a missing registry row is `missing`. The registry codec exposes the
+  legacy columns as platform-specific simulator/emulator records.
 
 When not stale, it returns the cached `info` unchanged. When stale, it routes the registry row
 through `device_destroy_row`, which shuts down any running instance before deleting it. The same
 operation handles dead-checkout GC and undeclared rows during fleet refresh, so every registered
 device follows one teardown policy. Reconciliation then recreates the device via
-`ios_ensure` / `android_ensure` and writes the new row with
-`registry.set_device(checkout, dtype, variant, udid/name, model, target)`. **The recreated sim is
+`ios_ensure` / `android_ensure` and writes a `SimulatorRecord` or `EmulatorRecord`. **The recreated sim is
 left Shutdown** — `ios_ensure` returns `"Shutdown"` and `ensure_fresh_sim` never boots it; booting
 is a separate, explicit step. A pinned variant's OS does not drift merely because a newer runtime
 or image is installed; edits to its model, device profile, or emulator name can still require
@@ -159,18 +158,19 @@ recreation. `latest` variants additionally drift when Xcode/SDK moves the floor.
 The `if not stale:` block contains a `row is None` re-check that "never fires" — `stale` is True
 whenever `row is None`, so the guard exists purely to narrow the Optional for mypy (`devices.py:753`).
 
-### The info handoff contract
+### The launch-destination contract
 
-Every resolve path returns the same loosely-typed `info` dict, which is the handoff to the
-launcher:
+Every resolve path returns a discriminated `IOSDestination` or `AndroidDestination`, which is
+the handoff to the launcher. Both expose `platform`, `name`, `identifier`, and `owned`; their
+types narrow the native identifier and rule out cross-platform key combinations.
 
-- iOS sim → `{"kind": "ios", "udid": <udid>, "name": <sim_name>}`
-- Android emulator → `{"kind": "android", "serial": "", "name": <avd_name>}` (serial is empty
-  here — emulator boot/serial-resolution happens later in the launcher)
-- physical → `{"kind": "ios"|"android", "udid"|"serial": <native id>, "name": …, "physical": True}`
+- iOS simulator → `IOSDestination(name, udid, owned=True)`
+- Android emulator before boot → `AndroidDestination(name, None, owned=True)`; boot returns a
+  replacement carrying the resolved ADB serial
+- physical hardware → the platform destination with `owned=False`
 
-The key for the native id is `udid` on iOS and `serial` on Android — chosen per platform
-(`devices.py:626-632`, `:755`, `:766`). Consumers must know which to read based on `kind`.
+Compatibility mapping access still accepts `kind`/`udid`/`serial` for callers of the old internal
+helpers, but production consumers use the typed attributes.
 
 ### Framework launch (`launching.py`)
 
@@ -191,7 +191,7 @@ there — running either at the workspace root silently does nothing useful.
 Runnable profiles structurally implement `RunnableProfile`; web/backend profiles do not expose a
 `run` method. `cmd_run` checks this capability (or a matching custom `[project] run`) before device
 reconciliation or boot. `launching.device_run` repeats the capability check as a defensive boundary, then
-delegates to `PROFILES[fw].run(app_dir, recipe, info)` — the per-profile launcher consumes the `info` dict above
+delegates to `PROFILES[fw].run(app_dir, recipe, destination)` — the per-profile launcher consumes the typed destination above
 (`flutter run -d <udid/serial>`, `xcodebuild`/`simctl`, `gradle`, etc.). The generic
 `device_status` / `device_shutdown` / `device_destroy` dispatchers (`devices.py:776`, `:789`,
 `:798`) drive the `splash start/stop/destroy` subcommands by `dtype`.
@@ -220,10 +220,9 @@ the shell's exit status.
 - **A reconciled `latest` sim is Shutdown, never booted.** `ensure_fresh_sim` returns after
   create; nothing in this module boots it. If a caller assumes "fresh sim" means "running sim",
   it is wrong.
-- **The `info` dict is stringly-typed and platform-dependent.** The native id lives under `udid`
-  for iOS and `serial` for Android — there is no single key. Read `kind` first; a consumer that
-  hard-codes one key breaks on the other platform. Android emulator `info` even carries
-  `serial: ""` (empty until launch).
+- **Android has no identifier until boot.** Its destination uses `identifier=None` between
+  reconciliation and boot; launch runners reject an unresolved destination rather than passing an
+  empty device id to a tool.
 - **`_resolve_device_name` renders name templates with an EMPTY resources scope.** It calls
   `_make_scope(cwd, branch, {})` (`devices.py:70`), so a template like
   `{{ SLUG }}-{{ VARIANT }}` works but anything referencing a resource (`{{ PORT }}`) raises —
@@ -231,9 +230,9 @@ the shell's exit status.
 - **Duplicate-named sims resolve to the first match.** `_ios_find_device_by_name` returns the
   first `isAvailable` device with that name across all runtime buckets; if two sims share a name
   (e.g. created manually) the later one is invisible to status/shutdown/destroy.
-- **`row.ios` is overloaded.** For emulator rows the `ios` column holds the *Android image*, and
-  the `udid` column holds the *AVD name*. Reconcile, status-for-row, and orphan detection all
-  read those columns through that double meaning (`_device_status_for_row`, `devices.py:844`).
+- **The TSV stays backward compatible.** Its historical `udid/model/ios` slots still encode
+  simulator identifier/model/runtime or emulator name/device/image. Only the registry codec sees
+  that layout; lifecycle code receives `SimulatorRecord` or `EmulatorRecord`.
 - **Android boot has no map; it brute-forces.** `_android_running_serial` queries each emulator
   serial individually with a 2s timeout. A wedged emulator process can slow status calls.
 - **Orphan vs stale are different.** `_is_orphan_device` (`devices.py:343`) flags a registry row

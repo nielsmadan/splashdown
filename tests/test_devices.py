@@ -367,7 +367,7 @@ def test_cli_devices_shows_recipe_and_local(tmp_path, monkeypatch):
     assert rc == 0
 
 
-def test_cli_stop_resolves_by_type_and_variant(tmp_path, monkeypatch):
+def test_cli_stop_uses_registered_identifier(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text("""
 [targets.simulator.default]
 model = "iPhone 17"
@@ -376,17 +376,50 @@ model = "iPhone 17"
 framework = "react-native"
 """)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    captured = {}
-
-    def _shutdown(dt, name):
-        captured["call"] = (dt, name)
-
-    monkeypatch.setattr(sd.devices, "device_shutdown", _shutdown)
-    monkeypatch.setattr(sd.commands, "device_shutdown", _shutdown)
+    registry = sd.Registry()
+    registry.set_device(
+        str(tmp_path.resolve()), "simulator", "default", "UDID-STORED", "iPhone 17", "18.5"
+    )
+    captured = []
+    monkeypatch.setattr(sd.commands, "device_shutdown_row", captured.append)
     rc = sd.main(["--cwd", str(tmp_path), "stop", "simulator"])
     assert rc == 0
-    assert captured["call"][0] == "simulator"
-    assert captured["call"][1].endswith("/default")
+    assert captured[0].identifier == "UDID-STORED"
+
+
+def test_cli_stop_without_registry_row_does_not_resolve_external_name(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "splashdown.toml").write_text('[targets.emulator.default]\nname = "unowned-avd"\n')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        sd.commands, "device_shutdown_row", lambda row: pytest.fail(f"shut down {row}")
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "stop", "emulator"]) == 0
+    assert "no managed instance" in capsys.readouterr().err
+
+
+def test_cli_destroy_uses_registered_emulator_name(tmp_path, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text(
+        '[targets.emulator.default]\nname = "renamed-in-recipe"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    registry = sd.Registry()
+    registry.set_device(
+        str(tmp_path.resolve()),
+        "emulator",
+        "default",
+        "stored-avd",
+        "pixel_9",
+        "android-34",
+    )
+    destroyed = []
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
+
+    assert sd.main(["--cwd", str(tmp_path), "destroy", "emulator", "--yes"]) == 0
+    assert isinstance(destroyed[0], sd.EmulatorRecord)
+    assert destroyed[0].name == "stored-avd"
 
 
 def test_cli_run_infers_dtype_when_only_one_declared(tmp_path, monkeypatch):
@@ -979,20 +1012,18 @@ def test_cli_bare_device_lists(tmp_path, monkeypatch):
     assert rc == 0
 
 
-def test_cli_device_remove_destroys_instance_by_default(tmp_path, monkeypatch):
+def test_cli_device_remove_without_registry_row_is_safe_noop(tmp_path, monkeypatch, capsys):
     (tmp_path / "splashdown.toml").write_text('[project]\nframework = "react-native"\n')
     (tmp_path / "splashdown.local.toml").write_text(
         '[targets.simulator.repro]\nmodel = "iPhone 17"\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    destroyed: list[tuple[str, str]] = []
-    monkeypatch.setattr(sd.devices, "device_destroy", lambda dt, name: destroyed.append((dt, name)))
     monkeypatch.setattr(
-        sd.commands, "device_destroy", lambda dt, name: destroyed.append((dt, name))
+        sd.commands, "device_destroy_row", lambda row: pytest.fail(f"destroyed {row}")
     )
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
     assert rc == 0
-    assert destroyed and destroyed[0][0] == "simulator"
+    assert "no managed instance found" in capsys.readouterr().err
     assert "[targets.simulator.repro]" not in (tmp_path / "splashdown.local.toml").read_text()
 
 
@@ -1002,11 +1033,8 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
         '[targets.simulator.repro]\nmodel = "iPhone 17"\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    destroyed: list[tuple[str, str]] = []
-    monkeypatch.setattr(sd.devices, "device_destroy", lambda dt, name: destroyed.append((dt, name)))
-    monkeypatch.setattr(
-        sd.commands, "device_destroy", lambda dt, name: destroyed.append((dt, name))
-    )
+    destroyed = []
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
     rc = sd.main(
         [
             "--cwd",
@@ -1026,10 +1054,8 @@ def test_cli_device_remove_keep_instance_skips_destroy(tmp_path, monkeypatch):
 def test_cli_device_remove_recipe_variant_does_not_destroy(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    destroyed: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        sd.commands, "device_destroy", lambda dtype, name: destroyed.append((dtype, name))
-    )
+    destroyed = []
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "default"])
     assert rc == 1
     assert destroyed == []
@@ -1078,11 +1104,6 @@ def test_cli_device_remove_destroys_registered_instance(tmp_path, monkeypatch):
     )
     destroyed = []
     monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
-    monkeypatch.setattr(
-        sd.commands,
-        "device_destroy",
-        lambda *args: pytest.fail(f"resolved-name fallback used: {args}"),
-    )
 
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
 
@@ -1107,7 +1128,6 @@ def test_cli_target_remove_uses_composition_root_registry(tmp_path, monkeypatch)
     registry.set_device(checkout, "simulator", "repro", "UDID", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
     monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: None)
-    monkeypatch.setattr(sd.commands, "device_destroy", lambda dtype, name: None)
 
     assert sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"]) == 0
     assert registry.get_device(checkout, "simulator", "repro") is None

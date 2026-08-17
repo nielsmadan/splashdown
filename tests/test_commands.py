@@ -59,7 +59,7 @@ def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands, "device_shutdown", lambda dt, name: pytest.fail("should not touch hardware")
+        sd.commands, "device_shutdown_row", lambda row: pytest.fail("should not touch hardware")
     )
     rc = sd.main(["--cwd", str(tmp_path), "stop", "device"])
     assert rc == 0
@@ -69,7 +69,7 @@ def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
-        sd.commands, "device_destroy", lambda dt, name: pytest.fail("should not touch hardware")
+        sd.commands, "device_destroy_row", lambda row: pytest.fail("should not touch hardware")
     )
     rc = sd.main(["--cwd", str(tmp_path), "destroy", "device"])
     assert rc == 0
@@ -79,8 +79,11 @@ def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 15"\n')
     destroyed: list = []
-    monkeypatch.setattr(sd.commands, "device_destroy", lambda dt, name: destroyed.append(name))
-    monkeypatch.setattr(sd.commands, "_resolve_device_name", lambda *a, **k: "SIM-NAME")
+    registry = sd.Registry()
+    registry.set_device(
+        str(tmp_path.resolve()), "simulator", "default", "UDID-STORED", "iPhone 15", "18.5"
+    )
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
 
     # Declining at the prompt aborts without touching the device.
     monkeypatch.setattr("builtins.input", lambda: "n")
@@ -89,7 +92,7 @@ def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
 
     # --yes skips the prompt and destroys.
     assert sd.main(["--cwd", str(tmp_path), "destroy", "simulator", "--yes"]) == 0
-    assert destroyed == ["SIM-NAME"]
+    assert [row.identifier for row in destroyed] == ["UDID-STORED"]
 
 
 def test_run_releases_operation_lock_before_launch(tmp_path, registry, monkeypatch):
@@ -165,7 +168,6 @@ def test_short_device_lifecycle_actions_hold_operation_lock(
         "_resolve_variant_for_cli",
         lambda *_args: ("default", {"model": "iPhone 17"}, recipe),
     )
-    monkeypatch.setattr(sd.commands, "_resolve_device_name", lambda *_args: "sim")
     if action == "start":
         monkeypatch.setattr(
             sd.commands,
@@ -176,10 +178,16 @@ def test_short_device_lifecycle_actions_hold_operation_lock(
         monkeypatch.setattr(sd.commands, "ios_boot", mutate)
         assert sd.commands.cmd_start(tmp_path, registry, None, None) == 0
     elif action == "stop":
-        monkeypatch.setattr(sd.commands, "device_shutdown", mutate)
+        registry.set_device(
+            str(tmp_path.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5"
+        )
+        monkeypatch.setattr(sd.commands, "device_shutdown_row", mutate)
         assert sd.commands.cmd_stop(tmp_path, registry, None, None) == 0
     else:
-        monkeypatch.setattr(sd.commands, "device_destroy", mutate)
+        registry.set_device(
+            str(tmp_path.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5"
+        )
+        monkeypatch.setattr(sd.commands, "device_destroy_row", mutate)
         assert sd.commands.cmd_destroy(tmp_path, registry, None, None, yes=True) == 0
 
     assert mutations == [action]
@@ -603,7 +611,7 @@ def test_remove_global_sourced_sim_without_global_flag_does_not_destroy(
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     sd.global_target_add("simulator", "gsim", {"model": "iPhone 15"})
     destroyed: list = []
-    monkeypatch.setattr(sd.commands, "device_destroy", lambda dt, name: destroyed.append(name))
+    monkeypatch.setattr(sd.commands, "device_destroy_row", destroyed.append)
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "gsim"])
     assert rc == 1
     assert destroyed == []  # the global-only variant's instance is NOT torn down

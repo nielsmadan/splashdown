@@ -74,6 +74,14 @@ from .commands import (
     cmd_target_refresh,
     cmd_targets_list,
 )
+from .device_types import (
+    AndroidDestination,
+    EmulatorRecord,
+    IOSDestination,
+    LaunchDestination,
+    ManagedDevice,
+    SimulatorRecord,
+)
 from .devices import (
     DeviceError,
     DeviceHealth,
@@ -103,6 +111,7 @@ from .devices import (
     device_health,
     device_needs_recreate,
     device_shutdown,
+    device_shutdown_row,
     device_status,
     ensure_fresh_sim,
     ensure_physical,

@@ -403,6 +403,23 @@ def test_registry_summary_for_counts_by_source(registry, tmp_path):
     assert s == {"port": 2, "kv": 1, "simulator": 1, "emulator": 1}
 
 
+def test_device_tsv_decodes_platform_specific_records(registry, tmp_path):
+    checkout = str(tmp_path)
+    registry.set_device(checkout, "simulator", "default", "UDID", "iPhone 17", "18.5")
+    registry.set_device(checkout, "emulator", "pixel", "my-avd", "pixel_9", "android-34")
+
+    simulator = registry.get_device(checkout, "simulator", "default")
+    emulator = registry.get_device(checkout, "emulator", "pixel")
+
+    assert isinstance(simulator, sd.SimulatorRecord)
+    assert simulator.identifier == "UDID"
+    assert simulator.runtime == "18.5"
+    assert isinstance(emulator, sd.EmulatorRecord)
+    assert emulator.name == "my-avd"
+    assert emulator.image == "android-34"
+    assert all(len(line.split("\t")) == 7 for line in registry.device_file.read_text().splitlines())
+
+
 def test_registry_summary_for_unknown_checkout_returns_zeros(registry, tmp_path):
     assert registry.summary_for(str(tmp_path / "never-tracked")) == {
         "port": 0,

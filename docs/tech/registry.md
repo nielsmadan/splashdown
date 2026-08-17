@@ -29,7 +29,7 @@ The column layouts (`registry.py:61-63`, declared as field counts at `registry.p
 
 - `ports.tsv` — `port \t abspath \t key` (3 fields)
 - `kv.tsv` — `abspath \t key \t value` (3 fields)
-- `devices.tsv` — `abspath \t dtype \t variant \t udid \t model \t ios \t created_at` (7 fields, mirrors the `DeviceRow` NamedTuple at `registry.py:16-23`)
+- `devices.tsv` — `abspath \t dtype \t variant \t identifier \t model \t runtime \t created_at` (7 fields). Explicit codecs preserve the historical bytes while decoding simulator rows to `SimulatorRecord` and emulator rows to `EmulatorRecord`; Android's three payload slots mean AVD name, device profile, and system image.
 
 `abspath` is the checkout/worktree directory — the cross-row primary-key prefix used by every per-checkout query (`all_for`, `release`, `devices_for`, GC existence checks).
 
@@ -47,7 +47,7 @@ Each file has a `_read_*`/`_write_*` pair. Reads (`_read_ports` `registry.py:109
 
 Writes serialize and validate every row before `_atomic_write` (`registry.py:46-55`) creates a mode-`0600` same-directory temporary file and calls `os.replace`. An unlocked reader therefore sees either the complete prior inode or the complete replacement, never an in-place truncation window. `_write_ports`, `_write_kv`, and `_write_devices` all use this one path (`registry.py:124`, `:230`, `:288`).
 
-Public mutators are read-modify-write under the lock: `set_kv`/`remove_kv` filter out the matching `(abspath, key)` then optionally re-append (`registry.py:245-264`); `set_device`/`remove_device` do the same on `(checkout, dtype, variant)` (`registry.py:304-338`), with `set_device` stamping `created_at` via `datetime.now(UTC).isoformat(timespec="seconds")`. `get_or_create_kv` (`registry.py:251-260`) performs lookup, factory invocation, and append under one kv lock, so concurrent UUID provisioning returns the one committed value. There is no in-memory cache: every call re-reads the file, which keeps concurrent invocations consistent at the cost of re-parsing.
+Public mutators are read-modify-write under the lock: `set_kv`/`remove_kv` filter out the matching `(abspath, key)` then optionally re-append (`registry.py:245-264`); `record_simulator` / `record_emulator` construct typed records, and `set_managed_device` / `remove_device` replace by `(checkout, dtype, variant)`. The legacy `set_device` signature remains as a compatibility adapter. `get_or_create_kv` (`registry.py:251-260`) performs lookup, factory invocation, and append under one kv lock, so concurrent UUID provisioning returns the one committed value. There is no in-memory cache: every call re-reads the file, which keeps concurrent invocations consistent at the cost of re-parsing.
 
 ### `_tsv_field` and row forgery
 

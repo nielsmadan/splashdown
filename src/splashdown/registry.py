@@ -10,24 +10,18 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import TypeAlias
 
+from .device_types import EmulatorRecord, ManagedDevice, SimulatorRecord
 
-class DeviceRow(NamedTuple):
-    checkout: str
-    dtype: str
-    variant: str
-    udid: str
-    model: str
-    ios: str
-    created_at: str
+DeviceRow: TypeAlias = ManagedDevice
 
 
 # Column counts for the tab-separated registry files; rows that don't match are
 # skipped as malformed.
 _PORT_ROW_FIELDS = 3  # (port, checkout, key)
 _KV_ROW_FIELDS = 3  # (checkout, key, value)
-_DEVICE_ROW_FIELDS = len(DeviceRow._fields)
+_DEVICE_ROW_FIELDS = 7
 _OPERATION_LOCK_SHARDS = 256
 
 # The registry files are flat tab/newline-delimited TSV with no escaping, so a
@@ -42,6 +36,37 @@ def _tsv_field(value: str, *, what: str) -> str:
     if any(ch in value for ch in _TSV_FORBIDDEN):
         raise ValueError(f"registry {what} may not contain tab or newline characters: {value!r}")
     return value
+
+
+def _decode_device_row(fields: list[str]) -> ManagedDevice | None:
+    checkout, dtype, variant, identifier, model, runtime, created_at = fields
+    if dtype == "simulator":
+        return SimulatorRecord(checkout, variant, identifier, model, runtime, created_at)
+    if dtype == "emulator":
+        return EmulatorRecord(checkout, variant, identifier, model, runtime, created_at)
+    return None
+
+
+def _encode_device_row(row: ManagedDevice) -> tuple[str, ...]:
+    if isinstance(row, SimulatorRecord):
+        return (
+            row.checkout,
+            row.dtype,
+            row.variant,
+            row.identifier,
+            row.model,
+            row.runtime,
+            row.created_at,
+        )
+    return (
+        row.checkout,
+        row.dtype,
+        row.variant,
+        row.name,
+        row.device,
+        row.image,
+        row.created_at,
+    )
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -276,32 +301,97 @@ class Registry:
                 out[key] = value
         return out
 
-    def _read_devices(self) -> list[DeviceRow]:
-        out: list[DeviceRow] = []
+    def _read_devices(self) -> list[ManagedDevice]:
+        out: list[ManagedDevice] = []
         for line in self.device_file.read_text().splitlines():
             if not line.strip():
                 continue
             parts = line.split("\t")
             if len(parts) != _DEVICE_ROW_FIELDS:
                 continue
-            out.append(DeviceRow(*parts))
+            if row := _decode_device_row(parts):
+                out.append(row)
         return out
 
-    def _write_devices(self, rows: Iterable[DeviceRow]) -> None:
+    def _write_devices(self, rows: Iterable[ManagedDevice]) -> None:
         lines = [
             "\t".join(
                 _tsv_field(field, what=f"device {name}")
-                for name, field in zip(r._fields, r, strict=True)
+                for name, field in zip(
+                    (
+                        "checkout",
+                        "dtype",
+                        "variant",
+                        "identifier",
+                        "model",
+                        "runtime",
+                        "created_at",
+                    ),
+                    _encode_device_row(row),
+                    strict=True,
+                )
             )
-            for r in rows
+            for row in rows
         ]
         _atomic_write(self.device_file, "\n".join(lines) + ("\n" if lines else ""))
 
-    def get_device(self, abspath: str, dtype: str, variant: str) -> DeviceRow | None:
+    def get_device(self, abspath: str, dtype: str, variant: str) -> ManagedDevice | None:
         for r in self._read_devices():
             if r.checkout == abspath and r.dtype == dtype and r.variant == variant:
                 return r
         return None
+
+    def set_managed_device(self, row: ManagedDevice) -> None:
+        with self._lock(self.device_file):
+            rows = [
+                existing
+                for existing in self._read_devices()
+                if not (
+                    existing.checkout == row.checkout
+                    and existing.dtype == row.dtype
+                    and existing.variant == row.variant
+                )
+            ]
+            rows.append(row)
+            self._write_devices(rows)
+
+    def record_simulator(
+        self,
+        checkout: str,
+        variant: str,
+        identifier: str,
+        model: str,
+        runtime: str,
+    ) -> None:
+        self.set_managed_device(
+            SimulatorRecord(
+                checkout,
+                variant,
+                identifier,
+                model,
+                runtime,
+                datetime.now(UTC).isoformat(timespec="seconds"),
+            )
+        )
+
+    def record_emulator(
+        self,
+        checkout: str,
+        variant: str,
+        name: str,
+        device: str,
+        image: str,
+    ) -> None:
+        self.set_managed_device(
+            EmulatorRecord(
+                checkout,
+                variant,
+                name,
+                device,
+                image,
+                datetime.now(UTC).isoformat(timespec="seconds"),
+            )
+        )
 
     def set_device(
         self,
@@ -312,24 +402,12 @@ class Registry:
         model: str,
         ios: str,
     ) -> None:
-        with self._lock(self.device_file):
-            rows = [
-                r
-                for r in self._read_devices()
-                if not (r.checkout == abspath and r.dtype == dtype and r.variant == variant)
-            ]
-            rows.append(
-                DeviceRow(
-                    abspath,
-                    dtype,
-                    variant,
-                    udid,
-                    model,
-                    ios,
-                    datetime.now(UTC).isoformat(timespec="seconds"),
-                )
-            )
-            self._write_devices(rows)
+        if dtype == "simulator":
+            self.record_simulator(abspath, variant, udid, model, ios)
+        elif dtype == "emulator":
+            self.record_emulator(abspath, variant, udid, model, ios)
+        else:
+            raise ValueError(f"unknown managed device type `{dtype}`")
 
     def remove_device(self, abspath: str, dtype: str, variant: str) -> None:
         with self._lock(self.device_file):
@@ -340,16 +418,16 @@ class Registry:
             ]
             self._write_devices(rows)
 
-    def all_devices(self) -> list[DeviceRow]:
+    def all_devices(self) -> list[ManagedDevice]:
         return self._read_devices()
 
-    def devices_for(self, abspath: str) -> list[DeviceRow]:
+    def devices_for(self, abspath: str) -> list[ManagedDevice]:
         return [r for r in self._read_devices() if r.checkout == abspath]
 
     def managed_udids(self) -> set[str]:
-        return {r.udid for r in self._read_devices()}
+        return {r.identifier for r in self._read_devices()}
 
-    def gc_devices(self, orphan_check: Callable[[DeviceRow], bool] | None = None) -> int:
+    def gc_devices(self, orphan_check: Callable[[ManagedDevice], bool] | None = None) -> int:
         """Drop device rows for missing checkouts and optionally missing devices."""
         with self._lock(self.device_file):
             rows = self._read_devices()
@@ -433,7 +511,7 @@ class Registry:
         self,
         *,
         include_devices: bool = True,
-        device_orphan_check: Callable[[DeviceRow], bool] | None = None,
+        device_orphan_check: Callable[[ManagedDevice], bool] | None = None,
     ) -> int:
         """Drop entries whose abspath no longer exists, then reconcile live
         checkouts against their current recipes. Returns count removed."""

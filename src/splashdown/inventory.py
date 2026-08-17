@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from .device_types import LaunchDestination
     from .recipe import Recipe
 
 
@@ -26,4 +27,4 @@ class ProjectInventory:
 
 @runtime_checkable
 class RunnableProfile(Protocol):
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int: ...
+    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int: ...

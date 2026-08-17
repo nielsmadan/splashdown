@@ -18,6 +18,14 @@ from .constants import (
     TARGET_TYPES,
     TARGET_VARIANT_RE,
 )
+from .device_types import (
+    AndroidDestination,
+    EmulatorRecord,
+    IOSDestination,
+    LaunchDestination,
+    ManagedDevice,
+    SimulatorRecord,
+)
 
 # DeviceError is defined in errors.py (dependency-free) and re-exported here for
 # the many `from .devices import DeviceError` call sites; recipe.py imports it
@@ -37,7 +45,7 @@ from .recipe import (
     render_template,
     validate_target_spec,
 )
-from .registry import DeviceRow, Registry
+from .registry import Registry
 
 
 def _default_sim_name(cwd: Path, variant: str) -> str:
@@ -340,15 +348,13 @@ def _android_avd_exists(name: str) -> bool:
     return name in [line.strip() for line in out.decode().splitlines()]
 
 
-def _is_orphan_device(row: DeviceRow) -> bool:
+def _is_orphan_device(row: ManagedDevice) -> bool:
     """A registered device whose underlying sim/AVD no longer exists. Happens
     when the user runs `xcrun simctl delete` or `avdmanager delete avd` by
     hand, leaving the registry pointing at a ghost."""
-    if row.dtype == "simulator":
-        return not _ios_udid_exists(row.udid)
-    if row.dtype == "emulator":
-        return not _android_avd_exists(row.udid)
-    return False
+    if isinstance(row, SimulatorRecord):
+        return not _ios_udid_exists(row.identifier)
+    return not _android_avd_exists(row.name)
 
 
 def _android_latest_image() -> str:
@@ -608,7 +614,7 @@ def _physical_match(
     return devices
 
 
-def ensure_physical(spec: dict[str, Any], *, warned: set[str] | None = None) -> dict[str, str]:
+def ensure_physical(spec: dict[str, Any], *, warned: set[str] | None = None) -> LaunchDestination:
     """Resolve a `device` target (physical hardware) to a connected device.
     Auto-picks the lone device; `id`/`name`/`platform` on the spec narrow the
     selection. Returns the same `info` shape as the sim/emulator path, plus
@@ -623,13 +629,9 @@ def ensure_physical(spec: dict[str, Any], *, warned: set[str] | None = None) -> 
             "`id`/`name`/`platform` on the variant"
         )
     d = devices[0]
-    info: dict[str, Any] = {
-        "kind": d["platform"] if d["platform"] == "ios" else "android",
-        "name": d["name"],
-        "physical": True,
-    }
-    info["udid" if d["platform"] == "ios" else "serial"] = d["id"]
-    return info
+    if d["platform"] == "ios":
+        return IOSDestination(d["name"], d["id"], owned=False)
+    return AndroidDestination(d["name"], d["id"], owned=False)
 
 
 def _physical_no_match_msg(spec: dict[str, Any]) -> str:
@@ -696,12 +698,12 @@ def device_health(
     if row is None:
         return DeviceHealth.MISSING
     target = _target_os_for(dtype, spec, cache)
-    if dtype == "simulator":
-        drifted = row.ios != target or row.model != spec.get("model", "")
-    elif dtype == "emulator":
+    if isinstance(row, SimulatorRecord):
+        drifted = row.runtime != target or row.model != spec.get("model", "")
+    elif isinstance(row, EmulatorRecord):
         resolved_name = _resolve_device_name(spec, cwd, variant, dtype)
         drifted = (
-            row.udid != resolved_name or row.ios != target or row.model != spec.get("device", "")
+            row.name != resolved_name or row.image != target or row.device != spec.get("device", "")
         )
     else:
         raise DeviceError(f"unknown target type `{dtype}`")
@@ -734,7 +736,7 @@ def ensure_fresh_sim(
     spec: dict[str, Any],
     *,
     cache: dict[str, str] | None = None,
-) -> dict[str, str]:
+) -> LaunchDestination:
     """Reconcile a sim/AVD instance against the variant spec. Destroys + recreates
     if the OS image (or model) has drifted from what's in the registry. Pinned
     variants (`ios = "<explicit>"`) are kept on their declared version forever."""
@@ -750,25 +752,25 @@ def ensure_fresh_sim(
         target_ios = _target_os_for(dtype, spec, cache)
         model_spec = spec.get("model", "")
         if not stale:
-            if row is None:  # unreachable (stale is True when row is None); narrows the type
+            if not isinstance(row, SimulatorRecord):
                 raise DeviceError("internal: simulator row vanished mid-check")
-            return {"kind": "ios", "udid": row.udid, "name": sim_name}
+            return IOSDestination(sim_name, row.identifier, owned=True)
         if row is not None:
             device_destroy_row(row)
         udid, _state = ios_ensure(sim_name, model_spec or None, target_ios)
-        registry.set_device(checkout, dtype, variant, udid, model_spec, target_ios)
-        return {"kind": "ios", "udid": udid, "name": sim_name}
+        registry.record_simulator(checkout, variant, udid, model_spec, target_ios)
+        return IOSDestination(sim_name, udid, owned=True)
 
     if dtype == "emulator":
         target_image = _target_os_for(dtype, spec, cache)
         device_spec = spec.get("device", "")
         if not stale:
-            return {"kind": "android", "serial": "", "name": sim_name}
+            return AndroidDestination(sim_name, None, owned=True)
         if row is not None:
             device_destroy_row(row)
         android_ensure(sim_name, device_spec or None, target_image)
-        registry.set_device(checkout, dtype, variant, sim_name, device_spec, target_image)
-        return {"kind": "android", "serial": "", "name": sim_name}
+        registry.record_emulator(checkout, variant, sim_name, device_spec, target_image)
+        return AndroidDestination(sim_name, None, owned=True)
 
     raise DeviceError(f"unknown target type `{dtype}`")
 
@@ -808,22 +810,30 @@ def device_destroy(dtype: str, resolved_name: str) -> None:
         android_destroy(resolved_name)
 
 
-def device_destroy_row(row: DeviceRow) -> None:
+def device_shutdown_row(row: ManagedDevice) -> None:
+    if isinstance(row, SimulatorRecord):
+        if _ios_udid_exists(row.identifier):
+            ios_shutdown(row.identifier)
+    elif _android_avd_exists(row.name):
+        android_shutdown(row.name)
+
+
+def device_destroy_row(row: ManagedDevice) -> None:
     """Destroy the sim/AVD a registry row points at, using the identifier the
     row actually stores: the real UDID for simulators (set_device stores the
     UDID in the udid column), the AVD name for emulators. Unlike `device_destroy`
     this needs no by-name lookup, so it also reaches orphaned instances whose
     recipe variant is gone."""
-    if row.dtype == "simulator":
-        if not _ios_udid_exists(row.udid):
+    if isinstance(row, SimulatorRecord):
+        if not _ios_udid_exists(row.identifier):
             return
-        ios_shutdown(row.udid)
-        ios_destroy(row.udid)
-    elif row.dtype == "emulator":
-        if not _android_avd_exists(row.udid):
+        ios_shutdown(row.identifier)
+        ios_destroy(row.identifier)
+    elif isinstance(row, EmulatorRecord):
+        if not _android_avd_exists(row.name):
             return
-        android_shutdown(row.udid)
-        android_destroy(row.udid)
+        android_shutdown(row.name)
+        android_destroy(row.name)
 
 
 def _ios_current_state(udid: str) -> str:
@@ -841,18 +851,18 @@ def _ios_current_state(udid: str) -> str:
     return "Unknown"
 
 
-def _device_status_for_row(row: DeviceRow) -> str:
+def _device_status_for_row(row: ManagedDevice) -> str:
     """Liveness/state for a registry device row. Reuses udid for iOS lookup
     and the AVD name for Android (the `udid` column doubles as the AVD name
     for emulator rows)."""
-    if row.dtype == "simulator":
-        if not _ios_udid_exists(row.udid):
+    if isinstance(row, SimulatorRecord):
+        if not _ios_udid_exists(row.identifier):
             return "absent"
-        return _ios_current_state(row.udid).lower()
-    if row.dtype == "emulator":
-        if not _android_avd_exists(row.udid):
+        return _ios_current_state(row.identifier).lower()
+    if isinstance(row, EmulatorRecord):
+        if not _android_avd_exists(row.name):
             return "absent"
-        return "running" if _android_running_serial(row.udid) else "stopped"
+        return "running" if _android_running_serial(row.name) else "stopped"
     return "unknown"
 
 

@@ -69,10 +69,12 @@ reconcile leaves the new sim **Shutdown** — it never boots anything, so the OS
 (or that `[project] run` supplies one) before it reconciles or boots anything. It then calls
 `ensure_fresh_sim`, boots (`ios_boot` / `android_boot`), and builds + launches via `device_run`.
 `cmd_start` reconciles + boots but skips the build/launch. `cmd_stop`
-(`commands.py:978`) shuts the instance down but preserves it. `cmd_destroy` (`commands.py:1003`) deletes the instance
-and its registry row — and now gates the deletion behind a `[y/N]` prompt (`_confirm`,
+shuts the registered instance down but preserves it. `cmd_destroy` deletes the registered instance
+and its registry row, gated behind a `[y/N]` prompt (`_confirm`,
 `src/splashdown/commands.py:995`), bypassable with `--yes`. For `type = device`, stop/destroy are
-no-ops with an explanatory message because splashdown owns no hardware.
+no-ops with an explanatory message because splashdown owns no hardware. Managed teardown uses the
+persisted simulator UDID or AVD name; if no registry row exists it reports a no-op and never falls
+back to a recipe-derived name.
 
 **Type and variant inference.** When the user omits `TYPE`, `_infer_dtype`
 (`src/splashdown/commands.py:1038`) resolves it to the single declared target type, or errors with
@@ -322,8 +324,9 @@ splash target remove <type> <variant> [--keep-instance]
 - **`target remove` destroys the instance by default.** Pass `--keep-instance` for a toml-only edit.
   It preflights local ownership before destruction, refuses recipe-declared variants, and leaves
   both the declaration and registry row intact when the lifecycle step raises. A registered
-  instance is addressed by its stored identifier, so a later config rename cannot orphan it;
-  already-absent instances are accepted. `--keep-instance` also leaves any registry row untouched;
+  instance is addressed by its stored identifier, so a later config rename cannot redirect
+  teardown to an unowned same-name device. A missing registry row is a safe no-op; the declaration
+  is removed without looking up an instance by its derived name. `--keep-instance` also leaves any registry row untouched;
   a later `splash target refresh` treats that now-undeclared row as defunct and destroys the
   retained instance.
 - **`splashdown.local.toml` is add-only.** A variant name that collides with a recipe-declared one

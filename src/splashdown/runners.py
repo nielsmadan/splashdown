@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import require_macos, translate_tool_errors
+from .device_types import (
+    AndroidDestination,
+    DestinationLike,
+    IOSDestination,
+    LaunchDestination,
+    as_launch_destination,
+)
 from .errors import DeviceError
 from .recipe import Recipe
 
@@ -45,8 +52,15 @@ def _android_component(label: str, value: str) -> str:
     return value
 
 
-def _flutter_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    device_id = (info.get("udid") if info["kind"] == "ios" else info.get("serial")) or ""
+def _destination_id(destination: LaunchDestination) -> str:
+    if not destination.identifier:
+        raise DeviceError(f"{destination.platform} destination has no running device identifier")
+    return destination.identifier
+
+
+def _flutter_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+    destination = as_launch_destination(destination)
+    device_id = _destination_id(destination)
     with translate_tool_errors("flutter", "flutter", "install Flutter and add it to PATH"):
         return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
 
@@ -131,9 +145,11 @@ def _x86_64_sim_advice() -> str:
     )
 
 
-def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    if info["kind"] == "ios":
-        cmd = ["npx", "react-native", "run-ios", "--udid", info["udid"], *_rn_ios_flags(recipe)]
+def _rn_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+    destination = as_launch_destination(destination)
+    device_id = _destination_id(destination)
+    if isinstance(destination, IOSDestination):
+        cmd = ["npx", "react-native", "run-ios", "--udid", device_id, *_rn_ios_flags(recipe)]
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
             rc = subprocess.call(cmd, cwd=cwd)
         if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
@@ -144,21 +160,23 @@ def _rn_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         "react-native",
         "run-android",
         "--deviceId",
-        info["serial"],
+        device_id,
         *_rn_android_flags(recipe),
     ]
     with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
         return subprocess.call(cmd, cwd=cwd)
 
 
-def _expo_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+def _expo_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
     # No scheme/mode forwarding: `expo run:ios --scheme` means a URL scheme, not
     # an Xcode scheme, so `[project.ios] scheme` can't be mapped cleanly here.
-    if info["kind"] == "ios":
+    destination = as_launch_destination(destination)
+    device_id = _destination_id(destination)
+    if isinstance(destination, IOSDestination):
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
-            return subprocess.call(["npx", "expo", "run:ios", "--device", info["udid"]], cwd=cwd)
+            return subprocess.call(["npx", "expo", "run:ios", "--device", device_id], cwd=cwd)
     with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
-        return subprocess.call(["npx", "expo", "run:android", "--device", info["serial"]], cwd=cwd)
+        return subprocess.call(["npx", "expo", "run:android", "--device", device_id], cwd=cwd)
 
 
 _RUN_PLACEHOLDER = re.compile(r"\{(device_id|device_name|platform)\}")
@@ -187,30 +205,32 @@ def _resolve_custom_run(recipe: Recipe, kind: str) -> str | None:
     return cmd
 
 
-def _substitute_run_placeholders(cmd: str, info: dict[str, str]) -> str:
+def _substitute_run_placeholders(cmd: str, destination: DestinationLike) -> str:
     """Substitute {device_id}/{device_name}/{platform} in a custom run command.
     Device values are shell-quoted so spaces/quotes can't break the command;
     unknown `{...}` sequences are left untouched (shell brace-expansion survives)."""
-    device_id = info.get("udid") or info.get("serial") or ""
+    destination = as_launch_destination(destination)
+    device_id = destination.identifier or ""
     if "{device_id}" in cmd and not device_id:
         raise DeviceError("run command uses {device_id} but no device id is available")
     values = {
         "device_id": shlex.quote(device_id),
-        "device_name": shlex.quote(info.get("name", "")),
-        "platform": info.get("kind", ""),
+        "device_name": shlex.quote(destination.name),
+        "platform": destination.platform,
     }
     return _RUN_PLACEHOLDER.sub(lambda m: values[m.group(1)], cmd)
 
 
-def run_custom_command(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int | None:
+def run_custom_command(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int | None:
     """Run the user's custom command with the booted device identifier injected.
     Returns the exit code, or None when no custom command is configured (caller
     falls back to framework detection). Runs via a shell (like `[setup.*]`) so
     pipes / `&&` / `$ENV` / `cd` work."""
-    cmd = _resolve_custom_run(recipe, info["kind"])
+    destination = as_launch_destination(destination)
+    cmd = _resolve_custom_run(recipe, destination.platform)
     if cmd is None:
         return None
-    cmd = _substitute_run_placeholders(cmd, info)
+    cmd = _substitute_run_placeholders(cmd, destination)
     return subprocess.call(cmd, shell=True, cwd=cwd)  # noqa: S602 — user-authored run command by design
 
 
@@ -261,7 +281,7 @@ def _ios_native_schemes(cwd: Path) -> list[str]:
     return schemes
 
 
-def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
     require_macos("native build support")
     cfg = recipe.project.get("ios") or {}
     scheme = cfg.get("scheme")
@@ -271,7 +291,10 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         )
     scheme = _no_flag("ios scheme", scheme)
     configuration = _no_flag("ios configuration", cfg.get("configuration", "Debug"))
-    udid = info["udid"]
+    destination = as_launch_destination(destination)
+    if not isinstance(destination, IOSDestination):
+        raise DeviceError("ios-native requires an iOS destination")
+    udid = _destination_id(destination)
     derived = cwd / "build" / "splash-derived"
     project_flag = _ios_xcodebuild_args(cwd, cfg)
 
@@ -320,7 +343,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
     except (FileNotFoundError, KeyError) as e:
         raise DeviceError(f"ios-native: couldn't read bundle id from {app_path}: {e}") from e
 
-    if info.get("physical"):
+    if not destination.owned:
         # Physical iOS devices aren't reachable via simctl (simulator-only);
         # devicectl (Xcode 15+) installs and launches on real hardware.
         with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
@@ -360,11 +383,14 @@ def _ios_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
         return subprocess.call(["xcrun", "simctl", "launch", udid, bundle_id])
 
 
-def _android_native_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
+def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
     cfg = recipe.project.get("android") or {}
     module = _no_flag("android module", cfg.get("module", "app"))
     variant = _no_flag("android variant", cfg.get("variant", "debug"))
-    serial = info["serial"]
+    destination = as_launch_destination(destination)
+    if not isinstance(destination, AndroidDestination):
+        raise DeviceError("android-native requires an Android destination")
+    serial = _destination_id(destination)
     gradlew = cwd / "gradlew"
     gradle_cmd = [f"./{gradlew.name}"] if gradlew.exists() else ["gradle"]
     gradle_tool = gradle_cmd[0]

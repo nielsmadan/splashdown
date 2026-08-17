@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .catalog import PROFILES
 from .constants import RECIPE_NAME
+from .device_types import DestinationLike, as_launch_destination
 from .errors import DeviceError
 from .inventory import RunnableProfile
 from .recipe import Recipe
@@ -62,12 +63,13 @@ def validate_device_run(cwd: Path, recipe: Recipe, kind: str | None) -> None:
         raise DeviceError(f"framework `{framework}` does not support `splash run`")
 
 
-def device_run(cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-    rc = run_custom_command(cwd, recipe, info)
+def device_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+    destination = as_launch_destination(destination)
+    rc = run_custom_command(cwd, recipe, destination)
     if rc is not None:
         return rc
     framework = detect_framework(cwd, recipe)
     profile = PROFILES.get(framework)
     if not isinstance(profile, RunnableProfile):
         raise DeviceError(f"framework `{framework}` does not support `splash run`")
-    return int(profile.run(resolve_app_dir(cwd, recipe, framework), recipe, info))
+    return int(profile.run(resolve_app_dir(cwd, recipe, framework), recipe, destination))

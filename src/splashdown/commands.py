@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tomllib
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -29,6 +30,7 @@ from .bootstrap import (
 from .capabilities import translate_tool_errors, warn_capability
 from .catalog import PROFILES
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
+from .device_types import AndroidDestination, IOSDestination, as_launch_destination
 from .devices import (
     DeviceError,
     DeviceHealth,
@@ -45,11 +47,10 @@ from .devices import (
     android_boot,
     android_destroy,
     android_shutdown,
-    device_destroy,
     device_destroy_row,
     device_health,
     device_needs_recreate,
-    device_shutdown,
+    device_shutdown_row,
     device_status,
     ensure_fresh_sim,
     global_target_add,
@@ -244,7 +245,7 @@ def _gather_devices_all(
                 "type": row.dtype,
                 "variant": row.variant,
                 "source": "",
-                "device_name": row.udid,
+                "device_name": row.identifier,
                 "status": status,
                 "orphan": orphan,
                 "stale": stale,
@@ -1017,14 +1018,14 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
         variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
         validate_device_run(cwd, recipe, kind)
-        info = _fresh_sim(registry, cwd, dtype, variant, spec)
+        info = as_launch_destination(_fresh_sim(registry, cwd, dtype, variant, spec))
         # Physical devices are already live (discovery returns the running id); only
         # splashdown-owned sims/emulators need booting.
-        if not info.get("physical"):
-            if info["kind"] == "ios":
-                _boot_ios(info["udid"], _ios_state(info["udid"]))
-            elif info["kind"] == "android":
-                info["serial"] = _boot_android(info["name"])
+        if info.owned:
+            if isinstance(info, IOSDestination):
+                _boot_ios(info.identifier, _ios_state(info.identifier))
+            elif isinstance(info, AndroidDestination):
+                info = replace(info, identifier=_boot_android(info.name))
     return int(_dev_run(cwd, recipe, info))
 
 
@@ -1038,34 +1039,36 @@ def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str
     with registry.operation_lock(abspath):
         dtype = _infer_dtype(cwd, dtype)
         variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-        info = _fresh_sim(registry, cwd, dtype, variant, spec)
-        if info.get("physical"):
-            print(f"{dtype}.{variant} connected ({info['name']})", file=sys.stderr)
+        info = as_launch_destination(_fresh_sim(registry, cwd, dtype, variant, spec))
+        if not info.owned:
+            print(f"{dtype}.{variant} connected ({info.name})", file=sys.stderr)
             return 0
-        if info["kind"] == "ios":
-            _boot_ios(info["udid"], _ios_state(info["udid"]))
-        elif info["kind"] == "android":
-            info["serial"] = _boot_android(info["name"])
-    print(f"started {dtype}.{variant} ({info['name']})", file=sys.stderr)
+        if isinstance(info, IOSDestination):
+            _boot_ios(info.identifier, _ios_state(info.identifier))
+        elif isinstance(info, AndroidDestination):
+            info = replace(info, identifier=_boot_android(info.name))
+    print(f"started {dtype}.{variant} ({info.name})", file=sys.stderr)
     return 0
 
 
 def cmd_stop(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     """Shut down the sim/emulator (preserves it for next start)."""
-    _dev_shutdown = device_shutdown
     abspath = str(cwd.resolve())
     with registry.operation_lock(abspath):
         dtype = _infer_dtype(cwd, dtype)
-        variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+        variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         if dtype == "device":
             print(
                 f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop",
                 file=sys.stderr,
             )
             return 0
-        resolved = _resolve_device_name(spec, cwd, variant, dtype)
-        _dev_shutdown(dtype, resolved)
-    print(f"stopped {dtype}.{variant} ({resolved})", file=sys.stderr)
+        row = registry.get_device(abspath, dtype, variant)
+        if row is None:
+            print(f"{dtype}.{variant} has no managed instance; nothing to stop", file=sys.stderr)
+            return 0
+        device_shutdown_row(row)
+    print(f"stopped {dtype}.{variant} ({row.identifier})", file=sys.stderr)
     return 0
 
 
@@ -1086,7 +1089,6 @@ def cmd_destroy(
     yes: bool = False,
 ) -> int:
     """Delete the sim/emulator and its registry entry."""
-    _dev_destroy = device_destroy
     dtype = _infer_dtype(cwd, dtype)
     variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
@@ -1100,11 +1102,14 @@ def cmd_destroy(
         return 1
     abspath = str(cwd.resolve())
     with registry.operation_lock(abspath):
-        variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant)
-        resolved = _resolve_device_name(spec, cwd, variant, dtype)
-        _dev_destroy(dtype, resolved)
+        variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant)
+        row = registry.get_device(abspath, dtype, variant)
+        if row is None:
+            print(f"{dtype}.{variant} has no managed instance; nothing to destroy", file=sys.stderr)
+            return 0
+        device_destroy_row(row)
         registry.remove_device(abspath, dtype, variant)
-    print(f"destroyed {dtype}.{variant} ({resolved})", file=sys.stderr)
+    print(f"destroyed {dtype}.{variant} ({row.identifier})", file=sys.stderr)
     return 0
 
 
@@ -1574,11 +1579,9 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
     # up too, destroying each by the identifier its row stores (UDID for sims, AVD
     # name for emulators).
     for row in registry.devices_for(abspath):
-        if row.dtype == "device":
-            continue  # hardware splashdown doesn't own
         try:
             device_destroy_row(row)
-            print(f"destroyed {row.dtype}.{row.variant} ({row.udid})", file=sys.stderr)
+            print(f"destroyed {row.dtype}.{row.variant} ({row.identifier})", file=sys.stderr)
         except DeviceError as e:
             print(f"warning: could not destroy {row.dtype}.{row.variant}: {e}", file=sys.stderr)
 
@@ -2052,21 +2055,26 @@ def _target_remove_locked(args: Any, cwd: Path, registry: Registry, checkout: st
             f"`{args.dtype}.{variant}` is a global variant; "
             "remove it with `splash target remove … --global`"
         )
-    spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant)
+    _spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant)
     destroyed = False
+    missing = False
     if not args.keep_instance and args.dtype != "device":
         row = registry.get_device(checkout, args.dtype, variant)
         if row is not None:
             device_destroy_row(row)
         else:
-            resolved = _resolve_device_name(spec, cwd, variant, args.dtype)
-            device_destroy(args.dtype, resolved)
+            missing = True
         local_path.write_text(new_local_text)
         registry.remove_device(checkout, args.dtype, variant)
-        destroyed = True
+        destroyed = row is not None
     else:
         local_path.write_text(new_local_text)
-    suffix = " (and destroyed the instance)" if destroyed else ""
+    if destroyed:
+        suffix = " (and destroyed the instance)"
+    elif missing:
+        suffix = " (no managed instance found)"
+    else:
+        suffix = ""
     print(f"removed target `{args.dtype}.{variant}` from {LOCAL_NAME}{suffix}", file=sys.stderr)
     return 0
 

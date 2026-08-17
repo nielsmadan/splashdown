@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import PROFILES
+from .device_types import LaunchDestination
 from .errors import DeviceError
 from .inventory import AppInventory
 from .package_json import package_dependencies
@@ -1466,8 +1467,8 @@ class ReactNativeProfile(Profile):
             "- Launch with `splash run simulator` or `splash run emulator`.",
         ]
 
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-        return _rn_run(cwd, recipe, info)
+    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
+        return _rn_run(cwd, recipe, destination)
 
 
 class ExpoProfile(Profile):
@@ -1492,8 +1493,8 @@ class ExpoProfile(Profile):
             "- Launch with `splash run simulator` or `splash run emulator`.",
         ]
 
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-        return _expo_run(cwd, recipe, info)
+    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
+        return _expo_run(cwd, recipe, destination)
 
 
 class FlutterProfile(Profile):
@@ -1505,8 +1506,8 @@ class FlutterProfile(Profile):
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
 
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-        return _flutter_run(cwd, recipe, info)
+    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
+        return _flutter_run(cwd, recipe, destination)
 
 
 class IosNativeProfile(Profile):
@@ -1521,8 +1522,8 @@ class IosNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-        return _ios_native_run(cwd, recipe, info)
+    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
+        return _ios_native_run(cwd, recipe, destination)
 
 
 class AndroidNativeProfile(Profile):
@@ -1537,8 +1538,8 @@ class AndroidNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
-    def run(self, cwd: Path, recipe: Recipe, info: dict[str, str]) -> int:
-        return _android_native_run(cwd, recipe, info)
+    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
+        return _android_native_run(cwd, recipe, destination)
 
 
 # Mobile precedence: pubspec.yaml (flutter) wins over an `expo` or `react-native`
