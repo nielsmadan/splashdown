@@ -28,7 +28,7 @@ classifiers = [
 splash = "splashdown:main"
 
 [dependency-groups]
-dev = ["pytest>=9.1.1", "pytest-cov>=5", "ruff>=0.16.1", "pylint>=4.0.7", "mypy>=2.3.0"]
+dev = ["pytest>=9.1.1", "pytest-cov>=5", "ruff>=0.16.3", "pylint>=4.0.7", "mypy>=2.3.0"]
 docs = ["zensical"]
 
 [tool.coverage.run]
