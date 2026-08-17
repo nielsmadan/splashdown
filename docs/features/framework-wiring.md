@@ -46,14 +46,14 @@ The unit is `WiringCheck` (`src/splashdown/wiring.py:25`): an `id`, a human
 `description`, `applies(cwd)`, `detect(cwd) -> ("ok"|"problem", detail)`, an optional
 `autofix(cwd)` (`None` means manual-only), and `manual_instructions(cwd)`.
 
-Most checks are owned by **Profiles**. RN checks accumulate in the module-level list
-`_RN_WIRING_CHECKS` as each `rn-*` helper is appended; the shared `_HOOK_WIRING_CHECK` is reused by
-native Profiles that otherwise have no per-checkout wiring. Vite and Spring Boot define their
-checks inline in their Profiles. `doctor.py` resolves the active framework and app directory, then
-pulls that framework's checks through `_wiring_checks_for_framework`. It also combines project-level
-Compose checks and, when the recipe has `[bootstrap]`, the generic hook check. Project checks still
-run when framework detection is ambiguous or unavailable, so a framework-neutral bootstrap recipe
-can use `splash doctor --fix`.
+Checks are owned by **Profiles**, not by `doctor` directly. RN checks accumulate in the
+module-level `_RN_WIRING_CHECKS` list; the shared `_HOOK_WIRING_CHECK` is reused by native Profiles
+that otherwise have no per-checkout wiring. Vite and Spring Boot define their checks in
+`profiles_web.py` and `profiles_server.py`. `doctor.py` resolves the active framework and app
+directory, then pulls that Profile's checks through `_wiring_checks_for_framework`. It also combines
+project-level Compose checks and, when the recipe has `[bootstrap]`, the generic hook check. Project
+checks still run when framework detection is ambiguous or unavailable, so a framework-neutral
+bootstrap recipe can use `splash doctor --fix`.
 
 The run loop in `cmd_doctor` (`src/splashdown/doctor.py`): for each check, skip if
 `applies` is false; if `detect` returns `ok`, print `✓`; on `problem`, if `--fix` was
@@ -80,7 +80,7 @@ walks a key's value region in either block or flow style, which is enough to rea
 config honestly without pretending to parse it.
 
 An empty check list is reported two different ways, gated on `Profile.env_only`
-(`src/splashdown/profiles.py:104`). A profile that reads its port straight from the
+(`src/splashdown/profile_core.py`). A profile that reads its port straight from the
 environment (`nextjs`, `node-backend`, `django`, `fastapi`, `flask`, `rails`,
 `laravel`) sets `env_only = True`,
 so there is nothing to patch and `doctor` prints ``✓ no wiring checks needed for
@@ -123,22 +123,22 @@ The individual checks:
   (find-by-pair, replace) and mark tool-managed vs hand-edited lines. The literal-export
   regex is intentionally narrow (`src/splashdown/wiring.py:521`) so hand-written
   conditional wirings are not mangled.
-- **`vite-config-process-env`** (`src/splashdown/profiles.py:551`, detect/autofix at
-  `:562`/`:572`) — rewrites the `loadEnv` idiom `env.X` to `process.env.X` in
+- **`vite-config-process-env`** (`src/splashdown/profiles_web.py`) — rewrites the
+  `loadEnv` idiom `env.X` to `process.env.X` in
   `vite.config.{ts,js,mjs}` so values loaded into the shell by mise/direnv/devbox reach
-  Vite. The matcher (`src/splashdown/profiles.py:480`) skips already-fixed
-  `process.env.X`, and `_vite_unfixed_env_matches` (`:483`) additionally skips any
+  Vite. The matcher skips already-fixed
+  `process.env.X`, and `_vite_unfixed_env_matches` additionally skips any
   `env.X` whose name is already read as `process.env.X` somewhere in the file —
   `process.env.X || env.X` is a deliberate shell-then-dotenv fallback chain, and
   rewriting its second term would silently delete the dotenv layer.
-- **`vite-port-wired`** (`src/splashdown/profiles.py:525`) — the companion assertion:
+- **`vite-port-wired`** (`src/splashdown/profiles_web.py`) — the companion assertion:
   the config must name the allocated port var (`WEB_DEV_PORT`) somewhere, or the port
   is allocated and never consumed. **Report-only** (`autofix=None`) because injecting a
   `server.port` block into an arbitrary config is not safely mechanical. It deliberately
   tests for the variable name rather than the string `process.env.`, so bracket access
   and destructuring both pass — an earlier substring test flagged those correct configs
   as problems and left `doctor --fix` failing with nothing to fix.
-- **`astro-config-port`** (`src/splashdown/profiles.py:425`, detect/autofix at `:436`/`:447`)
+- **`astro-config-port`** (`src/splashdown/profiles_web.py`)
   — `astro.config.*` must set `server.port` from `WEB_DEV_PORT`. Astro is the one web
   profile that reads *neither* `PORT` from the environment nor a dotenv file for its dev
   port, so an unwired config silently boots on 4321 no matter what splashdown allocated;
@@ -147,7 +147,7 @@ The individual checks:
   a `server:` block already exists anywhere in the file: Astro configs commonly carry a
   `vite: { server: {…} }`, and a regex can't tell that nesting apart from the top-level
   block, so guessing would put the port where it configures Vite's dev server instead.
-- **`compose-hardcoded-ports`** (`src/splashdown/profiles.py:234`, detect at `:333`) —
+- **`compose-hardcoded-ports`** (`src/splashdown/profiles_compose.py`) —
   project-level, not owned by any Profile. Reports host-port mappings whose host side is a
   bare number and any literal `container_name:`. It reads every YAML layout, because the
   original line-anchored regexes (`^\s*-\s*["']?(\d+):\d+`) only saw block style and returned
@@ -171,14 +171,14 @@ The individual checks:
   Still **report-only** (`autofix=None`): splashdown ships no YAML parser (deps are frozen at
   two), so a rewrite would be regex over indentation-sensitive text — reading a value region
   is bounded, rewriting one is not.
-  `compose_project_resources` (`:183`) emits
+  `compose_project_resources` emits
   `COMPOSE_PROJECT_NAME` — the one value that needs no compose edit, since compose reads it
   from the environment — and deliberately invents no per-service ports, because which service
   deserves a pinned port is a judgement call and wrong guesses become config the user must
-  undo. `cmd_doctor` appends these via `compose_wiring_checks` (`:230`) against the repo root,
+  undo. `cmd_doctor` appends these via `compose_wiring_checks` against the repo root,
   independent of the resolved framework.
-- **`springboot-application-properties`** (`src/splashdown/profiles.py:1166`, detect at
-  `:1210`) — checks that every config Spring may load uses the `server.port=${PORT:8080}`
+- **`springboot-application-properties`** (`src/splashdown/profiles_server.py`) — checks
+  that every config Spring may load uses the `server.port=${PORT:8080}`
   placeholder. `_springboot_declared_port` reads two spellings: the flat `server.port` form
   (all a `.properties` file can write) and YAML's nested `server:` block, which the original
   `server\.port\s*[:=]` regex could never match — so correctly wired YAML projects carried a
@@ -195,7 +195,7 @@ The individual checks:
   with no vite config, which then get the green `env_only` verdict. `LaravelProfile` is
   registered *ahead* of `ViteProfile` for the same reason: every modern Laravel app ships a
   `vite.config.js`, so vite would otherwise claim it and leave the PHP port unmanaged.
-- **`aspnet-launch-settings`** (`src/splashdown/profiles.py:1352`, detect at `:1367`) —
+- **`aspnet-launch-settings`** (`src/splashdown/profiles_server.py`) —
   ASP.NET Core is the one profile whose env var is real but conditionally ignored:
   `ASPNETCORE_HTTP_PORTS` works, except `dotnet run` reads `applicationUrl` out of
   `Properties/launchSettings.json` first and that wins. The check flags any
@@ -225,7 +225,8 @@ common-hook writers while leaving any configured `core.hooksPath` untouched.
 - `src/splashdown/doctor.py` — target resolution, project/Profile check combination, and the
   detect / `--fix` / manual run loop.
 - `src/splashdown/hooks.py` — exact post-checkout readiness and hook-manager coexistence.
-- `src/splashdown/profiles.py` — Profile-owned Vite, Spring Boot, and RN check registration.
+- `src/splashdown/profiles_mobile.py` — RN/native check registration.
+- `src/splashdown/profiles_web.py` / `src/splashdown/profiles_server.py` — Vite and Spring Boot checks.
 - `src/splashdown/cli.py` — doctor parser and dispatch.
 - `src/splashdown/commands.py` — init's post-scaffold wiring loop.
 
@@ -251,8 +252,8 @@ common-hook writers while leaving any configured `core.hooksPath` untouched.
   from iOS, and splashdown has no check for it. `yarn android` works because the RN CLI
   propagates `RCT_METRO_PORT` to Gradle, but a bare `gradle assembleDebug` may default to
   8081. Tracked as a future check (see `README.md`, "Framework wiring" → Known limitation).
-- **Spring Boot checks are manual / report-only by design.** `autofix=None`
-  (`src/splashdown/profiles.py:1174`) — `doctor` reports whether
+- **Spring Boot checks are manual / report-only by design.** `autofix=None` in
+  `src/splashdown/profiles_server.py` — `doctor` reports whether
   `server.port=${PORT:8080}` is present but never rewrites Java/Spring config, because
   mechanical edits there are too risky. `--fix` will not silence a Spring Boot `✗`.
 - **iOS port changes need a rebuild.** `RCT_METRO_PORT` is compiled into the iOS binary
@@ -267,9 +268,8 @@ common-hook writers while leaving any configured `core.hooksPath` untouched.
   the hook check stays a `✗` even under `--fix` and prints
   manual instructions (`src/splashdown/wiring.py:296`).
 - **Vite autofix leaves `loadEnv` lines in place.** It only rewrites `env.X` reads to
-  `process.env.X`; the `loadEnv` call itself is untouched
-  (`src/splashdown/profiles.py:577` comment), so a stray `env.X` outside the matcher's
-  shape won't be caught.
+  `process.env.X`; the `loadEnv` call itself is untouched, so a stray `env.X` outside
+  the matcher's shape won't be caught.
 
 ## Why
 

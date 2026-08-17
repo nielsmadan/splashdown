@@ -161,6 +161,30 @@ def _app(tmp_path, profile):
     return sd.AppInventory(name="main", path=tmp_path, profile=profile)
 
 
+def test_builtin_profile_detection_precedence():
+    assert list(sd.PROFILES) == [
+        "astro",
+        "laravel",
+        "nuxt",
+        "angular",
+        "vite",
+        "node-backend",
+        "deno",
+        "nextjs",
+        "django",
+        "fastapi",
+        "flask",
+        "springboot",
+        "aspnetcore",
+        "rails",
+        "flutter",
+        "expo",
+        "react-native",
+        "ios-native",
+        "android-native",
+    ]
+
+
 def test_react_native_profile_declares_sim_and_emulator_targets(tmp_path):
     targets = sd.PROFILES["react-native"].targets(_app(tmp_path, "react-native"))
     assert targets["simulator"]["default"]["model"]

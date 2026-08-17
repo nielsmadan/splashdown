@@ -3,16 +3,18 @@
 The detection + extension layer: how splashdown looks at a repo on disk and decides
 *what* it is (workspace shape, apps, frameworks, secondary capabilities, shell loader) before any provisioning
 happens. `inventory.py` defines scan results, `catalog.py` owns the shared ordered profile
-registry, `scanner.py` performs filesystem detection, `profiles.py` supplies framework rules,
-`runners.py` and `launching.py` own launch behavior, `scaffolds.py` holds preset data,
-`agentdocs.py` renders framework guidance, and `loaders.py` wires shell environments.
+registry, and `scanner.py` performs filesystem detection. Framework rules are split across
+`profile_core.py` and the `profiles_*` implementation modules, while `profiles.py` assembles
+their detection order and provides the compatibility import surface. `runners.py` and
+`launching.py` own launch behavior, `scaffolds.py` holds preset data, `agentdocs.py` renders
+framework guidance, and `loaders.py` wires shell environments.
 
 ## Contents
 
 - [Purpose](#purpose)
 - [How it works (current state)](#how-it-works-current-state)
   - [scanner.py — repo → ProjectInventory](#scannerpy--repo--projectinventory)
-  - [profiles.py — the Profile extension point](#profilespy--the-profile-extension-point)
+  - [Profile modules — the framework extension point](#profile-modules--the-framework-extension-point)
   - [agentdocs.py — managed instruction-file guidance](#agentdocspy--managed-instruction-file-guidance)
   - [loaders.py — idempotent shell-env wiring](#loaderspy--idempotent-shell-env-wiring)
 - [Key entry points](#key-entry-points)
@@ -32,8 +34,9 @@ into `splashdown.toml`, which consumer-config patches the doctor will offer, and
 This layer is **pure inspection on the detection side** (the `Scanner` never writes) and a
 **registry/plugin extension point** on the framework side (`PROFILES`, `LOADERS`). Both
 registries are dicts populated at import time, and **insertion order is load-bearing** for
-detection precedence. `SCAFFOLDS` is a separate, intentionally small registry of explicit
-intent presets, not another list of supported frameworks.
+detection precedence. Profile implementations do not mutate the catalog themselves:
+`profiles.py` assembles the complete built-in sequence explicitly. `SCAFFOLDS` is a separate,
+intentionally small registry of intent presets, not another list of supported frameworks.
 
 ## How it works (current state)
 
@@ -113,18 +116,18 @@ environment identifiers.
 `profiles.py` at import, and read by scanner, recipe validation, launch dispatch, doctor,
 and agent guidance. Those consumers share the catalog without importing one another.
 
-### profiles.py — the Profile extension point
+### Profile modules — the framework extension point
 
-A `Profile` (`profiles.py`) is the per-framework integration contract. The base class
+A `Profile` (`profile_core.py`) is the per-framework integration contract. The base class
 defines seven extension points and flags; subclasses override the ones that apply:
 
-- `detect(app_path)` (`profiles.py:116`) — filesystem predicate; the Scanner's match key.
-- `resources(app)` (`profiles.py:119`) — `{resource_name: {type, range, ...}}` to merge
+- `detect(app_path)` — filesystem predicate; the Scanner's match key.
+- `resources(app)` — `{resource_name: {type, range, ...}}` to merge
   into `[resources.*]`. Names are canonical; the Scanner mangles on collision. Built-in
   port ranges start above the framework's default port so splashdown never allocates the
   conventional default.
 - `targets(app)` — default device targets emitted during scanner-driven init.
-- `wiring_checks(app)` (`profiles.py:132`) — `WiringCheck`s the doctor runs to patch
+- `wiring_checks(app)` — `WiringCheck`s the doctor runs to patch
   consumer configs (see `docs/tech/wiring.md`).
 - `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
   Init supplies the recipe's actual names after collision mangling. Common guidance is
@@ -133,34 +136,28 @@ defines seven extension points and flags; subclasses override the ones that appl
   implement it and therefore satisfy the `RunnableProfile` protocol. Web/backend profiles
   deliberately expose no launch capability, and command preflight rejects them before
   provisioning or booting a target.
-- `reads_dotenv` class flag (`profiles.py:106`) — declares whether the framework picks up
+- `reads_dotenv` class flag — declares whether the framework picks up
   a plain `.env`/`.env.local` on its own (Next.js, Django, FastAPI, Flask, Rails, Laravel,
   Node backends → True; Vite, Spring Boot, ASP.NET Core, mobile → False). Consumed when no
   shell loader is present, to decide
   whether a dotenv-file fallback can actually reach the app.
 
-The concrete profiles and the **detection-precedence order** they are registered in:
+Implementations are grouped by responsibility:
+
+- `profiles_web.py` — Astro, Laravel, Nuxt, Angular, Vite, Node, Deno, and Next.js.
+- `profiles_server.py` — Django, FastAPI, Flask, Spring Boot, ASP.NET Core, and Rails.
+- `profiles_mobile.py` — Flutter, Expo, React Native, iOS native, and Android native,
+  including their detection helpers and launcher delegation.
+- `profiles_compose.py` — project-level Compose resources and wiring checks; Compose is
+  infrastructure rather than an app profile, so it is not registered in `PROFILES`.
+
+`profiles.py` imports those classes, re-exports the former module surface, and owns the one
+explicit built-in catalog. Its tuple order is the **detection-precedence order**:
 
 ```
-PROFILES["astro"]           (profiles.py:472)
-PROFILES["laravel"]         (profiles.py:645)
-PROFILES["nuxt"]            (profiles.py:674)
-PROFILES["angular"]         (profiles.py:791)
-PROFILES["vite"]            (profiles.py:793)
-PROFILES["node-backend"]    (profiles.py:811)
-PROFILES["deno"]            (profiles.py:1039)
-PROFILES["nextjs"]          (profiles.py:1065)
-PROFILES["django"]          (profiles.py:1095)
-PROFILES["fastapi"]         (profiles.py:1115)
-PROFILES["flask"]           (profiles.py:1143)
-PROFILES["springboot"]      (profiles.py:1229)
-PROFILES["aspnetcore"]      (profiles.py:1402)
-PROFILES["rails"]           (profiles.py:1429)
-PROFILES["flutter"]         (profiles.py:1547)
-PROFILES["expo"]            (profiles.py:1548)
-PROFILES["react-native"]    (profiles.py:1549)
-PROFILES["ios-native"]      (profiles.py:1550)
-PROFILES["android-native"]  (profiles.py:1551)
+astro → laravel → nuxt → angular → vite → node-backend → deno → nextjs →
+django → fastapi → flask → springboot → aspnetcore → rails → flutter → expo →
+react-native → ios-native → android-native
 ```
 
 Two orderings here are load-bearing and were both found by running real generated
@@ -183,23 +180,22 @@ projects rather than by reading detection code:
 `reads_dotenv` is False for `angular` and `deno`: neither reads a dotenv file, and both
 need their port threaded through a command line rather than an environment lookup.
 
-Each `PROFILES[...] = ...(...)` assignment runs at import; **list order is registration
-order is detection precedence.** The mobile block at the end is ordered deliberately
-(registration block at `profiles.py:1547`): `flutter` (a `pubspec.yaml` wins even if JS tooling leaks
-in) before `expo` (needs both an `expo` dep *and* `app.json`) before plain
-`react-native`. The two native profiles guard against false positives by first checking
-`_has_js_or_flutter()` and bailing (`profiles.py:50-83`) — an Expo app has an
-`.xcodeproj`, but it must not match `ios-native`.
+The `_BUILTIN_PROFILES` tuple is applied at import; **tuple order is registration order is
+detection precedence.** The mobile tail is deliberate: `flutter` (a `pubspec.yaml` wins even
+if JS tooling leaks in) before `expo` (needs both an `expo` dependency and `app.json`) before
+plain `react-native`. The two native profiles guard against false positives by first checking
+`_has_js_or_flutter()` and bailing — an Expo app has an `.xcodeproj`, but it must not match
+`ios-native`.
 
 A couple of profiles carry real integration logic worth noting:
 
-- **ViteProfile** (`profiles.py:499`) emits `WEB_DEV_PORT` unconditionally, and only adds
+- **ViteProfile** (`profiles_web.py`) emits `WEB_DEV_PORT` unconditionally, and only adds
   `API_DEV_PORT` (as a `{{ PORT }}` template) when the Vite config contains a `proxy`
-  block (`profiles.py:505-514`) — apps that don't proxy don't need the API's port. Its
+  block — apps that don't proxy don't need the API's port. Its
   wiring check rewrites `env.VAR` (the `loadEnv` idiom) to `process.env.VAR` so values
-  loaded by the shell loader are visible (`profiles.py:483-588`).
-- **SpringBootProfile** (`profiles.py:1146`) ships a wiring check whose `autofix` is
-  `None` (`profiles.py:1166`) — patching Spring config is too risky to auto-rewrite, so
+  loaded by the shell loader are visible.
+- **SpringBootProfile** (`profiles_server.py`) ships a wiring check whose `autofix` is
+  `None` — patching Spring config is too risky to auto-rewrite, so
   it's report-only with manual instructions.
 
 The `run()` overrides delegate to helpers in `runners.py` (`_flutter_run`, `_rn_run`,
@@ -218,10 +214,10 @@ preset deterministically requests a renderer port and stable profile identifier,
 plain init detects Electron as a secondary capability and asks whether to add only the
 optional profile-isolation overlay.
 
-### runners.py, launching.py & scaffolds.py — split out of profiles.py
+### Profile-adjacent modules
 
-`profiles.py` had grown to ~1490 lines holding unrelated concerns. Launch implementations,
-launch orchestration, and scaffold data now have separate owners.
+Launch implementations, launch orchestration, scaffold data, and profile categories have
+separate owners.
 
 - **`runners.py`** — everything `Profile.run` delegates to: `_rn_run`, `_expo_run`,
   `_flutter_run`, `_ios_native_run`, `_android_native_run`, the xcodebuild/gradle
@@ -235,17 +231,10 @@ launch orchestration, and scaffold data now have separate owners.
   profile catalog and runners, while `devices.py` remains solely below it.
 - **`scaffolds.py`** — the three intent-preset `splashdown.toml` templates and the
   `SCAFFOLDS` dict. Pure strings, no imports, no logic.
-
-The **detection helpers stayed in `profiles.py`** (`_detect_flutter`,
-`_detect_expo`, `_detect_rn`, `_detect_ios_native`, `_detect_android_native`,
-`_pbxproj_targets_ios`): they implement `Profile.detect`, so they belong with the
-profile they serve.
-
-**What was deliberately not done:** splitting `profiles.py` into a `profiles/` package
-by category. `PROFILES` insertion order *is* detection precedence, and scattering the
-registrations across modules would make that ordering implicit in import order — the
-laravel-vs-vite bug is what that failure mode looks like. Keeping every
-`PROFILES[...] = ...` line in one readable sequence is worth the file length.
+- **`profile_core.py` / `profiles_*.py`** — the base contract and categorized framework
+  implementations. The implementation modules never register themselves; the facade's one
+  `_BUILTIN_PROFILES` sequence keeps precedence reviewable and prevents import order from
+  silently changing detection.
 
 ### agentdocs.py — managed instruction-file guidance
 
@@ -313,12 +302,15 @@ never runs an approval command.
   glob expand.
 - `scanner.py` — collision mangling and per-app references (`_build_resource_catalog`).
 - `scanner.py:179` / `scanner.py:149` — first-match profile / loader resolution.
-- `profiles.py` — `Profile` base class and its seven extension points/flags, including
-  `agent_guidance(app, port_names)`.
+- `profile_core.py` — `Profile` and its extension points/flags, including
+  `agent_guidance(app, port_names)` and shared guidance helpers.
+- `profiles_web.py`, `profiles_server.py`, `profiles_mobile.py`, and
+  `profiles_compose.py` — categorized framework and Compose implementations.
+- `profiles.py` — compatibility exports and the single ordered `_BUILTIN_PROFILES` catalog.
 - `agentdocs.py` — `render_agent_guidance()`, `sync_agent_guidance()`, and
   `remove_agent_guidance()`; invoked by init/rescan/deinit orchestration in `commands.py`.
-- `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py:473-1552`
-  populates it in precedence order.
+- `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py` populates it in
+  precedence order.
 - `scaffolds.py` — `SCAFFOLDS` registry; substituted by `_cmd_init_preset` in `commands.py`.
 - `loaders.py:30` — `Loader` base; subclasses `loaders.py:56/93/149/201`.
 - `loaders.py:215` — `LOADERS` registry (precedence order).
@@ -334,10 +326,11 @@ never runs an approval command.
   explicit priority field — `Scanner._match_profile` (`scanner.py:207`) returns the *first*
   `detect()` hit. Inserting a new profile in the wrong position (e.g. a broad
   `package.json`-based detector before a narrow one) will silently shadow later profiles.
-  Same hazard for `LOADERS`. The mobile ordering at `profiles.py:1547-1551` exists precisely
-  to avoid this and must be preserved.
+  Same hazard for `LOADERS`. The explicit `_BUILTIN_PROFILES` tuple and its exact-order test
+  make this visible; insert new profiles at the intended precedence point.
 - **Adding a Profile does not imply adding a preset.** A new framework needs the
-  `Profile` subclass and a `PROFILES[...] =` line at the right precedence position.
+  `Profile` subclass in the appropriate implementation module and an entry in
+  `_BUILTIN_PROFILES` at the right precedence position.
   Framework coverage belongs in scanner-driven init. If it has consumer configs to patch, also add
   `WiringCheck`s in `wiring.py` and return them from `wiring_checks()`.
 - **Capabilities do not compete with Profiles.** Electron must remain a secondary
@@ -367,12 +360,11 @@ never runs an approval command.
 
 The detection side is split from the integration side on purpose. `Scanner` is pure,
 side-effect-free inspection so it can be re-run cheaply (init, refresh-inventory, status)
-and unit-tested without touching disk state. The integration side is a **registry/plugin
-pattern**: `PROFILES` and `LOADERS` are plain dicts filled by import-time
-side effects, which keeps "add a framework" to "write a subclass + register it" without a
-central switch statement to edit. Insertion-order-as-precedence is the cost of that
-simplicity — there's no priority metadata, so ordering is the only knob. `SCAFFOLDS`
-remains a policy-controlled list of intent presets outside that parity.
+and unit-tested without touching disk state. The integration side uses small implementation
+modules behind shared catalogs. `profiles.py` centralizes profile assembly because precedence
+is behavior, while `LOADERS` remains a compact module-local registry. There is no priority
+metadata, so insertion order is the only knob. `SCAFFOLDS` remains a policy-controlled list
+of intent presets outside that parity.
 
 The import graph itself is a build invariant. Pylint's `cyclic-import` checker analyzes the
 package as a whole and fails the local and CI gates with `R0401` when a cycle is introduced.

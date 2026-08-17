@@ -9,7 +9,7 @@
 - [Purpose](#purpose)
 - [How it works (current state)](#how-it-works-current-state)
   - [The `WiringCheck` contract](#the-wiringcheck-contract)
-  - [The two registries and their import-order coupling](#the-two-registries-and-their-import-order-coupling)
+  - [Check registries and the profile boundary](#check-registries-and-the-profile-boundary)
   - [`cmd_doctor`: resolve → run loop](#cmd_doctor-resolve--run-loop)
   - [The individual checks](#the-individual-checks)
   - [Why Electron integration is not a WiringCheck](#why-electron-integration-is-not-a-wiringcheck)
@@ -51,7 +51,7 @@ with no safe mechanical rewrite (Spring Boot) sets it to `None`, and the run loo
 never attempts a write, only prints the manual snippet. `manual_instructions` is
 also `Optional` in the type but every shipped check supplies one.
 
-### The two registries and their import-order coupling
+### Check registries and the profile boundary
 
 Checks are owned by **Profiles**, not by `doctor` directly. The RN checks live in
 a module-level list `_RN_WIRING_CHECKS` (`wiring.py:37`) that is populated by a
@@ -60,20 +60,20 @@ sequence of top-level `.append(...)` calls as each `rn-*` helper is defined
 (`wiring.py:474`) is a single check reused by native Profiles that otherwise have no
 per-checkout wiring.
 
-This is **order-dependent**, and the coupling runs through `profiles.py`:
+This is **order-dependent**, and the coupling runs through `profiles_mobile.py`:
 
-- `profiles.py:21` does `from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS`.
+- `profiles_mobile.py` imports `_HOOK_WIRING_CHECK` and `_RN_WIRING_CHECKS`.
   Importing `wiring` executes its entire module body — including every
-  `.append()` — before `profiles` resumes, so by the time any Profile method runs
+  `.append()` — before the profile module resumes, so by the time any Profile method runs
   the list is fully built.
-- `ReactNativeProfile.wiring_checks` (`profiles.py:1455`) returns
+- `ReactNativeProfile.wiring_checks` returns
   `list(_RN_WIRING_CHECKS)` — a snapshot copy taken at call time. The native
-  Profiles return `[_HOOK_WIRING_CHECK]` (`profiles.py:1520`, `:1536`).
+  Profiles return `[_HOOK_WIRING_CHECK]`.
 
 Practically: any new RN check must be appended in `wiring.py`'s module body (not
 lazily, not from another module after import), because Profiles read the populated
-list. Vite and Spring Boot build their checks *inline* in their Profiles rather
-than going through these registries (`profiles.py:516`, `:1162`).
+list. Vite and Spring Boot build their checks in `profiles_web.py` and
+`profiles_server.py` rather than going through these registries.
 
 ### `cmd_doctor`: resolve → run loop
 
@@ -137,25 +137,25 @@ autofixes per app. The intent-preset path resolves a framework from the checkout
   strips any static literal export, strips any prior sentinel block, then appends a
   sentinel-wrapped managed block (`_XCODE_BLOCK`, `wiring.py:502`): honor a value
   already set by `run-ios`, else read `splashdown.env`, else fall back to 8083.
-- **`vite-config-process-env`** (returned by `ViteProfile.wiring_checks`,
-  `profiles.py:516`; the check factory at `:551`, detect/autofix at `:562`/`:572`) —
+- **`vite-config-process-env`** (returned by `ViteProfile.wiring_checks` in
+  `profiles_web.py`) —
   rewrites the `loadEnv` idiom `env.X` to `process.env.X` in `vite.config.{ts,js,mjs}`
   so values loaded into the shell by mise/direnv/devbox reach Vite. The matcher
-  (`profiles.py:483`) skips already-fixed `process.env.X`.
+  skips already-fixed `process.env.X`.
 - **`springboot-application-properties`** (defined inline in the Spring Boot
-  Profile, `profiles.py:1162`; check factory at `:1166`, detect at `:1210`) — checks that
+  Profile in `profiles_server.py`) — checks that
   `application.properties`/`application.yml` uses the `server.port=${PORT:8080}`
-  placeholder. **Report-only**: `autofix=None` (`profiles.py:1174`), so `doctor`
+  placeholder. **Report-only**: `autofix=None`, so `doctor`
   reports the `✗` and prints manual instructions but never rewrites the file, even
   under `--fix`.
-- **`aspnet-launch-settings`** (`AspNetCoreProfile.wiring_checks`, `profiles.py:1258`;
-  check tuple at `:1352`, detect/autofix at `:1367`/`:1381`) — flags any
+- **`aspnet-launch-settings`** (`AspNetCoreProfile.wiring_checks` in
+  `profiles_server.py`) — flags any
   `"commandName": "Project"` profile in `Properties/launchSettings.json` that pins
   `applicationUrl`, which `dotnet run` honours ahead of an inherited
   `ASPNETCORE_HTTP_PORTS`. **Autofix present**, unlike the two report-only checks
   above: launchSettings is JSON, so the fix is `json.loads` → `pop("applicationUrl")`
   → `json.dumps(indent=2)` with no regex over whitespace-significant text.
-  `_aspnet_project_profiles` (`:1338`) is what narrows the rewrite to `Project`
+  `_aspnet_project_profiles` is what narrows the rewrite to `Project`
   profiles, leaving `IISExpress` entries untouched.
 
 ### Why Electron integration is not a WiringCheck
@@ -188,13 +188,14 @@ on purpose so a hand-written conditional/shell-substitution wiring is not mangle
 
 ### Dependency direction
 
-`wiring.py` owns the `WiringCheck` contract and concrete file checks. Profiles depend on
-those definitions, but wiring never imports profiles, scanner, commands, or the package root.
+`wiring.py` owns the `WiringCheck` contract and shared concrete file checks. The categorized
+profile modules depend on those definitions, but wiring never imports profiles, scanner,
+commands, or the package root.
 `doctor.py` is the higher orchestration layer: it reads the profile catalog, resolves launch
 context through `launching.py`, combines app and project checks, and renders results. A recipe with
 `[bootstrap]` adds the project hook check before framework resolution, so repair remains available
 for minimal, generic, and ambiguous projects. This makes
-the direction `doctor → profiles → wiring → hooks`; no function-local import is needed to hide a
+the direction `doctor → profile modules → wiring → hooks`; no function-local import is needed to hide a
 backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph in CI.
 
 ## Key entry points
@@ -203,7 +204,10 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
   `_HOOK_WIRING_CHECK`.
 - `doctor.py` — `cmd_doctor`, framework/project target resolution, deduplication, and rendering.
 - `hooks.py` — shared hook readiness, exact manager parsing, repair, and manual instructions.
-- `profiles.py` — Profile registration for RN, Vite, and Spring Boot wiring.
+- `profiles_mobile.py` — Profiles snapshot/reuse the registries via `list(...)` /
+  `[_HOOK_WIRING_CHECK]`.
+- `profiles_web.py` / `profiles_server.py` — `vite-config-process-env` and
+  `springboot-application-properties` checks.
 
 ## Gotchas
 
@@ -217,13 +221,13 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
   iOS, and there is no check for it. The RN CLI propagates `RCT_METRO_PORT` to
   Gradle so `yarn android` works, but a bare `gradle assembleDebug` may default to
   8081.
-- **Spring Boot is report-only by design.** `autofix=None` (`profiles.py:1174`): even
+- **Spring Boot is report-only by design.** `autofix=None` in `profiles_server.py`: even
   under `--fix`, `doctor` will not silence a Spring Boot `✗` — it only prints the
   manual placeholder snippet. Do not "helpfully" add an autofix here without
   re-reading [Why](#why).
-- **The registries' import-order coupling is real.** `_RN_WIRING_CHECKS` is
+- **The check registry's import-order coupling is real.** `_RN_WIRING_CHECKS` is
   populated by top-level `.append()` calls in `wiring.py`'s body; Profiles read it
-  through the `from .wiring import …` at `profiles.py:21`. A new RN check must be
+  through the import in `profiles_mobile.py`. A new RN check must be
   appended in the module body (not registered lazily from elsewhere), or Profiles
   will snapshot a list that's missing it.
 - **iOS port changes need a rebuild.** `RCT_METRO_PORT` is compiled into the iOS

@@ -12,9 +12,9 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   the output writers.
 - [recipe-and-templates.md](recipe-and-templates.md) — `recipe.py` + `tomlio.py`: recipe/local/global
   parsing, the AST-sandbox template engine, topo sort, and comment-preserving TOML writes.
-- [scanning-and-extension.md](scanning-and-extension.md) — `scanner.py` + `profiles.py` +
-  `agentdocs.py` + `loaders.py`: project detection, extension points, and generated agent
-  guidance.
+- [scanning-and-extension.md](scanning-and-extension.md) — `scanner.py` + `profile_core.py` +
+  `profiles*.py` + `agentdocs.py` + `loaders.py`: project detection, extension points, and
+  generated agent guidance.
 - [devices.md](devices.md) — `devices.py`: sim/emulator/physical-device lifecycle and framework
   device operations; `launching.py` owns framework selection and launch dispatch.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
@@ -27,8 +27,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   creation-only post-checkout execution path.
 
 ## Data flow (end to end)
-`scanner.py` (detect → `ProjectInventory`) → `profiles.py` (per-framework rules registered in
-`catalog.py`) →
+`scanner.py` (detect → `ProjectInventory`) → categorized `profiles_*.py` implementations
+assembled by `profiles.py` into `catalog.py` →
 `recipe.py` (parse + template engine) → `provisioning.py` (`provision()` resolves resources) →
 `registry.py` (machine-wide allocation). Alongside: `loaders.py` wires the env loader, `devices.py`
 runs sims/emulators, `launching.py` dispatches app launchers, `wiring.py` defines framework checks,
@@ -49,8 +49,8 @@ synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, resc
   `constants.py`, `catalog.py`, and `inventory.py` provide shared seams; `launching.py` sits above
   runners/profiles, and `doctor.py` sits above profiles/wiring. Pylint's `cyclic-import` checker
   analyzes the whole package and fails CI if a backward edge is introduced. `__init__.py` still
-  imports `profiles.py` first so the ordered profile catalog is populated before public consumers
-  are re-exported, but no submodule depends back on it.
+  imports the `profiles.py` facade first so its explicit ordered catalog is populated before
+  public consumers are re-exported, but no submodule depends back on it.
 - **Hot-path discipline.** Bare `splash` and the post-checkout event handler use the read and
   provision path, which only *reads* TOML via stdlib `tomllib`. `tomlkit` (TOML *writing*) is imported at
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
