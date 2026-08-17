@@ -56,8 +56,11 @@ synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, resc
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
   so the read path never loads it. `__version__` and other costly lookups are lazy in `__init__.py`.
   Keep the two-dependency floor (`argcomplete`, `tomlkit`) and the read path light.
-- **TSV registry contract.** All machine-wide state is flat, `fcntl`-locked TSV with **no
-  escaping** — `_tsv_field` rejects tab/newline/CR to prevent row forgery. See registry.md.
+- **TSV registry contract.** All machine-wide state is flat TSV, protected by stable sidecar
+  `fcntl` locks and committed with same-directory atomic replacement. Checkout-scoped operation
+  locks use a bounded hash-shard set to serialize registry changes, output-file writes, target
+  edits, and device lifecycle side effects. The format has **no escaping** — `_tsv_field` rejects
+  tab/newline/CR to prevent row forgery. See registry.md.
 
 ## Why this shape
 Python for zero install friction (brew vendors `python@3.13`); a flat TSV + `fcntl` instead of a

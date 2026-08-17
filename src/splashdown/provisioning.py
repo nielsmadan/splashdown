@@ -5,6 +5,7 @@ import re
 import stat
 import subprocess
 import uuid as uuid_mod
+from functools import partial
 from pathlib import Path
 
 from .constants import ENV_FILE_NAME, RECIPE_NAME
@@ -22,6 +23,15 @@ from .registry import Registry
 
 # A port resource's `range` is a two-element [lo, hi] list.
 _PORT_RANGE_LEN = 2
+
+
+def _required_set_default(name: str, default: object) -> str:
+    if default is None:
+        raise ValueError(
+            f"`{name}` is a set-type resource with no value yet; "
+            f"run `splash env set {name}=VALUE` or set a `default = ...`"
+        )
+    return str(default)
 
 
 def provision(
@@ -51,9 +61,11 @@ def provision(
                 registry.remove_port(abspath, name)
             value = str(registry.allocate_port(abspath, name, lo, hi))
         elif rtype == "uuid":
-            existing = registry.get_kv(abspath, name) if not reprovision else None
-            value = existing or str(uuid_mod.uuid4())
-            registry.set_kv(abspath, name, value)
+            if reprovision:
+                value = str(uuid_mod.uuid4())
+                registry.set_kv(abspath, name, value)
+            else:
+                value = registry.get_or_create_kv(abspath, name, lambda: str(uuid_mod.uuid4()))
         elif rtype == "cwd":
             value = cwd.name
             registry.set_kv(abspath, name, value)
@@ -68,18 +80,11 @@ def provision(
             value = render_template(tpl, scope)
             registry.set_kv(abspath, name, value)
         elif rtype == "set":
-            existing = registry.get_kv(abspath, name)
-            if existing is None:
-                default = spec.get("default")
-                if default is None:
-                    raise ValueError(
-                        f"`{name}` is a set-type resource with no value yet; "
-                        f"run `splash env set {name}=VALUE` or set a `default = ...`"
-                    )
-                value = str(default)
-                registry.set_kv(abspath, name, value)
-            else:
-                value = existing
+            value = registry.get_or_create_kv(
+                abspath,
+                name,
+                partial(_required_set_default, name, spec.get("default")),
+            )
         else:
             raise ValueError(f"`{name}` has unknown type `{rtype}`")
         resolved[name] = value

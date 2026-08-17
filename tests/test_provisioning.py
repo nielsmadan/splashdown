@@ -54,6 +54,176 @@ range = [18500, 18510]
     assert r1 == r2
 
 
+def test_concurrent_uuid_provision_returns_the_committed_value(registry, checkout, monkeypatch):
+    import threading
+
+    _write_recipe(checkout, '[resources.RUN_ID]\ntype = "uuid"\n')
+    lookup_barrier = threading.Barrier(2)
+    original_get = sd.Registry.get_kv
+    results: list[str] = []
+    errors: list[BaseException] = []
+    registries = [
+        sd.Registry(
+            port_file=registry.port_file,
+            kv_file=registry.kv_file,
+            device_file=registry.device_file,
+        )
+        for _ in range(2)
+    ]
+
+    def synchronized_get(instance, abspath, key):
+        value = original_get(instance, abspath, key)
+        lookup_barrier.wait()
+        return value
+
+    monkeypatch.setattr(sd.Registry, "get_kv", synchronized_get)
+
+    def worker(index: int) -> None:
+        try:
+            results.append(sd.provision(checkout, registry=registries[index])["RUN_ID"])
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(set(results)) == 1
+    assert original_get(registry, str(checkout.resolve()), "RUN_ID") == results[0]
+
+
+def test_checkout_operation_lock_spans_output_commit(registry, checkout, monkeypatch):
+    import threading
+
+    _write_recipe(checkout, '[resources.VALUE]\ntype = "template"\ntemplate = "v"\n')
+    second_registry = sd.Registry(
+        port_file=registry.port_file,
+        kv_file=registry.kv_file,
+        device_file=registry.device_file,
+    )
+    first_writer_entered = threading.Event()
+    release_first_writer = threading.Event()
+    second_provision_entered = threading.Event()
+    call_count = 0
+    call_guard = threading.Lock()
+    results: list[int] = []
+
+    def fake_provision(*_args, **_kwargs):
+        nonlocal call_count
+        with call_guard:
+            call_count += 1
+            current_call = call_count
+        if current_call == 2:
+            second_provision_entered.set()
+        return {"VALUE": "v"}
+
+    def fake_write_outputs(*_args, **_kwargs):
+        if not first_writer_entered.is_set():
+            first_writer_entered.set()
+            assert release_first_writer.wait(timeout=5)
+        return [("splashdown.env: 1 vars", True)]
+
+    monkeypatch.setattr(sd.commands, "provision", fake_provision)
+    monkeypatch.setattr(sd.commands, "write_outputs", fake_write_outputs)
+
+    threads = [
+        threading.Thread(
+            target=lambda selected=selected: results.append(
+                sd.commands._cmd_provision_inner(checkout, selected)
+            )
+        )
+        for selected in (registry, second_registry)
+    ]
+    threads[0].start()
+    assert first_writer_entered.wait(timeout=5)
+    threads[1].start()
+    assert not second_provision_entered.wait(timeout=0.2)
+    release_first_writer.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert second_provision_entered.is_set()
+    assert results == [0, 0]
+
+
+@pytest.mark.parametrize("action", ["set", "release", "deinit"])
+def test_checkout_mutators_take_operation_lock(registry, checkout, monkeypatch, action):
+    from argparse import Namespace
+    from contextlib import contextmanager
+
+    _write_recipe(checkout, '[project]\nloader = "none"\n[resources.TOKEN]\ntype = "set"\n')
+    registry.set_kv(str(checkout.resolve()), "TOKEN", "secret")
+    events = []
+
+    @contextmanager
+    def track_lock(target):
+        events.append(("enter", target))
+        yield
+        events.append(("exit", target))
+
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    if action == "set":
+        args = Namespace(
+            format=None,
+            env_cmd="set",
+            checkout=None,
+            assignment="TOKEN=replacement",
+        )
+        assert sd.commands._env_dispatch(args, checkout, registry) == 0
+    elif action == "release":
+        args = Namespace(format=None, env_cmd="release", checkout=None, key="TOKEN")
+        assert sd.commands._env_dispatch(args, checkout, registry) == 0
+    else:
+        assert sd.cmd_deinit(checkout, registry) == 0
+
+    target = str(checkout.resolve())
+    assert events == [("enter", target), ("exit", target)]
+
+
+def test_setup_runs_after_checkout_operation_lock(registry, checkout, monkeypatch):
+    from contextlib import contextmanager
+
+    _write_recipe(checkout, '[setup.dev]\nrun = "true"\n')
+    locked = False
+
+    @contextmanager
+    def track_lock(_target):
+        nonlocal locked
+        locked = True
+        yield
+        locked = False
+
+    def fake_write_outputs(*_args, **_kwargs):
+        assert locked is True
+        return []
+
+    def fake_run_setup(*_args, **_kwargs):
+        assert locked is False
+        return []
+
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(sd.commands, "provision", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(sd.commands, "write_outputs", fake_write_outputs)
+    monkeypatch.setattr(sd.commands, "run_setup", fake_run_setup)
+
+    assert sd.commands._cmd_provision_inner(checkout, registry, setup="dev") == 0
+
+
+def test_sync_refuses_dangling_local_config_symlink(registry, checkout, capsys):
+    _write_recipe(checkout, "")
+    outside = checkout.parent / "outside-local.toml"
+    (checkout / sd.LOCAL_NAME).symlink_to(outside)
+
+    assert sd.commands._cmd_provision_inner(checkout, registry) == 1
+    assert not outside.exists()
+    assert "not a regular file" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "invalid_tail",
     [

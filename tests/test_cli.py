@@ -124,6 +124,16 @@ def test_init_does_not_clobber_existing_local(tmp_path):
     assert "targets.mine" in (tmp_path / "splashdown.local.toml").read_text()
 
 
+def test_init_refuses_dangling_local_config_symlink(tmp_path):
+    outside = tmp_path.parent / "outside-local.toml"
+    (tmp_path / sd.LOCAL_NAME).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        sd.cmd_init(tmp_path, preset="minimal")
+
+    assert not outside.exists()
+
+
 def test_cli_init_named_preset_is_positional(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     rc = sd.main(["--cwd", str(tmp_path), "init", "server"])

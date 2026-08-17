@@ -44,10 +44,10 @@ checkout's **own** resources on demand.
 ### Lazy / automatic GC (ports + kv, on next allocation)
 
 Port allocation is the hot path that runs on every `splash`/`sync` (and thus on the
-post-checkout git hook). `Registry.allocate_port` calls `busy_ports(gc=True)`
-(`src/splashdown/registry.py:149`), which reads every port row, skips any whose checkout
+post-checkout git hook). `Registry.allocate_port` calls `_busy_ports_unlocked(gc=True)`
+(`src/splashdown/registry.py:174`), which reads every port row, skips any whose checkout
 directory no longer exists, and rewrites `ports.tsv` if anything was dropped
-(`src/splashdown/registry.py:118`). So a dead worktree's port is reclaimed the next time
+(`src/splashdown/registry.py:143-154`). So a dead worktree's port is reclaimed the next time
 *any* checkout allocates a port in that range — no command, no human. This is why UC7 is
 "occasional, low stakes": the common case self-heals.
 
@@ -58,16 +58,16 @@ abspath and never matched by a live checkout), but they do persist.
 
 ### `splash gc` (explicit, also sims + recipe reconcile)
 
-`cmd_gc` (`src/splashdown/commands.py:742`) is the full machine-wide sweep, in two parts:
+`cmd_gc` (`src/splashdown/commands.py:738`) is the full machine-wide sweep, in two parts:
 
 - `cmd_target_gc` (`src/splashdown/commands.py:683`) iterates every device row. For a dead
   checkout it destroys the underlying sim/AVD before removing the row; for a live checkout
   it also drops a row whose instance was already deleted by hand. A platform
   `CapabilityError` warns once and preserves that row because splashdown could not verify or
   destroy it.
-- `Registry.gc(include_devices=False)` (`src/splashdown/registry.py:394`) then drops
+- `Registry.gc(include_devices=False)` (`src/splashdown/registry.py:430`) then drops
   dead-checkout **port** and **kv** rows and runs `reconcile_with_recipes`
-  (`src/splashdown/registry.py:354`). Device cleanup is explicitly disabled here because the
+  (`src/splashdown/registry.py:390`). Device cleanup is explicitly disabled here because the
   capability-aware command sweep has already handled every device row; a second generic
   `gc_devices` pass could erase a row that the first pass deliberately preserved. Device
   probing stays in the orchestration layer, so the persistence module never imports platform
@@ -85,59 +85,61 @@ registry pointing at a ghost; `gc` removes those rows.
 
 ### `splash target prune [ios|android]` (foreign sims splashdown didn't create)
 
-`cmd_target_prune` (`src/splashdown/commands.py:859`) is *not* about dead checkouts. It
+`cmd_target_prune` (`src/splashdown/commands.py:855`) is *not* about dead checkouts. It
 computes `registry.managed_udids()` (every sim/AVD splashdown created) and discovers every
 device on the machine **not** in that set:
 
-- `_discover_foreign_ios` (`src/splashdown/commands.py:826`) lists available sims via
+- `_discover_foreign_ios` (`src/splashdown/commands.py:822`) lists available sims via
   `xcrun simctl list devices -j`, excluding managed UDIDs.
-- `_discover_foreign_avds` (`src/splashdown/commands.py:842`) lists AVDs via `avdmanager
+- `_discover_foreign_avds` (`src/splashdown/commands.py:838`) lists AVDs via `avdmanager
   list avd -c`, excluding managed names.
 
-It prints the kill list, then gates on `_confirm` (`src/splashdown/commands.py:995`, an
+It prints the kill list, then gates on `_confirm` (`src/splashdown/commands.py:991`, an
 interactive `[y/N]` prompt). `--dry-run` lists and exits without destroying; `--yes` skips
 the prompt. The platform arg (`ios` | `android` | `all`, default `all`) scopes which
 discovery runs. Splashdown-managed devices in the registry are always preserved — this is
 the command that clears the Xcode default-template pile (UC4). When the default `all` scope
 hits an unavailable platform, the dispatcher warns and continues with the other platform;
 an explicit `target prune ios` or `target prune android` is strict and returns an error
-instead (`src/splashdown/commands.py:1729`).
+instead (`src/splashdown/commands.py:1726`).
 
 ### `splash env release [KEY]` (this checkout's own allocations)
 
-Handled in `_env_dispatch` (`src/splashdown/commands.py:1800`). The target checkout is
+Handled in `_env_dispatch` (`src/splashdown/commands.py:1795`). The target checkout is
 `str(cwd.resolve())` by default, or `--checkout` to point at another checkout's entries —
 normalized the same way `provision()` keys the registry, so symlinked/relative invocations
 don't silently miss.
 
 - `splash env release KEY` → `remove_kv(target, KEY)` + `remove_port(target, KEY)`
-  (`src/splashdown/registry.py:226`, `:164`): frees one resource by key.
+  (`src/splashdown/registry.py:262`, `:189`): frees one resource by key.
 - `splash env release` (no key) → `registry.release(target)`
-  (`src/splashdown/registry.py:174`): removes **all** port, kv, and device rows for the
+  (`src/splashdown/registry.py:199`): removes **all** port, kv, and device rows for the
   checkout in one pass and reports the count. Note `release` does *not* destroy the
   underlying sim/AVD — it only drops the registry rows. The instance then becomes foreign
   and is discoverable by a later `target prune`; `gc` cannot associate it with the checkout
   after the row is gone.
 
-All registry mutations take the relevant `fcntl` file lock, so concurrent agents in
-sibling worktrees can't corrupt the TSVs.
+All registry mutations take the relevant `fcntl` file lock and atomically replace the TSV,
+so concurrent agents in sibling worktrees cannot corrupt an unlocked inspection read. Env
+release also takes the checkout operation lock, preventing it from interleaving with that
+checkout's sync/output commit.
 
 ## Key entry points
 
 | Concern | Location |
 | --- | --- |
-| Lazy GC of port rows on allocation | `src/splashdown/registry.py:118` (`busy_ports`), `:149` (caller) |
-| Full machine-wide registry GC | `src/splashdown/registry.py:394` (`Registry.gc`) |
+| Lazy GC of port rows on allocation | `src/splashdown/registry.py:143` (`_busy_ports_unlocked`), `:174` (caller) |
+| Full machine-wide registry GC | `src/splashdown/registry.py:430` (`Registry.gc`) |
 | Device-row GC (gone checkout + live orphan rows) | `src/splashdown/commands.py:683` (`cmd_target_gc`) |
-| Generic device-row GC helper | `src/splashdown/registry.py:314` (`gc_devices`; not called by `cmd_gc`) |
-| Recipe reconcile for live checkouts | `src/splashdown/registry.py:354` (`reconcile_with_recipes`) |
-| Free one key for a checkout | `src/splashdown/registry.py:164` (`remove_port`), `:226` (`remove_kv`) |
-| Free everything for a checkout | `src/splashdown/registry.py:174` (`Registry.release`) |
+| Generic device-row GC helper | `src/splashdown/registry.py:350` (`gc_devices`; not called by `cmd_gc`) |
+| Recipe reconcile for live checkouts | `src/splashdown/registry.py:390` (`reconcile_with_recipes`) |
+| Free one key for a checkout | `src/splashdown/registry.py:189` (`remove_port`), `:262` (`remove_kv`) |
+| Free everything for a checkout | `src/splashdown/registry.py:199` (`Registry.release`) |
 | `splash gc` orchestration | `src/splashdown/commands.py:738` (`cmd_gc`), `:683` (`cmd_target_gc`) |
 | `splash target prune` | `src/splashdown/commands.py:855` (`cmd_target_prune`) |
 | Foreign-device discovery | `src/splashdown/commands.py:822` (`_discover_foreign_ios`), `:838` (`_discover_foreign_avds`) |
 | Confirmation prompt | `src/splashdown/commands.py:991` (`_confirm`) |
-| `splash env release` dispatch | `src/splashdown/commands.py:1789` |
+| `splash env release` dispatch | `src/splashdown/commands.py:1795` |
 | Orphan-device test | `src/splashdown/devices.py:343` (`_is_orphan_device`) |
 | CLI parsers (`gc`, `target prune`, `env release`) | `src/splashdown/cli.py:199`, `:254`, `:186` |
 
@@ -153,7 +155,7 @@ are command flags:
 - `splash gc` takes no flags. Parser: `src/splashdown/cli.py:199`.
 
 Registry location follows `$XDG_STATE_HOME` (default `~/.local/state`), resolved at
-`Registry` instantiation (`src/splashdown/registry.py:44`) so tests can override it.
+`Registry` instantiation (`src/splashdown/registry.py:66`) so tests can override it.
 
 ## Gotchas
 

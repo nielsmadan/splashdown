@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import tomllib
@@ -98,6 +99,49 @@ from .scanner import (
     _prune_unresolvable_templates,
     _should_defer_monorepo,
 )
+
+
+def _create_local_skeleton(cwd: Path) -> bool:
+    path = cwd / LOCAL_NAME
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    for _ in range(2):
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileExistsError:
+            try:
+                entry = path.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(entry.st_mode):
+                raise ValueError(
+                    f"refusing to write `{path}`: destination is not a regular file"
+                ) from None
+            return False
+        except OSError as error:
+            raise ValueError(f"could not safely create `{path}`: {error}") from error
+
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                raise ValueError(f"refusing to write `{path}`: destination is not a regular file")
+            file = os.fdopen(fd, "w", encoding="utf-8", newline="")
+            fd = -1
+            with file:
+                file.write(LOCAL_SKELETON)
+        except (OSError, ValueError) as error:
+            if fd >= 0:
+                os.close(fd)
+            if isinstance(error, ValueError):
+                raise
+            raise ValueError(f"could not safely create `{path}`: {error}") from error
+        return True
+    raise ValueError(f"could not safely create `{path}` because it changed during inspection")
 
 
 def _gather_resource_entries(
@@ -709,13 +753,17 @@ def cmd_target_gc(registry: Registry, *, warned: set[str] | None = None) -> int:
     for i, row in enumerate(rows, 1):
         _emit_progress("gc", i, total)
         try:
-            if Path(row.checkout).exists():
-                if not _is_orphan_device(row):
+            with registry.operation_lock(row.checkout):
+                current = registry.get_device(row.checkout, row.dtype, row.variant)
+                if current is None:
                     continue
-            else:
-                device_destroy_row(row)
-            registry.remove_device(row.checkout, row.dtype, row.variant)
-            destroyed_count += 1
+                if Path(current.checkout).exists():
+                    if not _is_orphan_device(current):
+                        continue
+                else:
+                    device_destroy_row(current)
+                registry.remove_device(current.checkout, current.dtype, current.variant)
+                destroyed_count += 1
         except CapabilityError as error:
             warn_capability(error, warning_keys)
     _finish_progress()
@@ -799,33 +847,43 @@ def cmd_target_refresh(
     # device look undeclared and get destroyed row-by-row below.
     glob = GlobalConfig.load(_global_config_path())
     rows = [r for r in registry.all_devices() if _PLATFORM_OF_DTYPE.get(r.dtype) in platforms]
-    resolved_rows = [
-        (
-            row,
+    for row in rows:
+        if Path(row.checkout).exists():
             _load_variant_spec(Path(row.checkout), row.dtype, row.variant, glob=glob)
-            if Path(row.checkout).exists()
-            else None,
-        )
-        for row in rows
-    ]
-    total = len(resolved_rows)
-    for i, (row, spec) in enumerate(resolved_rows, 1):
+    total = len(rows)
+    for i, row in enumerate(rows, 1):
         _emit_progress("target refresh", i, total)
-        cwd = Path(row.checkout)
         try:
-            if spec is None:
-                device_destroy_row(row)
-                registry.remove_device(row.checkout, row.dtype, row.variant)
-                dropped += 1
-                continue
-            will_recreate = device_needs_recreate(
-                registry, cwd, row.dtype, row.variant, spec, cache=cache
-            )
-            _fresh_sim(registry, cwd, row.dtype, row.variant, spec, cache=cache)
-            if will_recreate:
-                recreated += 1
-            else:
-                unchanged += 1
+            with registry.operation_lock(row.checkout):
+                current = registry.get_device(row.checkout, row.dtype, row.variant)
+                if current is None:
+                    continue
+                cwd = Path(current.checkout)
+                spec = (
+                    _load_variant_spec(cwd, current.dtype, current.variant, glob=glob)
+                    if cwd.exists()
+                    else None
+                )
+                if spec is None:
+                    device_destroy_row(current)
+                    registry.remove_device(current.checkout, current.dtype, current.variant)
+                    dropped += 1
+                    continue
+                will_recreate = device_needs_recreate(
+                    registry, cwd, current.dtype, current.variant, spec, cache=cache
+                )
+                _fresh_sim(
+                    registry,
+                    cwd,
+                    current.dtype,
+                    current.variant,
+                    spec,
+                    cache=cache,
+                )
+                if will_recreate:
+                    recreated += 1
+                else:
+                    unchanged += 1
         except CapabilityError as error:
             _handle_optional_capability(error, skip_unavailable=skip_unavailable, warned=warned)
     _finish_progress()
@@ -953,18 +1011,20 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
     _ios_state = _ios_current_state
     _boot_android = android_boot
     _dev_run = device_run
-    dtype = _infer_dtype(cwd, dtype)
-    variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-    kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
-    validate_device_run(cwd, recipe, kind)
-    info = _fresh_sim(registry, cwd, dtype, variant, spec)
-    # Physical devices are already live (discovery returns the running id); only
-    # splashdown-owned sims/emulators need booting.
-    if not info.get("physical"):
-        if info["kind"] == "ios":
-            _boot_ios(info["udid"], _ios_state(info["udid"]))
-        elif info["kind"] == "android":
-            info["serial"] = _boot_android(info["name"])
+    abspath = str(cwd.resolve())
+    with registry.operation_lock(abspath):
+        dtype = _infer_dtype(cwd, dtype)
+        variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+        kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
+        validate_device_run(cwd, recipe, kind)
+        info = _fresh_sim(registry, cwd, dtype, variant, spec)
+        # Physical devices are already live (discovery returns the running id); only
+        # splashdown-owned sims/emulators need booting.
+        if not info.get("physical"):
+            if info["kind"] == "ios":
+                _boot_ios(info["udid"], _ios_state(info["udid"]))
+            elif info["kind"] == "android":
+                info["serial"] = _boot_android(info["name"])
     return int(_dev_run(cwd, recipe, info))
 
 
@@ -974,33 +1034,37 @@ def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str
     _boot_ios = ios_boot
     _ios_state = _ios_current_state
     _boot_android = android_boot
-    dtype = _infer_dtype(cwd, dtype)
-    variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-    info = _fresh_sim(registry, cwd, dtype, variant, spec)
-    if info.get("physical"):
-        print(f"{dtype}.{variant} connected ({info['name']})", file=sys.stderr)
-        return 0
-    if info["kind"] == "ios":
-        _boot_ios(info["udid"], _ios_state(info["udid"]))
-    elif info["kind"] == "android":
-        info["serial"] = _boot_android(info["name"])
+    abspath = str(cwd.resolve())
+    with registry.operation_lock(abspath):
+        dtype = _infer_dtype(cwd, dtype)
+        variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+        info = _fresh_sim(registry, cwd, dtype, variant, spec)
+        if info.get("physical"):
+            print(f"{dtype}.{variant} connected ({info['name']})", file=sys.stderr)
+            return 0
+        if info["kind"] == "ios":
+            _boot_ios(info["udid"], _ios_state(info["udid"]))
+        elif info["kind"] == "android":
+            info["serial"] = _boot_android(info["name"])
     print(f"started {dtype}.{variant} ({info['name']})", file=sys.stderr)
     return 0
 
 
-def cmd_stop(cwd: Path, dtype: str | None, variant_arg: str | None) -> int:
+def cmd_stop(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     """Shut down the sim/emulator (preserves it for next start)."""
     _dev_shutdown = device_shutdown
-    dtype = _infer_dtype(cwd, dtype)
-    variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
-    if dtype == "device":
-        print(
-            f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop",
-            file=sys.stderr,
-        )
-        return 0
-    resolved = _resolve_device_name(spec, cwd, variant, dtype)
-    _dev_shutdown(dtype, resolved)
+    abspath = str(cwd.resolve())
+    with registry.operation_lock(abspath):
+        dtype = _infer_dtype(cwd, dtype)
+        variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+        if dtype == "device":
+            print(
+                f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to stop",
+                file=sys.stderr,
+            )
+            return 0
+        resolved = _resolve_device_name(spec, cwd, variant, dtype)
+        _dev_shutdown(dtype, resolved)
     print(f"stopped {dtype}.{variant} ({resolved})", file=sys.stderr)
     return 0
 
@@ -1013,11 +1077,18 @@ def _confirm(prompt: str, *, yes: bool) -> bool:
     return input().strip().lower() in ("y", "yes")
 
 
-def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None, *, yes: bool = False) -> int:
+def cmd_destroy(
+    cwd: Path,
+    registry: Registry,
+    dtype: str | None,
+    variant_arg: str | None,
+    *,
+    yes: bool = False,
+) -> int:
     """Delete the sim/emulator and its registry entry."""
     _dev_destroy = device_destroy
     dtype = _infer_dtype(cwd, dtype)
-    variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
+    variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
         print(
             f"{dtype}.{variant} is hardware splashdown doesn't own; nothing to destroy",
@@ -1027,9 +1098,12 @@ def cmd_destroy(cwd: Path, dtype: str | None, variant_arg: str | None, *, yes: b
     if not _confirm(f"Destroy {dtype}.{variant}?", yes=yes):
         print(f"destroy {dtype}.{variant}: aborted", file=sys.stderr)
         return 1
-    resolved = _resolve_device_name(spec, cwd, variant, dtype)
-    _dev_destroy(dtype, resolved)
-    Registry().remove_device(str(cwd.resolve()), dtype, variant)
+    abspath = str(cwd.resolve())
+    with registry.operation_lock(abspath):
+        variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant)
+        resolved = _resolve_device_name(spec, cwd, variant, dtype)
+        _dev_destroy(dtype, resolved)
+        registry.remove_device(abspath, dtype, variant)
     print(f"destroyed {dtype}.{variant} ({resolved})", file=sys.stderr)
     return 0
 
@@ -1181,9 +1255,7 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
         "see https://splashdown.dev/monorepos/",
         file=sys.stderr,
     )
-    local_path = cwd / LOCAL_NAME
-    if not local_path.exists():
-        local_path.write_text(LOCAL_SKELETON)
+    if _create_local_skeleton(cwd):
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
     _ensure_gitignore(cwd)
     loader = LOADERS[inv.loader]
@@ -1387,9 +1459,7 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
     recipe_path.write_text(rendered)
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
-    local_path = cwd / LOCAL_NAME
-    if not local_path.exists():
-        local_path.write_text(LOCAL_SKELETON)
+    if _create_local_skeleton(cwd):
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
@@ -1449,9 +1519,7 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
     recipe_path.write_text(rendered)
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
-    local_path = cwd / LOCAL_NAME
-    if not local_path.exists():
-        local_path.write_text(LOCAL_SKELETON)
+    if _create_local_skeleton(cwd):
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
@@ -1477,7 +1545,10 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
 def cmd_deinit(cwd: Path, registry: Registry) -> int:
     if _reject_nested_lifecycle():
         return 1
-    with lifecycle_lock(cwd, require_git=False) as dirs:
+    with (
+        lifecycle_lock(cwd, require_git=False) as dirs,
+        registry.operation_lock(str(cwd.resolve())),
+    ):
         return _cmd_deinit_locked(cwd, registry, dirs)
 
 
@@ -1634,17 +1705,16 @@ def _provision_locked(
     setup: str | None = None,
 ) -> _ProvisionResult:
     abspath = str(cwd.resolve())
-    before = registry.all_for(abspath)
-    resolved = provision(
-        cwd,
-        registry=registry,
-        reprovision=reprovision,
-        recipe=recipe,
-    )
-    local_path = cwd / LOCAL_NAME
-    if not local_path.exists():
-        local_path.write_text(LOCAL_SKELETON)
-    writers = write_outputs(cwd, recipe, resolved)
+    with registry.operation_lock(abspath):
+        before = registry.all_for(abspath)
+        resolved = provision(
+            cwd,
+            registry=registry,
+            reprovision=reprovision,
+            recipe=recipe,
+        )
+        _create_local_skeleton(cwd)
+        writers = write_outputs(cwd, recipe, resolved)
     setup_messages = run_setup(
         cwd,
         recipe,
@@ -1931,7 +2001,7 @@ def cmd_post_checkout_hook(
     return 0
 
 
-def _target_add(args: Any, cwd: Path) -> int:
+def _target_add(args: Any, cwd: Path, registry: Registry) -> int:
     fields = {
         "model": args.model,
         "ios": args.ios,
@@ -1945,7 +2015,8 @@ def _target_add(args: Any, cwd: Path) -> int:
         path = global_target_add(args.dtype, args.variant, fields)
         print(f"added target `{args.dtype}.{args.variant}` to {path}", file=sys.stderr)
         return 0
-    target_add(cwd, args.dtype, args.variant, fields)
+    with registry.operation_lock(str(cwd.resolve())):
+        target_add(cwd, args.dtype, args.variant, fields)
     print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
     return 0
 
@@ -1959,6 +2030,12 @@ def _target_remove(args: Any, cwd: Path, registry: Registry) -> int:
             file=sys.stderr,
         )
         return 0
+    checkout = str(cwd.resolve())
+    with registry.operation_lock(checkout):
+        return _target_remove_locked(args, cwd, registry, checkout)
+
+
+def _target_remove_locked(args: Any, cwd: Path, registry: Registry, checkout: str) -> int:
     variant = args.variant
     recipe = _load_recipe_or_empty(cwd)
     try:
@@ -1978,7 +2055,6 @@ def _target_remove(args: Any, cwd: Path, registry: Registry) -> int:
     spec, local_path, new_local_text = _prepare_target_remove(cwd, args.dtype, variant)
     destroyed = False
     if not args.keep_instance and args.dtype != "device":
-        checkout = str(cwd.resolve())
         row = registry.get_device(checkout, args.dtype, variant)
         if row is not None:
             device_destroy_row(row)
@@ -2019,7 +2095,7 @@ def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     if args.target_cmd is None:
         return cmd_targets_list(cwd, _resolve_format_arg(args))
     if args.target_cmd == "add":
-        return _target_add(args, cwd)
+        return _target_add(args, cwd, registry)
     if args.target_cmd == "remove":
         return _target_remove(args, cwd, registry)
     if args.target_cmd == "refresh":
@@ -2071,7 +2147,7 @@ def _env_set(assignment: str, target: str, registry: Registry) -> int:
         return 2
     registry.remove_port(target, key)
     registry.set_kv(target, key, value)
-    print(f"set {key}={value}", file=sys.stderr)
+    print(f"set {key}", file=sys.stderr)
     return 0
 
 
@@ -2100,15 +2176,17 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
         print(value)
         return 0
     if args.env_cmd == "set":
-        return _env_set(args.assignment, target, registry)
+        with registry.operation_lock(target):
+            return _env_set(args.assignment, target, registry)
     if args.env_cmd == "release":
-        if args.key:
-            registry.remove_kv(target, args.key)
-            registry.remove_port(target, args.key)
-            print(f"released {args.key}", file=sys.stderr)
-        else:
-            n = registry.release(target)
-            print(f"released {n} entries for {target}", file=sys.stderr)
+        with registry.operation_lock(target):
+            if args.key:
+                registry.remove_kv(target, args.key)
+                registry.remove_port(target, args.key)
+                print(f"released {args.key}", file=sys.stderr)
+            else:
+                n = registry.release(target)
+                print(f"released {n} entries for {target}", file=sys.stderr)
         return 0
     print(f"splash env {args.env_cmd}: unknown action", file=sys.stderr)
     return 2

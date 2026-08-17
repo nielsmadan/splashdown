@@ -98,6 +98,102 @@ def test_kv_set_get(registry, checkout):
     assert registry.get_kv(str(checkout), "K") == "v2"
 
 
+def test_get_or_create_kv_is_lock_serialized_under_thread_contention(registry, checkout):
+    import threading
+
+    count = 12
+    barrier = threading.Barrier(count)
+    factory_calls: list[int] = []
+    results: list[str] = []
+    errors: list[BaseException] = []
+    registries = [
+        sd.Registry(
+            port_file=registry.port_file,
+            kv_file=registry.kv_file,
+            device_file=registry.device_file,
+        )
+        for _ in range(count)
+    ]
+
+    def worker(index: int) -> None:
+        try:
+            barrier.wait()
+
+            def factory() -> str:
+                factory_calls.append(index)
+                return f"value-{index}"
+
+            results.append(registries[index].get_or_create_kv(str(checkout), "RUN_ID", factory))
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(factory_calls) == 1
+    assert len(set(results)) == 1
+    assert registry.get_kv(str(checkout), "RUN_ID") == results[0]
+
+
+@pytest.mark.parametrize("kind", ["port", "kv", "device"])
+def test_registry_mutations_atomically_replace_tsv(registry, checkout, monkeypatch, kind):
+    replacements: list[tuple[str, str, int]] = []
+    real_replace = sd.registry.os.replace
+
+    def observe_replace(source, destination):
+        source_path = sd.Path(source)
+        destination_path = sd.Path(destination)
+        assert source_path.parent == destination_path.parent
+        replacements.append(
+            (
+                destination_path.read_text(),
+                source_path.read_text(),
+                source_path.stat().st_mode & 0o777,
+            )
+        )
+        real_replace(source, destination)
+
+    monkeypatch.setattr(sd.registry.os, "replace", observe_replace)
+    monkeypatch.setattr(sd.registry, "_port_in_use", lambda _port: False)
+
+    if kind == "port":
+        registry.allocate_port(str(checkout), "PORT", 18400, 18410)
+    elif kind == "kv":
+        registry.set_kv(str(checkout), "KEY", "value")
+    else:
+        registry.set_device(str(checkout), "simulator", "default", "UDID-X", "iPhone 17", "18.5")
+
+    assert len(replacements) == 1
+    old_text, replacement_text, replacement_mode = replacements[0]
+    assert old_text == ""
+    assert replacement_text
+    assert replacement_mode == 0o600
+
+
+def test_operation_locks_use_a_bounded_shard_set(registry, monkeypatch):
+    from contextlib import contextmanager
+
+    targets = set()
+
+    @contextmanager
+    def record_lock(path):
+        targets.add(path)
+        yield
+
+    monkeypatch.setattr(registry, "_lock", record_lock)
+    for index in range(2048):
+        with registry.operation_lock(f"/checkout/{index}"):
+            pass
+
+    assert 1 < len(targets) <= sd.registry._OPERATION_LOCK_SHARDS
+    assert {path.parent for path in targets} == {registry.kv_file.parent}
+
+
 def test_release_clears_entries(registry, checkout):
     registry.allocate_port(str(checkout), "P", 18200, 18210)
     registry.set_kv(str(checkout), "K", "v")

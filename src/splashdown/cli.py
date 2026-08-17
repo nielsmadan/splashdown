@@ -477,10 +477,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
             return cmd_start(cwd, registry, args.dtype, args.variant)
 
         if args.cmd == "stop":
-            return cmd_stop(cwd, args.dtype, args.variant)
+            return cmd_stop(cwd, registry, args.dtype, args.variant)
 
         if args.cmd == "destroy":
-            return cmd_destroy(cwd, args.dtype, args.variant, yes=args.yes)
+            return cmd_destroy(cwd, registry, args.dtype, args.variant, yes=args.yes)
 
         if args.cmd == "status":
             return cmd_status(

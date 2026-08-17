@@ -92,6 +92,99 @@ def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
     assert destroyed == ["SIM-NAME"]
 
 
+def test_run_releases_operation_lock_before_launch(tmp_path, registry, monkeypatch):
+    from contextlib import contextmanager
+
+    active = False
+    events = []
+    recipe = sd.Recipe({}, tmp_path / sd.RECIPE_NAME)
+
+    @contextmanager
+    def track_lock(target):
+        nonlocal active
+        active = True
+        events.append(("enter", target))
+        yield
+        active = False
+        events.append(("exit", target))
+
+    def reconcile(*_args, **_kwargs):
+        assert active is True
+        return {"kind": "ios", "udid": "UDID", "name": "sim"}
+
+    def boot(*_args):
+        assert active is True
+
+    def launch(*_args):
+        assert active is False
+        return 0
+
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(sd.commands, "_infer_dtype", lambda *_args: "simulator")
+    monkeypatch.setattr(
+        sd.commands,
+        "_resolve_variant_for_cli",
+        lambda *_args: ("default", {"model": "iPhone 17"}, recipe),
+    )
+    monkeypatch.setattr(sd.commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(sd.commands, "ensure_fresh_sim", reconcile)
+    monkeypatch.setattr(sd.commands, "_ios_current_state", lambda *_args: "Shutdown")
+    monkeypatch.setattr(sd.commands, "ios_boot", boot)
+    monkeypatch.setattr(sd.commands, "device_run", launch)
+
+    assert sd.commands.cmd_run(tmp_path, registry, None, None) == 0
+    target = str(tmp_path.resolve())
+    assert events == [("enter", target), ("exit", target)]
+
+
+@pytest.mark.parametrize("action", ["start", "stop", "destroy"])
+def test_short_device_lifecycle_actions_hold_operation_lock(
+    tmp_path, registry, monkeypatch, action
+):
+    from contextlib import contextmanager
+
+    active = False
+    mutations = []
+    recipe = sd.Recipe({}, tmp_path / sd.RECIPE_NAME)
+
+    @contextmanager
+    def track_lock(_target):
+        nonlocal active
+        active = True
+        yield
+        active = False
+
+    def mutate(*_args):
+        assert active is True
+        mutations.append(action)
+
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(sd.commands, "_infer_dtype", lambda *_args: "simulator")
+    monkeypatch.setattr(
+        sd.commands,
+        "_resolve_variant_for_cli",
+        lambda *_args: ("default", {"model": "iPhone 17"}, recipe),
+    )
+    monkeypatch.setattr(sd.commands, "_resolve_device_name", lambda *_args: "sim")
+    if action == "start":
+        monkeypatch.setattr(
+            sd.commands,
+            "ensure_fresh_sim",
+            lambda *_args, **_kwargs: {"kind": "ios", "udid": "UDID", "name": "sim"},
+        )
+        monkeypatch.setattr(sd.commands, "_ios_current_state", lambda *_args: "Shutdown")
+        monkeypatch.setattr(sd.commands, "ios_boot", mutate)
+        assert sd.commands.cmd_start(tmp_path, registry, None, None) == 0
+    elif action == "stop":
+        monkeypatch.setattr(sd.commands, "device_shutdown", mutate)
+        assert sd.commands.cmd_stop(tmp_path, registry, None, None) == 0
+    else:
+        monkeypatch.setattr(sd.commands, "device_destroy", mutate)
+        assert sd.commands.cmd_destroy(tmp_path, registry, None, None, yes=True) == 0
+
+    assert mutations == [action]
+
+
 def test_cli_status_hints_unfilled_set_resource(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text('[resources.MODE]\ntype = "set"\n')

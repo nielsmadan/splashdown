@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
 import os
 import socket
+import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -26,6 +28,7 @@ class DeviceRow(NamedTuple):
 _PORT_ROW_FIELDS = 3  # (port, checkout, key)
 _KV_ROW_FIELDS = 3  # (checkout, key, value)
 _DEVICE_ROW_FIELDS = len(DeviceRow._fields)
+_OPERATION_LOCK_SHARDS = 256
 
 # The registry files are flat tab/newline-delimited TSV with no escaping, so a
 # field containing a tab or newline would forge or corrupt rows on the next read
@@ -39,6 +42,18 @@ def _tsv_field(value: str, *, what: str) -> str:
     if any(ch in value for ch in _TSV_FORBIDDEN):
         raise ValueError(f"registry {what} may not contain tab or newline characters: {value!r}")
     return value
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+            os.fchmod(file.fileno(), 0o600)
+            file.write(text)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 class Registry:
@@ -72,9 +87,7 @@ class Registry:
 
     @contextmanager
     def _lock(self, path: Path) -> Iterator[None]:
-        # Lock a sidecar `.lock` file rather than the TSV itself so the
-        # registry can be freely truncated and rewritten without releasing
-        # or invalidating the held flock fd.
+        # Lock a stable sidecar because replacing the protected file changes its inode.
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.touch(exist_ok=True)
         fd = os.open(str(lock_path), os.O_RDWR)
@@ -86,6 +99,14 @@ class Registry:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
+
+    @contextmanager
+    def operation_lock(self, abspath: str) -> Iterator[None]:
+        digest = hashlib.sha256(abspath.encode()).digest()
+        shard = int.from_bytes(digest[:4]) % _OPERATION_LOCK_SHARDS
+        lock_target = self.kv_file.parent / f"checkout-operation-{shard:03d}"
+        with self._lock(lock_target):
+            yield
 
     def _read_ports(self) -> list[tuple[int, str, str]]:
         out: list[tuple[int, str, str]] = []
@@ -107,7 +128,7 @@ class Registry:
             f"{p}\t{_tsv_field(path, what='checkout path')}\t{_tsv_field(key, what='resource key')}"
             for (p, path, key) in rows
         ]
-        self.port_file.write_text("\n".join(lines) + ("\n" if lines else ""))
+        _atomic_write(self.port_file, "\n".join(lines) + ("\n" if lines else ""))
 
     def get_port(self, abspath: str, key: str) -> int | None:
         for port, path, k in self._read_ports():
@@ -116,6 +137,12 @@ class Registry:
         return None
 
     def busy_ports(self, *, gc: bool = True) -> set[int]:
+        if not gc:
+            return self._busy_ports_unlocked(gc=False)
+        with self._lock(self.port_file):
+            return self._busy_ports_unlocked(gc=True)
+
+    def _busy_ports_unlocked(self, *, gc: bool) -> set[int]:
         rows = self._read_ports()
         live = set()
         kept: list[tuple[int, str, str]] = []
@@ -146,7 +173,7 @@ class Registry:
                 # stale out-of-range value would keep shadowing the new one and a
                 # fresh duplicate row would accrue on every run.
                 self._remove_port_unlocked(abspath, key)
-            busy = self.busy_ports(gc=True)
+            busy = self._busy_ports_unlocked(gc=True)
             for candidate in range(lo, hi + 1):
                 if candidate in busy:
                     continue
@@ -209,7 +236,7 @@ class Registry:
             f"{_tsv_field(value, what='resource value')}"
             for (path, key, value) in rows
         ]
-        self.kv_file.write_text("\n".join(lines) + ("\n" if lines else ""))
+        _atomic_write(self.kv_file, "\n".join(lines) + ("\n" if lines else ""))
 
     def get_kv(self, abspath: str, key: str) -> str | None:
         for path, k, value in self._read_kv():
@@ -222,6 +249,17 @@ class Registry:
             rows = [r for r in self._read_kv() if not (r[0] == abspath and r[1] == key)]
             rows.append((abspath, key, value))
             self._write_kv(rows)
+
+    def get_or_create_kv(self, abspath: str, key: str, factory: Callable[[], str]) -> str:
+        with self._lock(self.kv_file):
+            rows = self._read_kv()
+            for path, existing_key, value in rows:
+                if path == abspath and existing_key == key:
+                    return value
+            value = factory()
+            rows.append((abspath, key, value))
+            self._write_kv(rows)
+            return value
 
     def remove_kv(self, abspath: str, key: str) -> None:
         with self._lock(self.kv_file):
@@ -257,7 +295,7 @@ class Registry:
             )
             for r in rows
         ]
-        self.device_file.write_text("\n".join(lines) + ("\n" if lines else ""))
+        _atomic_write(self.device_file, "\n".join(lines) + ("\n" if lines else ""))
 
     def get_device(self, abspath: str, dtype: str, variant: str) -> DeviceRow | None:
         for r in self._read_devices():

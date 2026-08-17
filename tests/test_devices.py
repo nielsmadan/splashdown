@@ -799,6 +799,7 @@ def test_cli_env_set(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / sd.RECIPE_NAME).write_text('[resources.K]\ntype = "set"\n')
     assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1"]) == 0
+    assert capsys.readouterr().err.strip() == "set K"
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 0
     assert capsys.readouterr().out.strip() == "v1"
 
@@ -1130,6 +1131,25 @@ def test_device_gc_drops_defunct_checkouts(registry, tmp_path, monkeypatch):
     assert {r.udid for r in registry.all_devices()} == {"UDID-B"}
 
 
+def test_device_gc_rereads_row_after_checkout_lock(registry, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    gone = tmp_path / "gone"
+    registry.set_device(str(gone), "simulator", "default", "UDID-OLD", "iPhone 17", "18.5")
+    destroyed = []
+
+    @contextmanager
+    def replace_before_entry(_target):
+        registry.set_device(str(gone), "simulator", "default", "UDID-NEW", "iPhone 17", "18.5")
+        yield
+
+    monkeypatch.setattr(registry, "operation_lock", replace_before_entry)
+    monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: destroyed.append(row.udid))
+
+    assert sd.cmd_target_gc(registry) == 1
+    assert destroyed == ["UDID-NEW"]
+
+
 def test_device_gc_drops_defunct_emulator_and_destroys_avd(registry, tmp_path, monkeypatch):
     """gc destroys the AVD (not just the sim) of a dead checkout's emulator row."""
     gone = tmp_path / "gone"
@@ -1243,6 +1263,25 @@ def test_device_refresh_recreates_stale_latest(registry, tmp_path, monkeypatch):
     assert rc == 0
     assert lifecycle == [("shutdown", "UDID-OLD"), ("destroy", "UDID-OLD")]
     assert registry.get_device(abspath, "simulator", "default").udid == "UDID-NEW"
+
+
+def test_device_refresh_rereads_row_after_checkout_lock(registry, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    gone = tmp_path / "gone"
+    registry.set_device(str(gone), "simulator", "default", "UDID-OLD", "iPhone 17", "18.5")
+    destroyed = []
+
+    @contextmanager
+    def replace_before_entry(_target):
+        registry.set_device(str(gone), "simulator", "default", "UDID-NEW", "iPhone 17", "18.5")
+        yield
+
+    monkeypatch.setattr(registry, "operation_lock", replace_before_entry)
+    monkeypatch.setattr(sd.commands, "device_destroy_row", lambda row: destroyed.append(row.udid))
+
+    assert sd.cmd_target_refresh(registry, platforms=("ios",)) == 0
+    assert destroyed == ["UDID-NEW"]
 
 
 def test_device_refresh_skips_unavailable_platform(registry, tmp_path, monkeypatch, capsys):
