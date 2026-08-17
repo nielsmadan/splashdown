@@ -34,6 +34,18 @@ def test_ios_native_schemes_reads_detected_workspace(tmp_path, monkeypatch):
     assert calls == [["xcodebuild", "-workspace", "Demo.xcworkspace", "-list", "-json"]]
 
 
+def test_ios_native_scheme_discovery_timeout_is_device_error(tmp_path, monkeypatch):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+
+    def timeout(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", timeout)
+
+    with pytest.raises(sd.DeviceError, match="xcodebuild list schemes timed out after 30s"):
+        sd.runners._ios_native_schemes(tmp_path)
+
+
 def test_flutter_run_builds_argv(tmp_path, monkeypatch):
     calls = _capture_profile_calls(monkeypatch)
     rc = sd.runners._flutter_run(
@@ -92,7 +104,7 @@ def _write_pods_excluded_arch(tmp_path):
 
 
 def _fake_x86_64_target(monkeypatch, value):
-    monkeypatch.setattr(sd.devices, "ios_x86_64_target", lambda: value)
+    monkeypatch.setattr(sd.device_ios, "ios_x86_64_target", lambda: value)
 
 
 def test_rn_run_prints_arch_hint_on_failure(tmp_path, monkeypatch, capsys):
@@ -256,7 +268,11 @@ def test_android_native_run_monkey_launcher(tmp_path, monkeypatch):
     recipe = sd.Recipe({"project": {"android": {}}}, tmp_path / "splashdown.toml")
     calls = _capture_profile_calls(monkeypatch)
     monkeypatch.setattr(
-        sd.runners.subprocess, "check_output", lambda *a, **k: "applicationId: com.example.app\n"
+        sd.runners,
+        "run_finite",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0], 0, "applicationId: com.example.app\n", ""
+        ),
     )
     rc = sd.runners._android_native_run(
         tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}

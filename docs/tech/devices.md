@@ -1,4 +1,4 @@
-# devices.py — sim / emulator / physical-device lifecycle
+# Device lifecycle and platform adapters
 
 > Tech doc: how the code works. For the user-facing model (TOML schema, `splash run`, the
 > `latest` vs pinned distinction), see `docs/features/device-targets.md` — that and `README.md` are
@@ -23,12 +23,12 @@
 
 ## Purpose
 
-`devices.py` is the largest module in `src/splashdown/`. It owns the full lifecycle of the
-mobile-device half of a recipe: iOS simulators, Android emulators (AVDs), and physical hardware.
-Each `[targets.<dtype>.<variant>]` table resolves through here to a concrete, bootable device
-whose native id is then handed to a framework launcher. The three device types are deliberately
-asymmetric: sims and emulators are *created/destroyed/reconciled* and tracked in the registry;
-physical devices are only *discovered* and never persisted.
+The device layer resolves each `[targets.<dtype>.<variant>]` table to a concrete launch
+destination. `devices.py` owns cross-platform discovery, reconciliation, health, and typed
+dispatch. `device_ios.py` owns Xcode, `simctl`, and `devicectl`; `device_android.py` owns the
+Android SDK, AVD, emulator, and ADB operations. `device_tools.py` supplies the shared finite-call
+deadline boundary. Simulators and emulators are *created/destroyed/reconciled* and tracked in the
+registry; physical devices are only *discovered* and never persisted.
 
 Target catalog writers live in `targets.py`, while lifecycle and fleet command composition lives
 in `target_commands.py`. Compatibility re-exports remain in this module for existing extensions.
@@ -38,16 +38,16 @@ The `splash status --all` summary formatting helpers remain here until status ex
 
 ### Naming: one sim per checkout per variant
 
-The instance name is the isolation key. `_default_sim_name` (`devices.py:43`) builds
+The instance name is the isolation key. `_default_sim_name` in `devices.py` builds
 `<parent>/<basename>/<variant>-<path-hash>` from the checkout's `cwd` — for example,
 `wrksp/dev1/default-352e9e09`. The readable prefix identifies the checkout, and the first eight
 hexadecimal SHA-256 characters of `str(cwd.resolve())` keep matching path tails under different
 roots distinct. The variant lets one checkout own several configs (default, lowest-supported, …).
-`_resolve_device_name` (`devices.py:60`)
+`_resolve_device_name`
 picks the name: an explicit `name` field on the variant wins (rendered as a template if it
 contains `{{`), else the path default. For `emulator` targets the result is passed through
-`_sanitize_avd_name` (`devices.py:53`) because `avdmanager` only accepts `[A-Za-z0-9._-]`; the
-`/` separators become `_`. A leading `-` is rejected outright (`devices.py:74`) so the name can
+`_sanitize_avd_name` (`device_android.py`) because `avdmanager` only accepts `[A-Za-z0-9._-]`; the
+`/` separators become `_`. A leading `-` is rejected by `_resolve_device_name` so the name can
 never be parsed as a CLI flag by `simctl`/`avdmanager create`.
 
 The suffix changed the generated identity for existing installations. Registry rows for iOS store
@@ -57,51 +57,50 @@ automatically. Destroy and recreate each default-named target once after upgradi
 
 ### iOS via xcrun simctl
 
-Every iOS read goes through `_xcrun_json`, a thin wrapper that first requires macOS, runs
+Every iOS read goes through `_xcrun_json` in `device_ios.py`, a thin wrapper that first requires macOS, runs
 `xcrun simctl … -j`, and parses the result. A missing or non-executable `xcrun` becomes a typed
 `CapabilityError`; a `simctl` process that starts and exits nonzero remains a command failure.
 On top of it:
 
-- `_ios_find_device_by_name` (`devices.py:92`) scans every runtime bucket of
+- `_ios_find_device_by_name` scans every runtime bucket of
   `simctl list devices -j` for an `isAvailable` device with the given name, returning
   `(udid, state)`.
-- Version selection: `_ios_latest_runtime` (`devices.py:112`) and
-  `_ios_latest_runtime_version` (`devices.py:117`) sort available runtimes by
-  `_version_tuple` (`devices.py:158`) — which splits `"18.5"` into `(18, 5)` so `19.0 > 9.0`
+- Version selection: `_ios_latest_runtime` and `_ios_latest_runtime_version` sort available
+  runtimes by `_version_tuple` — which splits `"18.5"` into `(18, 5)` so `19.0 > 9.0`
   numerically, falling back to `(0,)` on a non-numeric string — and take the max. The
   `_version` variant returns the human string (`"18.5"`); the other returns the runtime
-  identifier. `_ios_runtime_identifier` (`devices.py:181`) maps a pinned version back to the
+  identifier. `_ios_runtime_identifier` maps a pinned version back to the
   CoreSimulator identifier (`18.5` → `…SimRuntime.iOS-18-5`).
-- `_ios_device_type_identifier` (`devices.py:186`) resolves the `model` field, or defaults to
+- `_ios_device_type_identifier` resolves the `model` field, or defaults to
   the lexically-last `iPhone … Pro` device type when none is given.
-- `ios_ensure` (`devices.py:204`) is find-or-create: returns the existing sim's `(udid, state)`
+- `ios_ensure` is find-or-create: returns the existing sim's `(udid, state)`
   if present, otherwise `simctl create` and returns `(udid, "Shutdown")` — creation never boots.
-- `ios_boot` / `ios_shutdown` / `ios_destroy` (`devices.py:252`, `:270`, `:280`) wrap
+- `ios_boot` / `ios_shutdown` / `ios_destroy` wrap
   `boot`/`shutdown`/`delete`. Boot tolerates the benign "current state: Booted" race from a
-  concurrent boot; shutdown first checks `_ios_current_state` (`devices.py:829`) to skip the
+  concurrent boot; shutdown first checks `_ios_current_state` to skip the
   noisy 405 simctl raises when the sim is already shut down.
 
 ### Android via the SDK toolchain
 
-`_android_home` (`devices.py:295`) resolves the SDK root from `$ANDROID_HOME`/`$ANDROID_SDK_ROOT`
-or the platform defaults, and `_android_bin` (`devices.py:312`) locates each tool
+`_android_home` in `device_android.py` resolves the SDK root from
+`$ANDROID_HOME`/`$ANDROID_SDK_ROOT` or the platform defaults, and `_android_bin` locates each tool
 (`avdmanager`, `sdkmanager`, `emulator`, `adb`) across the known SDK layout directories.
 Missing SDK roots and tools raise `CapabilityError("android", ...)` with the setting or package to
 install. The same implementation supports macOS and Linux.
 
-- `_android_avd_exists` (`devices.py:329`) parses `avdmanager list avd -c`.
-- `_android_latest_image` (`devices.py:354`) parses `sdkmanager --list_installed`, picks the
+- `_android_avd_exists` parses `avdmanager list avd -c`.
+- `_android_latest_image` parses `sdkmanager --list_installed`, picks the
   highest installed `system-images;android-N;…` by API level, and falls back to a hard-coded
   known-good image name when nothing is installed.
-- `android_ensure` (`devices.py:378`) is find-or-create via `avdmanager create avd … --force`,
+- `android_ensure` is find-or-create via `avdmanager create avd … --force`,
   feeding `\n` on stdin to decline the custom-hardware-profile prompt; defaults `device` to
   `pixel_9` and `image` to the latest.
-- Boot is async: `android_boot` (`devices.py:436`) spawns `emulator -avd <name>` detached
-  (`start_new_session=True`, output to a per-AVD log under `REGISTRY_DIR`), then polls
-  `_android_running_serial` (`devices.py:402`) for up to 60s. That matcher is the load-bearing
+- Boot is async: `android_boot` spawns `emulator -avd <name>` detached
+  (`start_new_session=True`, output to a per-AVD log under the calling `Registry.state_dir`), then
+  polls `_android_running_serial` for up to 60s. That matcher is the load-bearing
   bit — there is no AVD→serial map, so it lists `adb devices`, and for each `emulator-*` serial
   asks `adb -s <serial> emu avd name` to find the one whose reported AVD name matches.
-- `android_shutdown` / `android_destroy` (`devices.py:466`, `:474`) issue `adb emu kill` and
+- `android_shutdown` / `android_destroy` issue `adb emu kill` and
   `avdmanager delete avd`.
 
 ### Capability boundaries
@@ -111,6 +110,12 @@ install. The same implementation supports macOS and Linux.
 converts only launch-time `OSError` into `CapabilityError`. The error carries a stable capability
 key used by `warn_capability` to deduplicate aggregate warnings.
 
+`device_tools.py` bounds finite external operations: discovery/list/status calls get 30 seconds,
+and create/install/delete/shutdown calls get 120 seconds. A timeout becomes a `DeviceError` that
+names the operation. The per-emulator ADB name probe keeps its 2-second deadline and emulator boot
+keeps its 60-second readiness loop. Builds, app launches, and user-authored commands remain
+unbounded because they are intentionally long-running.
+
 Explicit operations propagate the error to the CLI, which prints `error: ...` and exits 1.
 Fleet operations catch it per row or platform, warn once, and continue supported work. A skipped
 registry row is preserved so cleanup can be retried later on a capable host. See
@@ -119,11 +124,11 @@ registry row is preserved so cleanup can be retried later on a capable host. See
 ### Physical devices: discovered, never created
 
 Physical hardware cannot be created/booted/destroyed; the only operation is *discovery*.
-`_devicectl_json` (`devices.py:494`) wraps `xcrun devicectl … --json-output -` (Xcode 15+) the
-same way `_xcrun_json` wraps simctl. `_ios_physical_devices` (`devices.py:515`) gates on
+`_devicectl_json` in `device_ios.py` wraps `xcrun devicectl … --json-output -` (Xcode 15+) the
+same way `_xcrun_json` wraps simctl. `_ios_physical_devices` gates on
 `pairingState == paired` (not `tunnelState == connected`, because wifi devices sit disconnected
 until a launch-time tunnel) and excludes `unavailable` tunnels, returning
-`{id (udid), name, platform: "ios"}`. `_android_physical_devices` (`devices.py:543`) parses
+`{id (udid), name, platform: "ios"}`. `_android_physical_devices` in `device_android.py` parses
 `adb devices -l`, skipping `emulator-*` serials (those are the `emulator` dtype), returning
 `{id (serial), name, platform: "android"}`.
 
@@ -131,10 +136,10 @@ until a launch-time tunnel) and excludes `unavailable` tunnels, returning
 failure for one platform produces one warning and the other discovery path still runs. An
 *explicitly requested* platform re-raises its capability error. The optional shared `warned` set
 deduplicates warnings across several target variants. `_physical_match` filters by the spec's `id` (exact) or `name`
-(case-insensitive substring). `ensure_physical` (`devices.py:611`) requires exactly one match —
-zero raises a setup hint (`_physical_no_match_msg`, `devices.py:635`), two-or-more raises an
+(case-insensitive substring). `ensure_physical` in `devices.py` requires exactly one match —
+zero raises a setup hint from `_physical_no_match_msg`, two-or-more raises an
 "narrow with id/name/platform" error — and returns the `info` dict. `physical_status`
-(`devices.py:644`) maps the same match to `connected`/`absent`/`ambiguous` for `splash targets`.
+maps the same match to `connected`/`absent`/`ambiguous` for `splash targets`.
 
 ### ensure_fresh_sim: reconcile-on-drift
 
@@ -163,7 +168,7 @@ or image is installed; edits to its model, device profile, or emulator name can 
 recreation. `latest` variants additionally drift when Xcode/SDK moves the floor.
 
 The `if not stale:` block contains a `row is None` re-check that "never fires" — `stale` is True
-whenever `row is None`, so the guard exists purely to narrow the Optional for mypy (`devices.py:753`).
+whenever `row is None`, so the guard exists purely to narrow the Optional for mypy.
 
 ### The launch-destination contract
 
@@ -200,8 +205,8 @@ Runnable profiles structurally implement `RunnableProfile`; web/backend profiles
 reconciliation or boot. `launching.device_run` repeats the capability check as a defensive boundary, then
 delegates to `PROFILES[fw].run(app_dir, recipe, destination)` — the per-profile launcher consumes the typed destination above
 (`flutter run -d <udid/serial>`, `xcodebuild`/`simctl`, `gradle`, etc.). The generic
-`device_status` / `device_shutdown` / `device_destroy` dispatchers (`devices.py:776`, `:789`,
-`:798`) drive the `splash start/stop/destroy` subcommands by `dtype`.
+`device_status` / `device_shutdown` / `device_destroy` dispatchers in `devices.py` drive the
+`splash start/stop/destroy` subcommands by `dtype`.
 
 The fixed launchers in `runners.py` use the same capability boundary for Flutter, `npx`,
 `xcodebuild`, `xcrun`, Gradle/`gradlew`, and `adb`. Native iOS builds require macOS before project
@@ -210,15 +215,17 @@ the shell's exit status.
 
 ## Key entry points
 
-- `ensure_fresh_sim` — `devices.py:729` — the reconcile/allocate path; the only registry writer.
-- `ensure_physical` — `devices.py:611` — physical-device resolution → `info`.
-- `_default_sim_name` / `_resolve_device_name` — `devices.py:43`, `:60` — naming.
-- `ios_ensure` / `android_ensure` — `devices.py:204`, `:378` — find-or-create.
-- `physical_discover` — `devices.py:568` — toolchain-tolerant discovery.
+- `ensure_fresh_sim` — `devices.py` — the reconcile/allocate path; the only registry writer.
+- `ensure_physical` — `devices.py` — physical-device resolution → destination.
+- `_default_sim_name` / `_resolve_device_name` — `devices.py` — naming.
+- `ios_ensure` / `android_ensure` — `device_ios.py` / `device_android.py` — find-or-create.
+- `physical_discover` — `devices.py` — toolchain-tolerant cross-platform discovery.
 - `CapabilityError` / `require_macos` / `translate_tool_errors` — `errors.py` and
   `capabilities.py` — typed host/tool availability boundary.
-- `_xcrun_json` / `_devicectl_json` — `devices.py:82`, `:494` — subprocess JSON wrappers.
-- `device_status` / `device_shutdown` / `device_destroy` — `devices.py:776`, `:789`, `:798`.
+- `_xcrun_json` / `_devicectl_json` — `device_ios.py` — subprocess JSON wrappers.
+- `_android_avd_names` / `_android_running_serial` — `device_android.py` — AVD discovery.
+- `run_finite` / `check_output_finite` — `device_tools.py` — finite-operation deadlines.
+- `device_status` / `device_shutdown` / `device_destroy` — `devices.py` — typed dispatch.
 - `detect_framework` / `resolve_app_dir` / `device_run` — `launching.py:13`, `:40`, `:65`.
 - `target_add` / `target_remove` — `targets.py` — local-file variant writers, re-exported here for compatibility.
 
@@ -231,7 +238,7 @@ the shell's exit status.
   reconciliation and boot; launch runners reject an unresolved destination rather than passing an
   empty device id to a tool.
 - **`_resolve_device_name` renders name templates with an EMPTY resources scope.** It calls
-  `_make_scope(cwd, branch, {})` (`devices.py:70`), so a template like
+  `_make_scope(cwd, branch, {})`, so a template like
   `{{ SLUG }}-{{ VARIANT }}` works but anything referencing a resource (`{{ PORT }}`) raises —
   device names are resolved before resources exist.
 - **Duplicate-named sims resolve to the first match.** `_ios_find_device_by_name` returns the
@@ -240,9 +247,10 @@ the shell's exit status.
 - **The TSV stays backward compatible.** Its historical `udid/model/ios` slots still encode
   simulator identifier/model/runtime or emulator name/device/image. Only the registry codec sees
   that layout; lifecycle code receives `SimulatorRecord` or `EmulatorRecord`.
-- **Android boot has no map; it brute-forces.** `_android_running_serial` queries each emulator
-  serial individually with a 2s timeout. A wedged emulator process can slow status calls.
-- **Orphan vs stale are different.** `_is_orphan_device` (`devices.py:343`) flags a registry row
+- **Android boot has no map; it brute-forces.** `_android_running_serial` bounds the initial
+  `adb devices` list at 30 seconds, then queries each emulator serial individually with a 2-second
+  timeout.
+- **Orphan vs stale are different.** `_is_orphan_device` in `devices.py` flags a registry row
   whose underlying sim/AVD a user deleted by hand; `ensure_fresh_sim` treats a missing UDID/AVD
   as one trigger of `stale` and silently recreates.
 

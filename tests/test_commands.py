@@ -197,6 +197,32 @@ def test_short_device_lifecycle_actions_hold_operation_lock(
     assert mutations == [action]
 
 
+def test_android_start_uses_registry_state_directory(tmp_path, registry, monkeypatch):
+    recipe = sd.Recipe({}, tmp_path / sd.RECIPE_NAME)
+    captured = {}
+
+    monkeypatch.setattr(sd.target_commands, "_infer_dtype", lambda *_args: "emulator")
+    monkeypatch.setattr(
+        sd.target_commands,
+        "_resolve_variant_for_cli",
+        lambda *_args: ("default", {"device": "pixel_9"}, recipe),
+    )
+    monkeypatch.setattr(
+        sd.target_commands,
+        "ensure_fresh_sim",
+        lambda *_args, **_kwargs: sd.AndroidDestination("demo", None, owned=True),
+    )
+
+    def boot(name, *, state_dir):
+        captured["call"] = (name, state_dir)
+        return "emulator-5554"
+
+    monkeypatch.setattr(sd.target_commands, "android_boot", boot)
+
+    assert sd.target_commands.cmd_start(tmp_path, registry, None, None) == 0
+    assert captured["call"] == ("demo", registry.state_dir)
+
+
 def test_cli_status_hints_unfilled_set_resource(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text('[resources.MODE]\ntype = "set"\n')
@@ -239,6 +265,7 @@ def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
     )
     calls = []
     monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: calls.append(args) or 0)
+    monkeypatch.setattr(sd.runners, "call_finite", lambda args, **k: calls.append(args) or 0)
 
     class _Done:
         stdout = json.dumps(

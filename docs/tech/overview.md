@@ -15,8 +15,9 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 - [scanning-and-extension.md](scanning-and-extension.md) — `scanner.py` + `profile_core.py` +
   `profiles*.py` + `agentdocs.py` + `loaders.py`: project detection, extension points, and
   generated agent guidance.
-- [devices.md](devices.md) — `devices.py`: sim/emulator/physical-device lifecycle and framework
-  device operations; `launching.py` owns framework selection and launch dispatch.
+- [devices.md](devices.md) — `devices.py`: cross-platform lifecycle policy;
+  `device_ios.py`/`device_android.py`: platform adapters; `device_tools.py`: finite subprocess
+  deadlines; `launching.py`: framework selection and launch dispatch.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
   `doctor.py` owns check selection, execution, and rendering.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `hooks.py` +
@@ -31,7 +32,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
 assembled by `profiles.py` into `catalog.py` →
 `recipe.py` (parse + template engine) → `provisioning.py` (`provision()` resolves resources) →
 `registry.py` (machine-wide allocation). Alongside: `loaders.py` wires the env loader, `devices.py`
-runs sims/emulators, `launching.py` dispatches app launchers, `wiring.py` defines framework checks,
+reconciles target state through the platform adapters, `launching.py` dispatches app launchers,
+`wiring.py` defines framework checks,
 `doctor.py` orchestrates them, and `agentdocs.py` derives and
 synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, rescan, and deinit.
 `hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by

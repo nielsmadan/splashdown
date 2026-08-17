@@ -4,8 +4,14 @@ import os
 import re
 from pathlib import Path
 
-STATE_HOME = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-REGISTRY_DIR = STATE_HOME / "splashdown"
+
+def state_directory() -> Path:
+    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return state_home / "splashdown"
+
+
+REGISTRY_DIR = state_directory()
+STATE_HOME = REGISTRY_DIR.parent
 PORT_REGISTRY = REGISTRY_DIR / "ports.tsv"
 KV_REGISTRY = REGISTRY_DIR / "kv.tsv"
 DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"

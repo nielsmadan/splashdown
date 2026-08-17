@@ -23,7 +23,13 @@
 
 ### On-disk layout
 
-Three flat TSV files live under `$XDG_STATE_HOME/splashdown/` (falling back to `~/.local/state/splashdown/`), resolved at *instantiation* time, not import time, so tests can `setenv("XDG_STATE_HOME", ...)` (`src/splashdown/registry.py:66-78`). The constructor creates the dir, `touch`es all three files so reads never hit a missing-file error, and makes them owner-readable/writable (`registry.py:79-85`).
+Three flat TSV files live under `$XDG_STATE_HOME/splashdown/` (falling back to
+`~/.local/state/splashdown/`). `state_directory()` resolves that root at call time, and every
+`Registry` resolves and exposes it as `state_dir` at construction. Android emulator logging gets
+that same resolved directory from the command composition root, so registry rows and logs cannot
+split across two XDG roots when the environment changes after import. Exported path constants remain
+compatibility snapshots; production state writes do not read them. The constructor creates the
+directory and all three owner-only files before use.
 
 The column layouts (`registry.py:61-63`, declared as field counts at `registry.py:26-30`):
 

@@ -38,6 +38,20 @@ def test_registry_files_are_owner_only(registry):
         assert (f.stat().st_mode & 0o077) == 0, f"{f} is group/other-accessible"
 
 
+def test_registry_resolves_state_directory_at_construction(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(first))
+    first_registry = sd.Registry()
+    monkeypatch.setenv("XDG_STATE_HOME", str(second))
+    second_registry = sd.Registry()
+
+    assert first_registry.state_dir == first / "splashdown"
+    assert second_registry.state_dir == second / "splashdown"
+    assert sd.state_directory() == second / "splashdown"
+
+
 def test_allocate_port_is_lock_serialized_under_thread_contention(registry, tmp_path, monkeypatch):
     """Many checkouts racing for the same range must each get a distinct port with
     no lost/duplicated rows — the flock is the module's whole reason to exist."""

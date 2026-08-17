@@ -79,7 +79,7 @@ leftover `DART_PORT` after a profile stopped emitting it). Critically, a checkou
 recipe is missing or won't parse is left **untouched** — an unloadable recipe must never be
 read as "declares nothing" and nuke live entries.
 
-Orphan detection (`_is_orphan_device`, `src/splashdown/devices.py:343`) covers the case
+Orphan detection (`_is_orphan_device`, `src/splashdown/devices.py`) covers the case
 where the user ran `xcrun simctl delete` / `avdmanager delete avd` by hand, leaving the
 registry pointing at a ghost; `gc` removes those rows.
 
@@ -140,7 +140,7 @@ checkout's sync/output commit.
 | Foreign-device discovery | `src/splashdown/target_commands.py` (`_discover_foreign_ios`, `_discover_foreign_avds`) |
 | Confirmation prompt | `src/splashdown/target_commands.py` (`_confirm`) |
 | `splash env release` dispatch | `src/splashdown/commands.py:1795` |
-| Orphan-device test | `src/splashdown/devices.py:343` (`_is_orphan_device`) |
+| Orphan-device test | `src/splashdown/devices.py` (`_is_orphan_device`) |
 | CLI parsers (`gc`, `target prune`, `env release`) | `src/splashdown/cli.py:199`, `:254`, `:186` |
 
 ## Configuration
@@ -154,8 +154,9 @@ are command flags:
   different checkout. Parser: `src/splashdown/cli.py:186`.
 - `splash gc` takes no flags. Parser: `src/splashdown/cli.py:199`.
 
-Registry location follows `$XDG_STATE_HOME` (default `~/.local/state`), resolved at
-`Registry` instantiation (`src/splashdown/registry.py:66`) so tests can override it.
+Registry location follows `$XDG_STATE_HOME` (default `~/.local/state`) through the call-time
+`state_directory()` provider. `Registry` captures that resolved directory for its lifetime and
+passes it to Android boot logging, keeping cleanup state and emulator logs under one root.
 
 ## Gotchas
 

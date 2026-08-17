@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeAlias
 
+from .constants import state_directory
 from .device_types import EmulatorRecord, ManagedDevice, SimulatorRecord
 
 DeviceRow: TypeAlias = ManagedDevice
@@ -95,13 +96,11 @@ class Registry:
         kv_file: Path | None = None,
         device_file: Path | None = None,
     ):
-        # Resolve defaults at instantiation time (not import time) so tests can
-        # monkeypatch.setenv("XDG_STATE_HOME", ...) and have it take effect.
-        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-        registry_dir = state_home / "splashdown"
+        registry_dir = state_directory()
         self.port_file = port_file or (registry_dir / "ports.tsv")
         self.kv_file = kv_file or (registry_dir / "kv.tsv")
         self.device_file = device_file or (registry_dir / "devices.tsv")
+        self.state_dir = self.kv_file.parent
         self.port_file.parent.mkdir(parents=True, exist_ok=True)
         for f in (self.port_file, self.kv_file, self.device_file):
             f.touch(exist_ok=True)

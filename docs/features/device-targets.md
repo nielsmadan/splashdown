@@ -59,7 +59,7 @@ instance as healthy, missing, orphaned, drifted, or undeclared. `ensure_fresh_si
 The instance needs reconciliation when its registry row is missing, its underlying sim/AVD no
 longer exists, or its OS image, model, device profile, or emulator name has drifted from the spec.
 For `ios = "latest"` the target OS is resolved live
-(`_ios_latest_runtime_version`, `src/splashdown/devices.py:117`); for a pinned `ios = "17.0"` the
+(`_ios_latest_runtime_version`, `src/splashdown/device_ios.py`); for a pinned `ios = "17.0"` the
 target *is* `17.0`, so a stale check never fires on OS — that is what makes pinned variants
 permanent (UC10). When stale, the old sim is destroyed and a fresh one created in place, and the
 new instance is recorded in the machine-wide registry (`registry.set_device`). Crucially,
@@ -155,7 +155,7 @@ neither `ensure_fresh_sim` nor `target refresh` upgrades a healthy instance. A m
 instance is recreated at its declared version, while GC treats it like any other registered row.
 
 **Physical devices are discovered, not owned.** A `device` target resolves to a *connected* phone
-(`ensure_physical`, `src/splashdown/devices.py:611`; `_physical_match:596` filters by
+(`ensure_physical`, `src/splashdown/devices.py`; `_physical_match` filters by
 `platform`/`id`/`name`). `cmd_run` skips booting for `info["physical"]` and goes straight to the
 launcher (`src/splashdown/target_commands.py`). Physical devices are never written to the registry;
 `status`/`target` show `connected` / `absent` / `ambiguous` (`physical_status:644`).
@@ -177,8 +177,10 @@ Adding a variant that already exists in the recipe is an error.
 | Concern | Location |
 |---|---|
 | Instance name `<parent>/<cwd>/<variant>-<path-hash>` | `src/splashdown/devices.py` (`_default_sim_name`); override resolution in `_resolve_device_name` |
-| Reconcile (create / recreate-on-drift / pin) | `src/splashdown/devices.py:729` (`ensure_fresh_sim`) |
-| Latest-iOS lookup driving auto-upgrade | `src/splashdown/devices.py:117` (`_ios_latest_runtime_version`); Android `:354` (`_android_latest_image`) |
+| Reconcile (create / recreate-on-drift / pin) | `src/splashdown/devices.py` (`ensure_fresh_sim`) |
+| Platform lifecycle | `src/splashdown/device_ios.py`; `src/splashdown/device_android.py` |
+| Finite tool deadlines | `src/splashdown/device_tools.py` (30-second discovery, 120-second mutation) |
+| Latest-OS lookup driving auto-upgrade | `src/splashdown/device_ios.py` (`_ios_latest_runtime_version`); `src/splashdown/device_android.py` (`_android_latest_image`) |
 | `splash run` (reconcile + boot + build + launch) | `src/splashdown/target_commands.py` (`cmd_run`) |
 | `splash start` / `stop` / `destroy` | `src/splashdown/target_commands.py` |
 | Destroy confirmation gate | `src/splashdown/target_commands.py` (`_confirm`) |
@@ -186,9 +188,9 @@ Adding a variant that already exists in the recipe is an error.
 | Fleet refresh (eager auto-upgrade) | `src/splashdown/target_commands.py` (`cmd_target_refresh`) |
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/target_commands.py` (`cmd_target_prune`) |
 | `target add` / `remove` (local variants) | Catalog edits in `src/splashdown/targets.py`; orchestration in `src/splashdown/target_commands.py` |
-| Framework launcher selection | `src/splashdown/devices.py:1012` (`detect_framework`), `:1077` (`device_run`) |
+| Framework launcher selection | `src/splashdown/launching.py` (`detect_framework`, `device_run`) |
 | iOS-native / Android-native launch | `src/splashdown/runners.py:265` / `:364` |
-| Physical-device discovery | `src/splashdown/devices.py:611` (`ensure_physical`), `:596` (`_physical_match`) |
+| Physical-device discovery | Cross-platform policy in `src/splashdown/devices.py`; platform probes in `device_ios.py` and `device_android.py` |
 | CLI parsers: run/start/stop/destroy loop | `src/splashdown/cli.py:220` (note: `--yes` only on `destroy`, `:237`) |
 | CLI parsers: `target refresh`/`prune`/`add`/`remove` | `src/splashdown/cli.py:243` / `:254` / `:267` / `:293` |
 

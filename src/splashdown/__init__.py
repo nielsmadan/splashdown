@@ -29,6 +29,7 @@ from .constants import (
     STATE_HOME,
     TARGET_TYPES,
     TARGET_VARIANT_RE,
+    state_directory,
 )
 
 
@@ -42,6 +43,9 @@ def __getattr__(name: str) -> object:
 
 # Import profiles — this populates PROFILES.
 from . import capabilities as capabilities
+from . import device_android as device_android
+from . import device_ios as device_ios
+from . import device_tools as device_tools
 from . import profiles as _profiles_module
 from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
 from .bootstrap import (

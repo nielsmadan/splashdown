@@ -109,8 +109,9 @@ def _inv_none(tmp_path, *profiles):
 def _capture_profile_calls(monkeypatch):
     calls: list = []
     monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: calls.append(args) or 0)
+    monkeypatch.setattr(sd.runners, "call_finite", lambda args, **k: calls.append(args) or 0)
     return calls
 
 
 def _stub_ios_devices(monkeypatch, devices):
-    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": devices})
+    monkeypatch.setattr(sd.device_ios, "_xcrun_json", lambda args: {"devices": devices})

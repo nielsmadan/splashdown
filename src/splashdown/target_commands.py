@@ -1,32 +1,29 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .capabilities import translate_tool_errors, warn_capability
+from .capabilities import warn_capability
 from .constants import LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
-from .device_types import AndroidDestination, IOSDestination, as_launch_destination
-from .devices import (
-    _android_bin,
-    _ios_current_state,
-    _is_orphan_device,
-    _resolve_device_name,
-    _xcrun_json,
+from .device_android import (
+    _android_avd_names,
     android_boot,
     android_destroy,
     android_shutdown,
+)
+from .device_ios import _ios_current_state, _xcrun_json, ios_boot, ios_destroy, ios_shutdown
+from .device_types import AndroidDestination, IOSDestination, as_launch_destination
+from .devices import (
+    _is_orphan_device,
+    _resolve_device_name,
     device_destroy_row,
     device_needs_recreate,
     device_shutdown_row,
     device_status,
     ensure_fresh_sim,
-    ios_boot,
-    ios_destroy,
-    ios_shutdown,
     physical_status,
 )
 from .errors import CapabilityError, DeviceError
@@ -241,19 +238,7 @@ def _discover_foreign_ios(managed: set[str]) -> list[tuple[str, str, str]]:
 
 
 def _discover_foreign_avds(managed: set[str]) -> list[str]:
-    try:
-        with translate_tool_errors(
-            "android", "avdmanager", "install Android SDK command-line tools"
-        ):
-            out = subprocess.check_output(
-                [_android_bin("avdmanager"), "list", "avd", "-c"],
-                stderr=subprocess.DEVNULL,
-            )
-    except subprocess.CalledProcessError as error:
-        raise DeviceError(f"avdmanager list failed: exit {error.returncode}") from error
-    return [
-        name for line in out.decode().splitlines() if (name := line.strip()) and name not in managed
-    ]
+    return [name for name in _android_avd_names() if name not in managed]
 
 
 def _confirm(prompt: str, *, yes: bool) -> bool:
@@ -375,7 +360,10 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
             if isinstance(destination, IOSDestination):
                 ios_boot(destination.identifier, _ios_current_state(destination.identifier))
             elif isinstance(destination, AndroidDestination):
-                destination = replace(destination, identifier=android_boot(destination.name))
+                destination = replace(
+                    destination,
+                    identifier=android_boot(destination.name, state_dir=registry.state_dir),
+                )
     return int(device_run(cwd, recipe, destination))
 
 
@@ -391,7 +379,10 @@ def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str
         if isinstance(destination, IOSDestination):
             ios_boot(destination.identifier, _ios_current_state(destination.identifier))
         elif isinstance(destination, AndroidDestination):
-            destination = replace(destination, identifier=android_boot(destination.name))
+            destination = replace(
+                destination,
+                identifier=android_boot(destination.name, state_dir=registry.state_dir),
+            )
     print(f"started {dtype}.{variant} ({destination.name})", file=sys.stderr)
     return 0
 

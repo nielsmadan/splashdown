@@ -260,7 +260,7 @@ def test_android_physical_devices_excludes_emulators(monkeypatch):
         b"PXL1234             device product:panther model:Pixel_7 device:panther transport_id:2\n"
         b"ZZZ                 unauthorized\n"
     )
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/adb")
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/adb")
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: out)
     devices = sd._android_physical_devices()
     assert devices == [{"id": "PXL1234", "name": "Pixel_7", "platform": "android"}]
@@ -900,7 +900,7 @@ def test_resolve_device_name_rejects_leading_dash(tmp_path):
     ],
 )
 def test_device_destroy_reports_command_failure(monkeypatch, destroy, destroy_args, message):
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: name)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
     monkeypatch.setattr(
         sd.devices.subprocess,
         "run",
@@ -945,7 +945,7 @@ def test_cli_ios_start_reports_unsupported_platform(tmp_path, monkeypatch, capsy
 def test_android_home_missing_is_capability_error(tmp_path, monkeypatch):
     monkeypatch.delenv("ANDROID_HOME", raising=False)
     monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
-    monkeypatch.setattr(sd.devices.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(sd.device_android.Path, "home", lambda: tmp_path)
 
     with pytest.raises(sd.CapabilityError, match="ANDROID_HOME") as raised:
         sd._android_home()
@@ -967,7 +967,7 @@ def test_ios_tool_permission_error_is_capability_error(monkeypatch):
 
 
 def test_android_tool_permission_error_is_capability_error(monkeypatch):
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: name)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
     monkeypatch.setattr(
         sd.devices.subprocess,
         "run",
@@ -978,6 +978,42 @@ def test_android_tool_permission_error_is_capability_error(monkeypatch):
         sd.android_destroy("avd")
 
     assert raised.value.capability == "android"
+
+
+def test_ios_discovery_timeout_is_device_error(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
+    def timeout(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "check_output", timeout)
+
+    with pytest.raises(sd.DeviceError, match="xcrun simctl list devices -j timed out after 30s"):
+        sd.device_ios._xcrun_json(["simctl", "list", "devices", "-j"])
+
+
+def test_android_mutation_timeout_is_device_error(monkeypatch):
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
+
+    def timeout(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", timeout)
+
+    with pytest.raises(sd.DeviceError, match="avdmanager delete timed out after 120s"):
+        sd.device_android.android_destroy("demo")
+
+
+def test_android_boot_writes_log_under_supplied_state_directory(tmp_path, monkeypatch):
+    serials = iter((None, "emulator-5554"))
+    monkeypatch.setattr(sd.device_android, "_android_running_serial", lambda _name: next(serials))
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
+    monkeypatch.setattr(sd.device_android.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(sd.device_android.subprocess, "Popen", lambda *args, **kwargs: None)
+
+    state_dir = tmp_path / "state" / "splashdown"
+    assert sd.device_android.android_boot("demo", state_dir=state_dir) == "emulator-5554"
+    assert (state_dir / "emulator-demo.log").exists()
 
 
 def test_cli_version_flag(capsys):
@@ -1645,7 +1681,7 @@ def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
             {"name": "iPad Air", "udid": "FOREIGN-2", "isAvailable": True, "state": "Shutdown"},
         ]
     }
-    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": fake_devices})
+    monkeypatch.setattr(sd.device_ios, "_xcrun_json", lambda args: {"devices": fake_devices})
     monkeypatch.setattr(sd.target_commands, "_xcrun_json", lambda args: {"devices": fake_devices})
     registry.set_device("/tmp/something", "simulator", "default", "MANAGED", "iPhone 17", "18.5")
     rc = sd.cmd_target_prune(registry, yes=False, dry_run=True, platforms=("ios",))
@@ -1663,7 +1699,7 @@ def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
             {"name": "iPhone 17", "udid": "FOREIGN", "isAvailable": True, "state": "Shutdown"},
         ]
     }
-    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": fake_devices})
+    monkeypatch.setattr(sd.device_ios, "_xcrun_json", lambda args: {"devices": fake_devices})
     monkeypatch.setattr(sd.target_commands, "_xcrun_json", lambda args: {"devices": fake_devices})
     destroyed: list[str] = []
     shut: list[str] = []
@@ -1678,7 +1714,7 @@ def test_device_prune_yes_destroys_unmanaged(registry, monkeypatch):
 
 
 def test_device_prune_noop_when_nothing_unmanaged(registry, monkeypatch, capsys):
-    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: {"devices": {}})
+    monkeypatch.setattr(sd.device_ios, "_xcrun_json", lambda args: {"devices": {}})
     monkeypatch.setattr(sd.target_commands, "_xcrun_json", lambda args: {"devices": {}})
     rc = sd.cmd_target_prune(registry, yes=True, dry_run=False, platforms=("ios",))
     assert rc == 0
@@ -1798,7 +1834,7 @@ def test_version_tuple_parses_and_falls_back():
 
 def test_ios_latest_runtime_sorts_numerically(monkeypatch):
     monkeypatch.setattr(
-        sd.devices,
+        sd.device_ios,
         "_xcrun_json",
         lambda args: {
             "runtimes": [
@@ -1815,7 +1851,7 @@ def test_ios_latest_runtime_sorts_numerically(monkeypatch):
 
 def test_ios_device_type_identifier_selection(monkeypatch):
     monkeypatch.setattr(
-        sd.devices,
+        sd.device_ios,
         "_xcrun_json",
         lambda args: {
             "devicetypes": [
@@ -1832,7 +1868,7 @@ def test_ios_device_type_identifier_selection(monkeypatch):
 
 
 def test_android_latest_image_picks_highest_api(monkeypatch):
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/" + name)
     monkeypatch.setattr(
         sd.devices.subprocess,
         "check_output",
@@ -1845,14 +1881,14 @@ def test_android_latest_image_picks_highest_api(monkeypatch):
 
 
 def test_android_running_serial_matches_avd(monkeypatch):
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/" + name)
     outputs = [b"List of devices attached\nemulator-5554\tdevice\n", b"my_avd\n"]
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: outputs.pop(0))
     assert sd.devices._android_running_serial("my_avd") == "emulator-5554"
 
 
 def test_android_running_serial_no_match(monkeypatch):
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/" + name)
     outputs = [b"List of devices attached\nemulator-5554\tdevice\n", b"other_avd\n"]
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: outputs.pop(0))
     assert sd.devices._android_running_serial("my_avd") is None
@@ -1913,7 +1949,7 @@ def test_ios_current_state_and_udid_exists(monkeypatch):
 
 
 def test_android_avd_exists(monkeypatch):
-    monkeypatch.setattr(sd.devices, "_android_bin", lambda name: "/fake/" + name)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/" + name)
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: b"pixel_9\nmy_avd\n")
     assert sd.devices._android_avd_exists("my_avd") is True
     assert sd.devices._android_avd_exists("ghost") is False
@@ -2108,7 +2144,7 @@ _RUNTIMES = {
 
 
 def _fake_runtimes(monkeypatch, data=_RUNTIMES):
-    monkeypatch.setattr(sd.devices, "_xcrun_json", lambda args: data)
+    monkeypatch.setattr(sd.device_ios, "_xcrun_json", lambda args: data)
 
 
 def test_ios_x86_64_target_picks_newest_runtime_with_an_x86_64_slice(monkeypatch):
@@ -2136,9 +2172,9 @@ def test_ios_runtime_models_excludes_non_iphone_types(monkeypatch):
 
 def test_ios_create_failure_explains_incompatible_model(monkeypatch):
     _fake_runtimes(monkeypatch)
-    monkeypatch.setattr(sd.devices, "_ios_find_device_by_name", lambda name: None)
+    monkeypatch.setattr(sd.device_ios, "_ios_find_device_by_name", lambda name: None)
     monkeypatch.setattr(
-        sd.devices, "_ios_device_type_identifier", lambda m: "com.apple.x.iPhone-17"
+        sd.device_ios, "_ios_device_type_identifier", lambda m: "com.apple.x.iPhone-17"
     )
 
     def boom(args, **kwargs):
@@ -2155,9 +2191,9 @@ def test_ios_create_failure_explains_incompatible_model(monkeypatch):
 
 def test_ios_create_failure_stays_bare_when_model_is_compatible(monkeypatch):
     _fake_runtimes(monkeypatch)
-    monkeypatch.setattr(sd.devices, "_ios_find_device_by_name", lambda name: None)
+    monkeypatch.setattr(sd.device_ios, "_ios_find_device_by_name", lambda name: None)
     monkeypatch.setattr(
-        sd.devices, "_ios_device_type_identifier", lambda m: "com.apple.x.iPhone-16-Pro"
+        sd.device_ios, "_ios_device_type_identifier", lambda m: "com.apple.x.iPhone-16-Pro"
     )
 
     def boom(args, **kwargs):

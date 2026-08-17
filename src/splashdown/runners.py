@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import require_macos, translate_tool_errors
+from .device_tools import DISCOVERY_TIMEOUT, MUTATION_TIMEOUT, call_finite, run_finite
 from .device_types import (
     AndroidDestination,
     DestinationLike,
@@ -124,7 +125,7 @@ def _x86_64_sim_advice() -> str:
         '  If the build failed with "Unable to find a destination...", '
     )
     # Lazy: architecture advice is the only runner dependency on device lifecycle.
-    from .devices import ios_x86_64_target  # noqa: PLC0415
+    from .device_ios import ios_x86_64_target  # noqa: PLC0415
 
     target = ios_x86_64_target()
     if target is None:
@@ -256,7 +257,15 @@ def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
 def _ios_native_schemes(cwd: Path) -> list[str]:
     argv = ["xcodebuild", *_ios_xcodebuild_args(cwd, {}), "-list", "-json"]
     try:
-        result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+        result = run_finite(
+            argv,
+            operation="xcodebuild list schemes",
+            timeout=DISCOVERY_TIMEOUT,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     except OSError as exc:
         raise DeviceError(f"ios-native: couldn't list Xcode schemes: {exc}") from exc
     if result.returncode != 0:
@@ -320,8 +329,10 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
     with translate_tool_errors(
         "ios", "xcodebuild", "install Xcode and select it with xcode-select"
     ):
-        settings = subprocess.run(
+        settings = run_finite(
             [*common, "-showBuildSettings", "-json"],
+            operation="xcodebuild show build settings",
+            timeout=DISCOVERY_TIMEOUT,
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -347,7 +358,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
         # Physical iOS devices aren't reachable via simctl (simulator-only);
         # devicectl (Xcode 15+) installs and launches on real hardware.
         with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
-            rc = subprocess.call(
+            rc = call_finite(
                 [
                     "xcrun",
                     "devicectl",
@@ -357,7 +368,9 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
                     "--device",
                     udid,
                     str(app_path),
-                ]
+                ],
+                operation="devicectl install app",
+                timeout=MUTATION_TIMEOUT,
             )
         if rc != 0:
             return rc
@@ -376,7 +389,11 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
             )
 
     with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
-        rc = subprocess.call(["xcrun", "simctl", "install", udid, str(app_path)])
+        rc = call_finite(
+            ["xcrun", "simctl", "install", udid, str(app_path)],
+            operation="simctl install app",
+            timeout=MUTATION_TIMEOUT,
+        )
     if rc != 0:
         return rc
     with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
@@ -414,12 +431,17 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
                 gradle_tool,
                 "install Gradle or add an executable gradlew wrapper",
             ):
-                out = subprocess.check_output(
+                result = run_finite(
                     [*gradle_cmd, f":{module}:properties", "-q"],
+                    operation="gradle read application id",
+                    timeout=DISCOVERY_TIMEOUT,
                     cwd=cwd,
+                    capture_output=True,
                     text=True,
                     env=env,
+                    check=True,
                 )
+                out = result.stdout
             for line in out.splitlines():
                 if line.startswith("applicationId:"):
                     app_id = line.split(":", 1)[1].strip()
