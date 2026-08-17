@@ -6,13 +6,16 @@ description: Reference for every splash command, option, target action, and envi
 # CLI reference
 
 ```
-splash                              # sync this checkout (the post-checkout hook runs this)
+splash                              # sync this checkout explicitly
 splash --version
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [all]                 # resources + targets + which ports are bound right now
 splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
                     [--electron-profile=isolated|shared] [--ios-scheme=NAME]
-splash deinit                       # reverse init + sync for this checkout
+splash deinit                       # remove checkout-local state, keep shared hook and trust
+splash trust                        # authorize automatic handling for this clone
+splash untrust                      # revoke clone-wide automatic handling
+splash bootstrap [--rerun]          # sync + run bootstrap once for this checkout
 splash doctor [--fix] [--framework=…]
 
 splash run     [type] [variant]     # boot target + build + launch
@@ -70,20 +73,30 @@ pass `--ios-scheme=NAME` when the choice is ambiguous.
 
 ## Remove splashdown
 
-`splash deinit` surgically reverses init and clears the state created by sync and device runs. It
+`splash deinit` surgically removes checkout-local init state plus state created by sync and device runs. It
 destroys simulator and emulator instances owned by this checkout, releases its registry entries,
 removes `splashdown.env`, clears splashdown-managed keys from `envfile=` and `envrc` destinations,
-and unwires the loader, post-checkout hook, `.gitignore` entries, and managed agent instructions.
+and unwires the loader, `.gitignore` entries, and managed agent instructions. The shared
+post-checkout integration and clone-wide bootstrap trust remain because linked worktrees may still
+use them. Deinit clears only this checkout's bootstrap completion.
 It then removes `splashdown.toml` and an untouched `splashdown.local.toml` skeleton.
 
 User-owned content is preserved: a modified local config or hook is left with a note, unrelated
 dotenv keys remain, physical devices are never destroyed, and framework changes made by
 `splash doctor --fix` are not reverted because they have no recoverable original.
 
-`splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Empty or malformed setup declarations fail during recipe validation, before those changes. An unknown requested name or failed command exits 1 after provisioning; resource/output changes and earlier successful setup commands are not rolled back.
+`splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Empty or malformed setup declarations fail during recipe validation, before those changes. An unknown requested name or failed command exits 1 after provisioning. Resource/output changes and earlier successful setup commands are not rolled back.
+
+`splash trust` authorizes automatic resource sync for the whole clone. When the current recipe has
+`[bootstrap]`, it displays and authorizes those commands without running them. A later-added
+`[bootstrap]` needs another trust operation unless the clone was already trusted for bootstrap on
+an earlier ref. Existing bootstrap trust lasts until `splash untrust`. `splash bootstrap` provisions the checkout and runs
+the commands once, and `--rerun` repeats a completed bootstrap. `splash untrust` revokes both
+capabilities without needing a valid recipe. See
+[Trusted worktree bootstrap](bootstrap.md) for the security and retry contract.
 
 `splash env set KEY=VALUE` only accepts keys declared with `type = "set"` in the target checkout's recipe. It rejects invalid assignments, missing or malformed recipes, undeclared keys, and generated or allocated resources with exit 2.
 
 Commands that load configuration validate the complete document before provisioning or project-file mutation. Unknown sections and fields, wrong types, invalid templates, and malformed target definitions exit 1 with a qualified error and no traceback.
 
-`splash target add` applies the same target schema as TOML files before writing: `simulator` accepts `--model`, `--ios`, and `--name`; `emulator` accepts `--device`, `--image`, and `--name`; physical `device` accepts `--id`, `--name`, and `--platform=ios|android`. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.
+`splash target add` applies the same target schema as TOML files before writing. `simulator` accepts `--model`, `--ios`, and `--name`. `emulator` accepts `--device`, `--image`, and `--name`. Physical `device` accepts `--id`, `--name`, and `--platform=ios|android`. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.

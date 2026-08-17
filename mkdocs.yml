@@ -49,6 +49,7 @@ nav:
   - How it compares: comparison.md
   - Guides:
       - The recipe: recipe.md
+      - Trusted worktree bootstrap: bootstrap.md
       - Per-checkout overrides: overrides.md
       - Settings: settings.md
       - Shell completion: shell-completion.md

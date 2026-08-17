@@ -948,7 +948,7 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
     assert not (tmp_path / "splashdown.toml").exists()
     assert not (tmp_path / "splashdown.local.toml").exists()
     assert not (tmp_path / "mise.toml").exists()
-    assert not hook.exists()
+    assert hook.exists()
     # init (minimal preset) deterministically creates .gitignore with the two
     # managed lines; deinit must strip them but keep the file.
     gi = tmp_path / ".gitignore"

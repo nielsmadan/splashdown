@@ -44,6 +44,19 @@ def __getattr__(name: str) -> object:
 from . import capabilities as capabilities
 from . import profiles as _profiles_module
 from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
+from .bootstrap import (
+    GitDirs,
+    TrustState,
+    bootstrap_complete,
+    clear_bootstrap_completion,
+    git_dirs,
+    is_trusted,
+    is_worktree_creation,
+    mark_bootstrap_complete,
+    record_trust,
+    revoke_trust,
+    trust_state,
+)
 from .catalog import PROFILES
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .commands import (
@@ -108,15 +121,16 @@ from .devices import (
 from .doctor import cmd_doctor
 from .errors import CapabilityError
 from .hooks import (
+    LEGACY_POST_CHECKOUT_HOOK,
     _detect_hook_manager,
     _ensure_post_checkout_hook,
     _native_hook_path,
     _remove_mise_file_directive,
-    _remove_post_checkout_hook,
     _revert_gitignore,
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
     _wire_post_checkout_native,
+    post_checkout_readiness,
 )
 from .inventory import AppInventory, ProjectInventory, RunnableProfile
 from .launching import (
@@ -142,6 +156,7 @@ from .provisioning import (
 from .recipe import (
     GLOBAL_SKELETON,
     LOCAL_SKELETON,
+    CommandSpec,
     GlobalConfig,
     LocalConfig,
     Recipe,

@@ -6,7 +6,7 @@ For the *user-facing* contract (what gets pinned, what `splashdown.env` looks li
 
 ## Purpose
 
-`provision()` is the core sync step: it walks a recipe's resources in dependency order, resolves each one to a concrete string value (allocating a port, minting a uuid, rendering a template, etc.), and persists durable values to the machine-wide registry. `write_outputs()` then groups those values by their declared `writer` and emits them to the right destination — `splashdown.env`, an arbitrary `.env` file, an `.envrc`, stdout, or nowhere. `run_setup()` runs any `[setup.*]` shell hooks. The module is deliberately read-light on the hot path: it only reads TOML via stdlib `tomllib` (through `Recipe.load`) so the git hook never pulls in `tomlkit`.
+`provision()` is the core sync step: it walks a recipe's resources in dependency order, resolves each one to a concrete string value (allocating a port, minting a uuid, rendering a template, etc.), and persists durable values to the machine-wide registry. `write_outputs()` then groups those values by their declared `writer` and emits them to the right destination — `splashdown.env`, an arbitrary `.env` file, an `.envrc`, stdout, or nowhere. `run_setup()` and `run_bootstrap()` execute already-validated command specifications. The module is deliberately read-light on the hot path: it only reads TOML via stdlib `tomllib` (through `Recipe.load`) so the git hook never pulls in `tomlkit`.
 
 ## How it works (current state)
 
@@ -81,20 +81,24 @@ redirecting a write or permission change.
 - `write_envfile` (`provisioning.py:202`): *surgical merge* into a foreign file. Reads existing lines, drops any line whose `KEY=` is one splashdown manages (regex `^\s*([A-Za-z_]\w*)\s*=`), trims trailing blanks, then appends the managed `K=_env_quote(V)` lines (same quoting as `splashdown.env`). Non-managed lines are preserved, and missing parent directories are created before the file is written.
 - `write_envrc` (`provisioning.py:222`): same merge strategy but matches `export KEY=` and emits `export K=<single-quoted V>`. Uses shell single-quote escaping (`'\''`) rather than `_env_quote`, since `.envrc` is sourced by a shell (direnv).
 
-### `run_setup()` — `[setup.*]` hooks
+### Recipe commands
 
-Entry: `run_setup()` at `provisioning.py:294`. The shape of *every* declared
-setup was already validated by `Recipe.load`, before provisioning. When a setup
-is requested, `run_setup` selects it and runs each command via
+Entries: `_run_commands()`, `run_setup()`, and `run_bootstrap()` at the end of the module. The
+shape of every declared setup and bootstrap was already validated by `Recipe.load`, before
+provisioning. Recipe validation normalizes the string-or-array TOML form into an immutable
+`CommandSpec(commands=tuple(...))`, so execution does not reinterpret raw tables. When a setup is
+requested, `run_setup` selects it and runs each command via
 `subprocess.run(..., shell=True)` with `cwd` set to the checkout and env =
 `os.environ` overlaid with the freshly resolved values. Commands are
-user-authored, so `shell=True` is intentional.
+user-authored, so `shell=True` is intentional. `run_bootstrap` uses the same executor and receives
+the lifecycle marker as an additional environment override.
 
 Execution still occurs after provisioning and writer output. An unknown
 requested setup name or a command failure exits nonzero at that stage; those
 runtime failures do not roll back registry/file changes or earlier successful
 commands. A malformed declared setup, by contrast, fails during recipe load and
-causes no allocation or output write.
+causes no allocation or output write. Bootstrap authorization, locking, and completion are owned by
+`commands.py` and `bootstrap.py`, not this executor.
 
 ## Key entry points
 
@@ -107,7 +111,7 @@ causes no allocation or output write.
 - envfile path-containment guard: `provisioning.py:115`
 - `_read_output_file()` / `_write_if_changed()`: safe destination validation and replacement
 - `write_splashdown_env` / `write_envfile` / `write_envrc`: filesystem writer implementations
-- `run_setup()`: `provisioning.py:294`
+- `_run_commands()` / `run_setup()` / `run_bootstrap()`: command execution after validation
 
 ## Gotchas
 

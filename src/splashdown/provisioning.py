@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .constants import ENV_FILE_NAME, RECIPE_NAME
 from .recipe import (
+    CommandSpec,
     Recipe,
     _current_branch,
     _env_quote,
@@ -28,11 +29,12 @@ def provision(
     *,
     registry: Registry,
     reprovision: bool = False,
+    recipe: Recipe | None = None,
 ) -> dict[str, str]:
     recipe_path = cwd / RECIPE_NAME
     if not recipe_path.exists():
         raise FileNotFoundError(f"no {RECIPE_NAME} in {cwd}; run `splash init`")
-    recipe = Recipe.load(recipe_path)
+    recipe = recipe or Recipe.load(recipe_path)
     abspath = str(cwd.resolve())
     branch = _current_branch(cwd)
     resolved: dict[str, str] = {}
@@ -291,30 +293,62 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
     return changed
 
 
-def run_setup(cwd: Path, recipe: Recipe, preset: str | None, env: dict[str, str]) -> list[str]:
+def _run_commands(
+    cwd: Path,
+    spec: CommandSpec,
+    env: dict[str, str],
+    *,
+    label: str,
+    extra_env: dict[str, str] | None = None,
+) -> list[str]:
+    proc_env = {**os.environ, **env, **(extra_env or {})}
+    messages: list[str] = []
+    for command in spec.commands:
+        try:
+            subprocess.run(command, shell=True, cwd=cwd, env=proc_env, check=True)  # noqa: S602 — runs user-authorized recipe commands by design
+            messages.append(f"{label}: {command}")
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(f"{label} failed ({command}): exit {error.returncode}") from error
+    return messages
+
+
+def run_setup(
+    cwd: Path,
+    recipe: Recipe,
+    preset: str | None,
+    env: dict[str, str],
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> list[str]:
     if preset is None:
         return []
     if preset not in recipe.setup:
         available = ", ".join(sorted(recipe.setup)) or "(none)"
         raise ValueError(f"unknown setup `{preset}`; declared setups: {available}")
     spec = recipe.setup[preset]
-    if not isinstance(spec, dict):
-        raise ValueError(f"[setup.{preset}] must be a table")
-    commands = spec.get("run")
-    if isinstance(commands, str):
-        commands = [commands]
-    if (
-        not isinstance(commands, list)
-        or not commands
-        or any(not isinstance(cmd, str) or not cmd.strip() for cmd in commands)
-    ):
-        raise ValueError(f"[setup.{preset}] needs a non-empty `run` string or array of strings")
-    messages: list[str] = []
-    proc_env = {**os.environ, **env}
-    for cmd in commands:
-        try:
-            subprocess.run(cmd, shell=True, cwd=cwd, env=proc_env, check=True)  # noqa: S602 — runs user-authored [setup.*] commands by design
-            messages.append(f"setup.{preset}: {cmd}")
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"setup.{preset} failed ({cmd}): exit {e.returncode}") from e
-    return messages
+    label = f"setup.{preset}"
+    return _run_commands(
+        cwd,
+        spec,
+        env,
+        label=label,
+        extra_env=extra_env,
+    )
+
+
+def run_bootstrap(
+    cwd: Path,
+    recipe: Recipe,
+    env: dict[str, str],
+    *,
+    extra_env: dict[str, str],
+) -> list[str]:
+    if recipe.bootstrap is None:
+        raise ValueError("recipe has no [bootstrap] section")
+    return _run_commands(
+        cwd,
+        recipe.bootstrap,
+        env,
+        label="bootstrap",
+        extra_env=extra_env,
+    )

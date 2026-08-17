@@ -105,15 +105,14 @@ autofixes per app. The intent-preset path resolves a framework from the checkout
 
 ### The individual checks
 
-- **`rn-hook` / `hook`** (`_rn_hook_detect`, `wiring.py:279`; registered `:317`
-  and shared as `_HOOK_WIRING_CHECK` `:579`) — verifies a `post-checkout` hook
-  fires `splash`. Detection branches on the project's hook manager: lefthook config
-  (`post-checkout:` + `run: splash`), husky `.husky/post-checkout`, the native hook
-  in Git's common hooks directory, or any configured `core.hooksPath`
-  (reported but not touched). Autofix delegates to
+- **`hook`** (`_rn_hook_detect` and `_HOOK_WIRING_CHECK`) — delegates detection to
+  `post_checkout_readiness`, the same exact policy used during `splash trust`. Lefthook must have
+  the owned event-forwarding run value; Husky and native hooks must have the owned body and be
+  executable. A modified hook is reported as unverifiable instead of accepted by substring.
+  Configured `core.hooksPath` is reported but not touched. Autofix delegates to
   `_ensure_post_checkout_hook` through `_autofix_ensure_post_checkout_hook`
-  (`wiring.py:313`) so it coexists with the project's
-  existing manager.
+  so it coexists with the project's existing manager. RN and project-level registrations use the
+  same `hook` id, so doctor emits one diagnostic.
 - **`rn-metro-config`** (`_rn_metro_detect`, `wiring.py:345`; registered `:407`) —
   `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix
   (`_rn_metro_autofix`, `wiring.py:374`) recognizes three object-literal shapes
@@ -192,24 +191,19 @@ on purpose so a hand-written conditional/shell-substitution wiring is not mangle
 `wiring.py` owns the `WiringCheck` contract and concrete file checks. Profiles depend on
 those definitions, but wiring never imports profiles, scanner, commands, or the package root.
 `doctor.py` is the higher orchestration layer: it reads the profile catalog, resolves launch
-context through `launching.py`, combines app and project checks, and renders results. This makes
+context through `launching.py`, combines app and project checks, and renders results. A recipe with
+`[bootstrap]` adds the project hook check before framework resolution, so repair remains available
+for minimal, generic, and ambiguous projects. This makes
 the direction `doctor → profiles → wiring → hooks`; no function-local import is needed to hide a
 backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph in CI.
 
 ## Key entry points
 
-- `wiring.py:22` — `WiringCheck` NamedTuple (the check contract).
-- `wiring.py:37` — `_RN_WIRING_CHECKS` registry; `:474` `_HOOK_WIRING_CHECK`.
-- `doctor.py` — `cmd_doctor`, `_resolve_doctor_framework`, and
-  `_wiring_checks_for_framework`.
-- `wiring.py:174`/`:240`/`:343`/`:426` — `rn-hook`, `rn-metro-config`,
-  `rn-pkg-port`, `rn-xcode-env` detect helpers.
-- `wiring.py:251` — `_rn_metro_inject` (object-literal brace-aware injection).
-- `wiring.py:393`–`:418` — `ios/.xcode.env` sentinel block and its regexes.
-- `profiles.py:1455`/`:1520` — Profiles snapshot/reuse the registries via `list(...)` /
-  `[_HOOK_WIRING_CHECK]`.
-- `profiles.py:516`/`:1162` — `vite-config-process-env` and
-  `springboot-application-properties` checks.
+- `wiring.py` — `WiringCheck`, the RN check registry, concrete detect/autofix helpers, and
+  `_HOOK_WIRING_CHECK`.
+- `doctor.py` — `cmd_doctor`, framework/project target resolution, deduplication, and rendering.
+- `hooks.py` — shared hook readiness, exact manager parsing, repair, and manual instructions.
+- `profiles.py` — Profile registration for RN, Vite, and Spring Boot wiring.
 
 ## Gotchas
 
@@ -237,7 +231,9 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
   so even a correctly wired `ios/.xcode.env` only takes effect after the app is
   rebuilt — wiring alone won't move a running build off its old port.
 - **A configured `core.hooksPath` is reported, not auto-wired.** The hook check stays `✗`
-  even under `--fix`; Splashdown never changes or writes into that configured path.
+  even under `--fix`; Splashdown never changes or writes into that configured path. Manual
+  instructions show the event-aware hidden command with a trusted absolute executable, plus manual
+  bootstrap as the fallback. A sync-only instruction would not satisfy the check.
 
 ## Why
 

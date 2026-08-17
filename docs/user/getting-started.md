@@ -110,6 +110,10 @@ splash status         # PORT is 9082 here, not 9081
 
 Both checkouts can run their dev servers at once without a port clash. The machine-wide registry guarantees it, even across unrelated repos.
 
+If the project also declares trusted one-time setup under `[bootstrap]`, a trusted clone runs it
+after provisioning a newly-created worktree. Fresh clones use `splash trust` followed by
+`splash bootstrap`. See [Trusted worktree bootstrap](bootstrap.md).
+
 mise and direnv treat the inherited loader file at the new path as untrusted. Splashdown does
 not approve project-controlled files from a hook, so review the file and run `mise trust` or
 `direnv allow` in the new worktree if your loader asks.

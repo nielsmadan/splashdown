@@ -81,7 +81,7 @@ def test_wire_lefthook_appends_block_when_absent(tmp_path):
     assert "pre-commit:" in text
     assert "post-checkout:" in text
     assert "splashdown:" in text
-    assert "run: splash" in text
+    assert '"$SPLASH" hook post-checkout' in text
 
 
 def test_wire_lefthook_inserts_under_existing_post_checkout(tmp_path):
@@ -92,7 +92,7 @@ def test_wire_lefthook_inserts_under_existing_post_checkout(tmp_path):
     text = (tmp_path / "lefthook.yml").read_text()
     assert "notify:" in text  # existing command preserved
     assert "splashdown:" in text  # ours added
-    assert text.count("post-checkout:") == 1  # not duplicated
+    assert sum(line == "post-checkout:" for line in text.splitlines()) == 1
 
 
 def test_wire_lefthook_idempotent(tmp_path):
@@ -254,10 +254,7 @@ def test_doctor_rejects_unknown_framework_from_recipe(tmp_path):
 
 
 def test_doctor_uses_filesystem_when_no_recipe(tmp_path):
-    # package.json with react-native → detect_framework returns "react-native".
     (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
-    # WIRING["react-native"] now exists (rn-hook). A clean RN dir is missing the
-    # hook → doctor reports a problem.
     assert sd.cmd_doctor(tmp_path) == 1
 
 
@@ -267,7 +264,7 @@ def test_rn_hook_clean_detect_problem(tmp_path):
 
 
 def test_rn_hook_detect_tolerates_permission_denied_git(tmp_path, monkeypatch):
-    monkeypatch.setattr(sd.wiring, "_detect_hook_manager", lambda cwd: "none")
+    monkeypatch.setattr(sd.hooks, "_detect_hook_manager", lambda cwd: "none")
     monkeypatch.setattr(
         sd.hooks.subprocess,
         "check_output",
@@ -277,7 +274,7 @@ def test_rn_hook_detect_tolerates_permission_denied_git(tmp_path, monkeypatch):
     status, detail = sd._rn_hook_detect(tmp_path)
 
     assert status == "problem"
-    assert "not a Git checkout" in detail
+    assert "native post-checkout" in detail
 
 
 def test_rn_hook_clean_autofix_then_ok(tmp_path):
@@ -876,81 +873,6 @@ def test_revert_gitignore_keeps_file(tmp_path):
 def test_revert_gitignore_noop_when_absent(tmp_path):
     sd._revert_gitignore(tmp_path)  # must not raise
     assert not (tmp_path / ".gitignore").exists()
-
-
-def test_remove_hook_native(tmp_path):
-    _git_init(tmp_path)
-    sd._wire_post_checkout_native(tmp_path)
-    hook = _native_hook(tmp_path)
-    assert hook.exists()
-    sd._remove_post_checkout_hook(tmp_path)
-    assert not hook.exists()
-
-
-def test_remove_hook_husky_unmodified(tmp_path):
-    (tmp_path / ".husky").mkdir()
-    sd._wire_post_checkout_husky(tmp_path)
-    sd._remove_post_checkout_hook(tmp_path)
-    assert not (tmp_path / ".husky" / "post-checkout").exists()
-
-
-def test_remove_hook_husky_keeps_modified(tmp_path):
-    (tmp_path / ".husky").mkdir()
-    sd._wire_post_checkout_husky(tmp_path)
-    hook = tmp_path / ".husky" / "post-checkout"
-    hook.write_text(hook.read_text() + "\necho custom\n")
-    sd._remove_post_checkout_hook(tmp_path)
-    # User edited it -> we leave it alone.
-    assert hook.exists()
-    assert "echo custom" in hook.read_text()
-
-
-def test_remove_hook_lefthook_strips_block(tmp_path):
-    (tmp_path / "lefthook.yml").write_text(
-        "post-checkout:\n  commands:\n    notify:\n      run: echo hi\n"
-    )
-    sd._wire_post_checkout_lefthook(tmp_path)
-    sd._remove_post_checkout_hook(tmp_path)
-    text = (tmp_path / "lefthook.yml").read_text()
-    assert "notify:" in text  # unrelated command preserved
-    assert "splashdown:" not in text
-
-
-def test_remove_hook_lefthook_collapses_created_block(tmp_path):
-    # A post-checkout block splashdown created from scratch (only our job) should
-    # collapse away entirely on removal.
-    (tmp_path / "lefthook.yml").write_text(
-        "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
-        "post-checkout:\n  commands:\n    splashdown:\n      run: splash\n"
-    )
-    sd._remove_post_checkout_hook(tmp_path)
-    text = (tmp_path / "lefthook.yml").read_text()
-    assert "pre-commit:" in text
-    assert "lint:" in text
-    assert "post-checkout:" not in text
-    assert "splashdown:" not in text
-
-
-def test_remove_hook_lefthook_preserves_other_hook_named_splashdown(tmp_path):
-    # A user job literally named `splashdown` under a different hook must survive.
-    (tmp_path / "lefthook.yml").write_text(
-        "pre-commit:\n  commands:\n    splashdown:\n      run: splash check\n"
-        "post-checkout:\n  commands:\n    splashdown:\n      run: splash\n"
-    )
-    sd._remove_post_checkout_hook(tmp_path)
-    text = (tmp_path / "lefthook.yml").read_text()
-    assert "pre-commit:" in text
-    assert "run: splash check" in text  # the pre-commit splashdown job is untouched
-    assert "post-checkout:" not in text  # only our hook removed
-
-
-def test_remove_hook_native_even_when_lefthook_now_present(tmp_path):
-    _git_init(tmp_path)
-    sd._wire_post_checkout_native(tmp_path)
-    hook = _native_hook(tmp_path)
-    (tmp_path / "lefthook.yml").write_text("pre-commit:\n  commands: {}\n")
-    sd._remove_post_checkout_hook(tmp_path)
-    assert not hook.exists()
 
 
 def test_revert_gitignore_exact_match_preserves_padded_line(tmp_path):

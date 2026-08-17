@@ -38,13 +38,16 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 ## Purpose
 
 `cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to
-`sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
+`sync`, and dispatches each subcommand to a
 handler. `commands.py` holds those handlers (`cmd_*`) and composes `scanner`, `profiles`,
 `provisioning`, `registry`, `loaders`, `devices`, `launching`, and `doctor`. `hooks.py` owns post-checkout
 installation and coexistence with other hook managers. `completion.py` provides the argcomplete
 completers, which must never raise or print because they run on every `<Tab>`.
 
-The package is built for a fast hot path: `splash` with no args (what the git post-checkout hook runs on every checkout) must reach `provision()` cheaply. That goal shapes several decisions below — lazy version resolution, lazy completion install, lazy submodule imports inside handlers.
+The package is built for a fast hot path: the git post-checkout event handler must reach trust
+checking and, for an authorized clone, `provision()` cheaply. That goal shapes several decisions
+below — lazy version resolution, lazy completion install, lazy Registry construction, and lazy
+submodule imports inside handlers.
 
 ## How it works (current state)
 
@@ -57,14 +60,25 @@ The package is built for a fast hot path: `splash` with no args (what the git po
 1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py:392`) to inject a `sync` token if no subcommand is present.
 2. Build the parser (`_build_parser`, `cli.py:394`).
 3. Install completion (`cli.py:395`–`399`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
-4. `parse_args`, then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d) and construct the shared `Registry` (`cli.py:400`–`407`).
-5. A `try` block holds a flat dispatch table — one `if args.cmd == …: return cmd_…(…)` per subcommand (`cli.py:409`–`465`). The final fall-through is `sync` (the default), so both bare `splash` and explicit `splash sync` land on `_cmd_provision`.
+4. `parse_args`, dispatch completion before checkout resolution, then resolve `cwd` (`_resolve_cwd`,
+   honours `--cwd`, else `$PWD`, always `.resolve()`d).
+5. Dispatch `trust`, `untrust`, `bootstrap`, and the hidden hook event before constructing a
+   Registry. This is security-relevant for the hook: an untrusted event can return without touching
+   machine-wide registry state or output writers.
+6. Construct the shared `Registry`, then enter the ordinary flat dispatch table. The final
+   fall-through is `sync` (the default), so both bare `splash` and explicit `splash sync` land on
+   `_cmd_provision`.
 
-The handler signature shows the orchestration boundary: `main()` resolves `cwd` and `registry` once and threads them in; the `cmd_*` functions own the work. Each branch returns the process exit code.
+The handler signature shows the orchestration boundary: `main()` resolves `cwd`, creates a Registry
+only when needed, and threads dependencies into handlers. Each branch returns the process exit code.
 
 #### `_ensure_subcommand` — bare `splash` defaults to `sync`
 
-`_ensure_subcommand` (`cli.py:364`) makes `splash` (no subcommand) behave as `splash sync`, which is what the post-checkout hook relies on. It cannot just prepend `sync`, because top-level flags must still parse at the root parser level — `splash --cwd /path` has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since `sync` has no `--cwd`).
+`_ensure_subcommand` (`cli.py:364`) makes `splash` (no subcommand) behave as `splash sync`. The
+post-checkout hook uses the explicit hidden event command instead. The helper cannot just prepend
+`sync`, because top-level flags must still parse at the root parser level — `splash --cwd /path`
+has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since
+`sync` has no `--cwd`).
 
 The walk: bail early if `-h`/`--help`/`--version` is present (`cli.py:368`) — those are root actions and inserting `sync` would shadow them. Otherwise scan from the front, skipping leading top-level flags: a `--cwd PATH`/`--format json` consumes two slots (the flag set is `_TOP_LEVEL_VALUE_FLAGS`, `cli.py:361`), a `--flag=value` consumes one. The moment a token is a known subcommand (`KNOWN_CMDS`), return `argv` unchanged. The first non-flag, non-subcommand token is where `sync` gets inserted (`cli.py:381-382`), so the flags stay ahead of it.
 
@@ -83,8 +97,8 @@ The walk: bail early if `-h`/`--help`/`--version` is present (`cli.py:368`) — 
 `_VersionAction` reimplements argparse's built-in version action so the version string is resolved
 *only* when `--version` is actually passed. Its `__call__` lazy-imports
 `_version.resolve_version` and prints it. The motivation is the hot path:
-`importlib.metadata.version(...)` costs ~20ms, which every silent hook-triggered `splash sync`
-would otherwise pay for a string it never prints.
+`importlib.metadata.version(...)` costs ~20ms, which every hook-triggered Splashdown process would
+otherwise pay for a string it never prints.
 
 #### The run/start/stop/destroy parser loop
 
@@ -121,7 +135,7 @@ orchestration lives in `doctor.py`; see [Gotchas](#gotchas).
 
 #### Provision handlers (`sync` / `init`)
 
-`_cmd_provision` (`cli.py:465` → `commands.py:1581`) is a thin shim over `_cmd_provision_inner` (`commands.py:1595`), the shared engine for both `splash sync` and the tail of `splash init`.
+`_cmd_provision` delegates to `_cmd_provision_inner` (`commands.py:1702`), the shared engine for both `splash sync` and the tail of `splash init`.
 
 `_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before*
 provisioning so it can report only what changed, calls `provision()`
@@ -147,39 +161,55 @@ stale fields abort the rescan instead of being blessed. This keeps
 generator/profile/loader drift from producing a file that the next sync cannot
 load.
 
-`cmd_init` is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → run framework wiring autofixes. An intent preset short-circuits to `_cmd_init_preset`, which writes one of the three `SCAFFOLDS` templates verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync`, and `--rescan` diverts entirely to `cmd_refresh_inventory`.
+`cmd_init` is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → record sync-only clone trust → run framework wiring autofixes. An intent preset short-circuits to `_cmd_init_preset`, which writes one of the three `SCAFFOLDS` templates verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync`, and `--rescan` diverts entirely to `cmd_refresh_inventory`. Init never grants bootstrap trust.
 
 #### `deinit` teardown
 
-`cmd_deinit` (`commands.py:1461`) is the reverse-orchestration path for state splashdown
-owns or marks explicitly. It reads the recipe before deleting it so it can discover the
+`cmd_deinit` (`commands.py:1477`) removes checkout-local state that Splashdown owns or marks
+explicitly. It reads the recipe before deleting it so it can discover the
 loader and writer destinations, but a malformed recipe only disables those recipe-dependent
 steps; it does not block the rest of teardown.
 
 The handler destroys every registered simulator/emulator for the checkout (hardware rows are
 not owned), releases all remaining registry rows, removes the wholly-owned `splashdown.env`,
 and asks `clear_writer_destinations` to remove only splashdown keys from user-owned
-`envfile=`/`envrc` outputs. It then calls the loader's `unwire`, removes the managed
-post-checkout integration, reverts splashdown's gitignore entries and agent-guidance block,
+`envfile=`/`envrc` outputs. It then calls the loader's `unwire`, reverts splashdown's gitignore
+entries and agent-guidance block,
 and removes `splashdown.local.toml` only when it still equals `LOCAL_SKELETON`. A modified
 local file is preserved with a note; `splashdown.toml` is deleted last. Framework files
 patched by `doctor --fix` are outside this reversal because they have no sentinels or saved
-originals.
+originals. Clone-wide trust and the shared hook remain; checkout completion is removed.
 
 #### Git post-checkout hook installation
 
-`hooks.py` owns post-checkout integration. `_ensure_post_checkout_hook` wires `post-checkout →
-splash sync` while *coexisting* with whatever hook manager the project already uses, rather than
+`hooks.py` owns post-checkout integration. `_ensure_post_checkout_hook` wires the internal
+post-checkout event command while *coexisting* with whatever hook manager the project already uses, rather than
 clobbering it. `_detect_hook_manager` classifies the project into one of four cases, in priority
 order:
 
-1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout: → commands: → splashdown: → run: splash` block into the YAML (merging into an existing `post-checkout:` section if present), then best-effort runs the installed `lefthook` binary. It never executes project-controlled `yarn` or `npx` commands during init.
+1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout.commands.splashdown` job that forwards `{1} {2} {3}`, then best-effort runs the installed `lefthook` binary. It never executes project-controlled `yarn` or `npx` commands during init.
 2. **`husky`** — a `.husky/` directory exists. `_wire_post_checkout_husky` drops a `.husky/post-checkout` script using the shared `POST_CHECKOUT_HOOK` body and makes it executable.
-3. **`core-hookspath-other`** — `git config core.hooksPath` is set to any nonempty value. Splashdown refuses to take over that hooks directory: it prints a warning telling the user to add a `splash sync` hook there themselves and wires nothing.
+3. **`core-hookspath-other`** — `git config core.hooksPath` is set to any nonempty value. Splashdown refuses to take over that hooks directory: it prints event-forwarding instructions using a trusted absolute executable and wires nothing.
 4. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`.
 
-The shared `POST_CHECKOUT_HOOK` script is defensive: `cd` to the repo top, exit 0 if there's no
-`splashdown.toml`, and run `splash sync >&2 || true` (never fail a checkout) if `splash` is on PATH.
+The shared `POST_CHECKOUT_HOOK` script is defensive: Git supplies the checkout root as its working
+directory, the script exits 0 if there is no `splashdown.toml`, resolves `splash` once, rejects a
+resolved executable inside the checkout, and forwards Git's three arguments to one hidden event
+command. It absorbs the handler's failure so Git checkout itself succeeds. There is no feature
+probe or older-binary fallback. Trust activates only local state; tracked Lefthook/Husky migration
+belongs to init/doctor.
+
+Hook readiness is a single `HookReadiness` policy in `hooks.py`, shared by doctor detection and
+trust activation. Native and Husky hooks must exactly match the owned event-aware body and be
+executable. Lefthook must contain the exact event-aware run value. A custom or modified form is
+reported as unverifiable rather than green. `splash doctor --fix` can add the project-level hook
+check for a recipe with `[bootstrap]` even when framework detection fails, so minimal and generic
+projects have the same migration path.
+
+The hidden handler checks the lifecycle recursion marker, takes the private checkout lock, and
+loads one recipe snapshot. It then takes shared clone trust. Without sync trust it constructs no
+Registry and writes nothing. With sync trust it provisions output; bootstrap additionally requires
+bootstrap trust, a validated linked-worktree creation event, and no completion marker.
 
 Git and hook-manager subprocesses are optional integration probes. Missing and non-executable
 tools fall back to detection results or a setup note rather than escaping as Python exceptions.
@@ -262,21 +292,21 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Key entry points
 
-- `main()` — process entry / dispatch table — `cli.py:389`
-- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py:364`
-- `_build_parser` — the single flat parser — `cli.py:110`
-- `_EpilogOnlyFormatter` — suppress argparse's command dump — `cli.py:33`
-- `_VersionAction` — lazy `--version` — `cli.py:43`
-- `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:328`
-- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1595`
-- `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1295`
-- `cmd_deinit` — teardown orchestrator — `commands.py:1461`
-- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py:277` / `:119`
-- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py:19`
-- `cmd_status` — status entry — `commands.py:515`
-- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1141` / `:1095`
-- `_confirm` — shared `[y/N]` gate — `commands.py:995`
-- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1740` / `:1800`
+- `main()` — process entry / dispatch table — `cli.py:415`
+- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py:390`
+- `_build_parser` — the single flat parser — `cli.py:121`
+- `_EpilogOnlyFormatter` — suppress argparse's command dump — `cli.py:37`
+- `_VersionAction` — lazy `--version` — `cli.py:47`
+- `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py:354`
+- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py:1702`
+- `cmd_init` — onboarding orchestrator (returns `None`, `sys.exit`s) — `commands.py:1311`
+- `cmd_deinit` — teardown orchestrator — `commands.py:1477`
+- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py:395` / `:146`
+- `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py:34`
+- `cmd_status` — status entry — `commands.py:531`
+- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py:1157` / `:1111`
+- `_confirm` — shared `[y/N]` gate — `commands.py:1011`
+- `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `commands.py:1977` / `:2037`
 - `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:39` / `:57` / `:80`
 
 ## Gotchas
@@ -293,7 +323,9 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Why
 
-- **Default-to-`sync` for the hook.** The post-checkout hook runs `splash sync` (and the bare-`splash` rewrite means even a misconfigured hook calling `splash` works). Making `sync` the zero-arg default keeps the hot path — the thing that fires on every `git checkout`/`worktree add` — trivial and fast, with lazy version/completion/submodule imports so it pays for nothing it doesn't use.
+- **Default-to-`sync` for interactive use.** Bare `splash` remains the shortest explicit sync command.
+  The hook uses `splash hook post-checkout` because automatic bootstrap needs Git's event arguments
+  and because trust must be checked before Registry construction or output writes.
 - **Hook-manager coexistence over clobbering.** A project that already uses lefthook or husky has a hooks pipeline a developer depends on; silently overwriting its hook or seizing `core.hooksPath` would break it. Splashdown adds its entry to the detected manager, uses Git's common native hook only when no manager or custom hooks path exists, and refuses to touch any configured `core.hooksPath`.
 
 ## Related

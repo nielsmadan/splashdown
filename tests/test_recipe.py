@@ -390,6 +390,37 @@ def test_recipe_rejects_invalid_setup_schema(tmp_path, text):
 
 
 @pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        ('"echo ready"', ("echo ready",)),
+        ('["echo one", "echo two"]', ("echo one", "echo two")),
+    ],
+)
+def test_recipe_accepts_bootstrap_schema(tmp_path, run, expected):
+    recipe = sd.Recipe.parse(
+        f"[bootstrap]\nrun = {run}\n",
+        tmp_path / "splashdown.toml",
+    )
+    assert recipe.bootstrap is not None
+    assert recipe.bootstrap.commands == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[bootstrap]\n",
+        '[bootstrap]\nrun = ""\n',
+        "[bootstrap]\nrun = []\n",
+        '[bootstrap]\nrun = ["ok", ""]\n',
+        '[bootstrap]\nrun = "ok"\nunknown = true\n',
+    ],
+)
+def test_recipe_rejects_invalid_bootstrap_schema(tmp_path, text):
+    with pytest.raises(ValueError, match=r"\[bootstrap"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
     ("dtype", "fields"),
     [
         ("simulator", {"model": "iPhone", "ios": "latest", "name": "Demo"}),

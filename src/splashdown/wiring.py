@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from .hooks import (
-    _detect_hook_manager,
     _ensure_post_checkout_hook,
-    _lefthook_config_path,
-    _native_hook_path,
+    post_checkout_manual_instructions,
+    post_checkout_readiness,
 )
 
 # The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
@@ -172,37 +171,12 @@ def _yaml_key_regions(text: str, key: str, *, indent: int | None = None) -> list
 
 
 def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
-    manager = _detect_hook_manager(cwd)
-    if manager == "lefthook":
-        path = _lefthook_config_path(cwd)
-        if path.exists():
-            # Lefthook's scaffolded config is mostly commented-out examples, so an
-            # unstripped scan reads one as a live hook — and a hook that never fires
-            # is the root cause of stale registry entries and port collisions.
-            text = _strip_hash_comments(path.read_text())
-            if re.search(r"post-checkout\s*:", text) and re.search(r"\brun\s*:\s*splash\b", text):
-                return ("ok", "lefthook post-checkout invokes splash")
-        return ("problem", "lefthook detected; post-checkout doesn't invoke splash")
-    if manager == "husky":
-        hook = cwd / ".husky" / "post-checkout"
-        if hook.exists() and "splash" in _strip_hash_comments(hook.read_text()):
-            return ("ok", "husky .husky/post-checkout invokes splash")
-        return ("problem", "husky detected; .husky/post-checkout missing or doesn't invoke splash")
-    if manager == "core-hookspath-other":
-        return ("problem", "core.hooksPath points to a custom dir; can't auto-wire there")
-    native_hook = _native_hook_path(cwd)
-    if native_hook is None:
-        return ("problem", "not a Git checkout; no post-checkout hook can be installed")
-    if native_hook.exists() and "splash" in native_hook.read_text():
-        return ("ok", "native post-checkout hook invokes splash")
-    return ("problem", "no post-checkout hook invokes splash")
+    readiness = post_checkout_readiness(cwd)
+    return ("ok", readiness.detail) if readiness.ready else ("problem", readiness.detail)
 
 
 def _rn_hook_manual(cwd: Path) -> str:
-    return (
-        "core.hooksPath is set to a non-splashdown directory. Add a post-checkout\n"
-        "hook there that runs `splash sync >&2 || true`."
-    )
+    return post_checkout_manual_instructions(cwd)
 
 
 def _autofix_ensure_post_checkout_hook(cwd: Path) -> None:
@@ -211,8 +185,8 @@ def _autofix_ensure_post_checkout_hook(cwd: Path) -> None:
 
 _RN_WIRING_CHECKS.append(
     WiringCheck(
-        id="rn-hook",
-        description="post-checkout fires `splash`",
+        id="hook",
+        description="post-checkout forwards Git events to Splashdown",
         applies=lambda cwd: True,
         detect=_rn_hook_detect,
         autofix=_autofix_ensure_post_checkout_hook,
@@ -473,7 +447,7 @@ _RN_WIRING_CHECKS.append(
 
 _HOOK_WIRING_CHECK = WiringCheck(
     id="hook",
-    description="post-checkout fires `splash`",
+    description="post-checkout forwards Git events to Splashdown",
     applies=lambda cwd: True,
     detect=_rn_hook_detect,
     autofix=_autofix_ensure_post_checkout_hook,

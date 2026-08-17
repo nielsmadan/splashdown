@@ -23,6 +23,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   `completion.py`: entry, parse, dispatch, the `cmd_*` handlers, and git-hook installation.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
   audited subprocess-failure contract.
+- [bootstrap.md](bootstrap.md) — clone trust, worktree completion, lifecycle locking, and the
+  creation-only post-checkout execution path.
 
 ## Data flow (end to end)
 `scanner.py` (detect → `ProjectInventory`) → `profiles.py` (per-framework rules registered in
@@ -34,6 +36,7 @@ runs sims/emulators, `launching.py` dispatches app launchers, `wiring.py` define
 synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, rescan, and deinit.
 `hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
 `loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
+`bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.
 `src/splashdown/__init__.py` is the seam that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)
@@ -48,8 +51,8 @@ synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, resc
   analyzes the whole package and fails CI if a backward edge is introduced. `__init__.py` still
   imports `profiles.py` first so the ordered profile catalog is populated before public consumers
   are re-exported, but no submodule depends back on it.
-- **Hot-path discipline.** Bare `splash` (the post-checkout hook) runs `provision()`/`status`,
-  which only *read* TOML via stdlib `tomllib`. `tomlkit` (TOML *writing*) is imported at
+- **Hot-path discipline.** Bare `splash` and the post-checkout event handler use the read and
+  provision path, which only *reads* TOML via stdlib `tomllib`. `tomlkit` (TOML *writing*) is imported at
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
   so the read path never loads it. `__version__` and other costly lookups are lazy in `__init__.py`.
   Keep the two-dependency floor (`argcomplete`, `tomlkit`) and the read path light.
@@ -59,4 +62,4 @@ synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, resc
 ## Why this shape
 Python for zero install friction (brew vendors `python@3.13`); a flat TSV + `fcntl` instead of a
 DB so the registry is dependency-free and inspectable; an AST-walking template sandbox (not `eval`)
-because recipes run automatically from the post-checkout hook on potentially untrusted checkouts.
+because clone trust covers recipes from future refs processed by the post-checkout hook.

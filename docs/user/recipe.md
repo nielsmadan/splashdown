@@ -1,11 +1,12 @@
 ---
 title: The splashdown recipe
-description: Reference for splashdown.toml projects, apps, resources, setup commands, and device targets.
+description: Reference for splashdown.toml projects, apps, resources, bootstrap and setup commands, and device targets.
 ---
 
 # The recipe: `splashdown.toml`
 
-The committed file. Its top-level sections are `[project]`, `[apps.*]`, `[resources.*]`, `[targets.*]` (for mobile), and `[setup.*]`. The scanner produces a working version.
+The committed file. Its top-level sections are `[project]`, `[apps.*]`, `[resources.*]`,
+`[targets.*]` (for mobile), `[bootstrap]`, and `[setup.*]`. The scanner produces a working version.
 
 ```toml
 [project]
@@ -102,6 +103,22 @@ run = [
 ```
 
 `run` accepts one non-empty command string or a non-empty array of non-empty strings. It is the only field accepted in a setup block. Commands run sequentially from the checkout root with resolved resources added to their environment. The requested setup name must exist. Execution stops at the first failed command and exits 1. Resource allocation and output-file writes happen before setup execution starts and are not rolled back if a command fails.
+
+For commands that should run once when a trusted worktree is created, use a top-level
+`[bootstrap]` instead:
+
+```toml
+[bootstrap]
+run = [
+  "pnpm install --frozen-lockfile",
+  "python manage.py migrate",
+]
+```
+
+The command shape and failure behavior match setup, but bootstrap has a separate security and
+completion model. It never runs until the clone is authorized with `splash trust`, and then runs
+once per checkout through `splash bootstrap` or a qualifying worktree-creation hook. See
+[Trusted worktree bootstrap](bootstrap.md).
 
 **For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands. Pin an explicit version like `ios = "18.5"` for fixed coverage.
 

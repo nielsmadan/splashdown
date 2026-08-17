@@ -41,7 +41,7 @@ produce empty configs, so callers can load them unconditionally.
 
 Validation is strict and centralized:
 
-- A recipe permits only `project`, `apps`, `resources`, `targets`, and `setup`
+- A recipe permits only `project`, `apps`, `resources`, `targets`, `bootstrap`, and `setup`
   at the top level. Project fields and nested iOS/Android command settings are
   whitelisted and checked against the built-in workspace, loader, and profile
   registries.
@@ -54,7 +54,10 @@ Validation is strict and centralized:
   rejected during load. `envfile=PATH` must be a non-empty relative path that
   resolves inside the checkout; absolute, `..`, and escaping-symlink paths fail.
 - Every setup table permits only `run`, as either a non-empty string or a
-  non-empty array of non-empty strings.
+  non-empty array of non-empty strings. Validation normalizes both forms to a frozen
+  `CommandSpec` with an immutable command tuple.
+- The optional top-level bootstrap table has the same command shape and no other fields. Its
+  separate trust/completion behavior lives in [bootstrap.md](bootstrap.md).
 - Local and global documents permit only `settings` and `targets`; both sections
   are validated completely.
 
@@ -63,10 +66,10 @@ errors consistently use
 `SOURCE: [qualified.path] problem; expected ...`, including TOML decoding
 errors. The existing `[devices.*]` rename diagnostic is retained in that format.
 
-The objects continue exposing plain dictionaries (`project`, `apps`,
-`resources`, `setup`, `targets`, and `settings`), so consumers do not need a
-second model layer. `LOCAL_SKELETON` is the comment-only template written when a
-local file is first scaffolded.
+The objects expose plain dictionaries for project, apps, resources, targets, and settings.
+Command-bearing sections use `CommandSpec`: `bootstrap` is one optional value and `setup` maps
+names to values. `LOCAL_SKELETON` is the comment-only template written when a local file is first
+scaffolded.
 
 ### `[targets.*]` parsing
 
@@ -255,7 +258,7 @@ file I/O.
 - `Recipe.load` / `Recipe.parse` — file and in-memory recipe validation.
 - `LocalConfig.load` / `LocalConfig.parse` and `GlobalConfig.load` /
   `GlobalConfig.parse` — local/global validation.
-- `_validate_resources`, `_validate_apps`, `_validate_setup`,
+- `_validate_resources`, `_validate_apps`, `_validate_setup`, `_validate_bootstrap`,
   `_validate_project` — recipe schema.
 - `_parse_targets_section` / `validate_target_spec` — shared target schema.
 - `recipe.py:988` — `merged_targets`; `recipe.py:1028` — `resolve_variant`.
@@ -273,9 +276,8 @@ file I/O.
 
 ## Gotchas
 
-- **The AST sandbox is a security boundary, not a convenience.** Recipes run
-  automatically from the post-checkout git hook against whatever a checkout
-  contains — i.e. potentially untrusted input. `_eval_node` is `eval`-free *on
+- **The AST sandbox is a security boundary, not a convenience.** Clone trust covers future refs,
+  so the post-checkout git hook may process a recipe changed after authorization. `_eval_node` is `eval`-free *on
   purpose*: an empty-`__builtins__` `eval` is not a real sandbox, because
   object-graph walks like `().__class__.__base__.__subclasses__()` reach
   `os`/`subprocess`. Forbidding attribute access is what closes that escape
@@ -307,12 +309,12 @@ file I/O.
 
 ## Why
 
-- **AST interpreter, not `eval`** — the engine has to be safe against untrusted
-  recipes executed by a git hook; see the gotcha above. The whitelist approach
+- **AST interpreter, not `eval`** — the engine has to be safe against recipe input
+  from future refs processed by a git hook; see the gotcha above. The whitelist approach
   means the threat surface is the explicit `_BINOPS`/scope set, not the entire
   Python object graph.
 - **tomllib read vs tomlkit write split** — reads and schema validation (the hot path: every
-  post-checkout sync, `status`, completion) must stay dependency-light and fast,
+  post-checkout event, `status`, completion) must stay dependency-light and fast,
   so they use stdlib `tomllib`. Only *writes* need to preserve comments, which
   is `tomlkit`'s job. Confining `tomlkit` to `tomlio.py`,
   keeping `tomlio` out of `__init__.py`'s re-exports, and lazy-importing it from

@@ -29,6 +29,7 @@ splashdown pins system resources (dev ports, env vars, iOS simulators, Android e
 - [How it works](how-it-works.md): the git-hook + env-loader glue, and the four files splash manages.
 - [How it compares](comparison.md): splashdown vs Galactic, Worktrunk, VibeChard, and adjacent tools.
 - [The recipe: `splashdown.toml`](recipe.md): the committed config for apps, resources, and mobile targets.
+- [Trusted worktree bootstrap](bootstrap.md): run shared setup once when a trusted worktree is created.
 - [Per-checkout overrides](overrides.md): add local target variants in `splashdown.local.toml`.
 - [Settings](settings.md): behavior toggles and where they live.
 - [Shell completion](shell-completion.md): bash/zsh tab-completion setup.

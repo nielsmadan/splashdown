@@ -88,13 +88,31 @@ The recipe is on disk, the loader is wired, the hook fires on every checkout. Ad
 git worktree add ../myapp.feat-x feat-x
 cd ../myapp.feat-x
 
-# post-checkout hook fired `splash`. splashdown.env now has the per-checkout ports.
+# post-checkout hook provisioned splashdown.env with the per-checkout ports.
 pnpm dev    # api on 9082 instead of 9081, vite on 5175 instead of 5174
 ```
 
 See [`examples/`](./examples/) for hook + mise wiring patterns. Verify wiring later with `splash doctor` (and `splash doctor --fix` to re-apply).
 
 > Multi-app / monorepo setups: see [splashdown.dev/monorepos](https://splashdown.dev/monorepos/).
+
+### Trusted worktree bootstrap
+
+Projects can share one-time worktree setup without making cloned repositories execute shell code
+automatically:
+
+```toml
+[bootstrap]
+run = ["pnpm install --frozen-lockfile", "python manage.py migrate"]
+```
+
+Review the recipe, then run `splash trust` and `splash bootstrap`. Trust belongs to this clone and
+is shared by its linked worktrees; another clone starts untrusted and its hook writes nothing.
+Future `git worktree add` operations provision the checkout and run bootstrap once, while ordinary
+branch switches only sync resources. Trust covers code in future refs too, including scripts called
+by an unchanged command. `splash init` grants only automatic sync trust, never bootstrap trust.
+Revoke it with `splash untrust`. Full security and retry behavior:
+[splashdown.dev/bootstrap](https://splashdown.dev/bootstrap/).
 
 ### Mobile: simulators & emulators
 

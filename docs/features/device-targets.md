@@ -197,7 +197,7 @@ the machine-wide `~/.config/splashdown/config.toml` (`GlobalConfig`, shared acro
 Three types: `simulator`, `emulator`, `device`.
 
 All three documents are strict: recipe top-level sections are limited to `project`, `apps`,
-`resources`, `targets`, and `setup`; local and global configs are limited to `settings` and
+`resources`, `targets`, `bootstrap`, and `setup`; local and global configs are limited to `settings` and
 `targets`. Unknown target types or fields, malformed variant names, non-string/empty values, and
 invalid physical-device platforms are hard errors when the document loads. The same target
 validator is used for all three sources and `target add`, so invalid declarations fail before

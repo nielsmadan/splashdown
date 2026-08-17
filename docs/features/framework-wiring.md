@@ -30,7 +30,7 @@ auto-patches it. `splash doctor` is a read-only `✓`/`✗` report; `splash doct
 applies the safe autofixes and prints manual instructions for the rest; `splash init`
 runs the fixing pass after scaffolding so a fresh setup lands wired.
 
-Checks covered today: the post-checkout hook (`rn-hook`/`hook`), RN
+Checks covered today: the post-checkout hook (`hook`), RN
 `metro.config.js`, RN `package.json` scripts, RN `ios/.xcode.env`, Vite config, and
 Spring Boot `application.properties` (report-only).
 
@@ -46,18 +46,16 @@ The unit is `WiringCheck` (`src/splashdown/wiring.py:25`): an `id`, a human
 `description`, `applies(cwd)`, `detect(cwd) -> ("ok"|"problem", detail)`, an optional
 `autofix(cwd)` (`None` means manual-only), and `manual_instructions(cwd)`.
 
-Checks are owned by **Profiles**, not by `doctor` directly. RN checks accumulate in
-the module-level list `_RN_WIRING_CHECKS` (`src/splashdown/wiring.py:40`) as each
-`rn-*` helper is appended; the shared `_HOOK_WIRING_CHECK`
-(`src/splashdown/wiring.py:579`) is reused by native Profiles that otherwise have no
-per-checkout wiring. Vite and Spring Boot define their checks inline in their
-Profiles. `cmd_doctor` resolves the active framework (override, else recipe, else
-`detect_framework`) via `_resolve_doctor_framework` (`src/splashdown/wiring.py:177`),
-then pulls that framework's check list through `_wiring_checks_for_framework`
-(`src/splashdown/wiring.py:205`), which synthesizes an `AppInventory` rooted at `cwd`
-and calls `Profile.wiring_checks`.
+Most checks are owned by **Profiles**. RN checks accumulate in the module-level list
+`_RN_WIRING_CHECKS` as each `rn-*` helper is appended; the shared `_HOOK_WIRING_CHECK` is reused by
+native Profiles that otherwise have no per-checkout wiring. Vite and Spring Boot define their
+checks inline in their Profiles. `doctor.py` resolves the active framework and app directory, then
+pulls that framework's checks through `_wiring_checks_for_framework`. It also combines project-level
+Compose checks and, when the recipe has `[bootstrap]`, the generic hook check. Project checks still
+run when framework detection is ambiguous or unavailable, so a framework-neutral bootstrap recipe
+can use `splash doctor --fix`.
 
-The run loop in `cmd_doctor` (`src/splashdown/wiring.py:217`): for each check, skip if
+The run loop in `cmd_doctor` (`src/splashdown/doctor.py`): for each check, skip if
 `applies` is false; if `detect` returns `ok`, print `✓`; on `problem`, if `--fix` was
 passed and an `autofix` exists, run it, re-`detect`, and report `(fixed)` or
 fall through to manual instructions; otherwise print `✗` plus the manual snippet.
@@ -101,12 +99,11 @@ nothing.
 
 The individual checks:
 
-- **`rn-hook` / `hook`** (`src/splashdown/wiring.py:279`, registered at
-  `src/splashdown/wiring.py:317` and `:579`) — verifies a `post-checkout` hook fires
-  `splash`. Detection branches on the project's hook manager: lefthook config, husky
-  `.husky/post-checkout`, the native hook in Git's common hooks directory, or any configured
-  `core.hooksPath` (reported, not touched). Autofix delegates to
-  `_ensure_post_checkout_hook` so it coexists with the project's existing manager.
+- **`hook`** — verifies exact event-aware post-checkout integration through the shared
+  `post_checkout_readiness` policy in `hooks.py`. Lefthook must contain the owned command that
+  forwards all three event values. Native and Husky hooks must contain the owned body and be
+  executable. Any configured `core.hooksPath` is reported but not touched. Autofix delegates to
+  `_ensure_post_checkout_hook`, and duplicate Profile/project hook checks are removed by id.
 - **`rn-metro-config`** (`src/splashdown/wiring.py:345`, registered `:407`) —
   `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix handles three
   shapes (`src/splashdown/wiring.py:329` comment): a literal `port: <N>` is rewritten
@@ -224,18 +221,13 @@ common-hook writers while leaving any configured `core.hooksPath` untouched.
 
 ## Key entry points
 
-- `src/splashdown/wiring.py:25` — `WiringCheck` NamedTuple (the check contract).
-- `src/splashdown/wiring.py:40` — `_RN_WIRING_CHECKS` registry; `:579` `_HOOK_WIRING_CHECK`.
-- `src/splashdown/wiring.py:217` — `cmd_doctor` run loop (detect / `--fix` / manual).
-- `src/splashdown/wiring.py:177` — `_resolve_doctor_framework`; `:205` `_wiring_checks_for_framework`.
-- `src/splashdown/wiring.py:279`/`:345`/`:448`/`:531` — `rn-hook`, `rn-metro-config`, `rn-pkg-port`, `rn-xcode-env` detect helpers.
-- `src/splashdown/wiring.py:502` — `ios/.xcode.env` sentinel-wrapped managed block.
-- `src/splashdown/profiles.py:551`/`:525`/`:1166` — `vite-config-process-env` (autofix), `vite-port-wired` and `springboot-application-properties` (both report-only) checks.
-- `src/splashdown/wiring.py:51`/`:71`/`:138` — `_strip_hash_comments` / `_strip_js_comments` / `_yaml_key_regions`, the lexical helpers every detect uses to read config without a parser.
-- `src/splashdown/wiring.py:196` — `_run_detect`, the guard that turns a raising check into one `✗`.
-- `src/splashdown/cli.py:208` — `doctor` argparse parser (`--fix`, `--framework`); dispatch at `src/splashdown/cli.py:433`.
-- `src/splashdown/commands.py:1401` — init's post-scaffold wiring loop.
-- `src/splashdown/hooks.py` — `_ensure_post_checkout_hook` and hook-manager coexistence.
+- `src/splashdown/wiring.py` — `WiringCheck`, concrete file checks, and `_HOOK_WIRING_CHECK`.
+- `src/splashdown/doctor.py` — target resolution, project/Profile check combination, and the
+  detect / `--fix` / manual run loop.
+- `src/splashdown/hooks.py` — exact post-checkout readiness and hook-manager coexistence.
+- `src/splashdown/profiles.py` — Profile-owned Vite, Spring Boot, and RN check registration.
+- `src/splashdown/cli.py` — doctor parser and dispatch.
+- `src/splashdown/commands.py` — init's post-scaffold wiring loop.
 
 ## Configuration
 

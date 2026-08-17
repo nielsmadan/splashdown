@@ -171,8 +171,8 @@ def test_post_checkout_hook_provisions_new_worktree(tmp_path, monkeypatch):
 
     wt2 = tmp_path / "wt2"
     # `git worktree add` performs a checkout, firing the common hook, which
-    # runs `splash sync` (splash is on PATH under uv; XDG_STATE_HOME is inherited
-    # from os.environ). We never invoke splash in wt2 ourselves.
+    # forwards the event to splash (on PATH under uv). XDG_STATE_HOME is inherited
+    # from os.environ. We never invoke splash in wt2 ourselves.
     _git(main, "worktree", "add", "--detach", str(wt2))
 
     env_file = wt2 / "splashdown.env"

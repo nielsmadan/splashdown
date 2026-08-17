@@ -113,21 +113,28 @@ init calls the loader's `approve()` (`mise trust` / `direnv allow`) so the fresh
 config actually loads — see the trust-approval note below.
 
 **Git hook.** `_ensure_post_checkout_hook` (`hooks.py`) installs a `post-checkout`
-hook that fires `splash sync` on later checkout and worktree transitions. `_detect_hook_manager`
+hook that forwards Git's event arguments to Splashdown on later checkout and worktree transitions. `_detect_hook_manager`
 (`hooks.py`) classifies the project's existing setup as `lefthook` / `husky` /
 `core-hookspath-other` / `none`, and splashdown **coexists** rather than clobbers:
 
-- **lefthook** → idempotently add a `post-checkout` → `run: splash` entry to the lefthook
+- **lefthook** → idempotently add a `post-checkout.commands.splashdown` entry that forwards
+  `{1} {2} {3}` to the lefthook
   config and run the installed `lefthook` binary's `lefthook install` command best-effort.
   Project-controlled `yarn` or `npx` commands are never executed during init.
 - **husky** → drop a `.husky/post-checkout` hook.
 - **any configured `core.hooksPath`** → do **not** touch it; print a warning telling the
-  user to add a `splash sync` hook there themselves.
+  user to invoke a trusted absolute `splash` executable with the post-checkout event arguments,
+  or run bootstrap manually.
 - **none** → write the native `post-checkout` hook under Git's common hooks directory.
   Splashdown never changes `core.hooksPath`, and the common hook is shared by all worktrees.
-  The hook body is `POST_CHECKOUT_HOOK` (`hooks.py`): it `cd`s to the repo top,
-  no-ops if `splashdown.toml` is absent, and runs
-  `splash sync` if `splash` is on PATH (otherwise prints a "not on PATH" note).
+  The hook body is `POST_CHECKOUT_HOOK` (`hooks.py`): Git already starts it at the repo top, so it
+  no-ops if `splashdown.toml` is absent, resolves `splash` once, rejects an executable inside the
+  checkout, and invokes the internal event handler once with all three Git arguments. A missing
+  executable prints a note. The wrapper absorbs the handler's failure after diagnostics.
+
+Every successful init path records sync-only clone trust after hook installation. This lets the
+generated hook provision later checkouts while ensuring a `[bootstrap]` added by a future ref still
+requires explicit `splash trust`.
 
 **Wiring checks.** For each known-profile app, `cmd_init` runs the profile's `wiring_checks`,
 and for any check whose `detect` is not `"ok"` it applies the `autofix` if one exists, swallowing
@@ -167,11 +174,12 @@ reference fails before the existing file is replaced. Use it to pick up a newly-
 **Teardown.** `cmd_deinit` (`commands.py:1461`) reverses the owned parts of init without
 blindly restoring user files: it destroys registered sims/AVDs that splashdown owns, releases
 all registry rows, removes `splashdown.env`, clears only splashdown keys from user-owned writer
-destinations, unwires the configured loader and post-checkout hook, reverts managed gitignore
+destinations, unwires the configured loader, reverts managed gitignore
 and agent-guidance entries, removes an untouched local skeleton, and finally deletes the recipe.
 A modified `splashdown.local.toml` is preserved, loader cleanup degrades safely when the recipe
 cannot be parsed, and framework edits made by `doctor --fix` are intentionally outside deinit's
-scope because they have no reversible sentinel/original snapshot.
+scope because they have no reversible sentinel/original snapshot. The shared hook and clone-wide
+bootstrap trust remain for sibling worktrees; only this checkout's bootstrap completion is cleared.
 
 ## Key entry points
 
@@ -231,18 +239,16 @@ scope because they have no reversible sentinel/original snapshot.
 
 ## Gotchas
 
-- **UC6 — a teammate cloning a configured repo is not auto-provisioned (the H1 gap).** Git
+- **UC6 — a teammate cloning a configured repo must opt in.** Git
   does **not** run hooks on `git clone`, and `core.hooksPath` / `.husky` / lefthook wiring is
   local config that a clone does not activate. The registry (`$XDG_STATE_HOME/splashdown/…`)
   and `splashdown.env` are per-machine and never committed. So even when a teammate clones a
-  repo that already commits `splashdown.toml`, they get **no hook fired and no live values** —
-  they must run `splash init` themselves, which **re-scans and re-scaffolds** (and refuses
-  unless `--overwrite`, since the recipe already exists). There is **no lightweight
-  "install the hook + sync only" verb today** (`splash up` / `splash install` is a candidate,
-  not built — see `docs/product/use-cases.md` CE and the prior review's H1). Practical
-  workaround for a teammate on an already-configured repo: install the hook manually (or run
-  whatever the project's hook manager's `install` step is) and run `splash sync`, rather than
-  `splash init`.
+  repo that already commits `splashdown.toml`, they get no clone-local trust and no live values.
+  After reviewing the recipe, `splash trust` is the lightweight onboarding verb: it grants
+  automatic sync, grants bootstrap only when currently declared, and activates or verifies the
+  local hook without rescanning or rewriting the recipe. The teammate then runs `splash sync`, or
+  `splash bootstrap` when the recipe declares it. Tracked Lefthook/Husky changes still require the
+  project's normal hook-manager install step.
 
 - **`sys.exit(2)` short-circuits, it does not return.** The refusal guard and the
   unknown-preset branch both call `sys.exit(2)` (`commands.py:1309`, `:1429`). Callers
@@ -260,8 +266,8 @@ scope because they have no reversible sentinel/original snapshot.
 
 - **Any configured `core.hooksPath` is intentionally not touched.** If a project sets
   `core.hooksPath`, init only prints a warning and installs nothing — the user must wire
-  `splash sync` into that hook directory
-  themselves. Silent non-provisioning is the failure mode to watch for.
+  a trusted absolute executable as `splash hook post-checkout "$1" "$2" "$3"` in that hook
+  directory, or run bootstrap manually. A sync-only call cannot recognize worktree creation.
 
 - **`lefthook install` is best-effort.** Splashdown invokes only an installed `lefthook`
   binary. If it is unavailable or fails, the config entry is written but **not registered**
@@ -304,10 +310,10 @@ scope because they have no reversible sentinel/original snapshot.
 Onboarding is once-per-project but high-stakes: per the persona, a bad first run equals
 abandonment, and the parallel-agent persona needs setup to be zero-touch because an agent
 won't run a step it doesn't know about. Folding scan + scaffold + loader + hook + wiring +
-sync into one command is what makes "spin up a worktree and it just works" true. The honest
-limitation (UC6/H1) — that a *teammate's clone* is not the same as a *second worktree*, because
-hooks and the registry don't travel with a clone — is the single biggest onboarding gap and is
-documented above as a Gotcha rather than papered over.
+sync into one command is what makes "spin up a worktree and it just works" true. A teammate's clone
+is still different from a linked worktree because trust, hook activation, and registry state do not
+travel with Git. `splash trust` makes that difference an explicit security decision without
+requiring the teammate to regenerate project configuration.
 
 **Why the first sync lives in the CLI dispatch layer, not `cmd_init`.** `cmd_init` stays pure
 scaffolding so the ~30 tests that call `cmd_init(tmp_path, ...)` directly — without a `Registry` —

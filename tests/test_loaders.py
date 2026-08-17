@@ -113,7 +113,7 @@ def test_react_native_profile_inherits_existing_wiring_checks(tmp_path):
     app = sd.AppInventory(name="main", path=tmp_path, profile="react-native")
     checks = sd.PROFILES["react-native"].wiring_checks(app)
     ids = {c.id for c in checks}
-    assert "rn-hook" in ids
+    assert "hook" in ids
     assert "rn-metro-config" in ids
     assert "rn-pkg-port" in ids
     assert "rn-xcode-env" in ids

@@ -489,8 +489,6 @@ def test_invalid_port_range_errors(registry, checkout):
 
 def test_cli_sync_without_recipe_hints_init(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    # The git hook fires `splash` in every repo, so a missing recipe is a graceful
-    # no-op (rc 0) — but it must still point the user at `splash init`, not stay silent.
     rc = sd.main(["--cwd", str(tmp_path), "sync"])
     assert rc == 0
     assert "splash init" in capsys.readouterr().err

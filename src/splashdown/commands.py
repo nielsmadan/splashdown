@@ -5,10 +5,26 @@ import os
 import subprocess
 import sys
 import tomllib
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from .agentdocs import remove_agent_guidance, sync_agent_guidance
+from .bootstrap import (
+    GitDirs,
+    bootstrap_complete,
+    clear_bootstrap_completion,
+    git_dirs,
+    is_trusted,
+    is_worktree_creation,
+    lifecycle_active,
+    lifecycle_environment,
+    lifecycle_lock,
+    mark_bootstrap_complete,
+    record_trust,
+    revoke_trust,
+    trusted_execution,
+)
 from .capabilities import translate_tool_errors, warn_capability
 from .catalog import PROFILES
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
@@ -46,9 +62,9 @@ from .devices import (
 from .doctor import _resolve_doctor_framework, _wiring_checks_for_framework, cmd_doctor
 from .errors import CapabilityError
 from .hooks import (
+    _activate_post_checkout_hook,
     _ensure_gitignore,
     _ensure_post_checkout_hook,
-    _remove_post_checkout_hook,
     _revert_gitignore,
 )
 from .inventory import ProjectInventory
@@ -57,6 +73,7 @@ from .loaders import LOADERS
 from .provisioning import (
     clear_writer_destinations,
     provision,
+    run_bootstrap,
     run_setup,
     write_outputs,
 )
@@ -1173,6 +1190,7 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     if loader.wire(cwd):
         loader.approve(cwd, announce=True)
     _ensure_post_checkout_hook(cwd)
+    _trust_generated_sync(cwd)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
 
@@ -1287,6 +1305,11 @@ def _resolve_init_ios_scheme(inv: ProjectInventory, explicit: str | None) -> str
     return selected
 
 
+def _trust_generated_sync(cwd: Path) -> None:
+    with suppress(OSError, ValueError):
+        record_trust(git_dirs(cwd), bootstrap=False)
+
+
 def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional integration
     cwd: Path,
     preset: str | None = None,
@@ -1376,6 +1399,7 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
     if no_loader_msg:
         print(f"  {no_loader_msg}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
+    _trust_generated_sync(cwd)
     if electron_isolated:
         resource_names = [
             name
@@ -1439,6 +1463,7 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
         # a dotenv file here — but we must not leave the user with a silent no-op.
         print(f"  {_NO_LOADER_INSTRUCTIONS}", file=sys.stderr)
     _ensure_post_checkout_hook(cwd)
+    _trust_generated_sync(cwd)
     if preset == "electron":
         _print_electron_integration([_ELECTRON_PROFILE_RESOURCE])
 
@@ -1450,10 +1475,14 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
 
 
 def cmd_deinit(cwd: Path, registry: Registry) -> int:
-    """Remove splashdown from this checkout: reverse `init`'s edits and clear the
-    machine-wide state that `sync`/`run` created. Surgical — user-modified files
-    are kept with a note rather than clobbered. Framework config patches from
-    `doctor --fix` are out of scope (no sentinels, originals not recoverable)."""
+    if _reject_nested_lifecycle():
+        return 1
+    with lifecycle_lock(cwd, require_git=False) as dirs:
+        return _cmd_deinit_locked(cwd, registry, dirs)
+
+
+def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> int:
+    """Remove local state; preserve clone trust, shared hooks, and framework patches."""
     abspath = str(cwd.resolve())
 
     # Loader name lives in the recipe; read it before we delete the recipe. A
@@ -1505,8 +1534,6 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
     if loader is not None:
         loader.unwire(cwd)
 
-    _remove_post_checkout_hook(cwd)
-
     _revert_gitignore(cwd)
     remove_agent_guidance(cwd)
 
@@ -1523,6 +1550,9 @@ def cmd_deinit(cwd: Path, registry: Registry) -> int:
     if recipe_path.exists():
         recipe_path.unlink()
         print(f"removed {RECIPE_NAME}", file=sys.stderr)
+
+    if dirs is not None and clear_bootstrap_completion(dirs):
+        print("removed this checkout's bootstrap completion", file=sys.stderr)
 
     print("splashdown removed from this checkout", file=sys.stderr)
     return 0
@@ -1581,6 +1611,89 @@ def _resolve_format_arg(args: Any) -> str:
     return getattr(args, "format", None) or "text"
 
 
+class _ProvisionResult(NamedTuple):
+    resolved: dict[str, str]
+    writers: list[tuple[str, bool]]
+    setup: list[str]
+    changed: dict[str, str]
+
+
+def _load_required_recipe(cwd: Path) -> Recipe:
+    path = cwd / RECIPE_NAME
+    if not path.exists():
+        raise FileNotFoundError(f"no {RECIPE_NAME} in {cwd}; run `splash init`")
+    return Recipe.load(path)
+
+
+def _provision_locked(
+    cwd: Path,
+    registry: Registry,
+    recipe: Recipe,
+    *,
+    reprovision: bool = False,
+    setup: str | None = None,
+) -> _ProvisionResult:
+    abspath = str(cwd.resolve())
+    before = registry.all_for(abspath)
+    resolved = provision(
+        cwd,
+        registry=registry,
+        reprovision=reprovision,
+        recipe=recipe,
+    )
+    local_path = cwd / LOCAL_NAME
+    if not local_path.exists():
+        local_path.write_text(LOCAL_SKELETON)
+    writers = write_outputs(cwd, recipe, resolved)
+    setup_messages = run_setup(
+        cwd,
+        recipe,
+        setup,
+        resolved,
+        extra_env=lifecycle_environment(),
+    )
+    changed = {key: value for key, value in resolved.items() if before.get(key) != value}
+    return _ProvisionResult(resolved, writers, setup_messages, changed)
+
+
+def _emit_provision(result: _ProvisionResult, *, fmt: str) -> None:
+    anything_changed = (
+        bool(result.changed) or any(changed for _, changed in result.writers) or bool(result.setup)
+    )
+    if fmt == "json":
+        print(
+            json.dumps(
+                {
+                    "resolved": result.resolved,
+                    "writers": [message for message, _ in result.writers],
+                    "setup": result.setup,
+                    "changed": anything_changed,
+                    "changed_keys": sorted(result.changed),
+                },
+                indent=2,
+            )
+        )
+        return
+    if not anything_changed:
+        files = sum(
+            1
+            for message, _ in result.writers
+            if not message.startswith(("stdout:", "registry-only:"))
+        )
+        print(
+            f"splashdown: up to date ({len(result.resolved)} vars, {files} files)",
+            file=sys.stderr,
+        )
+        return
+    for key in result.changed:
+        print(f"  {key} (changed)", file=sys.stderr)
+    for message, changed in result.writers:
+        if changed:
+            print(f"  -> {message} (changed)", file=sys.stderr)
+    for message in result.setup:
+        print(f"  -> {message}", file=sys.stderr)
+
+
 def _cmd_provision_inner(
     cwd: Path,
     registry: Registry,
@@ -1589,56 +1702,232 @@ def _cmd_provision_inner(
     setup: str | None = None,
     fmt: str = "text",
 ) -> int:
-    abspath = str(cwd.resolve())
-    before = registry.all_for(abspath)
+    if _reject_nested_lifecycle():
+        return 1
     try:
-        resolved = provision(cwd, registry=registry, reprovision=reprovision)
-        recipe = Recipe.load(cwd / RECIPE_NAME)
-        local_path = cwd / LOCAL_NAME
-        if not local_path.exists():
-            local_path.write_text(LOCAL_SKELETON)
-        writer_results = write_outputs(cwd, recipe, resolved)
-        setup_msgs = run_setup(cwd, recipe, setup, resolved)
+        with lifecycle_lock(cwd, require_git=False):
+            recipe = _load_required_recipe(cwd)
+            result = _provision_locked(
+                cwd,
+                registry,
+                recipe,
+                reprovision=reprovision,
+                setup=setup,
+            )
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 0
     except (ValueError, TemplateError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    _emit_provision(result, fmt=fmt)
+    return 0
 
-    changed_vars = {k: v for k, v in resolved.items() if before.get(k) != v}
-    anything_changed = bool(changed_vars) or any(c for _, c in writer_results) or bool(setup_msgs)
 
-    if fmt == "json":
+def _reject_nested_lifecycle() -> bool:
+    if not lifecycle_active():
+        return False
+    print(
+        "error: recipe commands may not invoke splashdown lifecycle commands",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _bootstrap_commands(recipe: Recipe) -> tuple[str, ...]:
+    if recipe.bootstrap is None:
+        raise ValueError("recipe has no [bootstrap] section")
+    return recipe.bootstrap.commands
+
+
+def cmd_trust(cwd: Path) -> int:
+    if _reject_nested_lifecycle():
+        return 1
+    try:
+        dirs = git_dirs(cwd)
+        recipe = _load_required_recipe(cwd)
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    bootstrap_was_trusted = is_trusted(dirs)
+    if recipe.bootstrap is not None:
+        print("bootstrap commands:", file=sys.stderr)
+        for index, command in enumerate(recipe.bootstrap.commands, start=1):
+            print(f"  {index}. {json.dumps(command, ensure_ascii=True)}", file=sys.stderr)
+    else:
+        print("bootstrap commands: none", file=sys.stderr)
+    warning = (
+        "warning: trusting this clone permits current and future refs to write automatic "
+        "environment output"
+    )
+    if recipe.bootstrap is not None:
+        warning += " and run declared bootstrap commands with your user permissions"
+    print(warning, file=sys.stderr)
+    if recipe.bootstrap is None and bootstrap_was_trusted:
         print(
-            json.dumps(
-                {
-                    "resolved": resolved,
-                    "writers": [m for m, _ in writer_results],
-                    "setup": setup_msgs,
-                    "changed": anything_changed,
-                    "changed_keys": sorted(changed_vars),
-                },
-                indent=2,
-            )
-        )
-        return 0
-
-    if not anything_changed:
-        files = sum(1 for m, _ in writer_results if not m.startswith(("stdout:", "registry-only:")))
-        print(
-            f"splashdown: up to date ({len(resolved)} vars, {files} files)",
+            "bootstrap execution remains authorized from earlier trust; "
+            "run `splash untrust` to revoke it",
             file=sys.stderr,
         )
-        return 0
+    elif recipe.bootstrap is None:
+        print(
+            "bootstrap execution is not authorized; adding [bootstrap] requires `splash trust`",
+            file=sys.stderr,
+        )
+    try:
+        automatic = _activate_post_checkout_hook(cwd)
+    except OSError as error:
+        automatic = False
+        print(f"note: could not activate automatic handling: {error}", file=sys.stderr)
+    try:
+        record_trust(dirs, bootstrap=recipe.bootstrap is not None)
+    except OSError as error:
+        print(f"error: could not record trust: {error}", file=sys.stderr)
+        return 1
+    print("trusted this clone for automatic splashdown handling", file=sys.stderr)
+    if not automatic:
+        print("automatic post-checkout handling is not active for this checkout", file=sys.stderr)
+    if recipe.bootstrap is not None:
+        print("next: run `splash bootstrap`", file=sys.stderr)
+    return 0
 
-    for key in changed_vars:
-        print(f"  {key} (changed)", file=sys.stderr)
-    for m, changed in writer_results:
-        if changed:
-            print(f"  -> {m} (changed)", file=sys.stderr)
-    for m in setup_msgs:
-        print(f"  -> {m}", file=sys.stderr)
+
+def cmd_untrust(cwd: Path) -> int:
+    if _reject_nested_lifecycle():
+        return 1
+    try:
+        dirs = git_dirs(cwd)
+        existed = revoke_trust(dirs)
+    except (OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if existed:
+        print("revoked automatic splashdown trust for this clone", file=sys.stderr)
+    else:
+        print("this clone was not trusted for automatic splashdown handling", file=sys.stderr)
+    return 0
+
+
+def cmd_bootstrap(cwd: Path, registry: Registry | None = None, *, rerun: bool) -> int:
+    if _reject_nested_lifecycle():
+        return 1
+    try:
+        initial_dirs = git_dirs(cwd)
+        initial_recipe = _load_required_recipe(cwd)
+        _bootstrap_commands(initial_recipe)
+        if not is_trusted(initial_dirs):
+            raise ValueError("clone is not trusted; review the recipe and run `splash trust`")
+        registry = registry or Registry()
+        with lifecycle_lock(cwd, require_git=True) as dirs:
+            if dirs is None:
+                raise ValueError("bootstrap trust requires a Git checkout")
+            with trusted_execution(dirs) as trusted:
+                if not trusted.bootstrap:
+                    raise ValueError(
+                        "clone is not trusted; review the recipe and run `splash trust`"
+                    )
+                recipe = _load_required_recipe(cwd)
+                _bootstrap_commands(recipe)
+                result = _provision_locked(cwd, registry, recipe)
+                try:
+                    complete = bootstrap_complete(dirs)
+                except ValueError:
+                    if not rerun:
+                        raise
+                    complete = False
+                if complete and not rerun:
+                    _emit_provision(result, fmt="text")
+                    print(
+                        "splashdown: bootstrap already complete; use `--rerun` to run it again",
+                        file=sys.stderr,
+                    )
+                    return 0
+                messages = run_bootstrap(
+                    cwd,
+                    recipe,
+                    result.resolved,
+                    extra_env=lifecycle_environment(),
+                )
+                mark_bootstrap_complete(dirs)
+    except (FileNotFoundError, OSError, ValueError, TemplateError, RuntimeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        retry = "splash bootstrap --rerun" if rerun else "splash bootstrap"
+        print(f"retry with `{retry}` after fixing the problem", file=sys.stderr)
+        return 1
+    _emit_provision(result, fmt="text")
+    for message in messages:
+        print(f"  -> {message}", file=sys.stderr)
+    print("splashdown: bootstrap complete", file=sys.stderr)
+    return 0
+
+
+def _post_checkout_messages(
+    cwd: Path,
+    registry: Registry | None,
+    dirs: GitDirs | None,
+    old: str,
+    new: str,
+    flag: str,
+) -> list[str] | None:
+    recipe = _load_required_recipe(cwd)
+    if dirs is None:
+        return None
+    with trusted_execution(dirs) as trusted:
+        if not trusted.sync:
+            print(
+                "splashdown: automatic handling skipped because this clone is untrusted; "
+                "review the recipe and run `splash trust`",
+                file=sys.stderr,
+            )
+            return None
+        registry = registry or Registry()
+        result = _provision_locked(cwd, registry, recipe)
+        _emit_provision(result, fmt="text")
+        if recipe.bootstrap is None or not is_worktree_creation(dirs, old, new, flag):
+            return None
+        if not trusted.bootstrap:
+            print(
+                "splashdown: bootstrap skipped because its commands are not trusted; "
+                "review them and run `splash trust`, then `splash bootstrap`",
+                file=sys.stderr,
+            )
+            return None
+        if bootstrap_complete(dirs):
+            return None
+        messages = run_bootstrap(
+            cwd,
+            recipe,
+            result.resolved,
+            extra_env=lifecycle_environment(),
+        )
+        mark_bootstrap_complete(dirs)
+        return messages
+
+
+def cmd_post_checkout_hook(
+    cwd: Path,
+    registry: Registry | None,
+    old: str,
+    new: str,
+    flag: str,
+) -> int:
+    if _reject_nested_lifecycle():
+        return 1
+    try:
+        with lifecycle_lock(cwd, require_git=False) as dirs:
+            messages = _post_checkout_messages(cwd, registry, dirs, old, new, flag)
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError, TemplateError, RuntimeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        print("retry with `splash bootstrap` after fixing the problem", file=sys.stderr)
+        return 1
+    if messages is None:
+        return 0
+    for message in messages:
+        print(f"  -> {message}", file=sys.stderr)
+    print("splashdown: bootstrap complete", file=sys.stderr)
     return 0
 
 

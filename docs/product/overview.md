@@ -8,7 +8,7 @@ the product serves them. This is the high-level "why / for whom / what's missing
 - [persona.md](persona.md) — **primary: the parallel-agent developer** (many LLM agents, each in
   its own worktree); secondary: mobile and web/backend work flavors. (rev 2, 2026-06-23)
 - [use-cases.md](use-cases.md) — UC1–UC10 (the jobs mapped to the CLI surface) plus an
-  **Adjacent / candidate use cases** section (CA–CM) brainstormed for the agent persona. (rev 2)
+  **Adjacent / candidate use cases** section (CA–CM) brainstormed for the agent persona. (rev 3)
 
 ## Reviews (dated snapshots, newest first)
 - [2026-06-23-agent-persona-and-adjacent-use-cases.md](2026-06-23-agent-persona-and-adjacent-use-cases.md)

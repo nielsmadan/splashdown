@@ -12,16 +12,20 @@ from .commands import (
     _declared_target_types,
     _env_dispatch,
     _target_dispatch,
+    cmd_bootstrap,
     cmd_completion,
     cmd_deinit,
     cmd_destroy,
     cmd_gc,
     cmd_init,
+    cmd_post_checkout_hook,
     cmd_refresh_inventory,
     cmd_run,
     cmd_start,
     cmd_status,
     cmd_stop,
+    cmd_trust,
+    cmd_untrust,
 )
 from .constants import TARGET_TYPES
 from .devices import DeviceError
@@ -81,7 +85,10 @@ This checkout
 
 Set up a project
   init     [preset] [--rescan]   scaffold splashdown.toml + first sync (--no-sync skips it)
-  deinit                     remove splashdown from this checkout (reverses init + sync)
+  deinit                     remove checkout-local state (keeps shared hook and trust)
+  trust                      authorize automatic recipe handling for this clone
+  untrust                    revoke automatic recipe handling for this clone
+  bootstrap [--rerun]        sync + run trusted checkout bootstrap once
   doctor   [--fix]            check & fix framework wiring
 
 More
@@ -94,6 +101,10 @@ KNOWN_CMDS = {
     "sync",
     "init",
     "deinit",
+    "trust",
+    "untrust",
+    "bootstrap",
+    "hook",
     "env",
     "gc",
     "doctor",
@@ -182,6 +193,21 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     )
 
     sub.add_parser("deinit", help=argparse.SUPPRESS)
+    sub.add_parser("trust", help=argparse.SUPPRESS)
+    sub.add_parser("untrust", help=argparse.SUPPRESS)
+    bootstrap = sub.add_parser("bootstrap", help=argparse.SUPPRESS)
+    bootstrap.add_argument(
+        "--rerun",
+        action="store_true",
+        help="run bootstrap again even if this checkout already completed it",
+    )
+
+    hook = sub.add_parser("hook", help=argparse.SUPPRESS)
+    hook_sub = hook.add_subparsers(dest="hook_cmd", metavar="EVENT")
+    post_checkout = hook_sub.add_parser("post-checkout", help=argparse.SUPPRESS)
+    post_checkout.add_argument("old")
+    post_checkout.add_argument("new")
+    post_checkout.add_argument("flag")
 
     env = sub.add_parser("env", help=argparse.SUPPRESS)
     env.add_argument("--checkout", default=None)  # for bare `splash env` (list)
@@ -404,6 +430,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
         return cmd_completion(args.shell)
 
     cwd = _resolve_cwd(args)
+    if args.cmd == "trust":
+        return cmd_trust(cwd)
+    if args.cmd == "untrust":
+        return cmd_untrust(cwd)
+    if args.cmd == "bootstrap":
+        return cmd_bootstrap(cwd, rerun=args.rerun)
+    if args.cmd == "hook":
+        if args.hook_cmd != "post-checkout":
+            parser.error("hook requires an event")
+        return cmd_post_checkout_hook(cwd, None, args.old, args.new, args.flag)
+
     registry = Registry()
 
     try:

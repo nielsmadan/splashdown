@@ -7,7 +7,7 @@
 
 ## Overview
 
-When a worktree or checkout syncs, splashdown allocates free dev ports machine-wide, mints UUIDs, expands templates, and writes the concrete values to `splashdown.env` (or per-resource `writer` destinations). Every process in the checkout then sees the right `PORT`, `DATABASE_URL`, etc. with no hand-editing — this is what bare `splash` and the post-checkout hook run (UC1). The audience is the parallel-agent / worktree-heavy developer who needs each checkout to be a hermetic sandbox that "just works" on `cd`/checkout.
+When a worktree or checkout syncs, splashdown allocates free dev ports machine-wide, mints UUIDs, expands templates, and writes the concrete values to `splashdown.env` (or per-resource `writer` destinations). Every process in the checkout then sees the right `PORT`, `DATABASE_URL`, etc. with no hand-editing — this is what bare `splash` and the trusted post-checkout event handler run (UC1). The audience is the parallel-agent / worktree-heavy developer who needs each checkout to be a hermetic sandbox that "just works" on `cd`/checkout.
 
 ## Table of contents
 
@@ -19,7 +19,14 @@ When a worktree or checkout syncs, splashdown allocates free dev ports machine-w
 
 ## How it works (current state)
 
-Bare `splash` (and the post-checkout hook) routes to `_cmd_provision_inner`, which provisions resources, writes outputs, then optionally runs a requested setup (`src/splashdown/commands.py:1584`). `provision()` first loads and validates the complete `splashdown.toml`. Unknown sections or fields, wrong types, invalid enums, malformed app/resource/setup/target tables, unsafe writers, and statically invalid templates are hard errors. Validation finishes before any registry allocation or output-file mutation, and errors identify the source plus the qualified path (for example, `splashdown.toml: [resources.PORT.range] ...; expected ...`).
+Bare `splash` routes to `_cmd_provision_inner`. The hidden hook handler checks clone trust first,
+then uses the same locked provisioning path. It provisions resources, writes outputs, then
+optionally runs a requested setup only for explicit sync (`src/splashdown/commands.py`).
+`provision()` first loads and validates the complete `splashdown.toml`. Unknown sections or fields,
+wrong types, invalid enums, malformed app/resource/setup/target tables, unsafe writers, and
+statically invalid templates are hard errors. Validation finishes before any registry allocation or
+output-file mutation, and errors identify the source plus the qualified path (for example,
+`splashdown.toml: [resources.PORT.range] ...; expected ...`).
 
 After validation, provisioning computes the checkout's absolute path and git branch, then resolves every `[resources.*]` entry **in topological order** so a `template` that references another resource sees the referent's value (`src/splashdown/provisioning.py:35-41`, `topo_sort` at `src/splashdown/recipe.py:1062`). Resolution dispatches on `type`:
 
@@ -89,8 +96,9 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 
 - **`set` with no value blocks the whole sync.** A `set` resource with neither a persisted value nor a `default` raises, aborting provision until the user runs `splash env set NAME=VALUE` or adds `default` (`src/splashdown/provisioning.py:68-80`).
 - **Templates re-render; uuids and set values are sticky.** Editing a template or any referenced resource updates the result on the next sync. A direct `{{ uuid() }}` call therefore changes every time; reference a separate `type = "uuid"` resource for a stable composed value. Ports remain pinned in range, and `--force` reallocates ports and regenerates uuid resources without resetting user-set values.
-- **Output paths and checkout entries are untrusted.** Because the recipe auto-runs from the
-  post-checkout hook, `envfile=` paths must remain inside the checkout. Every writer also rejects
+- **Output paths and checkout entries are untrusted.** Clone trust covers future refs, so a later
+  checkout can change writer paths and filesystem entries. `envfile=` paths must remain inside the
+  checkout. Every writer also rejects
   a symlink or non-regular destination, including the fixed `splashdown.env` and `.envrc.local`
   names, so a checked-out link cannot redirect sync to another file.
 - **Templates forbid attribute access by design.** `{{ x.foo }}` won't work; the evaluator only allows scope names, calls, indexing/slicing, and arithmetic (`src/splashdown/recipe.py:124-171`).
@@ -103,6 +111,6 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 
 ## Why
 
-- **Restricted AST evaluator instead of `eval()`** — an empty-`__builtins__` `eval` is not a real sandbox (object-graph walks like `().__class__.__base__.__subclasses__()` reach `os`/`subprocess`), and recipes execute automatically from the post-checkout hook on untrusted checkouts (`src/splashdown/recipe.py:123-169`).
+- **Restricted AST evaluator instead of `eval()`** — an empty-`__builtins__` `eval` is not a real sandbox (object-graph walks like `().__class__.__base__.__subclasses__()` reach `os`/`subprocess`), and trusted hook execution can parse recipes from future refs (`src/splashdown/recipe.py:123-169`).
 - **Single-quote dotenv quoting** — the env file is `source`d by a shell in two paths (devbox init-hook, no-loader fallback); double-quoted `$(...)`/backticks would execute, so single quotes neutralize them while mise/direnv still read them literally (`src/splashdown/recipe.py:1096`).
 - **Keep an existing bound port pin** — reallocating a port currently bound by this checkout's own dev server would move it out from under the running process; deliberate reallocation goes through `--force` (`src/splashdown/registry.py:133-141`).

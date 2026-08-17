@@ -550,7 +550,7 @@ def test_cmd_init_writes_post_checkout_hook(tmp_path):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path)
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
-    assert "splash sync" in hook.read_text()
+    assert '"$SPLASH" hook post-checkout "$1" "$2" "$3"' in hook.read_text()
 
 
 def test_refresh_inventory_updates_project_and_apps(tmp_path):

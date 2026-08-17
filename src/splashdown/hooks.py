@@ -1,4 +1,4 @@
-"""Git-hook and env-loader wiring: install/remove the managed post-checkout hook
+"""Git-hook and env-loader wiring: install the managed post-checkout hook
 (coexisting with lefthook / husky / core.hooksPath), edit mise's `_.file`
 directive, and manage the project `.gitignore` entries.
 
@@ -11,12 +11,13 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from .constants import ENV_FILE_NAME, LOCAL_NAME
 from .package_json import package_dependencies
 
-POST_CHECKOUT_HOOK = """\
+LEGACY_POST_CHECKOUT_HOOK = """\
 #!/bin/sh
 # Splashdown per-checkout provisioning. Fires on checkout and worktree add.
 set -e
@@ -30,6 +31,47 @@ else
 fi
 exit 0
 """
+
+POST_CHECKOUT_HOOK = """\
+#!/bin/sh
+# Splashdown per-checkout provisioning. Fires on checkout and worktree add.
+set -e
+TOP=$PWD
+[ -f splashdown.toml ] || exit 0
+SPLASH=$(command -v splash) || {
+    echo "post-checkout: \\`splash\\` not on PATH — install splashdown" >&2
+    exit 0
+}
+case "$SPLASH" in
+    /*) ;;
+    *) SPLASH="$TOP/$SPLASH" ;;
+esac
+case "$SPLASH" in
+    "$TOP"/*)
+        echo "post-checkout: refusing checkout-controlled splash executable" >&2
+        exit 0
+        ;;
+esac
+"$SPLASH" hook post-checkout "$1" "$2" "$3" >&2 || true
+exit 0
+"""
+
+_LEFTHOOK_LEGACY_RUN = "splash"
+_LEFTHOOK_RUN = (
+    "'TOP=$PWD; SPLASH=$(command -v splash) || exit 0; "
+    'case "$SPLASH" in /*) ;; *) SPLASH="$TOP/$SPLASH";; esac; '
+    'case "$SPLASH" in "$TOP"/*) echo "post-checkout: refusing checkout-controlled '
+    'splash executable" >&2; exit 0;; esac; '
+    '"$SPLASH" hook post-checkout "{1}" "{2}" "{3}" >&2 || true\''
+)
+_OWNED_HOOKS = {LEGACY_POST_CHECKOUT_HOOK, POST_CHECKOUT_HOOK}
+
+
+@dataclass(frozen=True)
+class HookReadiness:
+    manager: str
+    ready: bool
+    detail: str
 
 
 def _ensure_gitignore(cwd: Path) -> None:
@@ -152,21 +194,104 @@ def _lefthook_config_path(cwd: Path) -> Path:
     return cwd / "lefthook.yml"  # default if lefthook detected only via package.json
 
 
-def _wire_post_checkout_lefthook(cwd: Path) -> None:
-    """Idempotently add a `post-checkout` -> `splash sync` entry to the lefthook config."""
+def _yaml_block_end(lines: list[str], start: int) -> int:
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            return index
+    return len(lines)
+
+
+def _lefthook_splashdown_job(
+    lines: list[str],
+) -> tuple[int, int, int | None] | None:
+    post = next(
+        (index for index, line in enumerate(lines) if re.fullmatch(r"post-checkout:\s*", line)),
+        None,
+    )
+    if post is None:
+        return None
+    post_end = _yaml_block_end(lines, post)
+    commands = next(
+        (
+            index
+            for index in range(post + 1, post_end)
+            if lines[index].strip() == "commands:" and not lines[index].lstrip().startswith("#")
+        ),
+        None,
+    )
+    if commands is None:
+        return None
+    commands_indent = len(lines[commands]) - len(lines[commands].lstrip())
+    commands_end = min(_yaml_block_end(lines, commands), post_end)
+    job = next(
+        (
+            index
+            for index in range(commands + 1, commands_end)
+            if lines[index].strip() == "splashdown:"
+            and not lines[index].lstrip().startswith("#")
+            and len(lines[index]) - len(lines[index].lstrip()) == commands_indent + 2
+        ),
+        None,
+    )
+    if job is None:
+        return None
+    job_indent = len(lines[job]) - len(lines[job].lstrip())
+    job_end = min(_yaml_block_end(lines, job), commands_end)
+    run = next(
+        (
+            index
+            for index in range(job + 1, job_end)
+            if re.match(r"^\s+run:\s*", lines[index])
+            and not lines[index].lstrip().startswith("#")
+            and len(lines[index]) - len(lines[index].lstrip()) == job_indent + 2
+        ),
+        None,
+    )
+    return (job, job_end, run)
+
+
+def _lefthook_run_value(line: str) -> str | None:
+    match = re.fullmatch(r"\s*run:\s*(.*?)\s*", line)
+    return match.group(1) if match else None
+
+
+def _wire_post_checkout_lefthook(cwd: Path) -> bool:
     path = _lefthook_config_path(cwd)
     text = path.read_text() if path.exists() else ""
-    if "splashdown" in text and "run: splash" in text:
-        _run_lefthook_install(cwd)
-        return
     lines = text.splitlines()
+    owned = _lefthook_splashdown_job(lines)
+    if owned is not None:
+        _, _, run_index = owned
+        value = _lefthook_run_value(lines[run_index]) if run_index is not None else None
+        if value == _LEFTHOOK_RUN:
+            return _run_lefthook_install(cwd)
+        if value == _LEFTHOOK_LEGACY_RUN and run_index is not None:
+            run_indent = lines[run_index][: len(lines[run_index]) - len(lines[run_index].lstrip())]
+            lines[run_index] = f"{run_indent}run: {_LEFTHOOK_RUN}"
+            path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") else ""))
+            installed = _run_lefthook_install(cwd)
+            print(f"updated post-checkout in {path.name} (lefthook)", file=sys.stderr)
+            return installed
+        print(
+            f"existing splashdown job in {path.name} was modified — leaving it untouched",
+            file=sys.stderr,
+        )
+        return False
     pc_idx = next(
         (i for i, ln in enumerate(lines) if re.match(r"^post-checkout:\s*$", ln)),
         None,
     )
     if pc_idx is None:
         sep = "" if not text or text.endswith("\n") else "\n"
-        text = text + sep + ("\npost-checkout:\n  commands:\n    splashdown:\n      run: splash\n")
+        text = (
+            text
+            + sep
+            + (f"\npost-checkout:\n  commands:\n    splashdown:\n      run: {_LEFTHOOK_RUN}\n")
+        )
         path.write_text(text)
     else:
         end_idx = len(lines)
@@ -180,21 +305,22 @@ def _wire_post_checkout_lefthook(cwd: Path) -> None:
             None,
         )
         if cmds_idx is not None:
-            indent = len(lines[cmds_idx]) - len(lines[cmds_idx].lstrip())
+            commands_indent = len(lines[cmds_idx]) - len(lines[cmds_idx].lstrip())
             addition = [
-                " " * (indent + 2) + "splashdown:",
-                " " * (indent + 4) + "run: splash",
+                " " * (commands_indent + 2) + "splashdown:",
+                " " * (commands_indent + 4) + f"run: {_LEFTHOOK_RUN}",
             ]
             lines = lines[: cmds_idx + 1] + addition + lines[cmds_idx + 1 :]
         else:
-            addition = ["  commands:", "    splashdown:", "      run: splash"]
+            addition = ["  commands:", "    splashdown:", f"      run: {_LEFTHOOK_RUN}"]
             lines = lines[: pc_idx + 1] + addition + lines[pc_idx + 1 :]
         path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") or text == "" else ""))
-    _run_lefthook_install(cwd)
+    installed = _run_lefthook_install(cwd)
     print(f"wired post-checkout in {path.name} (lefthook)", file=sys.stderr)
+    return installed
 
 
-def _run_lefthook_install(cwd: Path) -> None:
+def _run_lefthook_install(cwd: Path) -> bool:
     """Best-effort: regenerate the lefthook-managed git hooks. Silent if unavailable."""
     try:
         r = subprocess.run(
@@ -206,7 +332,7 @@ def _run_lefthook_install(cwd: Path) -> None:
             check=False,
         )
         if r.returncode == 0:
-            return
+            return True
     except (OSError, subprocess.TimeoutExpired):
         pass
     print(
@@ -214,10 +340,10 @@ def _run_lefthook_install(cwd: Path) -> None:
         "to register the post-checkout hook",
         file=sys.stderr,
     )
+    return False
 
 
-def _wire_post_checkout_husky(cwd: Path) -> None:
-    """Drop a husky post-checkout hook invoking `splash sync`."""
+def _wire_post_checkout_husky(cwd: Path) -> bool:
     husky_dir = cwd / ".husky"
     husky_dir.mkdir(exist_ok=True)
     hook = husky_dir / "post-checkout"
@@ -225,16 +351,17 @@ def _wire_post_checkout_husky(cwd: Path) -> None:
         existing = hook.read_text()
         # `.husky/post-checkout` is the user's file.
         # Never clobber a real hook — only (re)write one that's already ours.
-        if existing != POST_CHECKOUT_HOOK and "splash sync" not in existing:
+        if existing not in _OWNED_HOOKS:
             print(
                 "existing .husky/post-checkout is not splashdown's — leaving it "
-                "untouched; add `splash sync >&2 || true` to it to enable provisioning",
+                "untouched; use a trusted absolute splash path and forward `$1`, `$2`, `$3`",
                 file=sys.stderr,
             )
-            return
+            return False
     hook.write_text(POST_CHECKOUT_HOOK)
     hook.chmod(0o755)
     print("wrote .husky/post-checkout (husky)", file=sys.stderr)
+    return True
 
 
 def _native_hook_path(cwd: Path) -> Path | None:
@@ -256,26 +383,72 @@ def _native_hook_path(cwd: Path) -> Path | None:
     return common_dir.resolve() / "hooks" / "post-checkout"
 
 
-def _wire_post_checkout_native(cwd: Path) -> None:
+def _wire_post_checkout_native(cwd: Path) -> bool:
     hook = _native_hook_path(cwd)
     if hook is None:
         print("note: not a Git checkout; post-checkout hook not installed", file=sys.stderr)
-        return
+        return False
     hook.parent.mkdir(parents=True, exist_ok=True)
-    if hook.exists() and hook.read_text() != POST_CHECKOUT_HOOK:
+    if hook.exists() and hook.read_text() not in _OWNED_HOOKS:
         print(
             f"existing {hook} is not splashdown's — leaving it untouched; "
-            "add `splash sync >&2 || true` to enable provisioning",
+            "use a trusted absolute splash path and forward `$1`, `$2`, `$3`",
             file=sys.stderr,
         )
-        return
+        return False
     hook.write_text(POST_CHECKOUT_HOOK)
     hook.chmod(0o755)
     print(f"wrote {hook}", file=sys.stderr)
+    return True
+
+
+def post_checkout_readiness(cwd: Path) -> HookReadiness:
+    manager = _detect_hook_manager(cwd)
+    if manager == "lefthook":
+        path = _lefthook_config_path(cwd)
+        lines = path.read_text().splitlines() if path.exists() else []
+        owned = _lefthook_splashdown_job(lines)
+        if owned is not None:
+            _, _, run_index = owned
+            value = _lefthook_run_value(lines[run_index]) if run_index is not None else None
+            if value == _LEFTHOOK_RUN:
+                return HookReadiness(manager, True, "lefthook forwards post-checkout events")
+            if value == _LEFTHOOK_LEGACY_RUN:
+                return HookReadiness(manager, False, "lefthook post-checkout is sync-only")
+        return HookReadiness(manager, False, "lefthook post-checkout is missing or modified")
+    if manager == "husky":
+        hook = cwd / ".husky" / "post-checkout"
+        if (
+            hook.exists()
+            and hook.read_text() == POST_CHECKOUT_HOOK
+            and bool(hook.stat().st_mode & 0o111)
+        ):
+            return HookReadiness(manager, True, "husky forwards post-checkout events")
+        return HookReadiness(manager, False, "husky post-checkout is missing or modified")
+    if manager == "core-hookspath-other":
+        return HookReadiness(manager, False, "core.hooksPath points to a custom directory")
+    native_hook = _native_hook_path(cwd)
+    if (
+        native_hook is not None
+        and native_hook.exists()
+        and native_hook.read_text() == POST_CHECKOUT_HOOK
+        and bool(native_hook.stat().st_mode & 0o111)
+    ):
+        return HookReadiness(manager, True, "native hook forwards post-checkout events")
+    return HookReadiness(manager, False, "native post-checkout is missing or modified")
+
+
+def post_checkout_manual_instructions(cwd: Path) -> str:
+    readiness = post_checkout_readiness(cwd)
+    return (
+        f"{readiness.detail}. Run `splash doctor --fix` when Splashdown owns the hook.\n"
+        "For a custom hook, invoke a trusted absolute splash executable as:\n"
+        '    /trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true\n'
+        "Otherwise run `splash bootstrap` manually after creating a worktree."
+    )
 
 
 def _ensure_post_checkout_hook(cwd: Path) -> None:
-    """Wire `post-checkout -> splash sync`, coexisting with any existing hook manager."""
     manager = _detect_hook_manager(cwd)
     if manager == "lefthook":
         _wire_post_checkout_lefthook(cwd)
@@ -296,117 +469,38 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
             current = "?"
         print(
             f"warning: core.hooksPath is `{current}` — not wiring automatically. "
-            f"Add a post-checkout hook there that runs `splash sync`.",
+            "Use a trusted absolute splash path and forward `$1`, `$2`, `$3`.",
             file=sys.stderr,
         )
     else:
         _wire_post_checkout_native(cwd)
 
 
-def _remove_post_checkout_hook(cwd: Path) -> None:
-    """Inverse of _ensure_post_checkout_hook. Surgical: remove only the entry we
-    added, keeping unrelated hooks and leaving a user-modified hook in place.
-
-    Unlike `_ensure_*`, this does NOT dispatch on the currently-detected manager:
-    the manager can change between init and deinit, which would otherwise orphan
-    the old hook. Each removal is content/marker-guarded, so trying every target
-    only ever touches splashdown-owned content."""
-    _unwire_post_checkout_lefthook(cwd)
-    _unwire_post_checkout_husky(cwd)
-    _unwire_post_checkout_native(cwd)
-
-
-def _unwire_post_checkout_husky(cwd: Path) -> None:
-    hook = cwd / ".husky" / "post-checkout"
-    if not hook.exists():
-        return
-    if hook.read_text() == POST_CHECKOUT_HOOK:
-        hook.unlink()
-        print("removed .husky/post-checkout", file=sys.stderr)
-    else:
-        print("note: .husky/post-checkout was modified — left in place", file=sys.stderr)
-
-
-def _unwire_post_checkout_native(cwd: Path) -> None:
-    hook = _native_hook_path(cwd)
-    if hook is None or not hook.exists():
-        return
-    if hook.read_text() != POST_CHECKOUT_HOOK:
-        print(f"note: {hook} was modified — left in place", file=sys.stderr)
-        return
-    hook.unlink()
-    print(f"removed {hook}", file=sys.stderr)
-
-
-def _unwire_post_checkout_lefthook(cwd: Path) -> None:
-    path = _lefthook_config_path(cwd)
-    if not path.exists():
-        return
-    lines = path.read_text().splitlines()
-    # Operate ONLY within the top-level `post-checkout:` block — a job named
-    # `splashdown` under some other hook (e.g. pre-commit) must not be touched.
-    pc_idx = next((i for i, ln in enumerate(lines) if re.match(r"^post-checkout:\s*$", ln)), None)
-    if pc_idx is None:
-        return
-    end_idx = len(lines)
-    for j in range(pc_idx + 1, len(lines)):
-        ln = lines[j]
-        if ln and not ln[0].isspace() and not ln.startswith("#"):
-            end_idx = j
-            break
-    block = lines[pc_idx:end_idx]
-    if not any(ln.strip() == "splashdown:" for ln in block):
-        return
-    block = _remove_indented_block(block, "splashdown:")
-    block = _remove_empty_yaml_block(block, "commands:")
-    # If our removal emptied the post-checkout block (splashdown created it from
-    # scratch), drop the whole block; otherwise keep the user's other jobs.
-    if not any(ln.strip() for ln in block[1:]):
-        block = []
-    new_lines = lines[:pc_idx] + block + lines[end_idx:]
-    text = "\n".join(new_lines).rstrip()
-    path.write_text(text + "\n" if text else "")
-    _run_lefthook_install(cwd)
-    print("removed splashdown post-checkout (lefthook)", file=sys.stderr)
-
-
-def _remove_indented_block(lines: list[str], key: str) -> list[str]:
-    """Drop a `<indent>key` line and every following line indented deeper (plus
-    any blank lines between them)."""
-    out: list[str] = []
-    i, n = 0, len(lines)
-    while i < n:
-        ln = lines[i]
-        if ln.strip() == key:
-            indent = len(ln) - len(ln.lstrip())
-            i += 1
-            while i < n and (
-                not lines[i].strip() or (len(lines[i]) - len(lines[i].lstrip())) > indent
-            ):
-                i += 1
-            continue
-        out.append(ln)
-        i += 1
-    return out
-
-
-def _remove_empty_yaml_block(lines: list[str], key: str) -> list[str]:
-    """Drop a `<indent>key` line that has no deeper-indented body following it."""
-    out: list[str] = []
-    i, n = 0, len(lines)
-    while i < n:
-        ln = lines[i]
-        if ln.strip() == key:
-            indent = len(ln) - len(ln.lstrip())
-            has_body = False
-            for j in range(i + 1, n):
-                if not lines[j].strip():
-                    continue
-                has_body = (len(lines[j]) - len(lines[j].lstrip())) > indent
-                break
-            if not has_body:
-                i += 1
-                continue
-        out.append(ln)
-        i += 1
-    return out
+def _activate_post_checkout_hook(cwd: Path) -> bool:
+    readiness = post_checkout_readiness(cwd)
+    if readiness.ready:
+        if readiness.manager == "lefthook":
+            return _run_lefthook_install(cwd)
+        return True
+    if readiness.manager == "lefthook":
+        print(
+            "note: lefthook needs `splash doctor --fix` before "
+            "event-aware automatic handling; use `splash bootstrap` manually",
+            file=sys.stderr,
+        )
+        return False
+    if readiness.manager == "husky":
+        print(
+            "note: .husky/post-checkout needs `splash doctor --fix` "
+            "before event-aware automatic handling; use `splash bootstrap` manually",
+            file=sys.stderr,
+        )
+        return False
+    if readiness.manager == "core-hookspath-other":
+        print(
+            "note: core.hooksPath prevents event-aware automatic handling; "
+            "use `splash bootstrap` manually",
+            file=sys.stderr,
+        )
+        return False
+    return _wire_post_checkout_native(cwd)

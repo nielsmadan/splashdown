@@ -9,7 +9,7 @@ Allocating a port doesn't always reach the running process. Most frameworks hard
 
 | Profile | Check | What it ensures |
 |---|---|---|
-| react-native | `rn-hook` | post-checkout fires `splash`, wired through your existing hook manager (lefthook / husky) instead of clobbering `core.hooksPath` |
+| react-native | `hook` | post-checkout forwards Git's event to Splashdown through your existing hook manager (lefthook / husky) instead of clobbering `core.hooksPath` |
 | react-native | `rn-metro-config` | `metro.config.js` consumes `RCT_METRO_PORT`. Auto-patches the recognized `port: <N>` literal shape, otherwise prints the exact snippet to paste |
 | react-native | `rn-pkg-port` | `package.json` `start`/`ios`/`android` scripts don't carry `--port <N>` (which would override the env var), auto-stripped |
 | react-native | `rn-xcode-env` | `ios/.xcode.env` exports a splashdown-managed `RCT_METRO_PORT` block. iOS bakes the port into the binary at compile time, so Xcode-GUI builds need this to pick up the per-checkout port |

@@ -1,11 +1,8 @@
 # Use Cases (Jobs-to-be-done)
 
-> Last refined: 2026-06-23 (rev 2) · Persona: see persona.md
+> Last refined: 2026-08-17 (rev 3) · Persona: see persona.md
 >
-> **Changed in rev 2:** added **UC10** (commit the lowest-supported-OS sim as part of the
-> repo — already built, now documented) and an **Adjacent / candidate use cases** section
-> brainstormed around the new primary persona (the parallel-agent developer). Candidates are
-> labelled by how much the product covers today; they are *not* commitments.
+> **Changed in rev 3:** UC6 and CE now reflect clone trust and the trusted worktree bootstrap.
 >
 > **Downstream:** each job below is broken into requirements in [`docs/features/`](../features/overview.md)
 > (see its traceability matrix), which link on to the implementation in [`docs/tech/`](../tech/overview.md).
@@ -15,8 +12,9 @@ Ordered by centrality to the two co-primary personas. Paths cite the CLI surface
 
 ## UC1 — When I add a worktree, I want free dev ports without editing anything, so unrelated servers never collide (primary · general persona)
 - **Trigger**: `git worktree add` / `git checkout` of a project already running splashdown.
-- **Path today**: post-checkout hook fires `splash` (bare → `sync`) → `provision()` allocates
-  via the machine-wide registry → writes `splashdown.env` → loader (mise/direnv/devbox) sources it.
+- **Path today**: the post-checkout event handler verifies clone sync trust → `provision()`
+  allocates via the machine-wide registry → writes `splashdown.env` → loader
+  (mise/direnv/devbox) sources it.
 - **Definition of done**: `pnpm dev` (etc.) binds a free port; no hand-edit, no clash with
   other worktrees/repos.
 - **Frequency / stakes**: many times a day; silent wrong-port wastes real debugging time.
@@ -31,7 +29,8 @@ Ordered by centrality to the two co-primary personas. Paths cite the CLI surface
 ## UC3 — When I adopt splashdown in a project, I want one command to set it all up, so I get value immediately (primary · onboarding, both)
 - **Trigger**: `splash init [preset]`.
 - **Path today**: scan workspace+frameworks → scaffold `splashdown.toml`(+`.local.toml`) →
-  wire loader + post-checkout hook → run wiring checks → first `sync` → print ports.
+  wire loader + post-checkout hook → grant sync-only clone trust → run wiring checks → first
+  `sync` → print ports.
 - **Definition of done**: files written, hook installed, this checkout has live values.
 - **Frequency / stakes**: once per project; a bad first run = abandonment.
 
@@ -52,10 +51,13 @@ Ordered by centrality to the two co-primary personas. Paths cite the CLI surface
 
 ## UC6 — When I clone a project that uses splashdown, I want it to work on my machine too (team adoption)
 - **Trigger**: fresh `git clone` of a repo with a committed `splashdown.toml`.
-- **Path today**: the committed recipe + loader config exist, but the **hook is not
-  installed by a clone** and the registry/env are per-machine → the teammate must run
-  `splash init` (or at least install the hook) themselves.
-- **Definition of done**: teammate's checkout allocates ports / has the hook with no surprise.
+- **Path today**: the committed recipe + loader config exist, but clone-local trust, hook
+  activation, registry rows, and outputs do not travel with Git. After review, the teammate runs
+  `splash trust` to authorize automatic sync and any currently declared bootstrap, then runs
+  `splash sync` or `splash bootstrap`. The trust command installs or verifies local hook state
+  without rewriting the recipe.
+- **Definition of done**: teammate explicitly authorizes the clone, gets live values, and has an
+  active hook without regenerating project configuration.
 - **Frequency / stakes**: once per teammate; matters only if team adoption is the wedge.
 
 ## UC7 — When I delete worktrees, I want their reserved ports/sims freed, so the machine doesn't leak resources (both)
@@ -145,11 +147,9 @@ commitments**. Cross-references to the prior review (`2026-06-23-review.md`) whe
 - **Job**: "When my harness spins up a worktree, run *one* command that allocates ports, writes
   env, wires the loader, and runs project setup (migrate/seed) so the agent lands on a prepared
   sandbox."
-- **Coverage today (partial)**: `init` + `sync` + `[setup.*]` (`run_setup`) already do most of
-  this, but it isn't packaged as *the* agent-bootstrap entrypoint, and `init` re-scans/scaffolds
-  (wrong for an already-configured clone — see prior review **H1 / UC6**).
-- **Opportunity**: a `splash up` / `splash install` bootstrap verb. Overlaps the prior review's
-  H1; the agent persona raises its priority. Size S–M.
+- **Coverage today**: `[bootstrap]` plus `splash trust` and `splash bootstrap` provide the explicit
+  fresh-clone path. A trusted `git worktree add` provisions outputs and runs the command sequence
+  once for that worktree. Completion, retry, and revocation are tracked separately.
 
 ## CF — Fleet view: what every agent has allocated right now
 - **Job**: "When I'm supervising 8 agents, show me every worktree's ports/sims/DBs and what's

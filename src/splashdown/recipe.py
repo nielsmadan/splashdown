@@ -30,6 +30,11 @@ class TemplateError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class CommandSpec:
+    commands: tuple[str, ...]
+
+
 def _slug(s: str) -> str:
     s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
     return s or "x"
@@ -212,7 +217,7 @@ def template_refs(tpl: str) -> set[str]:
 
 
 _WORKSPACES = ("single", "pnpm", "yarn", "npm", "cargo", "gradle")
-_RECIPE_SECTIONS = {"project", "apps", "resources", "targets", "setup"}
+_RECIPE_SECTIONS = {"project", "apps", "resources", "targets", "setup", "bootstrap"}
 _CONFIG_SECTIONS = {"settings", "targets"}
 _PROJECT_FIELDS = {"workspace", "loader", "framework", "run", "ios", "android"}
 _PROJECT_IOS_FIELDS = {"scheme", "mode", "configuration", "workspace", "project"}
@@ -695,35 +700,51 @@ def _validate_apps(
     return apps
 
 
-def _validate_setup(data: dict[str, Any], *, source: str) -> dict[str, dict[str, Any]]:
+def _validate_command_table(
+    raw_spec: Any,
+    *,
+    source: str,
+    path: str,
+) -> CommandSpec:
+    spec = _table(raw_spec, source=source, path=path)
+    _allowed_keys(spec, {"run"}, source=source, path=path)
+    if "run" not in spec:
+        _schema_error(
+            source,
+            path,
+            problem="missing field `run`",
+            expected="a non-empty string or non-empty array of strings",
+        )
+    commands = spec["run"]
+    if isinstance(commands, str):
+        _non_empty_string(commands, source=source, path=f"{path}.run")
+        normalized = (commands,)
+    elif isinstance(commands, list) and commands:
+        for index, command in enumerate(commands):
+            _non_empty_string(command, source=source, path=f"{path}.run.{index}")
+        normalized = tuple(commands)
+    else:
+        _schema_error(
+            source,
+            f"{path}.run",
+            problem=f"got {type(commands).__name__}",
+            expected="a non-empty string or non-empty array of strings",
+        )
+    return CommandSpec(normalized)
+
+
+def _validate_setup(data: dict[str, Any], *, source: str) -> dict[str, CommandSpec]:
     raw = _table(data.get("setup", {}), source=source, path="setup")
-    setup: dict[str, dict[str, Any]] = {}
-    for name, raw_spec in raw.items():
-        path = f"setup.{name}"
-        spec = _table(raw_spec, source=source, path=path)
-        _allowed_keys(spec, {"run"}, source=source, path=path)
-        if "run" not in spec:
-            _schema_error(
-                source,
-                path,
-                problem="missing field `run`",
-                expected="a non-empty string or non-empty array of strings",
-            )
-        commands = spec["run"]
-        if isinstance(commands, str):
-            _non_empty_string(commands, source=source, path=f"{path}.run")
-        elif isinstance(commands, list) and commands:
-            for index, command in enumerate(commands):
-                _non_empty_string(command, source=source, path=f"{path}.run.{index}")
-        else:
-            _schema_error(
-                source,
-                f"{path}.run",
-                problem=f"got {type(commands).__name__}",
-                expected="a non-empty string or non-empty array of strings",
-            )
-        setup[name] = dict(spec)
-    return setup
+    return {
+        name: _validate_command_table(spec, source=source, path=f"setup.{name}")
+        for name, spec in raw.items()
+    }
+
+
+def _validate_bootstrap(data: dict[str, Any], *, source: str) -> CommandSpec | None:
+    if "bootstrap" not in data:
+        return None
+    return _validate_command_table(data["bootstrap"], source=source, path="bootstrap")
 
 
 def validate_target_spec(
@@ -807,6 +828,7 @@ class Recipe:
         _allowed_keys(data, _RECIPE_SECTIONS, source=source, path="document")
         self.resources = _validate_resources(data, source=source, base_dir=path.parent)
         self.setup = _validate_setup(data, source=source)
+        self.bootstrap = _validate_bootstrap(data, source=source)
         self.project = _validate_project(data, source=source)
         self.apps = _validate_apps(data, self.resources, source=source)
         self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(

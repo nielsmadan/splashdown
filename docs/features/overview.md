@@ -15,7 +15,7 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   `run`/`start`/`stop`/`destroy`, auto-recreate of `latest` sims, and the committed device matrix
   (incl. lowest-supported-OS coverage). *(UC2, UC4, UC10)*
 - [init-and-onboarding.md](init-and-onboarding.md) — `splash init`: scan, scaffold, wire the
-  loader + post-checkout hook, first sync; presets; and the fresh-clone onboarding gap. *(UC3, UC6)*
+  loader + post-checkout hook, first sync; presets; and fresh-clone trust onboarding. *(UC3, UC6)*
 - [framework-wiring.md](framework-wiring.md) — `splash doctor`: detect and (where safe) auto-patch
   framework configs that hardcode the port / override the env var. *(UC5)*
 - [resource-cleanup.md](resource-cleanup.md) — `gc`, lazy GC, `target prune`, and `env release`:
@@ -24,6 +24,8 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   and `env` (list/get/set/release); the machine-readable surface. *(UC8)*
 - [per-checkout-overrides.md](per-checkout-overrides.md) — `splashdown.local.toml` add-only target
   variants; `target add`/`remove`. *(UC9)*
+- [trusted-bootstrap.md](trusted-bootstrap.md) — clone-authorized, once-per-worktree shell setup;
+  trust/revocation, creation-only triggering, retries, and completion. *(UC3, UC6)*
 
 > Monorepo setup is a user how-to (a walkthrough with worked examples), not a feature spec, so
 > it lives in [`../user/monorepos.md`](../user/monorepos.md), not here.
@@ -43,3 +45,4 @@ feature doc's header repeats its own up/down links.
 | UC7 — resource cleanup | [resource-cleanup](resource-cleanup.md) | [registry](../tech/registry.md), [devices](../tech/devices.md) |
 | UC8 — status & inspect | [status-and-inspect](status-and-inspect.md) | [cli-and-commands](../tech/cli-and-commands.md) |
 | UC9 — per-checkout overrides | [per-checkout-overrides](per-checkout-overrides.md) | [recipe-and-templates](../tech/recipe-and-templates.md), [devices](../tech/devices.md) |
+| UC3, UC6 — trusted worktree setup | [trusted-bootstrap](trusted-bootstrap.md) | [bootstrap](../tech/bootstrap.md), [cli-and-commands](../tech/cli-and-commands.md) |
