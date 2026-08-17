@@ -523,9 +523,7 @@ def test_cli_init_overwrite_flag(tmp_path, monkeypatch, capsys):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 0
     # A second init without --overwrite refuses and names the flag (not --force).
-    with pytest.raises(SystemExit) as exc:
-        sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"])
-    assert exc.value.code == 2
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 2
     err = capsys.readouterr().err
     assert "--overwrite" in err and "--force" not in err
     # --overwrite replaces the recipe.

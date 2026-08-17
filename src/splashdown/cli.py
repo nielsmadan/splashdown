@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from .cli_output import render_application_error, render_untyped_error
 from .commands import (
     _cmd_provision,
     _cmd_provision_inner,
@@ -23,6 +24,7 @@ from .commands import (
 from .constants import TARGET_TYPES
 from .devices import DeviceError
 from .doctor import cmd_doctor
+from .errors import ApplicationError
 from .recipe import load_settings
 from .registry import Registry
 from .target_commands import (
@@ -132,6 +134,11 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     )
     parser.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
     parser.add_argument("--format", choices=["text", "json"], default=None)
+    parser.add_argument(
+        "--show-values",
+        action="store_true",
+        help="include resolved values in operational status, env, and sync output",
+    )
     parser.add_argument("--version", action=_VersionAction)
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
@@ -387,6 +394,7 @@ def _normalize_device_args(args: argparse.Namespace) -> None:
 # by _ensure_subcommand to skip past them when deciding where to inject the
 # default `sync` subcommand.
 _TOP_LEVEL_VALUE_FLAGS = {"--cwd", "--format"}
+_TOP_LEVEL_BOOL_FLAGS = {"--show-values"}
 
 
 def _ensure_subcommand(argv: list[str]) -> list[str]:
@@ -402,6 +410,9 @@ def _ensure_subcommand(argv: list[str]) -> list[str]:
             return argv  # explicit subcommand already present
         if a in _TOP_LEVEL_VALUE_FLAGS:
             i += 2  # flag + value
+            continue
+        if a in _TOP_LEVEL_BOOL_FLAGS:
+            i += 1
             continue
         if a.startswith("--") and "=" in a:
             i += 1  # --flag=value
@@ -461,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
             )
             if args.no_sync:
                 return 0
-            return _cmd_provision_inner(cwd, registry)
+            return _cmd_provision_inner(cwd, registry, show_values=args.show_values)
 
         if args.cmd == "deinit":
             return cmd_deinit(cwd, registry)
@@ -492,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
                 show_all=(args.scope == "all"),
                 check=args.check,
                 verbose=args.verbose,
+                show_values=args.show_values,
             )
 
         if args.cmd == "env":
@@ -502,9 +514,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — on
 
         # sync (default, what bare `splash` runs)
         return _cmd_provision(args, cwd, registry)
-    except (DeviceError, ValueError) as e:
-        # DeviceError: device/target lifecycle failures. ValueError: recipe
-        # validation (unknown target type, the [devices.*]→[targets.*] rename, …).
-        # (Missing-recipe FileNotFoundError is handled gracefully in the sync path.)
-        print(f"error: {e}", file=sys.stderr)
-        return 1
+    except ApplicationError as error:
+        return render_application_error(error)
+    except (DeviceError, ValueError) as error:
+        return render_untyped_error(error)

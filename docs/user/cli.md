@@ -8,6 +8,7 @@ description: Reference for every splash command, option, target action, and envi
 ```
 splash                              # sync this checkout explicitly
 splash --version
+splash [--format text|json] [--show-values] …
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [all]                 # resources + targets + which ports are bound right now
 splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
@@ -28,7 +29,7 @@ splash target add/remove <type> <variant> …
 splash target refresh [ios|android] # recreate stale sims/emulators
 splash target prune   [ios|android] # destroy sims/emulators splashdown didn't create
 
-splash env                          # list this checkout's resolved values
+splash env                          # list this checkout's resolved keys
 splash env get KEY | set KEY=VALUE | release [KEY]
 
 splash gc                           # drop dead-checkout entries (ports, vars, sims)
@@ -36,7 +37,12 @@ splash gc                           # drop dead-checkout entries (ports, vars, s
 splash completion [bash|zsh]        # print shell-completion script (eval it in your rc)
 ```
 
-`splash status` answers "what's the state of this checkout?": resolved env vars (with `[in use]` / `[free]` for port-typed resources), declared device variants and whether each is booted, and a count of stale registry rows. `splash sync --force` reallocates ports. The auto-reallocation lives in `Registry.allocate_port`, so plain `splash` does the same thing. `splash init` scans the project, scaffolds the project files, and then runs the first sync so the current checkout has values immediately (`--no-sync` scaffolds only). Use plain `splash init` for framework-detected projects and Compose infrastructure. `splash init --rescan` re-scans the filesystem, useful after adding a new app to a monorepo.
+`splash status` answers "what's the state of this checkout?": resource keys (with `[in use]` /
+`[free]` for ports), declared device variants and whether each is booted, and stale registry rows.
+Routine status, env-list, and sync JSON output hides resolved values; add the root-level
+`--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
+single-value read. `splash sync --force` reallocates ports. `splash init` scans the project,
+scaffolds the project files, and runs the first sync (`--no-sync` scaffolds only).
 
 Named presets are limited to choices that project scanning cannot infer:
 

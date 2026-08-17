@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import splashdown as sd
@@ -125,7 +127,7 @@ def test_checkout_operation_lock_spans_output_commit(registry, checkout, monkeyp
         if not first_writer_entered.is_set():
             first_writer_entered.set()
             assert release_first_writer.wait(timeout=5)
-        return [("splashdown.env: 1 vars", True)]
+        return [sd.WriterResult("splashdown-env", "splashdown.env: 1 vars", True)]
 
     monkeypatch.setattr(sd.commands, "provision", fake_provision)
     monkeypatch.setattr(sd.commands, "write_outputs", fake_write_outputs)
@@ -214,12 +216,13 @@ def test_setup_runs_after_checkout_operation_lock(registry, checkout, monkeypatc
     assert sd.commands._cmd_provision_inner(checkout, registry, setup="dev") == 0
 
 
-def test_sync_refuses_dangling_local_config_symlink(registry, checkout, capsys):
+def test_sync_refuses_dangling_local_config_symlink(checkout, monkeypatch, capsys):
     _write_recipe(checkout, "")
+    monkeypatch.setenv("XDG_STATE_HOME", str(checkout.parent / "state"))
     outside = checkout.parent / "outside-local.toml"
     (checkout / sd.LOCAL_NAME).symlink_to(outside)
 
-    assert sd.commands._cmd_provision_inner(checkout, registry) == 1
+    assert sd.main(["--cwd", str(checkout)]) == 1
     assert not outside.exists()
     assert "not a regular file" in capsys.readouterr().err
 
@@ -582,6 +585,20 @@ default = "top-secret"
     assert "top-secret" not in err
 
 
+def test_provision_json_output_hides_resolved_values_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text("""
+[resources.API_TOKEN]
+type = "set"
+default = "top-secret"
+""")
+
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["resolved_keys"] == ["API_TOKEN"]
+
+
 def test_provision_json_output_includes_resolved_values_when_explicit(
     tmp_path, monkeypatch, capsys
 ):
@@ -592,9 +609,9 @@ type = "set"
 default = "top-secret"
 """)
 
-    assert sd.main(["--cwd", str(tmp_path), "--format", "json"]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "--show-values"]) == 0
 
-    assert '"API_TOKEN": "top-secret"' in capsys.readouterr().out
+    assert json.loads(capsys.readouterr().out)["resolved"] == {"API_TOKEN": "top-secret"}
 
 
 def test_cwd_resource_type(registry, tmp_path):
@@ -671,7 +688,7 @@ def test_run_setup_runs_commands_and_reports(tmp_path):
 
 def test_run_setup_raises_on_failure(tmp_path):
     recipe = sd.Recipe({"setup": {"dev": {"run": ["exit 3"]}}}, tmp_path / "splashdown.toml")
-    with pytest.raises(RuntimeError, match=r"setup\.dev failed.*exit 3"):
+    with pytest.raises(sd.SetupError, match=r"setup\.dev failed.*exit 3"):
         sd.run_setup(tmp_path, recipe, "dev", {})
 
 
@@ -726,14 +743,26 @@ def test_write_envfile_preserves_unmanaged(tmp_path):
     assert "UNMANAGED=x" in text and "MY=hello" in text
 
 
-def test_stdout_writer_prints_keyvalue(registry, checkout, capsys):
+def test_stdout_writer_returns_structured_values(registry, checkout, capsys):
     _write_recipe(
         checkout, '[resources.MSG]\ntype = "template"\ntemplate = "hi"\nwriter = "stdout"\n'
     )
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
     resolved = sd.provision(checkout, registry=registry)
-    sd.write_outputs(checkout, recipe, resolved)
-    assert "MSG=hi" in capsys.readouterr().out
+    results = sd.write_outputs(checkout, recipe, resolved)
+    assert capsys.readouterr().out == ""
+    assert results == [sd.WriterResult("stdout", "stdout: 1 vars", True, {"MSG": "hi"})]
+
+
+def test_stdout_writer_stays_inside_json_document(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _write_recipe(
+        tmp_path, '[resources.MSG]\ntype = "template"\ntemplate = "hi"\nwriter = "stdout"\n'
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json"]) == 0
+
+    assert json.loads(capsys.readouterr().out)["stdout"] == {"MSG": "hi"}
 
 
 def test_none_writer_creates_no_file(registry, checkout):
@@ -741,7 +770,7 @@ def test_none_writer_creates_no_file(registry, checkout):
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
     resolved = sd.provision(checkout, registry=registry)
     msgs = sd.write_outputs(checkout, recipe, resolved)
-    assert any("registry-only" in m for m, _ in msgs)
+    assert any("registry-only" in result.message for result in msgs)
     assert not (checkout / sd.ENV_FILE_NAME).exists()
 
 

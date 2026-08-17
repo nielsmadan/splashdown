@@ -26,23 +26,12 @@ from .bootstrap import (
     revoke_trust,
     trusted_execution,
 )
-from .capabilities import warn_capability
 from .catalog import PROFILES
+from .cli_output import render_env_list, render_status, render_sync
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME
-from .devices import (
-    DeviceError,
-    DeviceHealth,
-    _device_status_for_row,
-    _resolve_device_name,
-    _short_path,
-    _summary_string,
-    device_destroy_row,
-    device_health,
-    device_status,
-    physical_status,
-)
+from .devices import DeviceError, device_destroy_row
 from .doctor import _resolve_doctor_framework, _wiring_checks_for_framework, cmd_doctor
-from .errors import CapabilityError
+from .errors import MissingRecipeError, UsageError
 from .hooks import (
     _activate_post_checkout_hook,
     _ensure_gitignore,
@@ -52,6 +41,7 @@ from .hooks import (
 from .inventory import ProjectInventory
 from .loaders import LOADERS
 from .provisioning import (
+    WriterResult,
     clear_writer_destinations,
     provision,
     run_bootstrap,
@@ -60,13 +50,8 @@ from .provisioning import (
 )
 from .recipe import (
     LOCAL_SKELETON,
-    GlobalConfig,
-    LocalConfig,
     Recipe,
-    TemplateError,
-    _global_config_path,
     _slug,
-    merged_targets,
 )
 from .registry import Registry
 from .scanner import (
@@ -77,7 +62,7 @@ from .scanner import (
     _prune_unresolvable_templates,
     _should_defer_monorepo,
 )
-from .target_commands import _load_variant_spec
+from .status import build_status_report
 from .target_commands import cmd_destroy as cmd_destroy  # noqa: PLC0414
 from .target_commands import cmd_gc as cmd_gc  # noqa: PLC0414
 from .target_commands import cmd_run as cmd_run  # noqa: PLC0414
@@ -88,7 +73,6 @@ from .target_commands import cmd_target_prune as cmd_target_prune  # noqa: PLC04
 from .target_commands import cmd_target_refresh as cmd_target_refresh  # noqa: PLC0414
 from .target_commands import cmd_targets_list as cmd_targets_list  # noqa: PLC0414
 from .targets import _load_recipe_or_empty
-from .targets import target_source as _target_source
 
 
 def _create_local_skeleton(cwd: Path) -> bool:
@@ -134,418 +118,7 @@ def _create_local_skeleton(cwd: Path) -> bool:
     raise ValueError(f"could not safely create `{path}` because it changed during inspection")
 
 
-def _gather_resource_entries(
-    co_path: Path, *, co_exists: bool, resources: dict[str, str]
-) -> list[dict[str, str]]:
-    """Resource rows with port liveness tagged. Port-state needs port-typed-
-    resource knowledge, so read the recipe when the checkout path still exists."""
-    port_keys: set[str] = set()
-    if co_exists:
-        recipe_path = co_path / RECIPE_NAME
-        if recipe_path.exists():
-            try:
-                rec = Recipe.load(recipe_path)
-                port_keys = {n for n, s in rec.resources.items() if s.get("type") == "port"}
-            except Exception:  # noqa: BLE001, S110 — malformed recipe shouldn't kill status
-                pass
-
-    from .registry import _port_in_use  # noqa: PLC0415
-
-    entries: list[dict[str, str]] = []
-    for key, value in sorted(resources.items()):
-        state = ""
-        if key in port_keys:
-            try:
-                state = "in use" if _port_in_use(int(value)) else "free"
-            except ValueError:
-                state = ""
-        entries.append({"key": key, "value": value, "port_state": state})
-    return entries
-
-
-class _StatusContext(NamedTuple):
-    summary: dict[str, int]
-    cache: dict[str, str]
-    warned: set[str]
-
-
-def _new_status_context() -> _StatusContext:
-    return _StatusContext(
-        summary={
-            "defunct_checkouts": 0,
-            "defunct_rows": 0,
-            "orphan_devices": 0,
-            "stale_devices": 0,
-            "undeclared_devices": 0,
-            "missing_devices": 0,
-            "missing_hardware": 0,
-        },
-        cache={},
-        warned=set(),
-    )
-
-
-def _gather_devices_all(
-    registry: Registry,
-    co: str,
-    co_path: Path,
-    *,
-    check: bool,
-    context: _StatusContext,
-) -> list[dict[str, Any]]:
-    """Device rows sourced from the registry (`--all` mode)."""
-    co_exists = co_path.exists()
-    entries: list[dict[str, Any]] = []
-    for row in registry.devices_for(co):
-        health: DeviceHealth | None = None
-        try:
-            try:
-                status = _device_status_for_row(row)
-            except CapabilityError:
-                raise
-            except DeviceError as error:
-                status = f"error: {error}"
-            if check and co_exists:
-                spec = _load_variant_spec(co_path, row.dtype, row.variant)
-                health = device_health(
-                    registry,
-                    co_path,
-                    row.dtype,
-                    row.variant,
-                    spec,
-                    cache=context.cache,
-                )
-        except CapabilityError as error:
-            warn_capability(error, context.warned)
-            status = "unavailable"
-        orphan = stale = undeclared = False
-        if health is not None:
-            if health is DeviceHealth.ORPHAN:
-                orphan = True
-                context.summary["orphan_devices"] += 1
-            elif health is DeviceHealth.DRIFTED:
-                stale = True
-                context.summary["stale_devices"] += 1
-            elif health is DeviceHealth.UNDECLARED:
-                undeclared = True
-                context.summary["undeclared_devices"] += 1
-        entries.append(
-            {
-                "type": row.dtype,
-                "variant": row.variant,
-                "source": "",
-                "device_name": row.identifier,
-                "status": status,
-                "orphan": orphan,
-                "stale": stale,
-                "undeclared": undeclared,
-                "missing": False,
-            }
-        )
-    return entries
-
-
-def _gather_targets_declared(
-    registry: Registry,
-    co: str,
-    co_path: Path,
-    *,
-    check: bool,
-    context: _StatusContext,
-) -> list[dict[str, Any]]:
-    """Device rows sourced from recipe + local + global catalog (default mode)."""
-    recipe = _load_recipe_or_empty(co_path)
-    local = LocalConfig.load(co_path / LOCAL_NAME)
-    glob = GlobalConfig.load(_global_config_path())
-    entries: list[dict[str, Any]] = []
-    for dtype, variants in merged_targets(recipe, local, glob).items():
-        for variant, spec in variants.items():
-            source = _target_source(dtype, variant, recipe, local, glob)
-            if dtype == "device":
-                # Hardware has no created instance; show its selector + live state.
-                resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
-            else:
-                resolved = _resolve_device_name(spec, co_path, variant, dtype)
-            health: DeviceHealth | None = None
-            try:
-                try:
-                    status = (
-                        physical_status(spec, warned=context.warned)
-                        if dtype == "device"
-                        else device_status(dtype, resolved)
-                    )
-                except CapabilityError:
-                    raise
-                except DeviceError as error:
-                    status = f"error: {error}"
-                if check:
-                    health = device_health(
-                        registry,
-                        co_path,
-                        dtype,
-                        variant,
-                        spec,
-                        cache=context.cache,
-                    )
-            except CapabilityError as error:
-                warn_capability(error, context.warned)
-                status = "unavailable"
-            orphan = stale = missing = False
-            if health is not None:
-                if dtype == "device" and status == "absent":
-                    missing = True
-                    context.summary["missing_hardware"] += 1
-                elif health is DeviceHealth.MISSING:
-                    missing = True
-                    context.summary["missing_devices"] += 1
-                elif health is DeviceHealth.ORPHAN:
-                    orphan = True
-                    context.summary["orphan_devices"] += 1
-                elif health is DeviceHealth.DRIFTED:
-                    stale = True
-                    context.summary["stale_devices"] += 1
-            entries.append(
-                {
-                    "type": dtype,
-                    "variant": variant,
-                    "source": source,
-                    "device_name": resolved,
-                    "status": status,
-                    "orphan": orphan,
-                    "stale": stale,
-                    "undeclared": False,
-                    "missing": missing,
-                }
-            )
-    return entries
-
-
-def _gather_status_for_checkout(
-    co: str,
-    registry: Registry,
-    *,
-    show_all: bool,
-    check: bool,
-    context: _StatusContext,
-) -> dict[str, Any]:
-    """Build the per-checkout block consumed by both JSON serialization and
-    text emission. The shared context accumulates repair counts, memoized OS
-    lookups, and capability warnings across checkouts."""
-    co_path = Path(co)
-    co_exists = co_path.exists()
-    resources = registry.all_for(co)
-    if check and not co_exists:
-        context.summary["defunct_checkouts"] += 1
-        context.summary["defunct_rows"] += len(resources) + len(registry.devices_for(co))
-
-    res_entries = _gather_resource_entries(co_path, co_exists=co_exists, resources=resources)
-
-    # Device entries. In --all mode, source = registry only. In default mode,
-    # source = recipe + local catalog.
-    if show_all:
-        dev_entries = _gather_devices_all(
-            registry,
-            co,
-            co_path,
-            check=check,
-            context=context,
-        )
-    elif co_exists:
-        dev_entries = _gather_targets_declared(
-            registry,
-            co,
-            co_path,
-            check=check,
-            context=context,
-        )
-    else:
-        dev_entries = []
-
-    return {
-        "checkout": co,
-        "exists": co_exists,
-        "resources": res_entries,
-        "targets": dev_entries,
-    }
-
-
-def _emit_status_block_text(block: dict[str, Any], *, show_all: bool) -> None:
-    """Emit one per-checkout text block to stderr."""
-    header_tag = "  [defunct]" if not block["exists"] else ""
-    if show_all:
-        print(f"=== {block['checkout']}{header_tag} ===", file=sys.stderr)
-    else:
-        print(f"checkout: {block['checkout']}{header_tag}", file=sys.stderr)
-    print("resources:", file=sys.stderr)
-    if not block["resources"]:
-        print("  (none)", file=sys.stderr)
-    for r in block["resources"]:
-        suffix = f"  [{r['port_state']}]" if r["port_state"] else ""
-        print(f"  {r['key']}={r['value']}{suffix}", file=sys.stderr)
-    print("targets:", file=sys.stderr)
-    if not block["targets"]:
-        print("  (none)", file=sys.stderr)
-    for d in block["targets"]:
-        cols = [f"{d['type']}.{d['variant']}"]
-        if d["source"]:
-            cols.append(d["source"])
-        cols.append(d["device_name"])
-        cols.append(d["status"])
-        if d["orphan"]:
-            cols.append("[orphan]")
-        elif d.get("stale"):
-            cols.append("[stale]")
-        elif d.get("undeclared"):
-            cols.append("[undeclared]")
-        elif d.get("missing"):
-            cols.append("[missing]")
-        print("  " + "\t".join(cols), file=sys.stderr)
-    if show_all:
-        print("", file=sys.stderr)
-
-
-class _StatusRow(NamedTuple):
-    path: str
-    summary: str
-    status: str
-
-
-def _cmd_status_table(
-    checkouts: list[str], registry: Registry, check: bool, context: _StatusContext
-) -> int:
-    """Compact one-row-per-checkout view for `splash status --all`."""
-    rows: list[_StatusRow] = []
-    for co in checkouts:
-        counts = registry.summary_for(co)
-        path_label = _short_path(co)
-        summary_str = _summary_string(counts)
-        co_exists = Path(co).exists()
-
-        status_label = ""
-        if not co_exists:
-            status_label = "defunct"
-            if check:
-                context.summary["defunct_checkouts"] += 1
-                context.summary["defunct_rows"] += sum(counts.values())
-        elif check:
-            for row in registry.devices_for(co):
-                try:
-                    spec = _load_variant_spec(Path(co), row.dtype, row.variant)
-                    health = device_health(
-                        registry,
-                        Path(co),
-                        row.dtype,
-                        row.variant,
-                        spec,
-                        cache=context.cache,
-                    )
-                except CapabilityError as error:
-                    warn_capability(error, context.warned)
-                    status_label = status_label or "unavailable"
-                    continue
-                if health is DeviceHealth.ORPHAN:
-                    context.summary["orphan_devices"] += 1
-                    status_label = "orphan"
-                    continue
-                if health is DeviceHealth.DRIFTED:
-                    context.summary["stale_devices"] += 1
-                    status_label = status_label or "stale"
-                elif health is DeviceHealth.UNDECLARED:
-                    context.summary["undeclared_devices"] += 1
-                    status_label = status_label or "undeclared"
-
-        rows.append(_StatusRow(path_label, summary_str, status_label))
-
-    path_width = max((len(r.path) for r in rows), default=4)
-    path_width = max(path_width, len("PATH"))
-    summary_width = max((len(r.summary) for r in rows), default=7)
-    summary_width = max(summary_width, len("SUMMARY"))
-
-    # ISSUE column only appears when at least one row flags something. Empty
-    # cells across the board would just be dead width.
-    has_issue = any(r.status for r in rows)
-    if has_issue:
-        fmt_row = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
-        print(fmt_row.format("PATH", "SUMMARY", "ISSUE").rstrip(), file=sys.stderr)
-        for path_label, summary_str, status_label in rows:
-            print(fmt_row.format(path_label, summary_str, status_label).rstrip(), file=sys.stderr)
-    else:
-        fmt_row = f"{{:<{path_width}}}  {{}}"
-        print(fmt_row.format("PATH", "SUMMARY").rstrip(), file=sys.stderr)
-        for path_label, summary_str, _ in rows:
-            print(fmt_row.format(path_label, summary_str).rstrip(), file=sys.stderr)
-
-    if check:
-        print("", file=sys.stderr)
-        _print_check_summary(context.summary)
-
-    return 0
-
-
-def _print_check_summary(summary: dict[str, int]) -> None:
-    """Emit the `--check` footer used by both cmd_status branches: a counts
-    block plus hints routed to whatever fixes each issue, or `all entries
-    verified` when clean."""
-    defunct = summary.get("defunct_checkouts", 0)
-    orphan = summary.get("orphan_devices", 0)
-    stale = summary.get("stale_devices", 0)
-    undeclared = summary.get("undeclared_devices", 0)
-    missing = summary.get("missing_devices", 0)
-    missing_hw = summary.get("missing_hardware", 0)
-    if not (defunct or orphan or stale or undeclared or missing or missing_hw):
-        print("Summary: all entries verified.", file=sys.stderr)
-        return
-    print("Summary:", file=sys.stderr)
-    if defunct:
-        rows = summary.get("defunct_rows", 0)
-        print(
-            f"  {defunct} defunct checkout{'s' if defunct != 1 else ''} "
-            f"({rows} registry row{'s' if rows != 1 else ''}).",
-            file=sys.stderr,
-        )
-    if orphan:
-        print(
-            f"  {orphan} orphan device{'s' if orphan != 1 else ''} (underlying sim/AVD deleted).",
-            file=sys.stderr,
-        )
-    if stale:
-        print(
-            f"  {stale} stale device{'s' if stale != 1 else ''} (declared target drifted).",
-            file=sys.stderr,
-        )
-    if undeclared:
-        print(
-            f"  {undeclared} undeclared device row{'s' if undeclared != 1 else ''}.",
-            file=sys.stderr,
-        )
-    if missing:
-        print(
-            f"  {missing} missing device{'s' if missing != 1 else ''} "
-            f"(declared but not yet created).",
-            file=sys.stderr,
-        )
-    if missing_hw:
-        print(
-            f"  {missing_hw} unplugged physical device{'s' if missing_hw != 1 else ''} "
-            f"(declared but not connected).",
-            file=sys.stderr,
-        )
-    # Route each hint to the command that actually fixes it. `splash gc` does NOT
-    # recreate an orphan whose checkout still exists — `target refresh` does.
-    if defunct:
-        print("  Run `splash gc` to drop dead checkouts.", file=sys.stderr)
-    if orphan or stale or undeclared:
-        print("  Run `splash target refresh` to reconcile.", file=sys.stderr)
-    if missing:
-        print("  Run `splash run` to provision.", file=sys.stderr)
-    if missing_hw:
-        print(
-            "  Connect the device (check pairing/USB) — splashdown can't create hardware.",
-            file=sys.stderr,
-        )
-
-
-def cmd_status(
+def cmd_status(  # noqa: PLR0913 — compatibility wrapper mirrors CLI status options
     cwd: Path,
     registry: Registry,
     fmt: str,
@@ -553,81 +126,17 @@ def cmd_status(
     show_all: bool = False,
     check: bool = False,
     verbose: bool = False,
+    show_values: bool = False,
 ) -> int:
-    """Show resolved vars + declared devices.
-
-    Default mode: just this checkout, recipe-aware device labels.
-    --all: compact one-row-per-checkout table.
-    --all --verbose: today's per-block view (resources + devices spelled out).
-    --check: tag defunct checkouts and orphan device rows, print a `splash gc`
-    cleanup hint footer. Composes with both --all variants."""
-    target = str(cwd.resolve())
-    checkouts = registry.all_checkouts() if show_all else [target]
-    if not checkouts:
-        checkouts = [target]
-    context = _new_status_context()
-
-    # JSON shape is fixed regardless of verbose — consumers want the data, not
-    # a table layout. Text branches: --all without --verbose emits a table;
-    # everything else falls through to the per-block emitter below.
-    if show_all and not verbose and fmt != "json":
-        return _cmd_status_table(checkouts, registry, check, context)
-
-    summary = context.summary
-    blocks = [
-        _gather_status_for_checkout(
-            co,
-            registry,
-            show_all=show_all,
-            check=check,
-            context=context,
-        )
-        for co in checkouts
-    ]
-
-    if fmt == "json":
-        payload: dict[str, Any] = {"checkouts": blocks} if show_all else blocks[0]
-        if check:
-            payload["summary"] = summary
-        print(json.dumps(payload, indent=2))
-        return 0
-
-    for block in blocks:
-        _emit_status_block_text(block, show_all=show_all)
-
-    if check:
-        _print_check_summary(summary)
-    elif not show_all:
-        stale = sum(
-            1
-            for r in registry._read_ports()  # noqa: SLF001
-            if not Path(r[1]).exists()
-        ) + sum(
-            1
-            for r in registry._read_kv()  # noqa: SLF001
-            if not Path(r[0]).exists()
-        )
-        if stale:
-            print(f"stale registry rows: {stale} (run `splash gc` to clean)", file=sys.stderr)
-
-        # Unfilled `set` resources never reach the registry, so they don't appear
-        # above — point the user at the command that fills them.
-        recipe = _load_recipe_or_empty(cwd)
-        resolved_keys = registry.all_for(target)
-        unfilled = [
-            name
-            for name, spec in recipe.resources.items()
-            if spec.get("type") == "set"
-            and spec.get("default") is None
-            and name not in resolved_keys
-        ]
-        if unfilled:
-            print(
-                f"{len(unfilled)} resource(s) need a value "
-                f"({', '.join(unfilled)}): run `splash env set NAME=VALUE`",
-                file=sys.stderr,
-            )
-
+    detailed = fmt == "json" or not (show_all and not verbose)
+    report = build_status_report(
+        cwd,
+        registry,
+        show_all=show_all,
+        check=check,
+        detailed=detailed,
+    )
+    render_status(report, fmt, verbose=verbose, show_values=show_values)
     return 0
 
 
@@ -902,8 +411,7 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
 
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists() and not force:
-        print(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)", file=sys.stderr)
-        sys.exit(2)
+        raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
     if preset is not None:
         if electron_profile is not None:
@@ -1017,8 +525,7 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
     scaffold = SCAFFOLDS.get(preset)
     if scaffold is None:
         available = sorted(SCAFFOLDS)
-        print(f"unknown preset `{preset}`; available: {', '.join(available)}", file=sys.stderr)
-        sys.exit(2)
+        raise UsageError(f"unknown preset `{preset}`; available: {', '.join(available)}")
     loader_name = loader_override or _detect_loader(cwd)
     recipe_path = cwd / RECIPE_NAME
     rendered = scaffold.replace("__SPLASH_LOADER__", loader_name)
@@ -1180,6 +687,7 @@ def _cmd_provision(args: Any, cwd: Path, registry: Registry) -> int:
         reprovision=args.force,
         setup=args.setup,
         fmt=_resolve_format_arg(args),
+        show_values=getattr(args, "show_values", False),
     )
 
 
@@ -1189,7 +697,7 @@ def _resolve_format_arg(args: Any) -> str:
 
 class _ProvisionResult(NamedTuple):
     resolved: dict[str, str]
-    writers: list[tuple[str, bool]]
+    writers: list[WriterResult]
     setup: list[str]
     changed: dict[str, str]
 
@@ -1231,42 +739,20 @@ def _provision_locked(
     return _ProvisionResult(resolved, writers, setup_messages, changed)
 
 
-def _emit_provision(result: _ProvisionResult, *, fmt: str) -> None:
-    anything_changed = (
-        bool(result.changed) or any(changed for _, changed in result.writers) or bool(result.setup)
+def _emit_provision(
+    result: _ProvisionResult,
+    *,
+    fmt: str,
+    show_values: bool = False,
+) -> None:
+    render_sync(
+        result.resolved,
+        result.writers,
+        result.setup,
+        list(result.changed),
+        fmt,
+        show_values=show_values,
     )
-    if fmt == "json":
-        print(
-            json.dumps(
-                {
-                    "resolved": result.resolved,
-                    "writers": [message for message, _ in result.writers],
-                    "setup": result.setup,
-                    "changed": anything_changed,
-                    "changed_keys": sorted(result.changed),
-                },
-                indent=2,
-            )
-        )
-        return
-    if not anything_changed:
-        files = sum(
-            1
-            for message, _ in result.writers
-            if not message.startswith(("stdout:", "registry-only:"))
-        )
-        print(
-            f"splashdown: up to date ({len(result.resolved)} vars, {files} files)",
-            file=sys.stderr,
-        )
-        return
-    for key in result.changed:
-        print(f"  {key} (changed)", file=sys.stderr)
-    for message, changed in result.writers:
-        if changed:
-            print(f"  -> {message} (changed)", file=sys.stderr)
-    for message in result.setup:
-        print(f"  -> {message}", file=sys.stderr)
 
 
 def _cmd_provision_inner(
@@ -1276,6 +762,7 @@ def _cmd_provision_inner(
     reprovision: bool = False,
     setup: str | None = None,
     fmt: str = "text",
+    show_values: bool = False,
 ) -> int:
     if _reject_nested_lifecycle():
         return 1
@@ -1289,13 +776,9 @@ def _cmd_provision_inner(
                 reprovision=reprovision,
                 setup=setup,
             )
-    except FileNotFoundError as e:
-        print(str(e), file=sys.stderr)
-        return 0
-    except (ValueError, TemplateError, RuntimeError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    _emit_provision(result, fmt=fmt)
+    except FileNotFoundError as error:
+        raise MissingRecipeError(str(error)) from error
+    _emit_provision(result, fmt=fmt, show_values=show_values)
     return 0
 
 
@@ -1425,7 +908,7 @@ def cmd_bootstrap(cwd: Path, registry: Registry | None = None, *, rerun: bool) -
                     extra_env=lifecycle_environment(),
                 )
                 mark_bootstrap_complete(dirs)
-    except (FileNotFoundError, OSError, ValueError, TemplateError, RuntimeError) as error:
+    except (FileNotFoundError, OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         retry = "splash bootstrap --rerun" if rerun else "splash bootstrap"
         print(f"retry with `{retry}` after fixing the problem", file=sys.stderr)
@@ -1494,7 +977,7 @@ def cmd_post_checkout_hook(
             messages = _post_checkout_messages(cwd, registry, dirs, old, new, flag)
     except FileNotFoundError:
         return 0
-    except (OSError, ValueError, TemplateError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         print("retry with `splash bootstrap` after fixing the problem", file=sys.stderr)
         return 1
@@ -1509,42 +992,32 @@ def cmd_post_checkout_hook(
 def _env_set(assignment: str, target: str, registry: Registry) -> int:
     """`splash env set KEY=VALUE` — persist a value into the registry kv store."""
     if "=" not in assignment:
-        print("usage: splash env set KEY=VALUE", file=sys.stderr)
-        return 2
+        raise UsageError("usage: splash env set KEY=VALUE")
     key, value = assignment.split("=", 1)
     if not ENV_NAME_RE.match(key):
-        print(f"invalid env name `{key}` (must match {ENV_NAME_RE.pattern})", file=sys.stderr)
-        return 2
+        raise UsageError(f"invalid env name `{key}` (must match {ENV_NAME_RE.pattern})")
     recipe_path = Path(target) / RECIPE_NAME
     if not recipe_path.exists():
-        print(
+        raise UsageError(
             f'no {RECIPE_NAME} in {target}; declare `{key}` as a type="set" resource',
-            file=sys.stderr,
         )
-        return 2
     try:
         resources = Recipe.load(recipe_path).resources
-    except (OSError, ValueError) as e:
-        print(f"could not read {recipe_path}: {e}", file=sys.stderr)
-        return 2
+    except (OSError, ValueError) as error:
+        raise UsageError(f"could not read {recipe_path}: {error}") from error
     spec = resources.get(key)
     if spec is None:
-        print(
+        raise UsageError(
             f"`{key}` is not a resource in {RECIPE_NAME}; declare it as "
-            f'`[resources.{key}]` with type = "set" before setting it',
-            file=sys.stderr,
+            f'`[resources.{key}]` with type = "set" before setting it'
         )
-        return 2
     if not isinstance(spec, dict):
-        print(f"`{key}` in {RECIPE_NAME} must be a resource table", file=sys.stderr)
-        return 2
+        raise UsageError(f"`{key}` in {RECIPE_NAME} must be a resource table")
     rtype = spec.get("type")
     if rtype != "set":
-        print(
-            f'`{key}` is type `{rtype}`; only type="set" resources accept manual values',
-            file=sys.stderr,
+        raise UsageError(
+            f'`{key}` is type `{rtype}`; only type="set" resources accept manual values'
         )
-        return 2
     registry.remove_port(target, key)
     registry.set_kv(target, key, value)
     print(f"set {key}", file=sys.stderr)
@@ -1557,13 +1030,7 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     if args.env_cmd is None:  # bare `splash env` → list
         target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
         data = registry.all_for(target)
-        if fmt == "json":
-            print(json.dumps(data, indent=2))
-        else:
-            if not data:
-                print(f"(empty) {target}", file=sys.stderr)
-            for k, v in sorted(data.items()):
-                print(f"{k}={v}")
+        render_env_list(data, target, fmt, show_values=getattr(args, "show_values", False))
         return 0
     # Normalize the same way provision() keys the registry (str(cwd.resolve())),
     # or get/set/release silently miss each other on symlinked/relative invocations.
@@ -1588,5 +1055,4 @@ def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
                 n = registry.release(target)
                 print(f"released {n} entries for {target}", file=sys.stderr)
         return 0
-    print(f"splash env {args.env_cmd}: unknown action", file=sys.stderr)
-    return 2
+    raise UsageError(f"splash env {args.env_cmd}: unknown action")

@@ -5,10 +5,12 @@ import re
 import stat
 import subprocess
 import uuid as uuid_mod
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
 from .constants import ENV_FILE_NAME, RECIPE_NAME
+from .errors import SetupError
 from .recipe import (
     CommandSpec,
     Recipe,
@@ -23,6 +25,14 @@ from .registry import Registry
 
 # A port resource's `range` is a two-element [lo, hi] list.
 _PORT_RANGE_LEN = 2
+
+
+@dataclass(frozen=True)
+class WriterResult:
+    writer: str
+    message: str
+    changed: bool
+    stdout_values: dict[str, str] = field(default_factory=dict)
 
 
 def _required_set_default(name: str, default: object) -> str:
@@ -91,10 +101,7 @@ def provision(
     return resolved
 
 
-def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[tuple[str, bool]]:
-    """Dispatch resolved values to their writers. Returns (message, changed) per
-    writer — `changed` is True when the writer actually touched disk (or, for the
-    stdout writer, produced output)."""
+def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[WriterResult]:
     groups: dict[str, dict[str, str]] = {}
     for name, value in resolved.items():
         writer = recipe.resources[name].get("writer", "splashdown-env")
@@ -106,12 +113,14 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[t
     if "splashdown-env" not in groups and (cwd / ENV_FILE_NAME).exists():
         groups["splashdown-env"] = {}
 
-    msgs: list[tuple[str, bool]] = []
+    results: list[WriterResult] = []
     for writer, items in groups.items():
         if writer == "splashdown-env":
             target = cwd / ENV_FILE_NAME
             changed = write_splashdown_env(target, items)
-            msgs.append((f"{ENV_FILE_NAME}: {len(items)} vars", changed))
+            results.append(
+                WriterResult("splashdown-env", f"{ENV_FILE_NAME}: {len(items)} vars", changed)
+            )
         elif writer.startswith("envfile="):
             path_arg = writer.removeprefix("envfile=")
             target = cwd / path_arg
@@ -125,20 +134,18 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[t
                     "envfile paths must stay within the project directory"
                 )
             changed = write_envfile(target, items)
-            msgs.append((f"{path_arg}: {len(items)} vars", changed))
+            results.append(WriterResult(writer, f"{path_arg}: {len(items)} vars", changed))
         elif writer == "envrc":
             target = cwd / ".envrc.local"
             changed = write_envrc(target, items)
-            msgs.append((f".envrc.local: {len(items)} vars", changed))
+            results.append(WriterResult("envrc", f".envrc.local: {len(items)} vars", changed))
         elif writer == "stdout":
-            for k, v in items.items():
-                print(f"{k}={v}")
-            msgs.append((f"stdout: {len(items)} vars", True))
+            results.append(WriterResult("stdout", f"stdout: {len(items)} vars", True, dict(items)))
         elif writer == "none":
-            msgs.append((f"registry-only: {len(items)} vars", False))
+            results.append(WriterResult("none", f"registry-only: {len(items)} vars", False))
         else:
             raise ValueError(f"unknown writer `{writer}`")
-    return msgs
+    return results
 
 
 def _read_output_file(path: Path) -> tuple[str, int] | None:
@@ -313,7 +320,7 @@ def _run_commands(
             subprocess.run(command, shell=True, cwd=cwd, env=proc_env, check=True)  # noqa: S602 — runs user-authorized recipe commands by design
             messages.append(f"{label}: {command}")
         except subprocess.CalledProcessError as error:
-            raise RuntimeError(f"{label} failed ({command}): exit {error.returncode}") from error
+            raise SetupError(f"{label} failed ({command}): exit {error.returncode}") from error
     return messages
 
 

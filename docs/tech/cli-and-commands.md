@@ -4,7 +4,8 @@ How a `splash` invocation gets from `argv` to a handler: argument parsing and di
 checkout orchestration (`commands.py`), target orchestration (`target_commands.py`), target catalog
 edits (`targets.py`), post-checkout integration (`hooks.py`), and fail-silent shell completion
 (`completion.py`). Framework launch dispatch lives in `launching.py`; `doctor.py` orchestrates
-checks defined in `wiring.py`.
+checks defined in `wiring.py`. Typed status gathering lives in `status.py`, while
+`cli_output.py` owns operational text, JSON, and application-error rendering.
 
 For the *user-facing* contract of each command, see the PRD docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
 
@@ -25,9 +26,9 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
     - [Provision handlers (`sync` / `init`)](#provision-handlers-sync--init)
     - [`deinit` teardown](#deinit-teardown)
     - [Git post-checkout hook installation](#git-post-checkout-hook-installation)
-    - [Status rendering](#status-rendering)
+    - [Status reporting](#status-reporting)
     - [The no-loader delivery fallback](#the-no-loader-delivery-fallback)
-    - [`_confirm` and the `cmd_init` refuse path](#_confirm-and-the-cmd_init-refuse-path)
+    - [`_confirm` and typed usage failures](#_confirm-and-typed-usage-failures)
     - [Device lifecycle handlers](#device-lifecycle-handlers)
     - [`target` and `env` dispatchers](#target-and-env-dispatchers)
   - [`completion.py` — fail-silent completers](#completionpy--fail-silent-completers)
@@ -40,7 +41,8 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 
 `cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to
 `sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
-handler. `commands.py` owns trust/bootstrap, init, sync, deinit, status, and env orchestration. `target_commands.py`
+handler. `commands.py` owns trust/bootstrap, init, sync, deinit, and env orchestration. `status.py`
+owns status report construction and `cli_output.py` owns rendering. `target_commands.py`
 owns run/start/stop/destroy, fleet maintenance, and the nested target dispatcher; `targets.py` owns
 local/global catalog edits. `hooks.py` owns post-checkout
 installation and coexistence with other hook managers. `completion.py` provides the argcomplete
@@ -57,7 +59,7 @@ submodule imports inside handlers.
 
 #### `main()` flow
 
-`main()` (`cli.py:389`) is the whole control flow:
+`main()` (`cli.py:402`) is the whole control flow:
 
 1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py:392`) to inject a `sync` token if no subcommand is present.
 2. Build the parser (`_build_parser`, `cli.py:394`).
@@ -82,13 +84,18 @@ post-checkout hook uses the explicit hidden event command instead. The helper ca
 has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since
 `sync` has no `--cwd`).
 
-The walk: bail early if `-h`/`--help`/`--version` is present (`cli.py:368`) — those are root actions and inserting `sync` would shadow them. Otherwise scan from the front, skipping leading top-level flags: a `--cwd PATH`/`--format json` consumes two slots (the flag set is `_TOP_LEVEL_VALUE_FLAGS`, `cli.py:361`), a `--flag=value` consumes one. The moment a token is a known subcommand (`KNOWN_CMDS`), return `argv` unchanged. The first non-flag, non-subcommand token is where `sync` gets inserted (`cli.py:381-382`), so the flags stay ahead of it.
+The walk bails early for help/version, then skips root flags before deciding where to inject
+`sync`. `--cwd`/`--format` consume a value; `--show-values` is the root boolean flag. Keeping both
+sets explicit makes bare `splash --show-values` parse as a sync rather than as a sync-subparser
+option.
 
 #### `KNOWN_CMDS` and the parser
 
 `KNOWN_CMDS` (`cli.py:93`) is the hand-maintained set of subcommand names. It exists only so `_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs — it is a second source of truth alongside the `sub.add_parser(...)` calls and must be kept in sync with them.
 
-`_build_parser` (`cli.py:110`) is a single flat parser (deliberately, hence the `PLR0915` noqa) with one `add_parser` block per subcommand. Every subparser is registered with `help=argparse.SUPPRESS` so the auto-generated command list is hidden — the curated tiered overview in `_HELP_EPILOG` (`cli.py:70`) carries the help text instead. Top-level flags (`--cwd`, `--format`, `--version`) live on the root parser (`cli.py:120`–`122`).
+`_build_parser` (`cli.py:114`) is a single flat parser with one block per subcommand. Every subparser is hidden
+from argparse's generated list because the curated epilog carries the task-oriented overview.
+Root flags are `--cwd`, `--format`, `--show-values`, and `--version`.
 
 #### Tiered `--help`: `_EpilogOnlyFormatter`
 
@@ -113,37 +120,33 @@ The four device verbs share one parser shape, built in a loop (`cli.py:220`–`2
 
 #### `_normalize_device_args`
 
-`_normalize_device_args` (`cli.py:328`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs (`cli.py:410`).
+`_normalize_device_args` (`cli.py:337`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs.
 
 #### Top-level exception handler
 
-The dispatch `try` is wrapped by a single `except (DeviceError, ValueError)`
-(`cli.py:466`). It prints `error: <msg>` to stderr and returns exit 1 — the
-uniform failure path for device/target lifecycle errors and config validation.
-`CapabilityError` is a `DeviceError` subtype, so unsupported hosts and missing
-fixed launchers use the same clean path without a traceback.
-Schema errors arrive as
-`SOURCE: [qualified.path] problem; expected ...`, so representative commands
-fail cleanly without a traceback. A missing recipe (`FileNotFoundError`) is
-deliberately *not* caught here: the sync path handles it gracefully as a no-op
-exit 0 (see [provision handlers](#provision-handlers-sync--init)), so the hook
-stays silent in non-splashdown repos.
+The dispatch has one error-rendering boundary. `ApplicationError` carries an exit code and whether
+the message receives an `error:` prefix; `UsageError`, `MissingRecipeError`, and `SetupError` model
+exit-2 usage failures, the hook-compatible exit-0 missing-recipe notice, and setup failures.
+`DeviceError` and configuration `ValueError` enter the same renderer as exit-1 failures. Handlers
+raise rather than terminating the process, so direct callers can handle failures and CLI output is
+emitted exactly once.
 
 ### `commands.py` — the orchestration layer
 
-This module spans status rendering, onboarding, provisioning presentation, and env dispatch. Target
+This module spans onboarding, provisioning orchestration, and env dispatch. Target
 lifecycle and fleet operations live in `target_commands.py`; hook wiring lives in `hooks.py`, while
-doctor orchestration lives in `doctor.py`; see [Gotchas](#gotchas).
+doctor orchestration lives in `doctor.py`. Status and output formatting have their own modules.
 
 #### Provision handlers (`sync` / `init`)
 
-`_cmd_provision` delegates to `_cmd_provision_inner` (`commands.py:1702`), the shared engine for both `splash sync` and the tail of `splash init`.
+`_cmd_provision` is a thin shim over `_cmd_provision_inner`, the shared engine for both
+`splash sync` and the tail of `splash init`.
 
 `_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before*
 provisioning so it can report only what changed, calls `provision()`
-(`provisioning.py`), then `write_outputs()` and `run_setup()` inside the same
-failure boundary. A missing `splashdown.toml` becomes the hook-compatible no-op
-exit 0.
+(`provisioning.py`), then calls `write_outputs()` while the checkout operation lock is held.
+`run_setup()` runs after release. `render_sync` owns all text/JSON output. A missing recipe is
+translated to `MissingRecipeError`, which the CLI renders with the hook-compatible exit 0.
 
 `provision()` begins with `Recipe.load`, which validates the complete document
 and preflights templates before any registry allocation or writer mutation.
@@ -151,8 +154,9 @@ Malformed recipe sections, apps, resources, setups, targets, writers, template
 syntax/references, and dependency cycles therefore become `error:` + exit 1
 without partial provisioning. Setup *execution* remains later: an unknown
 requested setup name or a failing command can occur after registry and writer
-changes and is not transactional. The "up to date (N vars, M files)" vs.
-per-line change report is decided by `anything_changed`.
+changes and is not transactional. The renderer chooses the no-op or per-line report. JSON exposes
+`resolved_keys` by default; `--show-values` opts into `resolved`. Explicit stdout-writer values are
+always placed in the JSON `stdout` object.
 
 `cmd_init` applies the same contract to generated TOML. Scanner recipes,
 minimal-monorepo recipes, and built-in presets go through `Recipe.parse` before
@@ -163,12 +167,16 @@ stale fields abort the rescan instead of being blessed. This keeps
 generator/profile/loader drift from producing a file that the next sync cannot
 load.
 
-`cmd_init` is the big onboarding orchestrator: scan → scaffold recipe → write local skeleton → `_ensure_gitignore` → wire the loader (`LOADERS[inv.loader].wire`) → `_ensure_post_checkout_hook` → record sync-only clone trust → run framework wiring autofixes. An intent preset short-circuits to `_cmd_init_preset`, which writes one of the three `SCAFFOLDS` templates verbatim and bypasses the scanner. Note `cmd_init` returns `None`, not an exit code — its refuse path uses `sys.exit(2)` directly (see [below](#_confirm-and-the-cmd_init-refuse-path)). `main()` runs the first sync after `cmd_init` returns, unless `--no-sync`, and `--rescan` diverts entirely to `cmd_refresh_inventory`. Init never grants bootstrap trust.
+`cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader → hook →
+sync-only clone trust → framework wiring. An intent preset short-circuits to `_cmd_init_preset`.
+Refusal and invalid-preset paths raise `UsageError`; `main()` renders them and returns exit 2. The
+first sync runs after init unless `--no-sync`; `--rescan` diverts to `cmd_refresh_inventory`. Init
+never grants bootstrap trust.
 
 #### `deinit` teardown
 
-`cmd_deinit` (`commands.py:1477`) removes checkout-local state that Splashdown owns or marks
-explicitly. It reads the recipe before deleting it so it can discover the
+`cmd_deinit` is the reverse-orchestration path for state splashdown
+owns or marks explicitly. It reads the recipe before deleting it so it can discover the
 loader and writer destinations, but a malformed recipe only disables those recipe-dependent
 steps; it does not block the rest of teardown.
 
@@ -216,21 +224,13 @@ bootstrap trust, a validated linked-worktree creation event, and no completion m
 Git and hook-manager subprocesses are optional integration probes. Missing and non-executable
 tools fall back to detection results or a setup note rather than escaping as Python exceptions.
 
-#### Status rendering
+#### Status reporting
 
-`cmd_status` (`commands.py:515`) is the entry; the rendering is spread across several helpers. The branching:
-
-- **`all` (positional scope) without `--verbose` (text)** → `_cmd_status_table` (`commands.py:380`): a compact one-row-per-checkout table (PATH / SUMMARY / optional ISSUE column, where ISSUE only appears if at least one row flags something — `commands.py:431`).
-- **everything else** → per-checkout blocks built by `_gather_status_for_checkout` (`commands.py:290`) and emitted by `_emit_status_block_text` (`commands.py:339`). JSON output uses the same block structure (`commands.py:555`).
-
-The block builder splits device sourcing two ways: `all` mode reads devices straight from the
-registry; default mode reads the recipe+local+global catalog. A shared `_StatusContext` carries repair
-counters, latest-OS lookup cache, and capability-warning keys across checkouts. When a device
-boundary raises `CapabilityError`, status warns once and renders `unavailable` without incrementing
-missing, stale, orphan, undeclared, or hardware counters. Other `DeviceError` values retain the
-`error: <message>` status. `_print_check_summary` routes actual issues to the action that fixes
-them: `gc` for defunct checkouts, `target refresh` for orphan/stale/undeclared rows, `run` for
-missing managed targets, and reconnect/pairing guidance for missing physical hardware.
+`cmd_status` is a thin compatibility wrapper around `status.build_status_report` and
+`cli_output.render_status`. The typed report builder owns registry/config/device reads, health
+counters, latest-OS caching, and deduplicated capability warnings. The renderer owns compact tables,
+detailed text blocks, JSON shaping, cleanup hints, and value redaction. Resource values are omitted
+unless `--show-values` is set; JSON format alone is never a disclosure opt-in.
 
 #### The no-loader delivery fallback
 
@@ -244,12 +244,13 @@ Profile. If no dotenv target fits, it prints `_NO_LOADER_INSTRUCTIONS`, telling 
 to install a loader or source the file manually. It also warns when the chosen target is
 not gitignored.
 
-#### `_confirm` and the `cmd_init` refuse path
+#### `_confirm` and typed usage failures
 
 `_confirm` in `target_commands.py` is the shared interactive `[y/N]` gate for `cmd_destroy` and
 `cmd_target_prune`. `yes=True` (from `--yes`) skips the prompt and returns `True`.
 
-`cmd_init`'s refuse path is the one place a handler exits the process directly rather than returning a code: when `splashdown.toml` already exists and `--overwrite` wasn't passed, it prints and calls `sys.exit(2)`. `_cmd_init_preset` does the same for an unknown preset. This is inconsistent with every other handler, which returns an int (see [Gotchas](#gotchas)).
+Init refusal, invalid presets, and invalid `env set` inputs raise `UsageError`. The CLI's shared
+renderer prints the message and returns exit 2; no application handler calls `sys.exit`.
 
 #### Device lifecycle handlers
 
@@ -307,7 +308,10 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `cmd_init` / `cmd_deinit` — onboarding and teardown orchestration — `commands.py`
 - `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
 - `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py`
-- `cmd_status` — status entry — `commands.py`
+- `render_sync` / `render_status` / `render_application_error` — `cli_output.py`
+- `build_status_report` and typed report records — `status.py`
+- `ApplicationError` / `UsageError` / `MissingRecipeError` / `SetupError` — `errors.py`
+- `cmd_status` — status compatibility wrapper — `commands.py`
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py`
 - `_confirm` — shared target `[y/N]` gate — `target_commands.py`
 - `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `target_commands.py` / `commands.py`
@@ -315,12 +319,14 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 ## Gotchas
 
-- **`commands.py` remains a large orchestration module.** Hook, doctor, and target orchestration
-  have clear owners, but status, onboarding, and provisioning presentation still share this file.
+- **`commands.py` remains the onboarding/application-service module.** Status gathering,
+  rendering, target orchestration, hooks, and doctor orchestration now have dedicated owners.
 - **Circular imports are a CI invariant.** Shared constants, catalogs, and inventory types live in
   dependency-free modules; Pylint's `cyclic-import` checker analyzes the whole package and reports
   the concrete path when a cycle is introduced.
-- **`cmd_init` uses `sys.exit`, not a return code.** Unlike every other handler (which returns an int that `main()` returns), `cmd_init` returns `None` and exits the process directly on its refusal and unknown-preset paths. Callers cannot treat those as ordinary return values.
+- **Argparse may still raise `SystemExit`.** Help, version, and parser-level invalid choices keep
+  argparse's normal behavior. Application handlers raise typed errors and never terminate the
+  process themselves.
 - **`KNOWN_CMDS` is a second source of truth.** It is maintained by hand alongside the `add_parser` calls so `_ensure_subcommand` can pre-classify argv. Add a subcommand and you must update both, or bare-`splash` rewriting will misfire on it.
 - **A variant named like a type is unreachable.** Because run/start/stop/destroy drop argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves type-vs-variant by "type names win". A variant literally named `simulator`/`emulator`/`device` can never be selected positionally — the token is always read as the type. Name variants something else.
 - **`--yes` exists only on `destroy`** among the four device verbs. `run`/`start`/`stop` are non-destructive and never prompt, so they have no flag.

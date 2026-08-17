@@ -20,8 +20,9 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   deadlines; `launching.py`: framework selection and launch dispatch.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
   `doctor.py` owns check selection, execution, and rendering.
-- [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `hooks.py` +
-  `completion.py`: entry, parse, dispatch, the `cmd_*` handlers, and git-hook installation.
+- [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
+  `cli_output.py` + `hooks.py` + `completion.py`: entry, parse, dispatch, typed status reports,
+  output/error rendering, command handlers, and git-hook installation.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
   audited subprocess-failure contract.
 - [bootstrap.md](bootstrap.md) — clone trust, worktree completion, lifecycle locking, and the
@@ -39,6 +40,7 @@ synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, resc
 `hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
 `loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
 `bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.
+`status.py` gathers typed reports and `cli_output.py` is the sole operational renderer.
 `src/splashdown/__init__.py` is the seam that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)

@@ -43,10 +43,12 @@ def __getattr__(name: str) -> object:
 
 # Import profiles — this populates PROFILES.
 from . import capabilities as capabilities
+from . import cli_output as cli_output
 from . import device_android as device_android
 from . import device_ios as device_ios
 from . import device_tools as device_tools
 from . import profiles as _profiles_module
+from . import status as status
 from .agentdocs import remove_agent_guidance, render_agent_guidance, sync_agent_guidance
 from .bootstrap import (
     GitDirs,
@@ -63,6 +65,7 @@ from .bootstrap import (
 )
 from .catalog import PROFILES
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
+from .cli_output import _short_path, _summary_string
 from .commands import (
     _cmd_init_preset,
     _env_dispatch,
@@ -98,8 +101,6 @@ from .devices import (
     _ios_udid_exists,
     _is_orphan_device,
     _resolve_device_name,
-    _short_path,
-    _summary_string,
     _xcrun_json,
     android_boot,
     android_destroy,
@@ -123,7 +124,13 @@ from .devices import (
     physical_status,
 )
 from .doctor import cmd_doctor
-from .errors import CapabilityError
+from .errors import (
+    ApplicationError,
+    CapabilityError,
+    MissingRecipeError,
+    SetupError,
+    UsageError,
+)
 from .hooks import (
     LEGACY_POST_CHECKOUT_HOOK,
     _detect_hook_manager,
@@ -150,6 +157,7 @@ from .profiles import (
     compose_wiring_checks,
 )
 from .provisioning import (
+    WriterResult,
     provision,
     run_setup,
     write_envfile,

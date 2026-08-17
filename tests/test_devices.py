@@ -460,9 +460,12 @@ range = [19000, 19010]
     rc = sd.main(["--cwd", str(tmp_path), "status"])
     assert rc == 0
     err = capsys.readouterr().err
-    assert "MY_PORT=" in err
+    assert "MY_PORT  [" in err
     # The state tag must be one of `[in use]` or `[free]` (port-typed resource).
     assert "[free]" in err or "[in use]" in err
+
+    assert sd.main(["--cwd", str(tmp_path), "--show-values", "status"]) == 0
+    assert "MY_PORT=" in capsys.readouterr().err
 
 
 def test_cli_status_local_positional_matches_bare(tmp_path, monkeypatch, capsys):
@@ -493,8 +496,15 @@ def test_cli_status_local_json_shape(tmp_path, monkeypatch, capsys):
     data = json.loads(capsys.readouterr().out)
     # Local mode emits a flat per-checkout object (not the `checkouts` list).
     assert data["checkout"] == str(tmp_path.resolve())
-    assert any(r["key"] == "J_PORT" for r in data["resources"])
+    resource = next(resource for resource in data["resources"] if resource["key"] == "J_PORT")
+    assert "value" not in resource
     assert "targets" in data
+
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "--show-values", "status"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert next(resource for resource in shown["resources"] if resource["key"] == "J_PORT")[
+        "value"
+    ].isdigit()
 
 
 def test_cli_status_physical_device_shows_connection_state(tmp_path, monkeypatch, capsys):
@@ -647,7 +657,7 @@ def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
     assert rc == 0
     err = capsys.readouterr().err
     # Verbose mode brings back resource names + the === path === block header.
-    assert "P_VERBOSE=" in err
+    assert "P_VERBOSE  [" in err
     assert "===" in err
 
 
@@ -711,7 +721,7 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
     reg.set_device(str(a), "simulator", "default", "UDID-GHOST", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: False)
     monkeypatch.setattr(sd.devices, "device_status", lambda dt, name: "absent")
-    monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "absent")
+    monkeypatch.setattr(sd.status, "device_status", lambda dt, name: "absent")
     capsys.readouterr()
     rc = sd.main(["--cwd", str(a), "status", "all", "--check"])
     assert rc == 0
@@ -825,7 +835,15 @@ def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "PORT"]) == 0
     assert capsys.readouterr().out.strip().isdigit()
     assert sd.main(["--cwd", str(tmp_path), "env"]) == 0  # bare list
+    assert capsys.readouterr().out.strip() == "PORT"
+    assert sd.main(["--cwd", str(tmp_path), "--show-values", "env"]) == 0
     assert "PORT=" in capsys.readouterr().out
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "env"]) == 0
+    assert json.loads(capsys.readouterr().out) == ["PORT"]
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "--show-values", "env"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert list(shown) == ["PORT"]
+    assert shown["PORT"].isdigit()
 
 
 def test_cli_env_set(tmp_path, monkeypatch, capsys):
@@ -1554,7 +1572,7 @@ def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
     reg.set_device(str(co.resolve()), "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "shutdown")
+    monkeypatch.setattr(sd.status, "device_status", lambda dt, name: "shutdown")
     capsys.readouterr()
     rc = sd.main(["--cwd", str(co), "status", "--check"])
     assert rc == 0
@@ -1574,7 +1592,7 @@ def test_cli_status_check_flags_model_drift(tmp_path, monkeypatch, capsys):
     reg = sd.Registry()
     reg.set_device(str(co.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
-    monkeypatch.setattr(sd.commands, "device_status", lambda dtype, name: "shutdown")
+    monkeypatch.setattr(sd.status, "device_status", lambda dtype, name: "shutdown")
 
     assert sd.main(["--cwd", str(co), "status", "--check"]) == 0
 
@@ -1591,7 +1609,7 @@ def test_cli_status_all_check_flags_undeclared_device_row(tmp_path, monkeypatch,
     reg = sd.Registry()
     reg.set_device(str(co.resolve()), "simulator", "old", "UDID", "iPhone 17", "18.5")
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
-    monkeypatch.setattr(sd.commands, "_device_status_for_row", lambda row: "shutdown")
+    monkeypatch.setattr(sd.status, "_device_status_for_row", lambda row: "shutdown")
 
     assert sd.main(["--cwd", str(co), "status", "all", "--check"]) == 0
 
@@ -1606,7 +1624,7 @@ def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
     co.mkdir()
     (co / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     # Declared but never provisioned: no registry row, sim absent.
-    monkeypatch.setattr(sd.commands, "device_status", lambda dt, name: "absent")
+    monkeypatch.setattr(sd.status, "device_status", lambda dt, name: "absent")
     capsys.readouterr()
     rc = sd.main(["--cwd", str(co), "status", "--check"])
     assert rc == 0
@@ -1626,8 +1644,8 @@ def test_status_unavailable_does_not_increment_repair_counters(
     def unavailable(*args, **kwargs):
         raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
 
-    monkeypatch.setattr(sd.commands, "device_status", unavailable)
-    monkeypatch.setattr(sd.commands, "device_health", unavailable)
+    monkeypatch.setattr(sd.status, "device_status", unavailable)
+    monkeypatch.setattr(sd.status, "device_health", unavailable)
 
     assert sd.cmd_status(checkout, registry, "json", check=True) == 0
     captured = capsys.readouterr()
@@ -1645,7 +1663,7 @@ def test_status_unavailable_does_not_increment_repair_counters(
 def test_status_text_and_target_list_render_unavailable(registry, checkout, monkeypatch, capsys):
     (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     monkeypatch.setattr(
-        sd.commands,
+        sd.status,
         "device_status",
         lambda *args: (_ for _ in ()).throw(
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")

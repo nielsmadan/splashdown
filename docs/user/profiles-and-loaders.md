@@ -36,7 +36,9 @@ range  = [9999, 10100]
 writer = "envfile=path/to/legacy/.env"
 ```
 
-Available writers: `splashdown-env` (default), `envfile=PATH` (a .env-format file, preserving non-managed lines), `envrc` (writes `.envrc.local`), `stdout` (echoes), and `none` (registry-only, no file output).
+Available writers: `splashdown-env` (default), `envfile=PATH` (a .env-format file, preserving
+non-managed lines), `envrc` (writes `.envrc.local`), `stdout` (explicitly discloses `KEY=value`
+in text output or the JSON `stdout` field), and `none` (registry-only, no file output).
 
 An `envfile=` path must be non-empty, relative to the checkout root, and stay inside the checkout. Absolute paths, `..` traversal, bare `envfile`, and other writer spellings are rejected during recipe validation, before any resource is allocated.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess as subprocess  # noqa: PLC0414
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -124,35 +125,48 @@ def _is_orphan_device(row: ManagedDevice) -> bool:
 
 
 def physical_discover(
-    platform: str | None = None, *, warned: set[str] | None = None
+    platform: str | None = None,
+    *,
+    warned: set[str] | None = None,
+    on_warning: Callable[[CapabilityError], None] | None = None,
 ) -> list[dict[str, str]]:
     """Discover physical devices, tolerating an unavailable unrequested platform."""
     ios_discover = _ios_physical_devices
     android_discover = _android_physical_devices
     devices: list[dict[str, str]] = []
     warning_keys = warned if warned is not None else set()
+
+    def emit_warning(error: CapabilityError) -> None:
+        if on_warning is not None:
+            on_warning(error)
+        else:
+            warn_capability(error, warning_keys)
+
     if platform in (None, "ios"):
         try:
             devices += ios_discover()
         except CapabilityError as error:
             if platform == "ios":
                 raise
-            warn_capability(error, warning_keys)
+            emit_warning(error)
     if platform in (None, "android"):
         try:
             devices += android_discover()
         except CapabilityError as error:
             if platform == "android":
                 raise
-            warn_capability(error, warning_keys)
+            emit_warning(error)
     return devices
 
 
 def _physical_match(
-    spec: dict[str, Any], *, warned: set[str] | None = None
+    spec: dict[str, Any],
+    *,
+    warned: set[str] | None = None,
+    on_warning: Callable[[CapabilityError], None] | None = None,
 ) -> list[dict[str, str]]:
     """Discover and filter physical devices by a variant spec's platform/id/name."""
-    devices = physical_discover(spec.get("platform"), warned=warned)
+    devices = physical_discover(spec.get("platform"), warned=warned, on_warning=on_warning)
     want_id = spec.get("id")
     want_name = spec.get("name")
     if want_id:
@@ -163,9 +177,14 @@ def _physical_match(
     return devices
 
 
-def ensure_physical(spec: dict[str, Any], *, warned: set[str] | None = None) -> LaunchDestination:
+def ensure_physical(
+    spec: dict[str, Any],
+    *,
+    warned: set[str] | None = None,
+    on_warning: Callable[[CapabilityError], None] | None = None,
+) -> LaunchDestination:
     """Resolve a physical target to exactly one connected launch destination."""
-    devices = _physical_match(spec, warned=warned)
+    devices = _physical_match(spec, warned=warned, on_warning=on_warning)
     if not devices:
         raise DeviceError(_physical_no_match_msg(spec))
     if len(devices) > 1:
@@ -189,9 +208,14 @@ def _physical_no_match_msg(spec: dict[str, Any]) -> str:
     )
 
 
-def physical_status(spec: dict[str, Any], *, warned: set[str] | None = None) -> str:
+def physical_status(
+    spec: dict[str, Any],
+    *,
+    warned: set[str] | None = None,
+    on_warning: Callable[[CapabilityError], None] | None = None,
+) -> str:
     """Liveness for a physical target: connected, absent, or ambiguous."""
-    devices = _physical_match(spec, warned=warned)
+    devices = _physical_match(spec, warned=warned, on_warning=on_warning)
     if not devices:
         return "absent"
     if len(devices) > 1:
@@ -383,33 +407,3 @@ def _device_status_for_row(row: ManagedDevice) -> str:
             return "absent"
         return "running" if _android_running_serial(row.name) else "stopped"
     return "unknown"
-
-
-def _short_path(abspath: str) -> str:
-    """Shorten paths under the current home directory with a leading tilde."""
-    home = str(Path.home())
-    if abspath == home:
-        return "~"
-    if abspath.startswith(home + "/"):
-        return "~" + abspath[len(home) :]
-    return abspath
-
-
-_SUMMARY_PARTS = (
-    ("port", "port", "ports"),
-    ("kv", "var", "vars"),
-    ("simulator", "sim", "sims"),
-    ("emulator", "emu", "emus"),
-)
-
-
-def _summary_string(counts: dict[str, int]) -> str:
-    """Render nonzero registry resource counts as a compact summary."""
-    parts: list[str] = []
-    for key, singular, plural in _SUMMARY_PARTS:
-        count = counts.get(key, 0)
-        if count == 1:
-            parts.append(f"1 {singular}")
-        elif count > 1:
-            parts.append(f"{count} {plural}")
-    return ", ".join(parts) if parts else "—"
