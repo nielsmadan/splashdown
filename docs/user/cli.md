@@ -41,8 +41,13 @@ splash completion [bash|zsh]        # print shell-completion script (eval it in 
 Named presets are limited to choices that project scanning cannot infer:
 
 - `minimal` creates a framework-neutral recipe with a generated run id.
-- `server` creates a generic `PORT` and checkout-specific `DATABASE_URL`.
+- `server` creates a generic `PORT` and a `DATABASE_URL` whose readable checkout slug includes a
+  short hash of the resolved path, preventing matching directory tails from sharing a database.
 - `electron` creates a renderer `PORT` and opts into checkout-specific Electron user data.
+
+Existing server recipes are not rewritten when the hash suffix changes. Update the
+`DATABASE_URL` template manually, run `splash sync`, then create or migrate the newly named
+database. The old database remains untouched until you remove it.
 
 Plain `splash init` detects Electron in addition to the renderer framework. In an interactive
 terminal, it asks once whether to isolate Electron user data per checkout. The default is No,

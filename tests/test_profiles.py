@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import subprocess
@@ -477,7 +478,19 @@ def test_compose_project_name_is_unique_per_checkout(tmp_path):
     one = sd.render_template(tpl, sd._make_scope(tmp_path / "wrk" / "dev1", None, {}))
     two = sd.render_template(tpl, sd._make_scope(tmp_path / "wrk" / "dev2", None, {}))
     assert one != two
-    assert one == "wrk-dev1"
+    digest = hashlib.sha256(str((tmp_path / "wrk" / "dev1").resolve()).encode()).hexdigest()[:8]
+    assert one == f"wrk-dev1-{digest}"
+
+
+def test_compose_project_name_distinguishes_matching_path_tails(tmp_path):
+    (tmp_path / "compose.yaml").write_text("services: {}\n")
+    tpl = sd.compose_project_resources(tmp_path)["COMPOSE_PROJECT_NAME"]["template"]
+    one = sd.render_template(tpl, sd._make_scope(tmp_path / "one" / "wrk" / "dev", None, {}))
+    two = sd.render_template(tpl, sd._make_scope(tmp_path / "two" / "wrk" / "dev", None, {}))
+
+    assert one.startswith("wrk-dev-")
+    assert two.startswith("wrk-dev-")
+    assert one != two
 
 
 def test_compose_check_flags_hardcoded_ports_and_container_name(tmp_path):

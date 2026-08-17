@@ -224,7 +224,7 @@ def compose_project_resources(root: Path) -> dict[str, dict[str, Any]]:
     return {
         "COMPOSE_PROJECT_NAME": {
             "type": "template",
-            "template": "{{ slug(parent) }}-{{ slug(cwd) }}",
+            "template": "{{ slug(parent) }}-{{ slug(cwd) }}-{{ truncate(hash(cwd_abs), 8) }}",
         }
     }
 

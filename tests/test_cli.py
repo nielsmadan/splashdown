@@ -273,8 +273,27 @@ def test_init_server_preset_writes_generic_scaffold(tmp_path):
     assert "[resources.PORT]" in recipe
     assert "[resources.DATABASE_URL]" in recipe
     assert "range = [3001, 3100]" in recipe
+    assert (
+        'template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}_'
+        '{{ truncate(hash(cwd_abs), 8) }}"' in recipe
+    )
     # Generic — should not name a specific framework.
     assert "Next.js preset" not in recipe
+
+
+def test_server_database_name_distinguishes_matching_path_tails(tmp_path):
+    sd.cmd_init(tmp_path, preset="server")
+    template = sd.Recipe.load(tmp_path / sd.RECIPE_NAME).resources["DATABASE_URL"]["template"]
+    one = sd.render_template(
+        template, sd._make_scope(tmp_path / "one" / "work" / "checkout", None, {})
+    )
+    two = sd.render_template(
+        template, sd._make_scope(tmp_path / "two" / "work" / "checkout", None, {})
+    )
+
+    assert one.startswith("postgres://localhost:5432/myapp_checkout_")
+    assert two.startswith("postgres://localhost:5432/myapp_checkout_")
+    assert one != two
 
 
 def test_init_electron_preset_includes_profile_id(tmp_path, capsys):

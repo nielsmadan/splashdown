@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -49,10 +50,9 @@ from .registry import Registry
 
 
 def _default_sim_name(cwd: Path, variant: str) -> str:
-    """Sim instance name: '<parent>/<basename>/<variant>'. The path component
-    keeps different worktrees / clones isolated; the variant suffix lets the
-    same checkout host multiple sim configs (default, lowest-supported, etc.)."""
-    return f"{cwd.parent.name}/{cwd.name}/{variant}"
+    """Return a readable, collision-resistant instance name for a checkout."""
+    digest = hashlib.sha256(str(cwd.resolve()).encode()).hexdigest()[:8]
+    return f"{cwd.parent.name}/{cwd.name}/{variant}-{digest}"
 
 
 _AVD_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]")
@@ -60,7 +60,7 @@ _AVD_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 def _sanitize_avd_name(name: str) -> str:
     """avdmanager rejects names containing characters outside [A-Za-z0-9._-].
-    Replace anything else with `_` so the default `<parent>/<basename>/<variant>`
+    Replace anything else with `_` so the default path-derived
     scheme works on Android too."""
     return _AVD_INVALID_RE.sub("_", name)
 

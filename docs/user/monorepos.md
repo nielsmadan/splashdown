@@ -304,13 +304,19 @@ When a compose file sits at the repo root, `splash init` adds a `COMPOSE_PROJECT
 ```toml
 [resources.COMPOSE_PROJECT_NAME]
 type     = "template"
-template = "{{ slug(parent) }}-{{ slug(cwd) }}"
+template = "{{ slug(parent) }}-{{ slug(cwd) }}-{{ truncate(hash(cwd_abs), 8) }}"
 ```
 
 That one variable does most of the work. Compose reads it from the environment and uses it to
 namespace containers, networks and volumes, so two worktrees of the same repo stop colliding
-without either compose file changing. Your loader already exports it on `cd`, so a plain
+without either compose file changing. The readable path tail is followed by a stable hash of the
+resolved checkout path, so unrelated clones with matching directory names stay separate too. Your loader already exports it on `cd`, so a plain
 `docker compose up` picks it up.
+
+Recipes generated before this suffix was added are not rewritten. To migrate, run
+`docker compose down` while the old `COMPOSE_PROJECT_NAME` is still loaded, update the template,
+run `splash sync`, and start the stack again. Compose creates a new set of named resources; remove
+the old volumes only when their data is no longer needed.
 
 Host ports still need an edit, because compose bakes them into the `ports:` mapping. Declare a
 resource per published port and reference it with compose's `${VAR:-default}` form:

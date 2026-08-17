@@ -23,7 +23,7 @@ worktree" recipe presets + reposition around the agent persona**, not to build a
   are recipe/preset work, not engine work.
 - **Zero-touch by design** — the post-checkout hook runs `splash` automatically, which is
   essential for the agent persona (an agent won't run a setup step it doesn't know about).
-- **Templating already isolates names** — `myapp_{{ slug(cwd) }}`, uuids, per-checkout values
+- **Templating already isolates names** — readable slugs plus `hash(cwd_abs)`, uuids, and per-checkout values
   cover the *naming* half of stateful isolation today.
 - **Pinned device variants are version-coverage-as-code** — UC10 works now; just undocumented.
 

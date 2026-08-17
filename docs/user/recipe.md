@@ -80,13 +80,13 @@ The same pattern gives every checkout its own database inside one shared Postgre
 ```toml
 [resources.DB_NAME]
 type     = "template"
-template = "myapp_{{ slug(cwd) }}"
+template = "myapp_{{ slug(cwd) }}_{{ truncate(hash(cwd_abs), 8) }}"
 writer   = "envfile=apps/api/.env"
 ```
 
 Three things to know before you add it:
 
-1. `slug()` lowercases and turns every non-alphanumeric run into a hyphen, so `myapp_{{ slug(cwd) }}` on a checkout named `myapp.feat-x` gives `myapp_myapp-feat-x`, mixing underscores and hyphens. That is safe only if whatever creates the database quotes the identifier. Use `lower(...)` plus `truncate(hash(cwd_abs), 8)` instead if you need a stricter character set.
+1. `slug()` lowercases and turns every non-alphanumeric run into a hyphen, so the readable part for a checkout named `myapp.feat-x` becomes `myapp-feat-x`. The truncated hash keeps identical path tails under different roots distinct. Mixing the literal underscore with the slug's hyphens is safe only if the database quotes the identifier; use a different literal separator when it does not.
 2. The first sync takes over any hand-set `DB_NAME=` line already in `apps/api/.env` and replaces it with the computed value. Other keys in that file are left alone. Check the file before you add the resource.
 3. There is no per-checkout exception. The resource applies to every checkout including your primary one, so the base database from your compose file simply goes unused there. You cannot express "compute this only in worktrees".
 
@@ -120,7 +120,7 @@ completion model. It never runs until the clone is authorized with `splash trust
 once per checkout through `splash bootstrap` or a qualifying worktree-creation hook. See
 [Trusted worktree bootstrap](bootstrap.md).
 
-**For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands. Pin an explicit version like `ios = "18.5"` for fixed coverage.
+**For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>-<path-hash>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands. Pin an explicit version like `ios = "18.5"` for fixed coverage.
 
 ```toml
 [targets.simulator.default]

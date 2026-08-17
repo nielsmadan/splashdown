@@ -32,7 +32,7 @@ range = [3001, 3100]
 
 [resources.DATABASE_URL]
 type     = "template"
-template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}"
+template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}_{{ truncate(hash(cwd_abs), 8) }}"
 
 # Add extra ports as needed, e.g.:
 # [resources.STORYBOOK_PORT]

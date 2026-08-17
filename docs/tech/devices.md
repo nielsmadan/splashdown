@@ -39,14 +39,21 @@ device-lifecycle proper.
 ### Naming: one sim per checkout per variant
 
 The instance name is the isolation key. `_default_sim_name` (`devices.py:43`) builds
-`<parent>/<basename>/<variant>` from the checkout's `cwd` — e.g. `wrksp/dev1/default`. The path
-prefix keeps sibling worktrees/clones from sharing a sim; the variant suffix lets one checkout
-own several configs (default, lowest-supported, …). `_resolve_device_name` (`devices.py:60`)
+`<parent>/<basename>/<variant>-<path-hash>` from the checkout's `cwd` — for example,
+`wrksp/dev1/default-352e9e09`. The readable prefix identifies the checkout, and the first eight
+hexadecimal SHA-256 characters of `str(cwd.resolve())` keep matching path tails under different
+roots distinct. The variant lets one checkout own several configs (default, lowest-supported, …).
+`_resolve_device_name` (`devices.py:60`)
 picks the name: an explicit `name` field on the variant wins (rendered as a template if it
 contains `{{`), else the path default. For `emulator` targets the result is passed through
 `_sanitize_avd_name` (`devices.py:53`) because `avdmanager` only accepts `[A-Za-z0-9._-]`; the
 `/` separators become `_`. A leading `-` is rejected outright (`devices.py:74`) so the name can
 never be parsed as a CLI flag by `simctl`/`avdmanager create`.
+
+The suffix changed the generated identity for existing installations. Registry rows for iOS store
+the stable UDID rather than the display name, so a healthy old simulator is not renamed
+automatically. Destroy and recreate each default-named target once after upgrading. Explicit
+`name` overrides are unaffected.
 
 ### iOS via xcrun simctl
 

@@ -116,7 +116,7 @@ Revoke it with `splash untrust`. Full security and retry behavior:
 
 ### Mobile: simulators & emulators
 
-For a mobile app, the scan also declares the simulator/emulator variants in `[targets.*]`. Each checkout gets its own sim/emulator instance (named `<parent>/<cwd>/<variant>`), so worktrees never fight over one device. Boot, build, and launch in one command:
+For a mobile app, the scan also declares the simulator/emulator variants in `[targets.*]`. Each checkout gets its own sim/emulator instance (named `<parent>/<cwd>/<variant>-<path-hash>`), so even unrelated clones with the same trailing directories never fight over one device. Boot, build, and launch in one command:
 
 ```sh
 splash run                            # one target type + one variant: no args needed

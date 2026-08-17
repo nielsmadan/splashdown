@@ -45,12 +45,13 @@ hardware.
 ## How it works (current state)
 
 **Instance naming and isolation.** Every sim/emulator instance is named
-`<parent-dir>/<checkout-name>/<variant>` (`src/splashdown/devices.py:43`,
-`_default_sim_name`). The path component keeps sibling worktrees/clones apart; the variant suffix
-lets one checkout host several configs (`default`, `lowest-supported`, …). A per-variant `name =
+`<parent-dir>/<checkout-name>/<variant>-<path-hash>` (`src/splashdown/devices.py`,
+`_default_sim_name`). The readable path component identifies the checkout, while the first eight
+hexadecimal characters of SHA-256 over its resolved absolute path prevent unrelated clones with
+the same trailing directories from colliding. The variant lets one checkout host several configs
+(`default`, `lowest-supported`, …). A per-variant `name =
 "..."` (literal or template) overrides the default; for emulators the name is sanitized to
-avdmanager's `[A-Za-z0-9._-]` (`_resolve_device_name`, `src/splashdown/devices.py:60`;
-`_sanitize_avd_name:53`).
+avdmanager's `[A-Za-z0-9._-]` (`_resolve_device_name`; `_sanitize_avd_name`).
 
 **Reconcile (the heart of UC2 and UC4).** `device_health` classifies the registry's recorded
 instance as healthy, missing, orphaned, drifted, or undeclared. `ensure_fresh_sim` and
@@ -175,7 +176,7 @@ Adding a variant that already exists in the recipe is an error.
 
 | Concern | Location |
 |---|---|
-| Instance name `<parent>/<cwd>/<variant>` | `src/splashdown/devices.py:43` (`_default_sim_name`); override resolution `:60` |
+| Instance name `<parent>/<cwd>/<variant>-<path-hash>` | `src/splashdown/devices.py` (`_default_sim_name`); override resolution in `_resolve_device_name` |
 | Reconcile (create / recreate-on-drift / pin) | `src/splashdown/devices.py:729` (`ensure_fresh_sim`) |
 | Latest-iOS lookup driving auto-upgrade | `src/splashdown/devices.py:117` (`_ios_latest_runtime_version`); Android `:354` (`_android_latest_image`) |
 | `splash run` (reconcile + boot + build + launch) | `src/splashdown/commands.py:936` (`cmd_run`) |
@@ -365,6 +366,10 @@ splash target remove <type> <variant> [--keep-instance]
   tables without backfilling tables the scaffold gained later. A checkout generated before the
   react-native scaffold added its Android `[targets.emulator.default]` will lack it until you edit
   the TOML or run `splash target add`.
+- **The path-hash suffix is a one-time identity migration.** Existing healthy simulators do not
+  rename themselves because their registry rows store the UDID, not the display name. For each
+  default-named target created by an older Splashdown, run `splash destroy TYPE VARIANT --yes`
+  once and then `splash start TYPE VARIANT`. Explicit `name = "..."` overrides are unchanged.
 
 ## Why
 

@@ -106,11 +106,16 @@ splash target prune [ios|android]   # destroys every sim/AVD splashdown did NOT 
 
 ## iOS sim management
 
-Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtime: latest installed. Sim name defaults to `<parent-dir>/<checkout-name>/<variant>` so different worktrees and variants never collide. Override per-variant with `model = "..."` and `ios = "18.5"` in the recipe (or in `splashdown.local.toml` for an add-only variant).
+Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtime: latest installed. Sim name defaults to `<parent-dir>/<checkout-name>/<variant>-<path-hash>` so different worktrees, clones, and variants never collide. The hash is the first eight SHA-256 characters of the resolved checkout path. Override per-variant with `model = "..."` and `ios = "18.5"` in the recipe (or in `splashdown.local.toml` for an add-only variant).
 
 ## Android emulator management
 
 Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_9`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached. `splash` polls `adb` for the serial to appear.
+
+After upgrading from a version that generated names without the path hash, recreate each
+default-named sim or emulator once with `splash destroy TYPE VARIANT --yes` followed by
+`splash start TYPE VARIANT`. Existing healthy iOS rows keep using their recorded UDID until this
+explicit recreation. Targets with an explicit `name` are unchanged.
 
 ## Physical devices
 

@@ -22,7 +22,7 @@ Ordered by centrality to the two co-primary personas. Paths cite the CLI surface
 ## UC2 — When I work in a checkout, I want to boot/build/launch on a sim that belongs to this checkout, so I never confuse builds (primary · mobile persona)
 - **Trigger**: `splash run [type] [variant]`.
 - **Path today**: `cmd_run` → reconcile sim/emulator (create if missing, named
-  `<parent>/<cwd>/<variant>`) → boot → framework launcher (flutter/RN/expo/xcodebuild/gradle).
+  `<parent>/<cwd>/<variant>-<path-hash>`) → boot → framework launcher (flutter/RN/expo/xcodebuild/gradle).
 - **Definition of done**: app installed and launched on the checkout's own device.
 - **Frequency / stakes**: many times a day; cross-checkout install confusion is the core pain.
 
@@ -105,7 +105,8 @@ commitments**. Cross-references to the prior review (`2026-06-23-review.md`) whe
 - **Job**: "When my agent runs, give its worktree its *own* database/container/bucket prefix so
   it never shares state with another agent's worktree."
 - **Coverage today (partial)**: `template` resources already mint per-checkout names/URLs
-  (README's `postgres://…/myapp_{{ slug(cwd) }}`), and `uuid`/`set` resources cover other ids.
+  (for example `postgres://…/myapp_{{ slug(cwd) }}_{{ truncate(hash(cwd_abs), 8) }}`), and
+  `uuid`/`set` resources cover other ids.
   What's missing is *creating/destroying the actual service* — nothing spins up the
   `myapp_<slug>` Postgres DB or Docker container, or tears it down on `gc`.
 - **Opportunity**: document a `[setup.*]` recipe that creates/migrates the per-slug DB on sync

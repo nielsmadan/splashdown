@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 
@@ -559,7 +560,7 @@ def test_resolve_device_name_default_uses_variant_suffix(tmp_path):
     cwd = tmp_path / "feat-z"
     cwd.mkdir()
     out = sd._resolve_device_name({}, cwd, "small-screen")
-    assert out == f"{tmp_path.name}/feat-z/small-screen"
+    assert out == sd._default_sim_name(cwd, "small-screen")
 
 
 def test_resolve_device_name_sanitized_for_android(tmp_path):
@@ -568,7 +569,7 @@ def test_resolve_device_name_sanitized_for_android(tmp_path):
     cwd.mkdir()
     out = sd._resolve_device_name({}, cwd, "default", dtype="emulator")
     assert "/" not in out
-    assert out == f"{tmp_path.name}_feat-z_default"
+    assert out == sd.devices._sanitize_avd_name(sd._default_sim_name(cwd, "default"))
 
 
 def test_resolve_device_name_ios_keeps_slashes(tmp_path):
@@ -576,14 +577,19 @@ def test_resolve_device_name_ios_keeps_slashes(tmp_path):
     cwd = tmp_path / "feat-z"
     cwd.mkdir()
     out = sd._resolve_device_name({}, cwd, "default", dtype="simulator")
-    assert out == f"{tmp_path.name}/feat-z/default"
+    assert out == sd._default_sim_name(cwd, "default")
 
 
 def test_default_sim_name_includes_variant(tmp_path):
     cwd = tmp_path / "myapp.feat-x"
     cwd.mkdir()
-    assert sd._default_sim_name(cwd, "default") == f"{tmp_path.name}/myapp.feat-x/default"
-    assert sd._default_sim_name(cwd, "small-screen") == f"{tmp_path.name}/myapp.feat-x/small-screen"
+    digest = hashlib.sha256(str(cwd.resolve()).encode()).hexdigest()[:8]
+    assert sd._default_sim_name(cwd, "default") == (
+        f"{tmp_path.name}/myapp.feat-x/default-{digest}"
+    )
+    assert sd._default_sim_name(cwd, "small-screen") == (
+        f"{tmp_path.name}/myapp.feat-x/small-screen-{digest}"
+    )
 
 
 def test_resolve_variant_explicit_wins():

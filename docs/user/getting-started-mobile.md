@@ -41,7 +41,7 @@ splash target              # list declared variants and which are booted
 splash stop simulator      # shut it down, keep it
 ```
 
-Each checkout gets its own instance, named `<parent>/<cwd>/<variant>`, so a worktree never collides with the main checkout. Add a worktree and `splash run` there creates and uses a separate sim.
+Each checkout gets its own instance, named `<parent>/<cwd>/<variant>-<path-hash>`, so a worktree or identically named clone under another root never collides with the main checkout. Add a worktree and `splash run` there creates and uses a separate sim.
 
 When a newer iOS or Android system image lands, recreate the `latest` devices in place:
 

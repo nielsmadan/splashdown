@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -33,7 +34,7 @@ def test_ensure_fresh_creates_when_missing(registry, checkout, monkeypatch):
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     info = sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
     assert info["udid"] == "UDID-NEW"
-    assert info["name"].endswith("/default")
+    assert info["name"] == sd._default_sim_name(checkout, "default")
     assert created["call"][1] == "iPhone 17"
     assert created["call"][2] == "18.5"
     assert registry.get_device(str(checkout.resolve()), "simulator", "default").udid == "UDID-NEW"
@@ -287,7 +288,7 @@ framework = "react-native"
     rc = sd.main(["--cwd", str(tmp_path), "run", "simulator"])
     assert rc == 0
     assert captured["info"]["udid"] == "UDID-NEW"
-    assert captured["info"]["name"].endswith("/default")
+    assert captured["info"]["name"] == sd._default_sim_name(tmp_path, "default")
 
 
 def test_cli_run_explicit_variant(tmp_path, monkeypatch):
@@ -312,7 +313,7 @@ framework = "react-native"
 
     monkeypatch.setattr(sd.commands, "device_run", _fake_run)
     sd.main(["--cwd", str(tmp_path), "run", "simulator", "small-screen"])
-    assert captured["info"]["name"].endswith("/small-screen")
+    assert captured["info"]["name"] == sd._default_sim_name(tmp_path, "small-screen")
 
 
 def test_cli_run_errors_when_no_default_and_no_pick(tmp_path, monkeypatch, capsys):
@@ -1846,7 +1847,23 @@ def test_android_running_serial_no_match(monkeypatch):
 
 
 def test_default_sim_name():
-    assert sd.devices._default_sim_name(Path("/work/myapp/co"), "default") == "myapp/co/default"
+    cwd = Path("/work/myapp/co")
+    digest = hashlib.sha256(str(cwd.resolve()).encode()).hexdigest()[:8]
+    assert sd.devices._default_sim_name(cwd, "default") == f"myapp/co/default-{digest}"
+
+
+def test_default_sim_name_distinguishes_matching_path_tails(tmp_path):
+    one = tmp_path / "one" / "work" / "checkout"
+    two = tmp_path / "two" / "work" / "checkout"
+    one.mkdir(parents=True)
+    two.mkdir(parents=True)
+
+    one_name = sd.devices._default_sim_name(one, "default")
+    two_name = sd.devices._default_sim_name(two, "default")
+
+    assert one_name.startswith("work/checkout/default-")
+    assert two_name.startswith("work/checkout/default-")
+    assert one_name != two_name
 
 
 def test_sanitize_avd_name():
