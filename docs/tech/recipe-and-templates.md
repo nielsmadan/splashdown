@@ -22,6 +22,7 @@ git-hook hot path never imports `tomlkit` at all (see [Why](#why)).
   - [The template engine](#the-template-engine)
   - [Template preflight and dependency ordering](#template-preflight-and-dependency-ordering)
   - [Named intent presets and scanned overlays](#named-intent-presets-and-scanned-overlays)
+  - [Settings](#settings-load_settings)
   - [_env_quote](#_env_quote)
   - [tomlio: comment-preserving writes](#tomlio-comment-preserving-writes)
 - [Key entry points](#key-entry-points)
@@ -92,7 +93,7 @@ so error messages name the offending file.
 
 ### merged_targets & resolve_variant
 
-`merged_targets` (`recipe.py:988`) first unions the recipe's catalog with the local
+`merged_targets` (`recipe.py`) first unions the recipe's catalog with the local
 catalog. That merge is **additive with collision = error**: if a `(type, variant)`
 already exists in the recipe, redeclaring it in the local file raises rather than
 overriding. It then folds in the optional global catalog. Global physical-device
@@ -100,7 +101,7 @@ variants are available in every project; global simulator/emulator variants only
 appear when the project already declares that type. Recipe/local entries silently
 win a global name collision, so a machine-wide config cannot break a project.
 
-`resolve_variant` (`recipe.py:1028`) picks one variant out of a *single type's*
+`resolve_variant` (`recipe.py`) picks one variant out of a *single type's*
 catalog by these rules, in order: explicit name wins → else the variant literally
 named `default` → else the sole variant if exactly one exists → else error. When
 its `prefix_match` arg is set (the CLI passes `load_settings(cwd).prefix_match`),
@@ -126,28 +127,28 @@ keys and wrong value types raise. Add a new toggle by extending both
 ### The template engine
 
 A resource value can be a template string containing `{{ expr }}` placeholders.
-`render_template` (`recipe.py:172`) substitutes each via `_TEMPLATE_RE`, calling
-`_safe_eval` (`recipe.py:164`) on the inner expression. A result that is still
+`render_template` (`recipe.py`) substitutes each via `_TEMPLATE_RE`, calling
+`_safe_eval` (`recipe.py`) on the inner expression. A result that is still
 callable is rejected — a guard against `{{ uuid }}` (the helper, not its call).
 
 `_safe_eval` parses the expression with `ast.parse(mode="eval")` and walks it
-with `_eval_node` (`recipe.py:123`). **This is an AST-walking interpreter, not
+with `_eval_node` (`recipe.py`). **This is an AST-walking interpreter, not
 `eval()`.** `_eval_node` whitelists exactly: constants, names bound in `scope`,
 a fixed set of binary ops (`_BINOPS`) and unary ops (`_UNARYOPS`), calls to
 scope-provided callables, and subscript/slice (`_eval_subscript`,
-`recipe.py:155`). Everything else — most importantly **attribute access** — falls
+`recipe.py`). Everything else — most importantly **attribute access** — falls
 through to a `TemplateError`. Calls additionally forbid `*args`/`**kwargs`
 unpacking and reject non-callable targets. Unknown names raise immediately rather
 than resolving to `None`.
 
-`_make_scope` (`recipe.py:37`) builds the evaluation namespace. It is the entire
+`_make_scope` (`recipe.py`) builds the evaluation namespace. It is the entire
 template vocabulary:
 
 - **Context values** computed from the checkout: `cwd` (basename), `cwd_abs`
   (resolved absolute path), `branch`, `repo` (git toplevel name via
-  `_repo_name`, `recipe.py:64`, falling back to the dir name when git is absent),
+  `_repo_name`, `recipe.py`, falling back to the dir name when git is absent),
   and `parent`.
-- **Helpers**: `basename`, `dirname`, `slug` (`_slug`, `recipe.py:32`), `lower`,
+- **Helpers**: `basename`, `dirname`, `slug` (`_slug`, `recipe.py`), `lower`,
   `upper`, `truncate`, `uuid`, `hash` (sha256 hex of `|`-joined args), and
   `port_hash` (sha256 folded into a `[lo, hi]` range, default 8000–9000, with
   keyword-overridable bounds).
@@ -157,7 +158,7 @@ template vocabulary:
 
 `provision()` drives this: it walks resources in dependency order, building a
 fresh scope from the accumulating `resolved` dict for each template
-(`provisioning.py:64-66`).
+(`provisioning.py`).
 
 ### Template preflight and dependency ordering
 
@@ -168,7 +169,7 @@ disallowed syntax, and references to undeclared resources are therefore load
 errors. Helper-specific failures that need runtime values — for example invalid
 arguments passed to a helper — remain runtime `TemplateError`s.
 
-`template_refs` (`recipe.py:192`) extracts the resource names a template depends
+`template_refs` (`recipe.py`) extracts the resource names a template depends
 on. It is **AST-based**: it parses each `{{ expr }}` and collects only
 `ast.Name` nodes, so an identifier-looking string literal (`{{ "PORT" }}`) is not
 mistaken for a dependency and cannot fabricate a phantom edge.
@@ -195,9 +196,9 @@ cannot be inferred safely from repository contents. React Native, Flutter, nativ
 native Android, and Next.js therefore use plain `splash init`; their former names and the
 `nextjs` alias are not `SCAFFOLDS` keys.
 
-The parser's positional choices are built directly from the registry (`cli.py:149-155`).
+The parser's positional choices are built directly from the registry (`cli.py`).
 The preset path replaces `__SPLASH_LOADER__` with the detected or overridden loader, runs
-`Recipe.parse` against the complete string, and only then writes it (`commands.py:1420-1434`).
+`Recipe.parse` against the complete string, and only then writes it (`commands.py`).
 This path bypasses scanning and prompts, so `splash init electron` is the deterministic
 Electron opt-in.
 
@@ -218,7 +219,7 @@ single-scheme discovery, or a TTY prompt.
 
 ### _env_quote
 
-`_env_quote` (`recipe.py:1097`) is the dotenv serializer used by the
+`_env_quote` (`recipe.py`) is the dotenv serializer used by the
 `splashdown.env` writers in `provisioning.py`. Bare-safe values
 (matching `_ENV_SAFE_RE`) pass through; anything else is **single-quoted** with
 `'` escaped as `'\''`. Single quotes are intentional: the env file is `source`d
@@ -229,21 +230,21 @@ neutralize them and are read literally by mise/direnv too.
 ### tomlio: comment-preserving writes
 
 `tomlio.py` is the *only* module that imports `tomlkit`, and its callers
-(`commands.py`, `devices.py`) lazy-import it inside functions
-(e.g. `devices.py:938`, `commands.py:1567`) so the read hot path never loads it.
+(`commands.py`, `targets.py`, and `hooks.py`) lazy-import it inside functions so the read hot path
+never loads it.
 Every function is a pure `str -> str` (or `str | None`) transform; callers own
 file I/O.
 
 - `render_scanned_recipe` builds a brand-new recipe document (header comment,
   `[project]`, `[apps.*]`, `[resources.*]`, and `[targets.*]`) from scratch. Scanner output and
   built-in preset output are passed through `Recipe.parse` before file I/O.
-- `refresh_recipe` (`tomlio.py:119`) is the re-scan path: it `tomlkit.parse`s the
+- `refresh_recipe` (`tomlio.py`) is the re-scan path: it `tomlkit.parse`s the
   existing text, mutates `[project]` in place and replaces `[apps.*]` wholesale
-  (via `_set_apps`, `tomlio.py:56`), but **only appends** profile resources whose
+  (via `_set_apps`, `tomlio.py`), but **only appends** profile resources whose
   names aren't already present. It preserves comments and existing resource
   fields mechanically, but the rebuilt document must pass `Recipe.parse` before
   it replaces the file; an unknown or stale field therefore prevents the write.
-- `ensure_mise_file_directive_text` (`tomlio.py:154`) idempotently ensures
+- `ensure_mise_file_directive_text` (`tomlio.py`) idempotently ensures
   `_.file = "<env file>"` under `[env]`, handling the case where `_` already
   exists as a table (it sets the key in place rather than re-declaring a dotted
   key, which `tomlkit` would reject).
@@ -261,18 +262,13 @@ file I/O.
 - `_validate_resources`, `_validate_apps`, `_validate_setup`, `_validate_bootstrap`,
   `_validate_project` — recipe schema.
 - `_parse_targets_section` / `validate_target_spec` — shared target schema.
-- `recipe.py:988` — `merged_targets`; `recipe.py:1028` — `resolve_variant`.
-- `recipe.py:172` — `render_template`; `recipe.py:164` `_safe_eval`;
-  `recipe.py:123` `_eval_node` (the AST sandbox).
-- `recipe.py:37` — `_make_scope`.
-- `recipe.py:192` — `template_refs`; `recipe.py:1063` — `topo_sort`.
-- `recipe.py:1097` — `_env_quote`.
+- `recipe.py` — `merged_targets`, `resolve_variant`, `render_template`, `_safe_eval`,
+  `_eval_node`, `_make_scope`, `template_refs`, `topo_sort`, and `_env_quote`.
 - `scaffolds.py` — the three named intent templates and `SCAFFOLDS`.
-- `commands.py:1420` — `_cmd_init_preset`, including loader substitution and pre-write
+- `commands.py` — `_cmd_init_preset`, including loader substitution and pre-write
   validation.
-- `commands.py:1187` — scanner-driven Electron resource overlay.
-- `tomlio.py:119` — `refresh_recipe`; `tomlio.py:205`/`tomlio.py:214` —
-  `target_add_text`/`target_remove_text`.
+- `commands.py` — scanner-driven Electron resource overlay.
+- `tomlio.py` — `refresh_recipe`, `target_add_text`, and `target_remove_text`.
 
 ## Gotchas
 
@@ -299,7 +295,7 @@ file I/O.
   Framework setup belongs in scanner output; add a named preset only when it represents
   explicit intent scanning cannot infer.
 - **`slug()` emits lowercase and hyphens, never underscores.** `_slug`
-  (`recipe.py:32`) collapses every non-alphanumeric run to `-`, strips the edges
+  (`recipe.py`) collapses every non-alphanumeric run to `-`, strips the edges
   and lowercases (empty input → `"x"`). A template that mixes a literal
   underscore prefix with a slug — `"myapp_db_{{ slug(cwd) }}_{{ truncate(hash(cwd_abs), 8) }}"` on
   `../myapp.feat-x` → `myapp_db_myapp-feat-x_352e9e09` — yields one identifier carrying

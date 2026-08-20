@@ -46,36 +46,36 @@ Seven options reshape that flow:
 ## How it works (current state)
 
 **Refusal guard.** `cmd_init` refuses to clobber an existing `splashdown.toml` unless
-`--overwrite` is passed, exiting with status `2` (`commands.py:1307`–`1309`). This is a hard
-`sys.exit(2)`, not a return — it short-circuits before any scan or write.
+`--overwrite` is passed. It raises `UsageError` before any scan or write; the CLI renders that
+typed failure as exit 2, while direct callers receive the exception.
 
-**Scan.** The default (no preset) path runs `Scanner().scan(cwd)` (`scanner.py:184`), which:
+**Scan.** The default (no preset) path runs `Scanner().scan(cwd)` (`scanner.py`), which:
 detects the workspace manager (pnpm/yarn/npm/cargo/gradle/`single`) via `_detect_workspace`
-(`scanner.py:44`); enumerates apps via `_enumerate_apps` (`scanner.py:69`); matches each app
+(`scanner.py`); enumerates apps via `_enumerate_apps` (`scanner.py`); matches each app
 to a Profile by name through the `PROFILES` registry, defaulting to `"unknown"` when nothing
-matches (`scanner.py:207`); and detects the shell loader by asking each `Loader` in priority
+matches (`scanner.py`); and detects the shell loader by asking each `Loader` in priority
 order mise → direnv → devbox, falling back to the first one installed on PATH and returning
 `"none"` only when none is configured or installed (`_detect_loader`,
-`scanner.py:156`). A `--loader` override replaces the detected loader on the inventory
-(`commands.py:1322`). The result is a `ProjectInventory` of `AppInventory` entries
-(`scanner.py:16`, `scanner.py:27`).
+`scanner.py`). A `--loader` override replaces the detected loader on the inventory
+(`commands.py`). The result is a `ProjectInventory` of `AppInventory` entries defined in
+`inventory.py`.
 
-**Resource collection + collision mangling.** For each non-`unknown` app, `cmd_init` asks the
-matched `Profile.resources(app)` for the resources it wants, then passes the per-app maps to
-`_build_resource_catalog`. When the same canonical name is owned by more than one app it is
-mangled with the upper-cased app name (e.g. two Vite apps → `WEB_DEV_PORT_ADMIN` /
-`WEB_DEV_PORT_CUSTOMER`); single-owner names stay canonical. The helper produces the flat
-resource table and each `[apps.<name>]` `resources` list together from the same resolved keys.
+**Resource collection + collision deferral.** For each non-`unknown` app, `cmd_init` asks the
+matched `Profile.resources(app)` for the resources it wants. If several apps claim the same
+canonical resource name, init writes a structure-only recipe and directs the user to configure
+explicit monorepo resources instead of guessing names or ranges. Collision-free projects continue
+through `_build_resource_catalog`, which produces the flat resource table and each app's resource
+list together.
 
 **Electron overlay.** Scanner-detected Electron apps can add a stable
-`ELECTRON_PROFILE_ID` through `_add_electron_resources` (`commands.py:1187`). Interactive
+`ELECTRON_PROFILE_ID` through `_add_electron_resources` (`commands.py`). Interactive
 init asks whether to isolate the profile; non-interactive/EOF defaults to shared. The
 `--electron-profile=isolated|shared` flag makes the choice deterministic. Isolation retains
 the app's primary Profile and adds a `writer = "splashdown-env"` template resource whose value
 the Electron main process uses to derive a per-checkout `userData` directory.
 
 **No-loader fallback.** When the loader is `"none"`, `_apply_no_loader_fallback`
-(`commands.py:1141`) decides delivery via `_resolve_no_loader_delivery` (`commands.py:1095`):
+(`commands.py`) decides delivery via `_resolve_no_loader_delivery` (`commands.py`):
 if a dotenv file the project already reads exists (`.env` → `.env.local` precedence) **and**
 at least one app actually reads dotenv files (`Profile.reads_dotenv`), it uses `setdefault`
 to add `writer = "envfile=<file>"` only to generated resources without an explicit writer.
@@ -84,7 +84,7 @@ keeps generating `splashdown.env` and prints instructions. It warns when the cho
 file is not gitignored, and notes any apps that read only the process environment
 (Vite/Spring/mobile/Electron) and therefore won't pick up a dotenv file.
 
-**Native iOS scheme.** `_resolve_init_ios_scheme` (`commands.py:1251`) discovers shared
+**Native iOS scheme.** `_resolve_init_ios_scheme` (`commands.py`) discovers shared
 Xcode schemes for a scanner-detected `ios-native` app. One shared scheme is recorded
 automatically as `[project.ios].scheme`; several produce a TTY prompt, while ambiguous
 non-interactive init errors with a direct `--ios-scheme=NAME` retry. An explicit name is
@@ -102,9 +102,9 @@ template the recipe already resolves is never pruned. The recipe is then rendere
 strict `Recipe` validator used by provisioning before it is written. This catches scanner/profile
 drift, invalid app resource references, resource/writer/template/schema errors, and unknown
 fields before init mutates the recipe or proceeds to loader/hook wiring. A `splashdown.local.toml` skeleton (`LOCAL_SKELETON`)
-is written if absent after the recipe passes validation. `_ensure_gitignore` (`hooks.py:35`) adds
+is written if absent after the recipe passes validation. `_ensure_gitignore` (`hooks.py`) adds
 `splashdown.env` and `splashdown.local.toml` to `.gitignore`. The selected loader is wired by
-`LOADERS[inv.loader].wire(cwd)` (`commands.py:1380`) — every loader's `wire` is idempotent
+`LOADERS[inv.loader].wire(cwd)` (`commands.py`) — every loader's `wire` is idempotent
 (`loaders.py`): mise sets `_.file = "splashdown.env"` under `[env]` (editing an existing
 `.mise.toml`/`mise.toml` rather than scaffolding a second), direnv appends a sentinel-wrapped
 `dotenv_if_exists splashdown.env` block to `.envrc`, devbox adds a marker-tagged `init_hook`,
@@ -138,12 +138,12 @@ requires explicit `splash trust`.
 
 **Wiring checks.** For each known-profile app, `cmd_init` runs the profile's `wiring_checks`,
 and for any check whose `detect` is not `"ok"` it applies the `autofix` if one exists, swallowing
-failures with a printed `✗` line (`commands.py:1401`–`1417`). This is the same `WiringCheck`
+failures with a printed `✗` line (`commands.py`). This is the same `WiringCheck`
 machinery as `splash doctor` (see UC5 / `wiring.py`).
 
 **Agent guidance.** After the generated recipe validates, every init path parses that recipe
 and derives a sentinel-wrapped Markdown block for port-bearing apps. The block uses each
-`[apps.*].resources` entry's actual name, including monorepo-mangled names, and combines common
+`[apps.*].resources` entry's actual resolved name and combines common
 no-numeric-port rules with `Profile.agent_guidance()` launch instructions. Existing root
 `AGENTS.md` and independent `CLAUDE.md` files are updated; neither is created. A `CLAUDE.md`
 that imports `@AGENTS.md` has any previous complete block removed, then is skipped. Complete
@@ -152,26 +152,26 @@ left untouched with a warning. `--rescan` can replace or remove stale guidance, 
 removes complete blocks even when the recipe cannot be parsed.
 
 **First sync.** After `cmd_init` returns, the CLI runs the first sync via
-`_cmd_provision_inner` unless `--no-sync` was passed (`cli.py:412`–`425`). That allocates ports
+`_cmd_provision_inner` unless `--no-sync` was passed (`cli.py`). That allocates ports
 through the registry, expands templates, and writes outputs. Text output names changed keys
-without revealing their values; explicit JSON output includes the resolved values — the
-"checkout has live values in one command" payoff.
+without revealing their values. JSON also returns keys by default; root `--show-values` is the
+deliberate disclosure opt-in. Explicit `writer = "stdout"` resources remain value-bearing.
 
 **Intent preset path.** `splash init <preset>` routes to `_cmd_init_preset`
-(`commands.py:1420`): it looks the name up in `SCAFFOLDS` (`scaffolds.py:62`; unknown name →
-`sys.exit(2)`), substitutes `__SPLASH_LOADER__`, validates the complete scaffold in memory, then
+(`commands.py`): it looks the name up in `SCAFFOLDS` (`scaffolds.py`; unknown name →
+`UsageError` for direct callers), substitutes `__SPLASH_LOADER__`, validates the complete scaffold in memory, then
 writes it. Only after validation does it write the local skeleton, ensure gitignore, wire the
 loader and hook, and run `cmd_doctor(cwd, fix=True)` when the resolved framework has wiring checks.
 Note this path is **not** sync-driven by itself — the post-init sync still comes from the CLI layer.
 
-**`--rescan`.** `cmd_refresh_inventory` (`commands.py:1540`) is dispatched *before* `cmd_init`
-(`cli.py:413`) and is a different operation: it requires an existing recipe (errors with
+**`--rescan`.** `cmd_refresh_inventory` (`commands.py`) is dispatched *before* `cmd_init`
+(`cli.py`) and is a different operation: it requires an existing recipe (errors with
 "run `splash init` instead" otherwise), re-scans, and rewrites only `[project]` / `[apps.*]`
 via `refresh_recipe`, preserving comments and valid existing `[resources.*]` tables. It validates
 both the source recipe and the rebuilt TOML, so an unknown key or invalid generated app/resource
 reference fails before the existing file is replaced. Use it to pick up a newly-added monorepo app.
 
-**Teardown.** `cmd_deinit` (`commands.py:1461`) reverses the owned parts of init without
+**Teardown.** `cmd_deinit` (`commands.py`) reverses the owned parts of init without
 blindly restoring user files: it destroys registered sims/AVDs that splashdown owns, releases
 all registry rows, removes `splashdown.env`, clears only splashdown keys from user-owned writer
 destinations, unwires the configured loader, reverts managed gitignore
@@ -183,33 +183,26 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 
 ## Key entry points
 
-- `cmd_init` — orchestrator; refusal guard + `sys.exit(2)`: `src/splashdown/commands.py:1295`
-  (guard at `:1307`–`1309`).
-- `_add_electron_resources` / `_resolve_init_ios_scheme`: `src/splashdown/commands.py:1187` /
-  `:1251`.
-- `_cmd_init_preset` — `init <preset>` path: `src/splashdown/commands.py:1420`.
-- `cmd_deinit` — surgical teardown: `src/splashdown/commands.py:1461`.
-- `cmd_refresh_inventory` — `--rescan`: `src/splashdown/commands.py:1540`.
+- `cmd_init` — orchestrator and typed refusal guard: `src/splashdown/commands.py`.
+- `_add_electron_resources` / `_resolve_init_ios_scheme`: `src/splashdown/commands.py`.
+- `_cmd_init_preset` — `init <preset>` path: `src/splashdown/commands.py`.
+- `cmd_deinit` — surgical teardown: `src/splashdown/commands.py`.
+- `cmd_refresh_inventory` — `--rescan`: `src/splashdown/commands.py`.
 - `_ensure_post_checkout_hook` / `_detect_hook_manager` / `_native_hook_path`:
   `src/splashdown/hooks.py`.
 - Hook wiring per manager — lefthook/husky/native common hook — and the shared
   `POST_CHECKOUT_HOOK` body: `src/splashdown/hooks.py`.
-- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery`:
-  `src/splashdown/commands.py:1141` / `:1095`.
-- `_ensure_gitignore` / `_ensure_mise_file_directive`:
-  `src/splashdown/hooks.py:35` / `:47`.
-- `Scanner.scan` / `ProjectInventory` / `AppInventory`:
-  `src/splashdown/scanner.py:184` / `:27` / `:16`.
-- `_detect_workspace` / `_enumerate_apps` / `_detect_loader`:
-  `src/splashdown/scanner.py:44` / `:69` / `:156`.
+- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery`: `src/splashdown/commands.py`.
+- `_ensure_gitignore` / `_ensure_mise_file_directive`: `src/splashdown/hooks.py`.
+- `Scanner.scan`: `src/splashdown/scanner.py`; `ProjectInventory` / `AppInventory`:
+  `src/splashdown/inventory.py`.
+- `_detect_workspace` / `_enumerate_apps` / `_detect_loader`: `src/splashdown/scanner.py`.
 - `_build_resource_catalog` (collision mangling and app references):
-  `src/splashdown/scanner.py:214`.
-- `LOADERS` registry + idempotent `wire`: `src/splashdown/loaders.py:215` (mise `:56`,
-  direnv `:93`, devbox `:149`, none `:201`).
+  `src/splashdown/scanner.py`.
+- `LOADERS` registry and idempotent loader implementations: `src/splashdown/loaders.py`.
 - `SCAFFOLDS` presets / `PROFILES` registration:
-  `src/splashdown/scaffolds.py:62`; the templates themselves fill that module.
-- `init` argparse parser: `src/splashdown/cli.py:149`. Dispatch (rescan before init, then
-  optional sync): `src/splashdown/cli.py:412`–`425`.
+  `src/splashdown/scaffolds.py`; the templates themselves fill that module.
+- `init` argparse parser and dispatch: `src/splashdown/cli.py`.
 
 ## Configuration
 
@@ -224,7 +217,7 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   for CI / scaffold-only runs: generate the committable files without touching the machine registry.
 - **`--rescan`** — re-detect `[project]`/`[apps.*]` in an existing recipe; preserves
   valid `[resources.*]` tables and comments. Does not scaffold; the rescan path is dispatched
-  before `cmd_init` and returns early (`cli.py:413`). Unknown or invalid retained fields are
+  before `cmd_init` and returns early (`cli.py`). Unknown or invalid retained fields are
   errors, not extension data.
 - **`--electron-profile=isolated|shared`** — scanner-only Electron choice. `isolated` adds a
   stable process-env profile id; `shared` explicitly declines isolation.
@@ -250,17 +243,17 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   `splash bootstrap` when the recipe declares it. Tracked Lefthook/Husky changes still require the
   project's normal hook-manager install step.
 
-- **`sys.exit(2)` short-circuits, it does not return.** The refusal guard and the
-  unknown-preset branch both call `sys.exit(2)` (`commands.py:1309`, `:1429`). Callers
-  embedding `cmd_init` get a `SystemExit`, not a return value.
+- **Init usage failures are typed.** The refusal guard and direct unknown-preset lookup raise
+  `UsageError`. The CLI renders exit 2; embedded callers can catch the application exception.
+  Argparse can still raise `SystemExit` while validating a positional preset before dispatch.
 
 - **The first sync lives in the CLI layer, not `cmd_init`.** `cmd_init` scaffolds and wires
-  but does **not** itself sync; `cli.py:412`–`425` runs `_cmd_provision_inner` afterward. So
+  but does **not** itself sync; `cli.py` runs `_cmd_provision_inner` afterward. So
   calling `cmd_init` directly (or with `--no-sync`) leaves the checkout scaffolded but
   **without** allocated ports or `splashdown.env`.
 
 - **`--rescan` is a separate code path that never scaffolds.** It is dispatched before
-  `cmd_init` (`cli.py:413`), requires an existing recipe, and rewrites only `[project]`/
+  `cmd_init` (`cli.py`), requires an existing recipe, and rewrites only `[project]`/
   `[apps.*]`. Combining `--rescan` with `--overwrite`/`--no-sync` is meaningless — rescan
   returns first.
 
@@ -293,11 +286,11 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   installed at all (or `--loader none` was passed) and the only apps read env from the process
   (Vite, Spring Boot, mobile) rather than a dotenv file: splashdown keeps writing
   `splashdown.env` and prints how to source it, but nothing sources it automatically
-  (`_resolve_no_loader_delivery` at `commands.py:1095`, `_NO_LOADER_INSTRUCTIONS` at `:1069`).
+  (`_resolve_no_loader_delivery` and `_NO_LOADER_INSTRUCTIONS` in `commands.py`).
 
 - **`profile = "unknown"` apps are skipped, not failed.** An unrecognized framework gets no
   resources and no wiring; the rest of the project still scaffolds
-  (`commands.py:1336`, `:1396`).
+  (`_apply_init_wiring_checks` in `commands.py`).
 
 - **Generated TOML is not trusted implicitly.** Scanner output, built-in preset output, the
   minimal-monorepo fallback, and rescan output all pass through `Recipe` before writing. A

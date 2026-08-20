@@ -2,281 +2,92 @@
 
 > PRD for **UC5** — make the allocated port actually reach the running app.
 > See `docs/product/use-cases.md` (UC5) and `docs/product/persona.md`. `README.md`
-> ("Framework wiring") is the authoritative spec.
+> ("Framework wiring") is the authoritative user-facing specification.
 > **Implemented by:** [wiring](../tech/wiring.md).
 
 ## Table of contents
 
 - [Overview](#overview)
-- [How it works (current state)](#how-it-works-current-state)
-- [Key entry points](#key-entry-points)
+- [Behavior](#behavior)
+- [Check coverage](#check-coverage)
 - [Configuration](#configuration)
 - [Gotchas](#gotchas)
 - [Why](#why)
 
 ## Overview
 
-Allocating a free port (UC1) is only half the job: most frameworks hardcode the
-dev port — or override the env var — in one or two config files, so the value
-splashdown writes into `splashdown.env` is silently ignored and the server boots
-on its old default (8081, 5173, 8080). The symptom is a confused "why is it still
-on 8081?" hunt — exactly the kind of phantom failure the parallel-agent persona
-burns tokens on.
+Allocating a free port is only half the job. Framework config can hardcode a default or override
+the inherited environment, causing the server to ignore `splashdown.env` without an obvious error.
 
-`splash doctor` carries a per-framework registry of **wiring checks**. Each check
-names one fact about a project (e.g. "`metro.config.js` consumes `RCT_METRO_PORT`"),
-detects whether it holds, and — where the rewrite is safe and mechanical —
-auto-patches it. `splash doctor` is a read-only `✓`/`✗` report; `splash doctor --fix`
-applies the safe autofixes and prints manual instructions for the rest; `splash init`
-runs the fixing pass after scaffolding so a fresh setup lands wired.
+`splash doctor` evaluates small, framework-specific wiring facts. The read-only command prints a
+`✓`/`✗` report. `splash doctor --fix` applies only safe mechanical rewrites and prints manual
+instructions for report-only findings. Scanner-driven init runs the safe fixes after scaffolding so
+a fresh setup lands wired.
 
-Checks covered today: the post-checkout hook (`hook`), RN
-`metro.config.js`, RN `package.json` scripts, RN `ios/.xcode.env`, Vite config, and
-Spring Boot `application.properties` (report-only).
+Electron user-data isolation is adjacent but not a wiring check. Init can add
+`ELECTRON_PROFILE_ID` and prints the main-process integration, but Splashdown cannot safely locate
+and rewrite an arbitrary Electron entrypoint.
 
-Electron user-data isolation sits beside this system. Scanner-driven init detects Electron
-as a secondary capability without replacing the primary Profile, optionally adds
-`ELECTRON_PROFILE_ID`, and prints the required main-process integration. There is no Electron
-`WiringCheck`: splashdown cannot safely rewrite arbitrary Electron entrypoints, and
-`app.setPath("userData", ...)` must run before the single-instance lock.
+## Behavior
 
-## How it works (current state)
+Checks come from the resolved app Profile plus project-level checks such as Compose and bootstrap
+hook readiness. They run in the resolved app directory, not blindly at the repository root.
+Project-level checks still run when framework detection is ambiguous. Duplicate checks are removed
+by id.
 
-The unit is `WiringCheck` (`src/splashdown/wiring.py:25`): an `id`, a human
-`description`, `applies(cwd)`, `detect(cwd) -> ("ok"|"problem", detail)`, an optional
-`autofix(cwd)` (`None` means manual-only), and `manual_instructions(cwd)`.
+For each applicable check, doctor detects the current state. In fix mode it runs an available
+autofix, detects again, and reports either `fixed` or the remaining problem and manual action. One
+check raising or reading an unfamiliar shape is a `✗`, never a false green. Exit status is zero
+only when no applicable check remains in the problem state.
 
-Checks are owned by **Profiles**, not by `doctor` directly. RN checks accumulate in the
-module-level `_RN_WIRING_CHECKS` list; the shared `_HOOK_WIRING_CHECK` is reused by native Profiles
-that otherwise have no per-checkout wiring. Vite and Spring Boot define their checks in
-`profiles_web.py` and `profiles_server.py`. `doctor.py` resolves the active framework and app
-directory, then pulls that Profile's checks through `_wiring_checks_for_framework`. It also combines
-project-level Compose checks and, when the recipe has `[bootstrap]`, the generic hook check. Project
-checks still run when framework detection is ambiguous or unavailable, so a framework-neutral
-bootstrap recipe can use `splash doctor --fix`.
+A check that returns `✓` is affirming its human description. Detection therefore strips comments,
+examines the relevant value slot, and reports unrecognized syntax as a problem. Implementation and
+extension rules live in [Framework wiring engine](../tech/wiring.md).
 
-The run loop in `cmd_doctor` (`src/splashdown/doctor.py`): for each check, skip if
-`applies` is false; if `detect` returns `ok`, print `✓`; on `problem`, if `--fix` was
-passed and an `autofix` exists, run it, re-`detect`, and report `(fixed)` or
-fall through to manual instructions; otherwise print `✗` plus the manual snippet.
-Both the autofix and the `detect` calls are wrapped (`_run_detect`) so one check
-failing reports rather than crashing the run. A raising `detect` becomes a `✗`, never
-a `✓` — an unreadable file is precisely the case where the check knows nothing.
-Exit code is 0 only when nothing is left in the `problem` state.
+## Check coverage
 
-**A `✓` prints `check.description`, not `detail`** — which is what makes a false green
-here worse than a missing check. The line the user reads is an affirmative claim
-("compose file templates its host ports and container names") assembled from the check's
-own advertisement, so a `detect` that returns `ok` on input it never parsed does not
-merely stay silent, it vouches. Two disciplines follow from that, and every check obeys
-them: **strip comments before scanning** (`_strip_hash_comments` / `_strip_js_comments`,
-`src/splashdown/wiring.py:51`/`:71`) so leftover commented-out wiring is not read as wiring —
-this was itself violated on arrival by `_deno_sources_read_port` and all three branches of
-`_rn_hook_detect`, the last of which greened a fully commented-out lefthook block;
-and **return `problem` for anything unrecognized**, with a detail saying so, rather than
-falling through to the `ok` at the bottom of the function. The lexical helpers exist
-because splashdown ships no YAML/JS parser (deps frozen at two) — `_yaml_key_regions`
-walks a key's value region in either block or flow style, which is enough to read a
-config honestly without pretending to parse it.
+| Check | What it verifies | Fix policy |
+| --- | --- | --- |
+| Post-checkout hook | Exact event-aware Lefthook, Husky, or native hook readiness | Safe repair, except configured `core.hooksPath` |
+| React Native Metro | Metro config, package scripts, and `ios/.xcode.env` consume `RCT_METRO_PORT` | Safe recognized shapes; manual otherwise |
+| Vite | Shell environment reads and use of `WEB_DEV_PORT` | Env-read rewrite; port consumption report-only |
+| Astro | Top-level dev server port consumes `WEB_DEV_PORT` | Safe recognized object shapes |
+| Angular | `ng serve` receives `--port $WEB_DEV_PORT` | Safe package-script rewrite |
+| Deno | `deno serve` flag order or source-level `PORT` read | Task rewrite; source changes manual |
+| Compose | Host ports and container names are checkout-specific | Report-only |
+| Spring Boot | Every active config uses a `PORT` placeholder | Report-only |
+| Laravel | Backend environment plus Vite asset-server port | Vite port check when Vite is present |
+| ASP.NET Core | Launch profiles do not override the inherited HTTP port | Safe JSON rewrite on .NET 8+; older TFMs report-only |
 
-An empty check list is reported two different ways, gated on `Profile.env_only`
-(`src/splashdown/profile_core.py`). A profile that reads its port straight from the
-environment (`nextjs`, `node-backend`, `django`, `fastapi`, `flask`, `rails`,
-`laravel`) sets `env_only = True`,
-so there is nothing to patch and `doctor` prints ``✓ no wiring checks needed for
-`<name>` (env-only)`` — a positive verdict. Anything else with an empty list keeps the
-``doctor: no wiring checks defined for framework `<name>`.`` wording. That distinction
-is load-bearing: `expo` allocates `RCT_METRO_PORT` and runs Metro, so it genuinely
-needs the same config patching `react-native` gets, and reporting it green would be
-the exact false-pass this check exists to prevent. Membership in `PROFILES` is *not*
-sufficient — a profile has to opt in. Both branches exit 0.
-
-`cmd_doctor` resolves the app directory as well as the framework
-(`_resolve_doctor_target`, `src/splashdown/wiring.py:185`). When the recipe places the
-app in a subdirectory, checks run against that directory — running them at the
-workspace root reports every check "not applicable" and exits 0 having inspected
-nothing.
-
-The individual checks:
-
-- **`hook`** — verifies exact event-aware post-checkout integration through the shared
-  `post_checkout_readiness` policy in `hooks.py`. Lefthook must contain the owned command that
-  forwards all three event values. Native and Husky hooks must contain the owned body and be
-  executable. Any configured `core.hooksPath` is reported but not touched. Autofix delegates to
-  `_ensure_post_checkout_hook`, and duplicate Profile/project hook checks are removed by id.
-- **`rn-metro-config`** (`src/splashdown/wiring.py:345`, registered `:407`) —
-  `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix handles three
-  shapes (`src/splashdown/wiring.py:329` comment): a literal `port: <N>` is rewritten
-  to `Number(process.env.RCT_METRO_PORT) || <N>` keeping the literal as fallback; an
-  existing `server: {` block gets a port line; a bare config object gets a `server`
-  block injected. Unrecognized shapes fall through to manual instructions.
-- **`rn-pkg-port`** (`src/splashdown/wiring.py:448`, registered `:485`) — strips a
-  hardcoded `--port <N>` from `package.json` scripts that boot Metro (`start`/`ios`/
-  `android`, or any script invoking `react-native start`), so the RN CLI reads
-  `RCT_METRO_PORT` from the environment. The `react-native start` match is deliberately
-  narrow (`src/splashdown/wiring.py:425`) so `--port` on unrelated tools is left alone.
-- **`rn-xcode-env`** (`src/splashdown/wiring.py:531`, registered `:567`) — `ios/.xcode.env`
-  should source `RCT_METRO_PORT` from this checkout's `splashdown.env`. Autofix strips
-  any static literal export and appends a sentinel-wrapped managed block
-  (`src/splashdown/wiring.py:502`): honor a value already set by `run-ios`, else read
-  `splashdown.env`, else fall back to 8083. Sentinels make the patch idempotent
-  (find-by-pair, replace) and mark tool-managed vs hand-edited lines. The literal-export
-  regex is intentionally narrow (`src/splashdown/wiring.py:521`) so hand-written
-  conditional wirings are not mangled.
-- **`vite-config-process-env`** (`src/splashdown/profiles_web.py`) — rewrites the
-  `loadEnv` idiom `env.X` to `process.env.X` in
-  `vite.config.{ts,js,mjs}` so values loaded into the shell by mise/direnv/devbox reach
-  Vite. The matcher skips already-fixed
-  `process.env.X`, and `_vite_unfixed_env_matches` additionally skips any
-  `env.X` whose name is already read as `process.env.X` somewhere in the file —
-  `process.env.X || env.X` is a deliberate shell-then-dotenv fallback chain, and
-  rewriting its second term would silently delete the dotenv layer.
-- **`vite-port-wired`** (`src/splashdown/profiles_web.py`) — the companion assertion:
-  the config must name the allocated port var (`WEB_DEV_PORT`) somewhere, or the port
-  is allocated and never consumed. **Report-only** (`autofix=None`) because injecting a
-  `server.port` block into an arbitrary config is not safely mechanical. It deliberately
-  tests for the variable name rather than the string `process.env.`, so bracket access
-  and destructuring both pass — an earlier substring test flagged those correct configs
-  as problems and left `doctor --fix` failing with nothing to fix.
-- **`astro-config-port`** (`src/splashdown/profiles_web.py`)
-  — `astro.config.*` must set `server.port` from `WEB_DEV_PORT`. Astro is the one web
-  profile that reads *neither* `PORT` from the environment nor a dotenv file for its dev
-  port, so an unwired config silently boots on 4321 no matter what splashdown allocated;
-  the port range starts at 4322 so that case can't masquerade as wired. The autofix injects
-  the line after a `defineConfig({` or bare `export default {`. It deliberately bails when
-  a `server:` block already exists anywhere in the file: Astro configs commonly carry a
-  `vite: { server: {…} }`, and a regex can't tell that nesting apart from the top-level
-  block, so guessing would put the port where it configures Vite's dev server instead.
-- **`compose-hardcoded-ports`** (`src/splashdown/profiles_compose.py`) —
-  project-level, not owned by any Profile. Reports host-port mappings whose host side is a
-  bare number and any literal `container_name:`. It reads every YAML layout, because the
-  original line-anchored regexes (`^\s*-\s*["']?(\d+):\d+`) only saw block style and returned
-  a green **"no hardcoded host ports"** on flow style — `ports: ['5432:5432']` and
-  `{ container_name: db }` sailed through while both collide across worktrees. A missing
-  check leaves you unsure; that one asserted safety. So detection now walks each `ports:`
-  key's value region (`_yaml_key_regions`, `src/splashdown/wiring.py:138`), splits it into
-  entries (`_split_flow_entries` / `_split_block_entries`, the latter keeping continuation
-  lines so long syntax stays one entry), and classifies each (`_classify_port_entry`).
-  Three details are each a bug that shipped: the region walker accepts a block sequence at
-  its key's **own** indent (`ports:` then `- "5432:5432"` in the same column is legal YAML,
-  and stopping at the dedent reported those files clean — worse than the regex it replaced);
-  the key is matched inside a flow mapping too (`db: { ports: [...] }`), not only at line
-  start; and only the **host slot** is tested for `$`, since testing the whole entry passed
-  `"5432:${CONTAINER_PORT}"` as templated while the host side stayed pinned. Variables are
-  masked to a colon-free sentinel before the slots are split, because `${VAR:-5432}` contains
-  a colon. **Anything it can't classify is reported as a problem, never as ok** — an alias
-  (`ports: *shared`), an unrecognized scalar. That's the whole point: the check is allowed to
-  say "I couldn't read this", but never allowed to claim clean on a pattern it didn't parse.
-  `_yaml_key_regions` strips comments itself (`_strip_hash_comments`) so no caller can forget.
-  Still **report-only** (`autofix=None`): splashdown ships no YAML parser (deps are frozen at
-  two), so a rewrite would be regex over indentation-sensitive text — reading a value region
-  is bounded, rewriting one is not.
-  `compose_project_resources` emits
-  `COMPOSE_PROJECT_NAME` — the one value that needs no compose edit, since compose reads it
-  from the environment — and deliberately invents no per-service ports, because which service
-  deserves a pinned port is a judgement call and wrong guesses become config the user must
-  undo. `cmd_doctor` appends these via `compose_wiring_checks` against the repo root,
-  independent of the resolved framework.
-- **`springboot-application-properties`** (`src/splashdown/profiles_server.py`) — checks
-  that every config Spring may load uses the `server.port=${PORT:8080}`
-  placeholder. `_springboot_declared_port` reads two spellings: the flat `server.port` form
-  (all a `.properties` file can write) and YAML's nested `server:` block, which the original
-  `server\.port\s*[:=]` regex could never match — so correctly wired YAML projects carried a
-  permanent `✗`. Files are scanned individually via `_springboot_config_files`, which globs
-  `application*` rather than reading two fixed names: a profile-specific
-  `application-dev.properties` pinning a literal overrides a wired base file, and the old
-  concatenate-then-search collapsed exactly that case into a green. **Report-only**:
-  `autofix=None` because rewriting Java/Spring config is too risky to mechanize; only
-  manual instructions are printed.
-- **`laravel` → `vite-port-wired`** — Laravel is the only profile that claims two ports,
-  because a Laravel app runs two dev servers: `php artisan serve` (`SERVER_PORT`, read
-  straight from the environment) and, since Laravel 9, Vite for assets. It reuses vite's
-  report-only port check for the second half and returns an empty list for API-only apps
-  with no vite config, which then get the green `env_only` verdict. `LaravelProfile` is
-  registered *ahead* of `ViteProfile` for the same reason: every modern Laravel app ships a
-  `vite.config.js`, so vite would otherwise claim it and leave the PHP port unmanaged.
-- **`aspnet-launch-settings`** (`src/splashdown/profiles_server.py`) —
-  ASP.NET Core is the one profile whose env var is real but conditionally ignored:
-  `ASPNETCORE_HTTP_PORTS` works, except `dotnet run` reads `applicationUrl` out of
-  `Properties/launchSettings.json` first and that wins. The check flags any
-  `"commandName": "Project"` profile declaring the key. **Autofix**: pops
-  `applicationUrl` and rewrites the file — the one config rewrite here that *is* safely
-  mechanical, because launchSettings is JSON and round-trips through `json.loads`/`dumps`
-  rather than regex over indentation-sensitive text (contrast compose and Spring, both
-  report-only for exactly that reason). `IISExpress` profiles keep their `applicationUrl`:
-  only IIS Express reads it, so editing it would be a change with no effect on the port.
-  Gated on the target framework (`_aspnet_supports_http_ports`): `ASPNETCORE_HTTP_PORTS`
-  is .NET 8+, so net6.0/net7.0 projects get a report-only twin instead — there, dropping
-  `applicationUrl` would hand the app the shared default 5000 and make collisions worse.
-
-`init` runs the same checks in fix mode after scaffolding the recipe, wiring the loader,
-and installing the hook: the wiring loop is in `cmd_init`
-(`src/splashdown/commands.py`), and the intent preset path calls
-`cmd_doctor(cwd, fix=True)` directly (`src/splashdown/commands.py:1454`).
-
-The hook-coexistence helpers are shared with `doctor` from `hooks.py`:
-`_detect_hook_manager`, `_lefthook_config_path`, `_native_hook_path`, and
-`_ensure_post_checkout_hook`, which dispatches to the lefthook, husky, or native Git
-common-hook writers while leaving any configured `core.hooksPath` untouched.
-
-## Key entry points
-
-- `src/splashdown/wiring.py` — `WiringCheck`, concrete file checks, and `_HOOK_WIRING_CHECK`.
-- `src/splashdown/doctor.py` — target resolution, project/Profile check combination, and the
-  detect / `--fix` / manual run loop.
-- `src/splashdown/hooks.py` — exact post-checkout readiness and hook-manager coexistence.
-- `src/splashdown/profiles_mobile.py` — RN/native check registration.
-- `src/splashdown/profiles_web.py` / `src/splashdown/profiles_server.py` — Vite and Spring Boot checks.
-- `src/splashdown/cli.py` — doctor parser and dispatch.
-- `src/splashdown/commands.py` — init's post-scaffold wiring loop.
+React Native and native iOS/Android Profiles declare checks. Expo and Flutter currently declare no
+wiring checks; doctor reports that neutral state rather than claiming their configuration was
+verified. Environment-only web/server Profiles need no file rewrites and receive an explicit
+env-only success verdict.
 
 ## Configuration
 
-- `splash doctor` — read-only `✓`/`✗` report; exit 0 only if nothing is in `problem`.
-- `splash doctor --fix` — apply safe autofixes, re-detect, print manual instructions for
-  whatever can't be auto-fixed (`src/splashdown/cli.py:209`).
-- `splash doctor --framework=NAME` — override detection with any profile name (e.g.
-  `react-native`, `flutter`, `expo`, `vite`, `springboot`); used when detection can't
-  resolve a framework (`src/splashdown/cli.py:214`).
-- The active framework's check list comes from its Profile (`Profile.wiring_checks`);
-  there is no per-check toggle. Adding a check means appending to `_RN_WIRING_CHECKS`
-  or returning it from a Profile's `wiring_checks`.
-- The `ios/.xcode.env` managed block is delimited by the sentinel pair
-  `# >>> splashdown-managed RCT_METRO_PORT >>>` / `# <<< ... <<<`
-  (`src/splashdown/wiring.py:502`) — edits inside it will be overwritten by `--fix`.
+- `splash doctor` reports without writing.
+- `splash doctor --fix` applies safe autofixes and prints manual instructions for the rest.
+- `splash doctor --framework=NAME` overrides framework detection with a registered Profile name.
+- Check lists are Profile-owned; there is no per-check toggle.
+- The React Native `ios/.xcode.env` block is sentinel-managed. Edits inside its marker pair are
+  overwritten by the next fix.
 
 ## Gotchas
 
-- **RN-on-Android Metro port is not wired (known limitation).** Android bakes the Metro
-  port into the build via the RN Gradle plugin / `BuildConfig`, a different mechanism
-  from iOS, and splashdown has no check for it. `yarn android` works because the RN CLI
-  propagates `RCT_METRO_PORT` to Gradle, but a bare `gradle assembleDebug` may default to
-  8081. Tracked as a future check (see `README.md`, "Framework wiring" → Known limitation).
-- **Spring Boot checks are manual / report-only by design.** `autofix=None` in
-  `src/splashdown/profiles_server.py` — `doctor` reports whether
-  `server.port=${PORT:8080}` is present but never rewrites Java/Spring config, because
-  mechanical edits there are too risky. `--fix` will not silence a Spring Boot `✗`.
-- **iOS port changes need a rebuild.** `RCT_METRO_PORT` is compiled into the iOS binary
-  (via `RCTBundleURLProvider`'s `defaultPort`), so even a correctly wired `ios/.xcode.env`
-  only takes effect after the app is rebuilt — wiring alone won't move a running build off
-  its old port (`src/splashdown/wiring.py:503` block comment).
-- **Detection can come back empty.** If the framework can't be resolved (no recipe, no
-  detectable framework) `doctor` errors and asks for `--framework`
-  (`src/splashdown/wiring.py:221`); a framework with no checks exits 0 with a note
-  (`src/splashdown/wiring.py:235`).
-- **A configured `core.hooksPath` is reported, not auto-wired.** If `core.hooksPath` is set,
-  the hook check stays a `✗` even under `--fix` and prints
-  manual instructions (`src/splashdown/wiring.py:296`).
-- **Vite autofix leaves `loadEnv` lines in place.** It only rewrites `env.X` reads to
-  `process.env.X`; the `loadEnv` call itself is untouched, so a stray `env.X` outside
-  the matcher's shape won't be caught.
+- **RN-on-Android Metro port remains a known limitation.** The RN CLI propagates
+  `RCT_METRO_PORT` to Gradle, but a bare Gradle build can fall back to 8081.
+- **Spring Boot and Compose are report-only.** Rewriting arbitrary YAML, properties, and Compose
+  layouts without their parsers would be riskier than giving an exact manual instruction.
+- **iOS Metro port changes need a rebuild.** The port becomes part of the iOS binary; repairing
+  `.xcode.env` does not change an already-built app.
+- **A configured `core.hooksPath` is never taken over.** Doctor reports it and prints manual
+  event-forwarding instructions even in fix mode.
+- **Vite's env rewrite is narrow.** It changes matched `env.X` reads to `process.env.X` but leaves
+  the `loadEnv` call and deliberate shell-then-dotenv fallbacks intact.
 
 ## Why
 
-A bare allocated env var isn't enough: frameworks override it in config the user rarely
-remembers exists, and the failure mode is silent (wrong port, not an error). For the
-parallel-agent persona an agent can't tell a resource clash from a real bug, so "the
-port is allocated but the server ignores it" turns into a wasted debugging loop.
-Auto-patching the safe, mechanical cases — and clearly flagging the risky ones (Spring
-Boot) as manual rather than guessing — keeps the allocated port actually reaching the
-process while never corrupting hand-authored config.
+A correctly allocated variable that the framework silently ignores is indistinguishable from a
+resource collision during development. Safe mechanical fixes remove that failure mode; explicit
+report-only checks preserve hand-authored configuration where a rewrite would require guessing.

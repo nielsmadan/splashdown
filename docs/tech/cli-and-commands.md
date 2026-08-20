@@ -59,11 +59,11 @@ submodule imports inside handlers.
 
 #### `main()` flow
 
-`main()` (`cli.py:402`) is the whole control flow:
+`main()` (`cli.py`) is the whole control flow:
 
-1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py:392`) to inject a `sync` token if no subcommand is present.
-2. Build the parser (`_build_parser`, `cli.py:394`).
-3. Install completion (`cli.py:395`–`399`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
+1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py`) to inject a `sync` token if no subcommand is present.
+2. Build the parser (`_build_parser`, `cli.py`).
+3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
 4. `parse_args`, dispatch completion before checkout resolution, then resolve `cwd` (`_resolve_cwd`,
    honours `--cwd`, else `$PWD`, always `.resolve()`d).
 5. Dispatch `trust`, `untrust`, `bootstrap`, and the hidden hook event before constructing a
@@ -78,7 +78,7 @@ only when needed, and threads dependencies into handlers. Each branch returns th
 
 #### `_ensure_subcommand` — bare `splash` defaults to `sync`
 
-`_ensure_subcommand` (`cli.py:364`) makes `splash` (no subcommand) behave as `splash sync`. The
+`_ensure_subcommand` (`cli.py`) makes `splash` (no subcommand) behave as `splash sync`. The
 post-checkout hook uses the explicit hidden event command instead. The helper cannot just prepend
 `sync`, because top-level flags must still parse at the root parser level — `splash --cwd /path`
 has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since
@@ -91,15 +91,15 @@ option.
 
 #### `KNOWN_CMDS` and the parser
 
-`KNOWN_CMDS` (`cli.py:93`) is the hand-maintained set of subcommand names. It exists only so `_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs — it is a second source of truth alongside the `sub.add_parser(...)` calls and must be kept in sync with them.
+`KNOWN_CMDS` (`cli.py`) is the hand-maintained set of subcommand names. It exists only so `_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs — it is a second source of truth alongside the `sub.add_parser(...)` calls and must be kept in sync with them.
 
-`_build_parser` (`cli.py:114`) is a single flat parser with one block per subcommand. Every subparser is hidden
+`_build_parser` (`cli.py`) is a single flat parser with one block per subcommand. Every subparser is hidden
 from argparse's generated list because the curated epilog carries the task-oriented overview.
 Root flags are `--cwd`, `--format`, `--show-values`, and `--version`.
 
 #### Tiered `--help`: `_EpilogOnlyFormatter`
 
-`_EpilogOnlyFormatter` (`cli.py:33`) is a `RawDescriptionHelpFormatter` subclass whose `_format_action` returns an empty string for the subparsers action (`argparse._SubParsersAction`, a private type argparse exposes no public name for). That suppresses argparse's flat `{sync,init,env,…}` dump. The actual command overview is the epilog (`_HELP_EPILOG`), hand-grouped into tiers — "Run on a device", "This checkout", "Set up a project", "More" — so `splash --help` reads as a task-oriented menu rather than an alphabetical list.
+`_EpilogOnlyFormatter` (`cli.py`) is a `RawDescriptionHelpFormatter` subclass whose `_format_action` returns an empty string for the subparsers action (`argparse._SubParsersAction`, a private type argparse exposes no public name for). That suppresses argparse's flat `{sync,init,env,…}` dump. The actual command overview is the epilog (`_HELP_EPILOG`), hand-grouped into tiers — "Run on a device", "This checkout", "Set up a project", "More" — so `splash --help` reads as a task-oriented menu rather than an alphabetical list.
 
 #### Lazy `--version`: `_VersionAction`
 
@@ -111,25 +111,31 @@ otherwise pay for a string it never prints.
 
 #### The run/start/stop/destroy parser loop
 
-The four device verbs share one parser shape, built in a loop (`cli.py:220`–`238`):
+The four device verbs share one parser shape, built in a loop in `cli.py`:
 
 - Each gets an optional positional `dtype` (`TYPE`) and an optional positional `variant`.
-- **Crucially, `dtype` has no argparse `choices`** (`cli.py:226`). This is intentional: with `choices=TARGET_TYPES`, a lone variant token like `splash run small-screen` would be rejected as an invalid TYPE. Dropping `choices` lets that token land in the `dtype` slot, to be re-interpreted by `_normalize_device_args` after parsing.
+- **Crucially, `dtype` has no argparse `choices`** (`cli.py`). This is intentional: with `choices=TARGET_TYPES`, a lone variant token like `splash run small-screen` would be rejected as an invalid TYPE. Dropping `choices` lets that token land in the `dtype` slot, to be re-interpreted by `_normalize_device_args` after parsing.
 - The two completers are attached here: `device_arg_completer` on `dtype`, `variant_completer` on `variant`.
-- **`--yes` is added only to `destroy`** (`cli.py:237`) — it is the only one of the four that is destructive (deletes the sim/AVD), so it is the only one with a confirmation prompt to skip. `run`/`start`/`stop` never prompt.
+- **`--yes` is added only to `destroy`** (`cli.py`) — it is the only one of the four that is destructive (deletes the sim/AVD), so it is the only one with a confirmation prompt to skip. `run`/`start`/`stop` never prompt.
 
 #### `_normalize_device_args`
 
-`_normalize_device_args` (`cli.py:337`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs.
+`_normalize_device_args` (`cli.py`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs.
 
 #### Top-level exception handler
 
-The dispatch has one error-rendering boundary. `ApplicationError` carries an exit code and whether
-the message receives an `error:` prefix; `UsageError`, `MissingRecipeError`, and `SetupError` model
-exit-2 usage failures, the hook-compatible exit-0 missing-recipe notice, and setup failures.
-`DeviceError` and configuration `ValueError` enter the same renderer as exit-1 failures. Handlers
-raise rather than terminating the process, so direct callers can handle failures and CLI output is
-emitted exactly once.
+Ordinary registry-backed dispatch has one application-error renderer. `ApplicationError` carries
+an exit code and whether the message receives an `error:` prefix; `UsageError`,
+`MissingRecipeError`, and `SetupError` model exit-2 usage failures, the hook-compatible exit-0
+missing-recipe notice, and setup failures. `DeviceError` and configuration `ValueError` enter the
+same renderer as exit-1 failures. These handlers raise rather than terminating the process, so
+direct callers can handle failures and CLI output is emitted exactly once.
+
+Trust, untrust, bootstrap, and the hidden post-checkout event are dispatched before Registry
+construction and before that ordinary renderer. They retain command-specific output and retry
+handling because the untrusted hook path must be able to return without touching machine-wide
+state. New registry-backed commands belong inside the shared boundary; changes to those early
+security-sensitive paths must preserve their explicit rendering contract.
 
 ### `commands.py` — the orchestration layer
 
@@ -288,13 +294,13 @@ return exit 2 without mutating the registry.
 
 ### `completion.py` — fail-silent completers
 
-The completers run on every `<Tab>`, so the module's contract is: **never raise, never print**. Both completers wrap their body in `except Exception: return []` (`completion.py:53`, `:76`) — a malformed recipe or a collision yields no suggestions rather than a traceback that would corrupt the shell line.
+The completers run on every `<Tab>`, so the module's contract is: **never raise, never print**. Both completers wrap their body in `except Exception: return []` (`completion.py`) — a malformed recipe or a collision yields no suggestions rather than a traceback that would corrupt the shell line.
 
-- `variant_completer` (`completion.py:39`) offers variant names for the typed-or-inferred type (slot 2).
-- `device_arg_completer` (`completion.py:57`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
-- Both share `_catalog` (`completion.py:21`), which mirrors `cli._resolve_cwd` (honour an already-typed `--cwd`, else `$PWD`, then `.resolve()`).
+- `variant_completer` (`completion.py`) offers variant names for the typed-or-inferred type (slot 2).
+- `device_arg_completer` (`completion.py`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
+- Both share `_catalog` (`completion.py`), which mirrors `cli._resolve_cwd` (honour an already-typed `--cwd`, else `$PWD`, then `.resolve()`).
 
-`install` (`completion.py:80`) is a no-op — and imports nothing — unless `_ARGCOMPLETE` is in the environment, so the normal CLI and hook paths pay zero cost. Only an active completion triggers the `import argcomplete` + `autocomplete()`. This is why `main()` calls `install` immediately before `parse_args`: `autocomplete()` parses `COMP_LINE` itself and exits the process before `parse_args` ever returns.
+`install` (`completion.py`) is a no-op — and imports nothing — unless `_ARGCOMPLETE` is in the environment, so the normal CLI and hook paths pay zero cost. Only an active completion triggers the `import argcomplete` + `autocomplete()`. This is why `main()` calls `install` immediately before `parse_args`: `autocomplete()` parses `COMP_LINE` itself and exits the process before `parse_args` ever returns.
 
 ## Key entry points
 
@@ -315,7 +321,7 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py`
 - `_confirm` — shared target `[y/N]` gate — `target_commands.py`
 - `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `target_commands.py` / `commands.py`
-- `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py:39` / `:57` / `:80`
+- `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py`
 
 ## Gotchas
 

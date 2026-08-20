@@ -45,7 +45,7 @@ Splashdown scans the filesystem, detects your workspace layout and framework, an
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.
 2. Writes `splashdown.local.toml`, a gitignored per-checkout file (empty to start).
-3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, creating the config if the loader is installed but not yet set up here, and installs a `post-checkout` git hook.
+3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, then activates compatible post-checkout integration. A custom `core.hooksPath` is left untouched with manual forwarding instructions; tracked Lefthook configuration may still require `lefthook install` locally.
 4. Adds managed framework and port guidance to an existing root `AGENTS.md` or independent `CLAUDE.md`.
 5. Allocates this checkout's resources and writes them to `splashdown.env`.
 

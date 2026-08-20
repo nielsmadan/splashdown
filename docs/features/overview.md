@@ -1,8 +1,8 @@
 # Features
 
 **What each splashdown feature does**, kept in sync with the implementation. This is the
-behavior reference for contributors and coding agents *building* splashdown: terse, pointer-first
-(`file:line`), not a usage tutorial. For human how-to walkthroughs see
+behavior reference for contributors and coding agents *building* splashdown: terse and
+symbol-first, not a usage tutorial. For human how-to walkthroughs see
 [`../user/`](../user/index.md); for internals see [`../tech/`](../tech/overview.md). Owned by
 the `doc` skill; run `doc --update` after feature work to keep it current.
 
@@ -18,8 +18,8 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   loader + post-checkout hook, first sync; presets; and fresh-clone trust onboarding. *(UC3, UC6)*
 - [framework-wiring.md](framework-wiring.md) — `splash doctor`: detect and (where safe) auto-patch
   framework configs that hardcode the port / override the env var. *(UC5)*
-- [resource-cleanup.md](resource-cleanup.md) — `gc`, lazy GC, `target prune`, and `env release`:
-  reclaiming ports/sims/vars for deleted checkouts. *(UC7)*
+- [resource-cleanup.md](resource-cleanup.md) — `gc`, lazy GC, `target prune`, `deinit`, and
+  `env release`: reclaiming ports/sims/vars for deleted or live checkouts. *(UC7)*
 - [status-and-inspect.md](status-and-inspect.md) — `status` (per-checkout / `all` / json / `--check`)
   and `env` (list/get/set/release); the machine-readable surface. *(UC8)*
 - [per-checkout-overrides.md](per-checkout-overrides.md) — `splashdown.local.toml` add-only target

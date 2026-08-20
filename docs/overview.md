@@ -10,7 +10,7 @@ Map of the `docs/` tree. `README.md` (repo root) is the authoritative user-facin
   [`user/`](user/index.md). Verbose, task-oriented, example-driven.
 - **Building splashdown** (contributors + coding agents): [`features/`](features/overview.md)
   for *what* each feature does (a terse behavior reference) and [`tech/`](tech/overview.md) for
-  *how* it's implemented. Concise, pointer-first (`file:line`).
+  *how* it's implemented. Concise and symbol-first, without brittle numeric source anchors.
 
 ## Sections
 - [user/](user/index.md): how-to guides for people using the tool (e.g. monorepo setup).

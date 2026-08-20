@@ -43,10 +43,12 @@ template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
 writer = "splashdown-env"
 ```
 
-If more than one workspace app uses Electron, the resource names are mangled per app, such as
-`ELECTRON_PROFILE_ID_DESKTOP`, and each value also includes the app name. Each `[apps.*]`
-entry lists its matching resource. The identifier always stays in `splashdown.env`, even when a
-renderer resource is routed to an app-specific dotenv file.
+When several Electron apps do not otherwise trigger the structure-only collision fallback, their
+profile resource names are made app-specific, such as `ELECTRON_PROFILE_ID_DESKTOP`, and each
+value also includes the app name. Each `[apps.*]` entry lists its matching resource. If their
+primary Profiles also claim colliding resources, init writes the detected app structure without
+resources and asks you to configure the monorepo explicitly. The identifier always stays in
+`splashdown.env`, even when a renderer resource is routed to an app-specific dotenv file.
 
 Init prints the matching main-process integration for each app:
 
@@ -189,10 +191,10 @@ splash run simulator      # iOS sim — per-checkout instance, never collides wi
 splash run emulator       # Android AVD
 ```
 
-`splash run` executes at the **repo root** and detects the framework there. In a
-monorepo where the mobile app lives in a subdir (`apps/mobile`) and uses yarn/pnpm
-rather than `npx`, set a custom run command so the launch happens in the right
-place with the right tool (see [Custom run command](devices.md#custom-run-command)):
+When exactly one declared app has a known runnable profile, the built-in launcher selects it and
+runs from that app's directory. This recipe declares several known apps, so launch selection is
+ambiguous; it also needs yarn/pnpm rather than the launcher's default command. Set explicit
+per-platform commands (see [Custom run command](devices.md#custom-run-command)):
 
 ```toml
 [project.run]
@@ -222,6 +224,10 @@ directories that React Native and Expo write.
 [project]
 workspace = "pnpm"
 loader = "mise"
+
+[project.run]
+ios = "./scripts/run-ios {device_id}"
+android = "./scripts/run-android {device_id}"
 
 [apps.web]
 path = "apps/web"
@@ -285,6 +291,11 @@ Run with:
 splash run simulator    # xcodebuild build → xcrun simctl install/launch
 splash run emulator     # ./gradlew :app:installDebug → adb shell am start
 ```
+
+Because this recipe declares multiple known app profiles, splashdown cannot choose one built-in
+launcher. The two wrapper commands above must build, install, and launch the native app for the
+supplied device id. A repository with only one declared runnable app does not need this override,
+even when that app lives in a subdirectory.
 
 For a standalone native project, run plain `splash init`. It detects a root Xcode workspace or
 project, or root Gradle build files, and emits the relevant native profile and default target.

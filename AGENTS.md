@@ -1,145 +1,121 @@
 # AGENTS.md
 
-This file is the single source of truth for coding-agent guidance in this repository. `CLAUDE.md` imports it, so Claude Code and any other agent that reads `AGENTS.md` share the same instructions.
+This file is the single source of truth for coding-agent guidance in this repository.
+`CLAUDE.md` imports it.
 
 ## What this is
 
-`splashdown` is a Python CLI (`splash`) that pins per-checkout/per-worktree system resources — dev ports, env vars, iOS simulators, Android emulators — and coordinates them machine-wide so concurrent git checkouts of the same (or unrelated) projects never collide. Read `README.md` for the full user-facing model; it is the authoritative spec for behavior, the TOML schema, and CLI surface.
+Splashdown is a Python CLI (`splash`) that pins ports, environment values, iOS simulators, and
+Android emulators per checkout and coordinates them machine-wide. `README.md` is the authoritative
+user-facing description of the behavior, TOML schema, and CLI surface.
 
 ## Commands
 
-Tasks run through `just` (see `Justfile`). CI runs `just check`.
+Tasks run through `just`; CI runs `just check`.
 
 ```sh
-just check          # everything CI runs: ruff + format + import cycles + mypy + pytest
+just check          # ruff + format check + import cycles + mypy + pytest
 just test           # pytest -q
 just lint           # ruff check
 just fmt            # ruff format (writes)
-just typecheck      # mypy (strict, src/splashdown only)
-just docs-build     # user docs site into ./site (zensical --strict; the real link gate)
-just docs           # serve the docs site with live reload
+just typecheck      # mypy --strict over src/splashdown
+just docs-build     # strict user-docs build into ./site
+just docs           # serve the docs site
 ```
 
-Run a single test: `uv run pytest tests/test_registry.py::test_two_checkouts_get_different_ports -q`
-(or filter with `-k`). The suite is split into per-module files under `tests/` (one
-`test_<module>.py` per `src/splashdown/` module); shared fixtures (`registry`, `checkout`)
-and helpers live in `tests/conftest.py`.
+Run one test with `uv run pytest tests/test_registry.py::test_name -q`, or use `-k`. Tests are
+split by source module under `tests/`; shared fixtures and helpers live in `tests/conftest.py`.
 
-Local install of the source as the real `splash` binary: `just install-local` / `just refresh-local` (reinstall after edits) / `just reset-local`.
-
-Release: `just tag-release-patch|minor|major` bumps `version` in `pyproject.toml`, commits, tags, pushes; `release.yml` then builds, publishes a GitHub release, and updates the Homebrew tap formula. Do not tag releases unless explicitly asked. See **Dev tooling → Release flow** before editing the recipe.
+Use `just install-local`, `just refresh-local`, and `just reset-local` for the real local `splash`
+binary. `just refresh-local` forces a no-cache reinstall so uv cannot reuse an old wheel.
 
 ## Before declaring done
 
-Run the full gate, not just `pytest`: `just check` (ruff check + ruff format --check + Pylint circular-import check + mypy + pytest). Work has twice been called verified after `pytest` alone and then failed CI on lint/type errors. For anything touching deps or the release recipe, also simulate the release Test step in a clean venv (`pip install build pytest .`) so runtime deps like `argcomplete`/`tomlkit` are present.
+Run `just check`, not only pytest. For dependency or release changes, also reproduce the release
+test install in a clean virtual environment with `pip install build pytest .`.
 
-## Dev tooling
+Coverage uses the `fail_under = 80` value in `pyproject.toml` and is enforced by CI and the
+pre-push hook. `just check` intentionally stays fast and does not collect coverage.
 
-How the local checks, hooks, and release flow fit together (the recipe list is under Commands; this is the behavior and gotchas behind them).
-
-- **Coverage floor is `fail_under = 80`** in `[tool.coverage.report]` (`pyproject.toml`) — the single source of truth, enforced on every `--cov` path: CI's test step and the pre-push lefthook (`uv run pytest -q --cov`). `just check` stays plain/fast and does **not** run coverage; only the `--cov` paths do. Real coverage runs ~84%, so the 80 floor has headroom for normal churn but still trips on a genuinely untested chunk.
-- **This repo's own git hooks** live in `lefthook.yml` (install with `just hooks`): pre-commit runs `ruff format --check` + `ruff check` in parallel over staged `*.py`; pre-push runs Pylint's circular-import check + `mypy` + `pytest` + a globbed `zensical build --strict` docs check (only when `docs/user/**`, `mkdocs.yml`, or `README.md` changed); all via `uv run`. This repo does **not** wire a `post-checkout` hook and has no `splashdown.toml` — it doesn't dogfood splashdown's own provisioning. (Don't confuse this with the *managed* post-checkout hook splashdown installs into consumer repos; the `lefthook install` / post-checkout gotchas elsewhere are about that managed hook.)
-
-### Release flow
-
-- **`tag-release` must `uv lock` and stage `uv.lock` before committing.** The recipe seds the new version into `pyproject.toml` then commits — and the commit fires the pre-commit lefthook, whose `uv run` notices the changed version and regenerates `uv.lock` as a side effect. If only `pyproject.toml` was staged, that regenerated lock lands **unstaged after** the commit is built from the index, so the tag carries a stale `uv.lock`. Fix (in the recipe): run `uv lock` and `git add pyproject.toml uv.lock` *before* `git commit`; keep the lock step before the stage step if you touch it.
-- **A stale `uv.lock` at the tag does not affect published artifacts.** `release.yml` builds with `python -m build` (pip), never touching `uv`/`uv.lock`; PyPI/Homebrew/GitHub artifacts come from `pyproject.toml`. So a stale lock is a dev-reproducibility nit, not a broken release — **don't re-tag/re-push a public tag** to fix it; a follow-up `chore: sync uv.lock` commit on `main` is enough.
-- **`tag-release` regenerates `CHANGELOG.md` via git-cliff** (config in `cliff.toml`), staged into the version-bump commit. git-cliff runs through `uvx` (pinned `git_cliff` var in the `Justfile`) — **no separate install**. It surfaces `feat` → Features, `fix` → Bug Fixes, and **skips `chore`/`docs`/`ci`/deps/merges**, so `CHANGELOG.md` stays user-facing. Regenerate anytime with `just changelog`; never hand-edit `CHANGELOG.md`. **Mark breaking changes** with `feat!:` / `fix!:` or a `BREAKING CHANGE:` footer (still valid `feat`/`fix` — no new commit type) — git-cliff renders them in a **⚠ Breaking Changes** section at the top of the release. On `0.x` a breaking commit does **not** force a major bump (`breaking_always_bump_major = false`); breaking changes ship in minor bumps and are listed there.
-- **`git tag` in the release recipes passes `-m` on purpose.** The maintainer has `tag.gpgsign = true`, so a bare `git tag <name>` creates a *signed annotated* tag and opens an editor for the message — which stalls the non-interactive recipe. Both recipes therefore run `git tag -m "splashdown $VERSION" …`; **don't strip the `-m` "for tidiness"** or the editor prompt (and the mid-release stall) comes back. Related: **`just release`** is the default path — git-cliff derives the next version from commits since the last tag (`feat` → minor, `fix` → patch, breaking → minor on `0.x`); `tag-release-patch|minor|major` force a specific bump when you disagree with what git-cliff picks.
+This repository's hooks are defined in `lefthook.yml` and installed with `just hooks`. It does not
+dogfood Splashdown provisioning: there is no repository `splashdown.toml` or managed
+post-checkout hook.
 
 ## Architecture
 
-All source is in `src/splashdown/`. `__init__.py` is a re-export hub: it defines the path/name constants (`RECIPE_NAME`, `LOCAL_NAME`, `ENV_FILE_NAME`, registry paths) and re-exports nearly every symbol so tests can reach internals as `sd.<name>` and monkeypatch them. Submodules import shared constants from the package root (`from . import RECIPE_NAME`), so import order in `__init__.py` matters (it is dependency-ordered to populate `PROFILES` before use).
+Start with [docs/tech/overview.md](docs/tech/overview.md). It is the current module map and links
+to each subsystem's implementation contract. Do not duplicate that catalog here.
 
-The data flow, end to end:
+The package has an explicit acyclic import policy:
 
-1. **`scanner.py`** — `Scanner` walks the filesystem, detects the workspace (single/pnpm/yarn/npm/cargo/gradle), the shell loader (mise/direnv/devbox), each app's primary framework, and secondary capabilities such as Electron, producing a `ProjectInventory` of `AppInventory` entries. Each app maps to a **Profile** by name. Collisions of resource names across apps are mangled here (e.g. `WEB_DEV_PORT_ADMIN`).
-2. **`profiles.py`** — `Profile` = per-framework integration rules: which resources an app wants, which config files need patching, and any stable agent launch guidance. `PROFILES` is the registry populated at import, and **its insertion order is detection precedence** (see the laravel/vite gotcha below). Launch behavior and the init templates were split out into `runners.py` / `scaffolds.py`.
-3. **`agentdocs.py`** — renders recipe-derived, framework-specific port guidance and synchronizes its sentinel-managed block in existing root `AGENTS.md` / independent `CLAUDE.md` files. Successful init and rescan replace or remove the block; deinit removes it without needing a valid recipe. It reads the import-populated `PROFILES` registry, so it must load after `profiles.py` has registered every profile.
-4. **`recipe.py`** — parses and fully validates `splashdown.toml` (`Recipe`), `splashdown.local.toml` (`LocalConfig`), and the global config before any state mutation. It also owns the template engine (`render_template`, `topo_sort`, `_make_scope`, scope functions like `slug`/`port_hash`/`hash`). `merged_targets` combines recipe + local target variants; `resolve_variant` picks one.
-5. **`provisioning.py`** — `provision()` is the core sync: loads the recipe, resolves each resource (allocating ports via the registry, generating uuids, expanding templates in topo order), and `write_*` functions emit `splashdown.env` (or per-`writer` destinations: envfile/envrc/stdout/none).
-6. **`registry.py`** — `Registry` is the machine-wide coordinator at `$XDG_STATE_HOME/splashdown/{ports,kv,devices}.tsv`. Flat TSV, `fcntl`-locked. Port allocation considers all other checkouts' pins plus live `bind()` probes; lazy GC drops entries whose checkout directory no longer exists. **TSV has no escaping** — `_tsv_field` rejects tab/newline/CR to prevent row forgery.
-7. **`loaders.py`** — `Loader` subclasses (mise/direnv/devbox) idempotently wire `splashdown.env` to be sourced on `cd`. `LOADERS` registry.
-8. **`devices.py`** — all sim/emulator/physical-device lifecycle. iOS via `xcrun simctl`/`devicectl`, Android via `avdmanager`/`sdkmanager`/`emulator`/`adb` from `$ANDROID_HOME`. `ensure_fresh_sim` implements the auto-recreate-on-newer-iOS behavior for `ios = "latest"` variants — it destroys the stale sim and recreates it, leaving the result **Shutdown** (never booted). `detect_framework` picks the launcher (flutter/react-native/expo/xcodebuild/gradle).
-9. **`wiring.py`** — `splash doctor`. `WiringCheck`s detect framework config files that hardcode ports/override the env var, and (where safe) auto-patch them (RN metro config, RN package.json scripts, RN `ios/.xcode.env`, Vite config). Risky rewrites (Spring Boot) are report-only.
-10. **`cli.py`** — argparse setup, `KNOWN_CMDS`, custom help formatter. `commands.py` holds the `cmd_*` handlers that orchestrate the modules above (init, sync, status, run/start/stop/destroy, target subcommands, gc), delegating git post-checkout hook installation (now in `hooks.py`) that coexists with lefthook/husky. `target refresh` (`cmd_target_refresh`) eagerly reconciles every managed device by calling `ensure_fresh_sim` per registry row — recreating stale/missing sims, dropping defunct/undeclared rows. `status --check` (`_print_check_summary`) now reports `missing_devices` and `stale_devices` counters alongside orphan/defunct, and routes hints to the correct fix command.
-11. **`completion.py`** — argcomplete completers; must be fail-silent (run on every `<Tab>`, never raise/print).
-12. **`hooks.py`** — git-hook and env-loader wiring extracted from `commands.py`: installs/removes the managed post-checkout hook, coexisting with lefthook/husky and never taking over `core.hooksPath`; edits mise's `_.file` directive; and manages project `.gitignore` entries. The native fallback lives untracked in Git's common hooks directory, so every worktree shares it. `wiring.py`/`loaders.py` depend on it directly.
-13. **`errors.py`** — shared exception types with no intra-package deps. `DeviceError` lives here (not `devices.py`) so lower-level modules like `recipe.py` can raise/catch it without importing the device layer, which would be a cycle (`devices.py` imports `recipe.py`).
+- Internal modules import dependency-free seams such as `constants.py`, `catalog.py`,
+  `inventory.py`, and `errors.py`; they never import the package root.
+- `__init__.py` is a public re-export hub, including private helpers used by tests. It imports the
+  `profiles.py` facade before consumers that need the ordered profile catalog, but no submodule
+  depends back on it.
+- `profiles.py` assembles implementations from `profiles_web.py`, `profiles_server.py`,
+  `profiles_mobile.py`, and `profiles_compose.py`. Launch selection lives in `launching.py`;
+  target commands live in `target_commands.py`; status gathering and rendering live in
+  `status.py` and `cli_output.py`.
+- Pylint's `cyclic-import` check analyzes the package in `just check`. Keep shared exception and
+  capability seams dependency-free rather than hiding cycles behind lazy imports.
 
-Two satellite modules hang off `profiles.py` rather than sitting in the flow above:
-**`runners.py`** (everything `Profile.run` delegates to — xcodebuild/gradle/adb and the
-`[project] run` custom-command path; imports `DeviceError` from `errors.py` so it has no
-dependency on `devices.py`) and **`scaffolds.py`** (the three explicit intent presets for
-`splash init <preset>` plus `SCAFFOLDS`; pure data, zero imports). The dependency arrow is one-way:
-`profiles -> runners`. Detection helpers stayed in `profiles.py` because they implement
-`Profile.detect`.
+`tomlio.py` is the sole top-level `tomlkit` importer. Its write-path callers (`commands.py`,
+`targets.py`, and `hooks.py`) import it lazily, and `__init__.py` does not re-export it. Reads use
+stdlib `tomllib`, keeping bare `splash` and the post-checkout hook path light.
 
-## Distribution
+## Load-bearing constraints
 
-Splashdown is distributed via a Homebrew tap at **`nielsmadan/homebrew-tap`** (GitHub repo `https://github.com/nielsmadan/homebrew-tap`). The tap is a general-purpose tap that also hosts the Juggler cask (`Casks/juggler.rb`); splashdown's formula lives at `Formula/splashdown.rb` in the same repo. The formula reference copy in this repo was removed once the tap repo existed — the canonical formula is in `homebrew-tap`.
-
-The tap repo was renamed from `homebrew-juggler` → `homebrew-tap` to serve as a general-purpose tap for multiple tools. Juggler's release CI (`app3/.github/workflows/release.yml`) was updated to clone `homebrew-tap` (not `homebrew-juggler`). If Juggler ever breaks its Homebrew step, that's the first place to check.
-
-The `HOMEBREW_TAP_TOKEN` secret (in this repo's GitHub secrets) must have write access to `nielsmadan/homebrew-tap`. It can be the same PAT as Juggler's (classic PAT with `repo` scope, or fine-grained scoped to the tap repo). When the tap repo was renamed, the PAT's scope followed automatically for classic PATs; fine-grained PATs may need re-scoping.
-
-**Why Python (not Rust/Go):** Python was chosen for zero install friction — the brew formula pulls in `python@3.13` as a managed dep (Homebrew handles it; user sees nothing). Single-file vendoring into repos was the original design but was dropped in favor of the global `splash` command. The main yearly maintenance burden is bumping the `python@3.X` dep in the formula when Homebrew retires the current major.
-
-## Gotchas
-
-- **`brew untap` blocked by installed casks:** `brew untap nielsmadan/tap` fails if Juggler (or any other cask from the tap) is currently installed. Options: `brew untap --force nielsmadan/tap` (leaves the installed app orphaned until you retap), or `brew uninstall --cask juggler && brew untap && brew tap nielsmadan/tap && brew install --cask juggler` (full cycle — triggers Gatekeeper on first launch). For most purposes the retap is cosmetic and can be skipped.
-- **`splashdown.local.toml` can be accidentally staged.** `splash init` creates the file and the project `.gitignore` is supposed to exclude it, but if `.gitignore` is missing the entry (e.g. on the first commit of a newly-splashdown'd project), `git add .` silently stages it. Its first line says "Gitignored, not committed" — it contains per-checkout device declarations that vary between machines. Committed versions pollute `git status` permanently and cause merge conflicts between worktrees. Verify `.gitignore` has `splashdown.local.toml` before the first commit. If it was committed: `git rm --cached splashdown.local.toml`.
-- **`release.yml` tap update requires the formula to already exist in the remote.** The workflow clones `nielsmadan/homebrew-tap`, seds the url + sha256, and pushes. If `Formula/splashdown.rb` doesn't exist in the remote at tag time, the sed fails silently and the formula is never updated. Push the formula to the tap repo before cutting the first release tag.
-- **`splash sync` is quiet on no-op — `--force` that re-allocates the same port still says "up to date".** The sync command diffs the registry snapshot before provisioning against the resolved dict after. If `--force` happens to allocate the same port (the port was still free), the registry value hasn't changed and the output collapses to the single `splashdown: up to date (N vars, M files)` line. This is accurate (nothing changed on disk), but can be surprising when the user explicitly asked for a forced re-sync. The output file's mtime also stays unchanged because `_write_if_changed` skips identical content; inspect the registry TSV if you need to confirm the forced allocation ran.
-- **Template resources re-render on every sync.** They are derived values: changing the template or a referenced resource updates the result immediately. A direct `{{ uuid() }}` call therefore generates a new value on every sync; for stable composed ids, declare a separate `type = "uuid"` resource and reference it from the template.
-- **Setup commands are fail-fast, not transactional.** The full `[setup.*]` schema is validated before resource allocation or file writes. Once a valid setup starts, the first failing command exits nonzero; resource/file changes and earlier successful commands are not rolled back.
-- **`writer = "envfile=PATH"` breaks the mise-loads-splashdown.env contract.** Per-resource `writer = "envfile=apps/web/.env"` overrides route values directly into app `.env` files instead of `splashdown.env`. This is the right fix when a consumer can't read `process.env` (e.g. Vite's `loadEnv`), but it means mise can't see that value in the parent shell. Prefer patching the consumer (e.g. rewrite `vite.config.ts` to read `process.env` instead of `loadEnv`) so all values stay in `splashdown.env`.
-- **Provisioning destinations must never follow checkout-controlled links.** `splashdown.env`, `.envrc.local`, and `envfile=` destinations share a no-symlink, regular-file-only, atomic-replacement path. Creating the `splashdown.local.toml` skeleton is create-only and rejects symlink/non-regular entries. Keep the descriptor checks and atomic operations; a pre-check followed by `write_text()` reopens the symlink race and lets the post-checkout hook write outside the checkout.
-- **Vite's `loadEnv` ignores `process.env`.** `loadEnv(mode, dir, "")` reads `.env` files in `dir`, not the parent shell environment. Values in `splashdown.env` (loaded by mise) are invisible to Vite unless you patch `vite.config.ts` to read `process.env.WEB_DEV_PORT ?? 5173` directly. `splash doctor --fix` handles this automatically for Vite projects.
-- **Port squatters: bare `splash` already re-allocates around OS-busy ports.** `allocate_port` probes the OS socket at provision time. If a non-splashdown process has grabbed the allocated port, splashdown drops the registry entry and picks the next free slot. No special command is needed — just run `splash` (or wait for the post-checkout hook). `splash sync` is the explicit form.
-- **Device type names changed: `ios-sim` → `simulator`, `android-emulator` → `emulator`, `physical` → `device`.** Existing `splashdown.toml` / `splashdown.local.toml` files with old names need updating to `[targets.simulator.*]`, `[targets.emulator.*]`, or `[targets.device.*]`. The parser now actively rejects any `[devices.*]` table with a clean error pointing at the bad key — a silent failure is no longer possible.
-- **Every `[apps.*]` entry requires an explicit `resources` array.** Use `resources = []` for apps that declare no resources. Recipes that omit the field fail strict validation before provisioning or file mutation.
-- **`splash init --rescan` preserves only valid `[resources.*]` tables.** Resource tables are validated before the rewritten recipe is saved, so unknown fields are errors rather than extension data carried through a rescan. Remove or rename stale fields before rescanning.
-- **`unpin` was renamed to `release`.** `splash unpin KEY` / `Registry.unpin()` no longer exist; use `splash release [KEY]` / `Registry.release()`. Same semantics — releases the checkout's registry entry (all if no KEY, one if KEY given).
-- **`splash init` wires the loader to `splashdown.env` even when all resources use `envfile=` writers.** If every `[resources.*]` entry has `writer = "envfile=..."`, nothing ever lands in `splashdown.env` — but `init` still adds `_.file = ".../splashdown.env"` to `mise.toml`/`.envrc`. mise silently ignores the absent file (no warning), so it's a no-op in practice, not a runtime error. The correct fix is in `init`: skip loader wiring when no resource targets `splashdown.env`.
-- **`ReactNativeProfile` and `ExpoProfile` both emit `RCT_METRO_PORT`.** Both override `resources()` to return `{"RCT_METRO_PORT": {"type": "port", "range": [8082, 8200]}}` (`profiles.py`), so scanner-driven `splash init` allocates a Metro port for either. Other base-`Profile` subclasses that don't override `resources()` inherit `Profile.resources()` → `{}` and emit no port — if you add a new Metro-running framework, remember to override `resources()`.
-- **`rn-metro-config` autofix only handles the `const config = {…}` / `module.exports = {…}` object-literal shapes.** The wiring check injects a `server: { port: Number(process.env.RCT_METRO_PORT) || 8081 }` block into those recognized shapes (fixed in commit `7c23f66`). Non-standard `metro.config.js` forms (e.g. `module.exports = merge(baseConfig, {…})` or a dynamic factory) are not auto-patched — `splash doctor` prints the exact snippet to paste instead. The check correctly reports `✗ still problem after autofix` when it can't safely patch the file.
-- **`lefthook install` must be run for the post-checkout hook to fire.** `lefthook.yml` declares the `post-checkout` hook, but it doesn't take effect until `lefthook install` populates `.git/hooks/`. Splashdown tries only the installed `lefthook` binary; it never executes a project-controlled `yarn`/`npx` command during init. A checkout cloned without a working binary or prior install will never auto-provision even though `lefthook.yml` looks correct. Verify with `ls .git/hooks/post-checkout`.
-- **`device refresh` was historically a mislabeled alias for `gc --all` (destroy-only).** If you see `device refresh` in documentation or scripts from before mid-2026, note that it only destroyed stale sims — it did not recreate them. Recreation was deferred to the next `splash run`. Current behavior (now `splash target refresh`): eagerly calls `ensure_fresh_sim` per registry row and leaves results Shutdown (no boot, no pipefail risk).
-- **`splash status` reads from the registry, not the recipe.** A checkout with `resources = []` in its recipe still shows stale entries if old allocations remain in the registry. The ground truth is `~/.local/state/splashdown/ports.tsv` + `kv.tsv`; the recipe declares *intent*, not current state. Run `splash gc` to reconcile.
-- **`splash gc` now also drops stale keys from *live* checkouts.** Previously `gc` only pruned entries for dead checkouts (paths gone from disk). It now calls `reconcile_with_recipes()` which compares each live checkout's registry entries against its parsed recipe and removes keys no longer declared. Guard: if the recipe is missing or unparseable, that checkout is skipped entirely — a malformed recipe is never treated as "zero declared resources".
-- **Registry `_lock` is non-reentrant.** The per-file flock opens a fresh fd per call. Nesting two `_lock` contexts on the same file causes a self-deadlock. `reconcile_with_recipes()` therefore runs as a separate sequential lock acquisition after `gc()`'s existing blocks finish — never nested inside them. `_busy_ports_unlocked` exists for callers that already hold the ports lock. Checkout-scoped `operation_lock` uses one of 256 hash-sharded sidecars and stays outermost around registry changes, output writes, target edits, and device lifecycle side effects; `run` releases it before app launch, and setup commands run after it is released. Registry rewrites must keep using same-directory atomic replacement because inspection reads are intentionally unlocked.
-- **Flutter does not need a pinned Dart/VM-service port.** Unlike React Native (Metro hardcoded to 8081), Flutter auto-assigns an ephemeral VM-service/DevTools port on each `flutter run`. The `FlutterProfile` intentionally emits no `DART_PORT` resource (`profiles.py`). Splashdown's value for Flutter is per-checkout sim/emulator naming, not port management.
-- **`uv tool install` may silently reuse a cached build.** After editing source, use `uv tool install --force --reinstall --no-cache .` — a plain `uv tool install` or `--reinstall` without `--no-cache` can pick up an old wheel. `just refresh-local` wraps this; its output includes `from file:///…/splashdown` so you can confirm it's reading the correct checkout.
-- **Installing via mise uses the `pipx:` backend, not a native Python backend.** mise has no native Python install backend; its only Python backend is `pipx:`. So the install line is `mise use -g pipx:splashdown` — the `pipx:` prefix is mise's backend selector (it uses `uvx` under the hood when `uv` is present), not a dependency on a separately-installed `pipx`. Dropping the prefix (`mise use -g splashdown`) won't resolve.
-- **`astral-sh/setup-uv` dropped moving major tags at v8.** `@v8` does not resolve. Pin an exact version (CI currently pins `@v8.3.2`). Earlier versions (`v3`–`v7`) have moving tags; v8+ does not.
-- **Wifi-paired iOS devices have `tunnelState: disconnected` at rest.** The tunnel is established lazily at launch — this is normal. Discovery that gates on `tunnelState == "connected"` silently excludes every wireless device. Correct gate: `pairingState == "paired"` (excluding `unavailable`).
-- **`ruff lint` auto-fix does not run `ruff format`.** After `ruff check --fix`, run `ruff format` separately; otherwise CI's `ruff format --check` step still fails.
-- **`splash completion <shell>` is the completion-setup path (not `register-python-argcomplete`).** splash bundles argcomplete and emits the shellcode itself via `argcomplete.shellcode` (`cmd_completion` in `commands.py`), so users just `eval "$(splash completion zsh)"` — no separately-installed `register-python-argcomplete`, and native zsh shellcode means no `bashcompinit`. This supersedes the old advice (install argcomplete separately + `activate-global-python-argcomplete`), which was unreliable under mise because the global hook scans the on-PATH `splash` shim for the `# PYTHON_ARGCOMPLETE_OK` marker rather than the real binary. The runtime `# PYTHON_ARGCOMPLETE_OK` marker + `completion.install` (`argcomplete.autocomplete`) hook is unchanged; `splash completion` only generates the shell-side registration. `argcomplete.shellcode` isn't in argcomplete's typed surface (`autocomplete` is), so the call carries `# type: ignore[attr-defined]`. It also needed `no-untyped-call` until argcomplete 3.7.2 annotated `shellcode`; under `warn_unused_ignores` that stale code now fails mypy, so keep the list matched to the pinned version.
-- **Brew `release.yml` sha256 rewrite must be anchored.** The formula has both a top-level `sha256` and one inside each `resource` block. An unanchored `sed -i "s/sha256 \"[^\"]*\"/…/g"` overwrites all of them with the tarball sha, breaking `brew install` with a SHA mismatch on the resource. Anchored form: `sed -i "s|^  sha256 \"[^\"]*\"|  sha256 \"${TARBALL_SHA}\"|"` (two-space indent, no `g` flag).
-- **`release.yml` Test step must install the project itself.** Using `pip install build pytest` (without `.`) creates a clean environment that is missing runtime deps (`argcomplete`, `tomlkit`). Use `pip install build pytest .` — installs from the local wheel and pulls in all `[project.dependencies]` entries, keeping the test environment drift-free.
-- **Doc URLs printed by the CLI are asserted by tests.** The monorepo hint in `commands.py` prints `https://splashdown.dev/monorepos/` and `tests/test_scanner.py` asserts that exact string. Any reword of a user-facing hint — or a `docs/user/` page rename that changes its published URL — has to move with its test.
-- **Three frameworks read no port env var at all: Angular, Astro and Deno.** For these the allocated value has to be threaded through a command line or config, not looked up from the environment. Angular takes it via the npm script (`ng serve --port $WEB_DEV_PORT`) because writing a literal into the committed `angular.json` would churn every worktree. Deno takes it via a `deno.json` task — and the flag **must precede the script argument** (`deno serve --port $PORT server.ts`), because everything after the script arg is passed to the script rather than to Deno, so an appended `--port` is silently ignored and the server keeps binding 8000.
-- **A wiring check may never return `ok` on input it did not parse.** `cmd_doctor` prints `check.description` (not `detail`) next to the `✓`, so an `ok` is an affirmative claim in the check's own words — "compose file templates its host ports and container names" — and a `detect` that falls through to the trailing `return ("ok", …)` because its regex matched nothing is *vouching* for a config it never read. That shape shipped in `compose-hardcoded-ports` (line-anchored regex, blind to `ports: ['5432:5432']`), `deno-port-wired` (`"$PORT" in text`, blind to flag position), `springboot-application-properties` (blind to nested YAML and to a second config file), and `angular-pkg-port` (green when no `ng serve` script existed at all). Two rules: **strip comments first** — `_strip_hash_comments` / `_strip_js_comments` (`wiring.py`), because leftover commented-out wiring reads exactly like working wiring — and **return `problem` with a distinct "can't read this" detail for anything unrecognized**, rather than reaching the `ok`. Neither is enforced by a type; the first shipped violated in the same commit that introduced it (`_deno_sources_read_port`, and all three branches of `_rn_hook_detect`, one of which greened a fully commented-out lefthook block), so **audit every `read_text()` in a `detect` when you touch this area**. `_yaml_key_regions` (`wiring.py`) is the shared value-region walker that makes reading YAML honestly possible without a parser — use it instead of adding a line-anchored regex, and note the three things it exists to get right: a block sequence may sit at its key's **own** indent, a key may appear inside a flow mapping (`db: { ports: [...] }`) rather than at line start, and it strips comments itself so no caller can forget. When judging whether a value is templated, test the **slot that matters**, not the whole string: `"5432:${CONTAINER_PORT}"` is a pinned host port. `_run_detect` guards the loop so a raising `detect` is one `✗`, never a `✓`.
-- **`.NET` launchSettings.json ships a UTF-8 BOM and CRLF.** `json.loads` rejects a leading BOM, so any read of that file must go through `_read_launch_settings` (byte-sniffing the BOM, preserving CRLF on write). A plain `read_text()`/`write_text()` round-trip both breaks parsing and rewrites every line.
-- **CORS_ORIGINS must include the splashdown-allocated Vite port.** When splashdown assigns a Vite app a port other than its hardcoded default (e.g. `5174` instead of `5173`), any backend that validates `CORS_ORIGINS` against a static list will CORS-fail browser direct calls. The Vite dev proxy covers the normal SPA-calls-`/api/` case, but direct `http://localhost:PORT/...` fetches from the browser will fail. Fix by templating `CORS_ORIGINS` to reference `{{ WEB_DEV_PORT }}` or keep a wide enough static list.
+- Registry TSV has no escaping. `_tsv_field` must reject tabs, newlines, and carriage returns.
+  Registry writes use stable `fcntl` sidecars plus same-directory atomic replacement.
+- Registry `_lock` is non-reentrant. Call unlocked helpers while holding a file lock, and keep the
+  checkout `operation_lock` outermost around registry changes, output writes, target edits, and
+  device lifecycle side effects. `run` releases it before the app process; setup runs afterward.
+- Provisioning destinations never follow checkout-controlled links. Generated env files use the
+  shared no-symlink, regular-file-only atomic writer; local skeleton creation is create-only and
+  rejects symlinks and non-regular entries.
+- Wiring checks must not return `ok` for input they did not parse. Strip comments, recognize the
+  relevant value slot, and report unrecognized shapes as a problem. Use `_yaml_key_regions` for
+  YAML value regions instead of line-only regular expressions.
+- `.NET` `launchSettings.json` may contain a UTF-8 BOM and CRLF. Read and write it through
+  `_read_launch_settings` so both survive.
+- Physical iOS discovery uses `pairingState == "paired"`; a wireless device normally has a
+  disconnected tunnel until launch.
+- User-facing URLs printed by the CLI are test contracts. Update their assertions with any URL or
+  wording change.
 
 ## Conventions
 
-- **Python 3.13** runtime (`requires-python >=3.13`); ruff/mypy target 3.11. Two runtime dependencies: `argcomplete` (shell completion) and `tomlkit` (comment/unknown-key-preserving TOML *writing*). **`tomlio` (which imports tomlkit at its top level) is itself lazy-imported by its callers (`commands.py`/`devices.py`), and never re-exported from `__init__.py`** — so the git-hook hot path (`splash` → `provision()`/`status`, which only *reads* TOML via stdlib `tomllib`) never imports it. Reads stay on `tomllib`. Keep the hot path lightweight (note `__version__` and other costly lookups are lazy in `__init__.py`). Don't add more deps. **Why the dependency count is frozen at two:** install ergonomics are already solved (pipx makes a private venv; brew bottles vendor deps invisibly), so the actual benefit of staying minimal is (a) reduced supply-chain surface — splashdown rewrites git hooks and mutates mise/envrc files, so unaudited transitive code running here has disproportionate reach, and (b) no maintenance rot (no dependabot, no transitive CVEs, the stdlib tool compiles on 3.11+ indefinitely). The Homebrew path also has a practical cost: each Python dep requires a `resource` block in the formula, regenerated on every bump. `tomlkit` is the one dep worth the tradeoff — it's the only place that removes genuinely fragile hand-rolled code (comment-preserving round-trip TOML writes). A CLI framework (Click/Typer) was evaluated and rejected: argparse is working well, and the only clear win (the `_ensure_subcommand` hack) is not worth the cost.
-- **`splash init` presets express intent, not framework coverage:** `minimal` | `server` | `electron`. Plain `splash init` detects all supported frameworks and Compose infrastructure. Electron is a secondary capability: interactive init asks whether to isolate `userData` per checkout without replacing the primary Profile; non-interactive/EOF runs default to No, while `--electron-profile=isolated|shared` makes automation explicit. Isolation adds a stable `ELECTRON_PROFILE_ID` with `writer = "splashdown-env"`; the main process derives a sibling of Electron's normal `userData` directory and calls `app.setPath` before `requestSingleInstanceLock()`. `splash init electron` is the deterministic opt-in and also allocates `PORT`. Native iOS init records the only shared Xcode scheme, prompts for one of several on a TTY, or requires `--ios-scheme=NAME` when ambiguous and non-interactive.
-- **Dev task runner is `just`, not mise tasks.** mise appears in splashdown as one of three supported env loaders (mise/direnv/devbox) — that's a user-facing integration choice, not an advocacy choice for mise as a build tool. `just` is the more mature dedicated task runner and is what CI uses. Migration to mise tasks would be trivial if "fewer tools" matters more later, but is not a goal.
-- **mypy strict** over `src/splashdown`. **ruff** with a broad rule set (`PL`, `B`, `S`, `SIM`, `SLF`, `RUF`, …); line length is formatter-enforced, not lint-enforced. `# noqa` codes in the tree are intentional — match the existing pattern rather than disabling rules globally.
-- Shelling out to PATH tools (`xcrun`, `simctl`, `adb`, `git`) is by design — `S603`/`S607` are globally ignored.
-- Tests are plain pytest, split into per-module files under `tests/`, fixture-driven (`registry`, `checkout`, `tmp_path`), heavy on monkeypatching the re-exported symbols. New behavior gets a test in the matching `tests/test_<module>.py` (shared fixtures/helpers in `tests/conftest.py`).
-- The four project files splashdown manages: `splashdown.toml` (committed recipe), `splashdown.local.toml` (gitignored, per-checkout add-only target variants), `splashdown.env` (gitignored, generated — never hand-edit), and the loader config. splashdown owns `splashdown.env` wholesale.
-- **No backward-compat code.** splashdown is pre-release and single-user (the user is the only one running it). When a change alters a file format, the recipe/`.env` layout, or the CLI surface, just make the breaking change — no migration helpers, no legacy-format readers, no code paths or tests preserving the old shape. Tell the user what to update in their own projects (`splash init --force`, one-off edits) and move on. Only add compat handling if explicitly asked.
-- **Monorepo-honest, not monorepo-smart.** Don't build clever auto-configuration that guesses a whole monorepo layout. Instead: (1) make setups *possible* via an expressive schema, (2) *document* the canonical layouts, (3) keep `splash init` *fail-safe* — when it can't produce a correct recipe, write a minimal safe one and point to docs rather than scaffolding something the user must undo. Prefer detection that gates *whether* to auto-scaffold over detection that auto-produces complex config. See `docs/superpowers/specs/2026-06-28-monorepo-support-design.md`.
+- Runtime is Python 3.13; ruff and mypy target 3.11. Strict mypy applies to `src/splashdown`.
+- Runtime dependencies are deliberately limited to `argcomplete` and `tomlkit`. Do not add a
+  dependency without an explicit evaluation of its supply-chain and Homebrew resource cost.
+- Ruff owns lint and formatting. After `ruff check --fix`, run `ruff format`; do not broadly
+  disable rules to avoid a local fix.
+- Shelling out to PATH tools such as `xcrun`, `adb`, and `git` is intentional; `S603` and `S607`
+  are globally ignored.
+- New behavior gets tests in the matching `tests/test_<module>.py`.
+- Splashdown owns `splashdown.env` wholesale. `splashdown.toml` is committed;
+  `splashdown.local.toml` and generated env output are gitignored.
+- This is a pre-release, single-user project. Make requested format and CLI changes directly;
+  do not add compatibility readers or migration branches unless explicitly asked.
+- Be monorepo-honest, not monorepo-smart. When scanning cannot produce a correct multi-app
+  recipe, emit the safe structure-only form and direct the user to manual configuration rather
+  than guessing.
+
+Release and Homebrew maintenance live in [docs/tech/release.md](docs/tech/release.md). Never tag a
+release unless explicitly asked, never hand-edit `CHANGELOG.md`, and keep release version, lock,
+and tag ordering as documented there.
 
 ## Documentation
 
-Project docs live in `docs/` (start at `docs/overview.md`). Feature behavior lives in `docs/features/`, implementation in `docs/tech/` (both for contributors/agents); user how-tos in `docs/user/` (README links there). After completing a feature, run `doc --update` to keep them current.
+Project docs start at [docs/overview.md](docs/overview.md). Feature behavior lives in
+`docs/features/`, implementation details in `docs/tech/`, product material in `docs/product/`, and
+user guides in `docs/user/`.
 
-**The two audiences stay strictly separate and are never merged.** The user set is the slim `README.md` landing page plus `docs/user/`; the developer/LLM set is `docs/features/`, `docs/tech/`, `docs/product/`, `docs/superpowers/`. This is a settled decision, reaffirmed several times — do not propose folding `docs/features/` into the user docs, even where content overlaps (recipe schema, CLI reference); some duplication between the two sets is accepted. The splashdown.dev site publishes the **user set only**, enforced by `docs_dir: docs/user` in `mkdocs.yml`. See `docs/superpowers/specs/2026-07-19-docs-site-and-readme-split-design.md`.
+The user and builder audiences stay separate. The public site publishes only `docs/user/` via
+`mkdocs.yml`; some user/builder duplication is intentional, but duplicate builder explanations
+should have one canonical owner and links elsewhere. User prose in `README.md` and `docs/user/`
+avoids em dashes and semicolons; builder docs retain their existing style.
 
-House style also differs per set: prose in `README.md` and `docs/user/` avoids em-dashes and semicolons (code blocks exempt), while the developer docs keep the author's em-dash-heavy voice — don't "normalize" either set toward the other.
+After changing behavior, update the relevant docs and run `just docs-build`. Use `doc --update` to
+refresh documentation and `doc --review` for a whole-repository audit.

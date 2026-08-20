@@ -8,9 +8,10 @@ description: Reference for every splash command, option, target action, and envi
 ```
 splash                              # sync this checkout explicitly
 splash --version
-splash [--format text|json] [--show-values] …
+splash [--cwd PATH] [--format text|json] [--show-values] …
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
-splash status [all]                 # resources + targets + which ports are bound right now
+splash status [local|all] [--check] [--verbose]
+                                      # resources + targets + health/cleanup details
 splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
                     [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
@@ -22,15 +23,22 @@ splash doctor [--fix] [--framework=…]
 splash run     [type] [variant]     # boot target + build + launch
 splash start   [type] [variant]     # boot target (no build/launch)
 splash stop    [type] [variant]     # shut down
-splash destroy [type] [variant]     # delete this checkout's target instance
+splash destroy [type] [variant] [--yes]
+                                      # delete this checkout's target instance
 
 splash target                       # list declared targets + live state
-splash target add/remove <type> <variant> …
-splash target refresh [ios|android] # recreate stale sims/emulators
-splash target prune   [ios|android] # destroy sims/emulators splashdown didn't create
+splash target add <type> <variant> [--model M] [--ios V] [--device D] [--image I]
+                  [--name N] [--id ID] [--platform ios|android] [--global]
+splash target remove <type> <variant> [--keep-instance] [--global]
+splash target refresh [ios|android|all]
+                                      # recreate stale registered sims/emulators
+splash target prune   [ios|android|all] [--dry-run] [--yes]
+                                      # destroy sims/emulators splashdown didn't create
 
-splash env                          # list this checkout's resolved keys
-splash env get KEY | set KEY=VALUE | release [KEY]
+splash env [--checkout PATH]        # list a checkout's resolved keys
+splash env get KEY [--checkout PATH]
+splash env set KEY=VALUE [--checkout PATH]
+splash env release [KEY] [--checkout PATH]
 
 splash gc                           # drop dead-checkout entries (ports, vars, sims)
 

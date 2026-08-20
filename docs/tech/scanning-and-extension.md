@@ -42,12 +42,12 @@ intentionally small registry of intent presets, not another list of supported fr
 
 ### scanner.py — repo → ProjectInventory
 
-`Scanner.scan()` (`scanner.py:156`) is the single public entry. It runs workspace, loader,
+`Scanner.scan()` (`scanner.py`) is the single public entry. It runs workspace, loader,
 profile, and capability detection, then assembles the `ProjectInventory` and `AppInventory`
 records defined in `inventory.py`. No writes, no caching of significance — the same instance
 is reusable.
 
-**1. Workspace detection** — `_detect_workspace()` (`scanner.py:44`) returns one of
+**1. Workspace detection** — `_detect_workspace()` (`scanner.py`) returns one of
 `pnpm | yarn | npm | cargo | gradle | single` by probing marker files in a fixed order:
 
 - `pnpm-workspace.yaml` → `pnpm`.
@@ -58,36 +58,36 @@ is reusable.
 - otherwise `single`.
 
 The order matters: a pnpm monorepo usually also has a `package.json`, so pnpm is checked
-first. Note JS-workspace detection keys off the *presence* of the `workspaces` field, not
-its contents.
+first. JS workspace detection requires a *truthy* `workspaces` value; an empty array or object
+falls through to `single`.
 
 Package metadata consumers share `package_json.py`. Missing, unreadable, malformed, and
 non-object JSON all produce an empty mapping, and only object-shaped dependency tables are
 merged.
 
-**2. App enumeration** — `_enumerate_apps()` (`scanner.py:69`) turns the workspace kind
+**2. App enumeration** — `_enumerate_apps()` (`scanner.py`) turns the workspace kind
 into `[(name, path), ...]`:
 
-- `single` short-circuits to one synthetic app `("main", cwd)` (`scanner.py:72`).
+- `single` short-circuits to one synthetic app `("main", cwd)` (`scanner.py`).
 - `pnpm` hand-parses the `packages:` glob list out of `pnpm-workspace.yaml` with a
   minimal line reader (no YAML dependency); the first non-list, non-comment line ends the
-  block (`scanner.py:74-93`).
+  block (`scanner.py`).
 - `yarn`/`npm` read `workspaces` from `package.json`, tolerating both the array form and
-  the `{ packages: [...] }` object form (`scanner.py:94-99`).
-- `cargo` extracts `[workspace] members` via stdlib `tomllib` (`scanner.py:100-104`).
+  the `{ packages: [...] }` object form (`scanner.py`).
+- `cargo` extracts `[workspace] members` via stdlib `tomllib` (`scanner.py`).
 - `gradle` regex-scrapes quoted tokens out of `settings.gradle*`, mapping Gradle's `:`
   path separator to `/` (`:api:server` → `api/server`), keeping only entries that resolve
-  to real directories (`scanner.py:105-119`).
+  to real directories (`scanner.py`).
 
-Glob expansion is centralized in `_expand_workspace_globs()` (`scanner.py:123`). It only
+Glob expansion is centralized in `_expand_workspace_globs()` (`scanner.py`). It only
 understands a single trailing-ish `*` (it splits on the first `*` and lists the parent
 dir's children), and it **excludes `node_modules` and dotdirs** while expanding
-(`scanner.py:133-139`). There is no general recursive walk: the scanner trusts the
+(`scanner.py`). There is no general recursive walk: the scanner trusts the
 workspace manifest to point at app roots, so it never descends into `node_modules` or
 `.git` — they are skipped structurally, not blacklisted.
 
 **3. Profile matching** — for each enumerated app, `Scanner._match_profile()`
-(`scanner.py:207`) iterates `PROFILES` in insertion order and returns the first
+(`scanner.py`) iterates `PROFILES` in insertion order and returns the first
 `profile.detect(app_path)` that is truthy, falling back to `"unknown"`. This is the only
 place precedence is consumed; the ordering itself lives in `profiles.py` (see below).
 
@@ -96,11 +96,11 @@ without replacing the primary Profile. An Electron/Vite app remains `profile="vi
 also carries `capabilities=("electron",)`. Electron-only workspace members are retained;
 other unmatched workspace members are still treated as shared libraries and omitted.
 
-**5. Loader detection** — `_detect_loader()` (`scanner.py:156`) asks each `Loader` in
+**5. Loader detection** — `_detect_loader()` (`scanner.py`) asks each `Loader` in
 `LOADERS` order whether it `detect()`s, returning the first hit or `"none"`. Same
 first-match-wins pattern as profiles.
 
-**Cross-app resource-name collision mangling.** Profiles emit *canonical* resource names
+**Cross-app resource-name collisions.** Profiles emit *canonical* resource names
 (e.g. a Vite app wants `WEB_DEV_PORT`, a Next.js app wants `PORT`). When two apps of
 overlapping profiles coexist, those names would collide in the single flat
 `[resources.*]` table. `_build_resource_catalog()` builds the owner counts and, for any
@@ -110,7 +110,10 @@ name owned by more than one app, mangles every instance to `<NAME>_<APP>` (upper
 flat resource table and the per-app `resources = [...]` lists, deriving each pair from
 the same resolved name so declarations and references cannot diverge. If two app names
 normalize to the same suffix, a stable digest disambiguates them while keeping valid
-environment identifiers.
+environment identifiers. Scanner-driven `splash init` checks for collisions before calling this
+helper: when automatic output would need mangling, it writes a structure-only recipe and asks the
+user to choose explicit monorepo resources. The mangling helper remains the shared catalog
+mechanism for already-explicit/rescan flows.
 
 `PROFILES` is declared in dependency-free `catalog.py`, filled in precedence order by
 `profiles.py` at import, and read by scanner, recipe validation, launch dispatch, doctor,
@@ -267,21 +270,21 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 - **MiseLoader** detects `mise.toml`/`.mise.toml`; `wire()` delegates to
   `_ensure_mise_file_directive()` in `hooks.py`, which
   adds a `_.file` directive into mise's `[env]` so mise itself loads `splashdown.env`.
-- **DirenvLoader** (`loaders.py:93`) detects `.envrc`/`.envrc.local`; `wire()` appends (or
-  regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py:79-90`) a
+- **DirenvLoader** (`loaders.py`) detects `.envrc`/`.envrc.local`; `wire()` appends (or
+  regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py`) a
   block containing `dotenv_if_exists splashdown.env`. It uses `dotenv_if_exists` rather
   than `dotenv` so a fresh checkout doesn't hard-error before `splashdown.env` exists
-  (`loaders.py:81`). `wire()` returns whether it created `.envrc`; `approve()` runs
+  (`loaders.py`). `wire()` returns whether it created `.envrc`; `approve()` runs
   `direnv allow` (mise's runs `mise trust`) so the config actually loads. Editing a
   *pre-existing* `.envrc` invalidates direnv's trust hash but is not auto-approved — `wire()`
   prints the `direnv allow` reminder instead (a freshly-created file skips the reminder because
   `approve()` handles it).
-- **DevboxLoader** (`loaders.py:149`) detects `devbox.json`; `wire()` parses the JSON, finds
+- **DevboxLoader** (`loaders.py`) detects `devbox.json`; `wire()` parses the JSON, finds
   or appends a `shell.init_hook` entry carrying the `# splashdown-managed` marker
-  (`loaders.py:145`), and the hook does `set -a; source splashdown.env; set +a`. It
+  (`loaders.py`), and the hook does `set -a; source splashdown.env; set +a`. It
   find-and-replaces by marker rather than parsing the hook string, normalizing a
-  string-valued `init_hook` into a list first (`loaders.py:155-169`).
-- **NoneLoader** (`loaders.py:201`) is the fallback. `detect()` is always `False`; it's
+  string-valued `init_hook` into a list first (`loaders.py`).
+- **NoneLoader** (`loaders.py`) is the fallback. `detect()` is always `False`; it's
   only ever *selected* as the fallback, never matched. `wire()` is a no-op — `cmd_init`
   decides whether to route values into a dotenv file or just print instructions.
 
@@ -297,11 +300,10 @@ never runs an approval command.
 
 ## Key entry points
 
-- `scanner.py:156` — `Scanner.scan()`, the one public detection entry.
-- `scanner.py:16` / `scanner.py:41` / `scanner.py:95` — workspace detect, app enumerate,
-  glob expand.
+- `scanner.py` — `Scanner.scan()`, the one public detection entry.
+- `scanner.py` — `_detect_workspace`, `_enumerate_apps`, and `_expand_workspace_globs`.
 - `scanner.py` — collision mangling and per-app references (`_build_resource_catalog`).
-- `scanner.py:179` / `scanner.py:149` — first-match profile / loader resolution.
+- `scanner.py` — `_match_profile` and `_detect_loader`.
 - `profile_core.py` — `Profile` and its extension points/flags, including
   `agent_guidance(app, port_names)` and shared guidance helpers.
 - `profiles_web.py`, `profiles_server.py`, `profiles_mobile.py`, and
@@ -312,8 +314,8 @@ never runs an approval command.
 - `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py` populates it in
   precedence order.
 - `scaffolds.py` — `SCAFFOLDS` registry; substituted by `_cmd_init_preset` in `commands.py`.
-- `loaders.py:30` — `Loader` base; subclasses `loaders.py:56/93/149/201`.
-- `loaders.py:215` — `LOADERS` registry (precedence order).
+- `loaders.py` — `Loader`, its mise/direnv/devbox/none implementations, and the precedence-ordered
+  `LOADERS` registry.
 - Consumers: scanner-driven init and rescan in `commands.py`, `_build_resource_catalog`
   in `scanner.py`, and `_cmd_init_preset` for `SCAFFOLDS`.
 - Registration wiring: `catalog.py` owns the dictionary and `__init__.py` imports
@@ -323,7 +325,7 @@ never runs an approval command.
 ## Gotchas
 
 - **`PROFILES` insertion order silently controls detection precedence.** There is no
-  explicit priority field — `Scanner._match_profile` (`scanner.py:207`) returns the *first*
+  explicit priority field — `Scanner._match_profile` (`scanner.py`) returns the *first*
   `detect()` hit. Inserting a new profile in the wrong position (e.g. a broad
   `package.json`-based detector before a narrow one) will silently shadow later profiles.
   Same hazard for `LOADERS`. The explicit `_BUILTIN_PROFILES` tuple and its exact-order test
@@ -339,19 +341,19 @@ never runs an approval command.
   range starts at `8082`, deliberately excluding Metro's framework-default port `8081`.
 - **Resource scoping has one source of truth.** `_build_resource_catalog` derives both
   declarations and each app's resource references from the same resolved-name map.
-- **Glob expansion only handles one `*`** (`scanner.py:127-143`) and lists a single
+- **Glob expansion only handles one `*`** (`scanner.py`) and lists a single
   directory level. `apps/**/foo`-style deep globs are not expanded the way a real pnpm/yarn
   matcher would; the scanner assumes the common `apps/*` / `packages/*` shapes.
-- **JS workspace detection is presence-based**, not lockfile-authoritative: a
-  `package.json` with a `workspaces` key and *no* lockfile defaults to `npm`
-  (`scanner.py:48-55`).
+- **JS workspace detection is truthiness-based**, not lockfile-authoritative: a
+  `package.json` with a non-empty `workspaces` value and *no* lockfile defaults to `npm`
+  (`scanner.py`).
 - **Configured loader beats installed loader.** Every `Loader.detect()` probes for a
   config file (`mise.toml`/`.mise.toml`, `.envrc`, `devbox.json`) before scanner detection
   falls back to installed binaries on `PATH`. A repository's chosen loader therefore wins
   even when another loader appears earlier in PATH fallback order.
 - **mise wiring must not scaffold a second config file.** `MiseLoader.detect` matches
-  either `mise.toml` or `.mise.toml` (`loaders.py:59`), so `_ensure_mise_file_directive`
-  (`hooks.py:47`) prefers an existing `mise.toml`, falls back to an existing
+  either `mise.toml` or `.mise.toml` (`loaders.py`), so `_ensure_mise_file_directive`
+  (`hooks.py`) prefers an existing `mise.toml`, falls back to an existing
   `.mise.toml`, and only creates a new `mise.toml` when neither exists. Hardcoding
   `mise.toml` here would scaffold a duplicate beside a `.mise.toml`-only user's file
   (mise merges both, so it silently "works" while leaving two configs).

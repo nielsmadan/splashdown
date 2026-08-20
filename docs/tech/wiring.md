@@ -39,7 +39,7 @@ scaffolding so a fresh setup lands wired. Intent presets bypass the scanner and 
 
 ### The `WiringCheck` contract
 
-`WiringCheck` (`wiring.py:22`) is a `NamedTuple` carrying everything `doctor` needs
+`WiringCheck` (`wiring.py`) is a `NamedTuple` carrying everything `doctor` needs
 to handle one fact: an `id`, a human `description`, `applies(cwd) -> bool`,
 `detect(cwd) -> ("ok"|"problem", detail)`, an optional `autofix(cwd) -> None`, and
 `manual_instructions(cwd) -> str`. The contract is deliberately three-state per
@@ -54,10 +54,9 @@ also `Optional` in the type but every shipped check supplies one.
 ### Check registries and the profile boundary
 
 Checks are owned by **Profiles**, not by `doctor` directly. The RN checks live in
-a module-level list `_RN_WIRING_CHECKS` (`wiring.py:37`) that is populated by a
-sequence of top-level `.append(...)` calls as each `rn-*` helper is defined
-(`wiring.py:212`, `:302`, `:380`, `:462`). The shared `_HOOK_WIRING_CHECK`
-(`wiring.py:474`) is a single check reused by native Profiles that otherwise have no
+a module-level list `_RN_WIRING_CHECKS` (`wiring.py`) that is populated by a
+sequence of top-level `.append(...)` calls as each `rn-*` helper is defined. The shared `_HOOK_WIRING_CHECK`
+(`wiring.py`) is a single check reused by native Profiles that otherwise have no
 per-checkout wiring.
 
 This is **order-dependent**, and the coupling runs through `profiles_mobile.py`:
@@ -72,27 +71,26 @@ This is **order-dependent**, and the coupling runs through `profiles_mobile.py`:
 
 Practically: any new RN check must be appended in `wiring.py`'s module body (not
 lazily, not from another module after import), because Profiles read the populated
-list. Vite and Spring Boot build their checks in `profiles_web.py` and
-`profiles_server.py` rather than going through these registries.
+list. Web, server, and Compose checks are built by `profiles_web.py`,
+`profiles_server.py`, and `profiles_compose.py` rather than going through the RN registry.
 
 ### `cmd_doctor`: resolve → run loop
 
-`cmd_doctor` (`doctor.py`) first resolves which framework to check via
-`_resolve_doctor_framework` (`doctor.py:16`): an explicit `--framework` override
-wins; else it loads the recipe (or an empty one) and calls `detect_framework`;
-`DeviceError` collapses to `None`. A `None` framework prints a "pass `--framework`"
-error and exits 1. It then pulls the check list through
-`_wiring_checks_for_framework` (`doctor.py:39`), which synthesizes an
-`AppInventory` rooted at `cwd` and calls that Profile's `wiring_checks`; a
-framework with no checks exits 0 with a note.
+`cmd_doctor` resolves all check targets through `_resolve_check_targets`. Project-level Compose
+checks are collected first, and a recipe with `[bootstrap]` adds the hook check. Framework
+resolution then selects the app directory and Profile checks. When framework detection is
+ambiguous or unavailable, project checks still run; doctor asks for `--framework` only when there
+are no project checks to perform. Framework and project checks are combined by id so the shared
+hook check is emitted once. A resolved framework with no checks exits 0 with either the env-only
+positive verdict or a neutral "no checks defined" note.
 
-The run loop in `doctor.py:67` walks each check:
+The run loop in `doctor.py` walks each check:
 
 1. `applies(cwd)` false → print "not applicable", skip.
 2. `detect` returns `ok` → print `✓`.
 3. `problem` **and** `--fix` **and** `autofix is not None` → call `autofix` (wrapped
    in `try/except` so one check failing reports rather than crashing the run,
-   `doctor.py:78`), then re-`detect`. On `ok` print `✓ (fixed)`; otherwise print
+   `doctor.py`), then re-`detect`. On `ok` print `✓ (fixed)`; otherwise print
    `✗ still problem after autofix` and the manual snippet, count it bad.
 4. Otherwise (problem with no fix requested/available) → print `✗` plus the manual
    snippet, count it bad.
@@ -113,50 +111,67 @@ autofixes per app. The intent-preset path resolves a framework from the checkout
   `_ensure_post_checkout_hook` through `_autofix_ensure_post_checkout_hook`
   so it coexists with the project's existing manager. RN and project-level registrations use the
   same `hook` id, so doctor emits one diagnostic.
-- **`rn-metro-config`** (`_rn_metro_detect`, `wiring.py:345`; registered `:407`) —
+- **`rn-metro-config`** (`_rn_metro_detect` in `wiring.py`) —
   `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix
-  (`_rn_metro_autofix`, `wiring.py:374`) recognizes three object-literal shapes
-  (documented in the comment at `wiring.py:329`): a literal `port: <N>` is rewritten
+  (`_rn_metro_autofix`, `wiring.py`) recognizes three object-literal shapes
+  (documented in the comment at `wiring.py`): a literal `port: <N>` is rewritten
   in place to `Number(process.env.RCT_METRO_PORT) || <N>` keeping the literal as
   fallback; an existing `server: {` block gets a port line inserted at its open
   brace; a bare `const config = {` / `module.exports = {` object gets a whole
   `server` block injected. The brace-aware injection lives in `_rn_metro_inject`
-  (`wiring.py:356`), driven by three regexes (`wiring.py:335`–`:337`). If none
+  (`wiring.py`), driven by three regexes in the same module. If none
   match, autofix returns without writing and the check surfaces manual instructions.
-- **`rn-pkg-port`** (`_rn_pkg_detect`, `wiring.py:448`; registered `:485`) — strips
+- **`rn-pkg-port`** (`_rn_pkg_detect` in `wiring.py`) — strips
   a hardcoded `--port <N>` from `package.json` scripts that boot Metro. The target
-  set (`_pkg_scripts_with_port`, `wiring.py:432`) is the default RN script names
+  set (`_pkg_scripts_with_port`, `wiring.py`) is the default RN script names
   `start`/`ios`/`android`, plus any script invoking `react-native start`. The
-  `react-native start` match (`wiring.py:425`) is deliberately narrow so `--port` on
+  `react-native start` match (`wiring.py`) is deliberately narrow so `--port` on
   unrelated tools (`react-native-test-runner --port 4000`) is left alone. Autofix
   re-serializes `package.json` with 2-space indent.
-- **`rn-xcode-env`** (`_rn_xcode_detect`, `wiring.py:531`; registered `:567`) —
+- **`rn-xcode-env`** (`_rn_xcode_detect` in `wiring.py`) —
   `ios/.xcode.env` should source `RCT_METRO_PORT` from this checkout's
   `splashdown.env`. Detection treats *any* mention of `splashdown.env` as ok
-  (sentinel block, hand-written conditional, whatever). Autofix (`wiring.py:542`)
+  (sentinel block, hand-written conditional, whatever). Autofix (`wiring.py`)
   strips any static literal export, strips any prior sentinel block, then appends a
-  sentinel-wrapped managed block (`_XCODE_BLOCK`, `wiring.py:502`): honor a value
+  sentinel-wrapped managed block (`_XCODE_BLOCK`, `wiring.py`): honor a value
   already set by `run-ios`, else read `splashdown.env`, else fall back to 8083.
 - **`vite-config-process-env`** (returned by `ViteProfile.wiring_checks` in
   `profiles_web.py`) —
   rewrites the `loadEnv` idiom `env.X` to `process.env.X` in `vite.config.{ts,js,mjs}`
   so values loaded into the shell by mise/direnv/devbox reach Vite. The matcher
   skips already-fixed `process.env.X`.
+- **`vite-port-wired`** (`profiles_web.py`) — report-only assertion that Vite names the
+  allocated port variable. It accepts bracket access and destructuring, but never invents a
+  `server.port` block in arbitrary config.
+- **`astro-config-port`** (`profiles_web.py`) — wires top-level `server.port` to
+  `WEB_DEV_PORT`, while refusing ambiguous nested `server` shapes.
+- **`angular-pkg-port`** (`profiles_web.py`) — rewrites `ng serve` npm scripts so
+  `--port $WEB_DEV_PORT` reaches Angular's CLI.
+- **`deno-port-wired`** (`profiles_web.py`) — validates task flag order or a source-level
+  `PORT` read; only task commands are mechanically rewritten.
+- **`compose-hardcoded-ports`** (`profiles_compose.py`) — project-level, report-only
+  detection for pinned host ports and literal container names across block and flow YAML shapes.
 - **`springboot-application-properties`** (defined inline in the Spring Boot
   Profile in `profiles_server.py`) — checks that
   `application.properties`/`application.yml` uses the `server.port=${PORT:8080}`
   placeholder. **Report-only**: `autofix=None`, so `doctor`
   reports the `✗` and prints manual instructions but never rewrites the file, even
   under `--fix`.
+- **Laravel's `vite-port-wired`** (`LaravelProfile.wiring_checks` in
+  `profiles_server.py`) — reuses the report-only Vite port assertion when the Laravel app has a
+  Vite config. The backend `SERVER_PORT` is already environment-only; an API-only app with no Vite
+  config has no file wiring to check.
 - **`aspnet-launch-settings`** (`AspNetCoreProfile.wiring_checks` in
   `profiles_server.py`) — flags any
   `"commandName": "Project"` profile in `Properties/launchSettings.json` that pins
   `applicationUrl`, which `dotnet run` honours ahead of an inherited
   `ASPNETCORE_HTTP_PORTS`. **Autofix present**, unlike the two report-only checks
-  above: launchSettings is JSON, so the fix is `json.loads` → `pop("applicationUrl")`
-  → `json.dumps(indent=2)` with no regex over whitespace-significant text.
+  above: launchSettings is JSON, so the fix removes `applicationUrl` from Project profiles.
+  `_read_launch_settings` handles the UTF-8 BOM emitted by .NET templates and preserves CRLF on
+  write; a plain text JSON round trip would reject or churn those files.
   `_aspnet_project_profiles` is what narrows the rewrite to `Project`
-  profiles, leaving `IISExpress` entries untouched.
+  profiles, leaving `IISExpress` entries untouched. Pre-.NET-8 projects use a report-only twin
+  because `ASPNETCORE_HTTP_PORTS` is unavailable there.
 
 ### Why Electron integration is not a WiringCheck
 
@@ -176,13 +191,13 @@ resource overlay.
 
 The `ios/.xcode.env` autofix is idempotent by sentinel pair. The managed block is
 bracketed by `# >>> splashdown-managed RCT_METRO_PORT >>>` /
-`# <<< splashdown-managed RCT_METRO_PORT <<<` (`wiring.py:498`–`:512`), and
-`_XCODE_BLOCK_RE` (`wiring.py:514`) is a non-greedy `DOTALL` match across that pair.
+`# <<< splashdown-managed RCT_METRO_PORT <<<` (`wiring.py`), and
+`_XCODE_BLOCK_RE` (`wiring.py`) is a non-greedy `DOTALL` match across that pair.
 Autofix strips any prior block by that regex before re-appending, so re-running
 `--fix` replaces the block's contents in place rather than stacking copies. The
 sentinels also document, in the file itself, which lines are tool-managed versus
 hand-edited — edits *inside* the pair are overwritten on the next `--fix`. The
-literal-export regex `_XCODE_LITERAL_EXPORT_RE` (`wiring.py:521`) matches only a
+literal-export regex `_XCODE_LITERAL_EXPORT_RE` (`wiring.py`) matches only a
 *static* `export RCT_METRO_PORT=<digits>` with no variable references, kept narrow
 on purpose so a hand-written conditional/shell-substitution wiring is not mangled.
 
@@ -206,8 +221,8 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
 - `hooks.py` — shared hook readiness, exact manager parsing, repair, and manual instructions.
 - `profiles_mobile.py` — Profiles snapshot/reuse the registries via `list(...)` /
   `[_HOOK_WIRING_CHECK]`.
-- `profiles_web.py` / `profiles_server.py` — `vite-config-process-env` and
-  `springboot-application-properties` checks.
+- `profiles_web.py` / `profiles_server.py` / `profiles_compose.py` — framework and
+  project-specific checks.
 
 ## Gotchas
 
@@ -215,7 +230,7 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
   literal `port:`, an existing `server: {` block, or a bare config object literal
   are handled; anything else (functional config, spread merges, an exotic export
   shape) makes `_rn_metro_inject` return `None`, autofix returns without writing,
-  and the check stays `✗` with the manual snippet printed (`wiring.py:391-398`).
+  and the check stays `✗` with the manual snippet printed (`wiring.py`).
 - **RN-on-Android Metro port is not wired (known limitation).** Android bakes the
   Metro port into the build via the RN Gradle plugin, a different mechanism from
   iOS, and there is no check for it. The RN CLI propagates `RCT_METRO_PORT` to
@@ -231,7 +246,7 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
   appended in the module body (not registered lazily from elsewhere), or Profiles
   will snapshot a list that's missing it.
 - **iOS port changes need a rebuild.** `RCT_METRO_PORT` is compiled into the iOS
-  binary via `RCTBundleURLProvider`'s `defaultPort` (`wiring.py:503` block comment),
+  binary via `RCTBundleURLProvider`'s `defaultPort` (`wiring.py` block comment),
   so even a correctly wired `ios/.xcode.env` only takes effect after the app is
   rebuilt — wiring alone won't move a running build off its old port.
 - **A configured `core.hooksPath` is reported, not auto-wired.** The hook check stays `✗`

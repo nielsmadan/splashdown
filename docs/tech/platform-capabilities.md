@@ -44,11 +44,12 @@ instance. `cmd_gc` therefore performs capability-aware device cleanup before cal
 | --- | --- | --- |
 | Finite required tool operation | `device_ios.py`: `xcrun`, `open`; `device_android.py`: `avdmanager`, `sdkmanager`, `adb`; `runners.py`: Xcode/Gradle discovery and app installation | Apply a host guard where applicable. Convert launch-time `OSError` to `CapabilityError`; convert a timeout to `DeviceError` naming the operation; preserve nonzero exits as real tool failures. Discovery/list/status gets 30 seconds, while create/install/delete/shutdown gets 120 seconds. |
 | Intentionally long-running required operation | `device_android.py`: detached emulator plus 60-second readiness loop; `runners.py`: Flutter, `npx`, Xcode/Gradle builds, and app launches | Preserve tool exit status. Do not impose the finite-operation deadline on a build, interactive app process, or user-driven launch. |
-| Best-effort integration or probe | `recipe.py`: Git metadata; `hooks.py`: Git, gitignore, and the installed lefthook binary; `wiring.py`: Git hook check; `loaders.py`: loader approval | Return the existing fallback, warning, or boolean result. Missing or non-executable tools must not crash the command. |
+| Best-effort integration or probe | `recipe.py`: Git metadata; `bootstrap.py`: Git clone/worktree state; `commands.py`: Git ignore checks; `hooks.py`: Git, gitignore, and the installed lefthook binary; `wiring.py`: Git hook check; `loaders.py`: loader approval | Return the existing fallback, warning, or boolean result. Missing or non-executable tools must not crash the command. |
 | User-authored shell | `provisioning.py`: `run_setup`; `runners.py`: `run_custom_command` | Preserve shell semantics. Setup failures reach the existing clean runtime-error renderer; custom launch commands return the shell exit status. |
 
-This inventory covers every `subprocess.call`, `run`, `check_output`, and `Popen` site under
-`src/splashdown` as of the audit.
+The table records the subprocess categories and their current owners. When a new subprocess site
+is added, classify it here and audit it against the rules below rather than treating this list as a
+permanent call-site inventory.
 
 ## Adding a subprocess
 

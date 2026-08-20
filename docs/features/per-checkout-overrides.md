@@ -26,21 +26,26 @@ the variant behaves like any recipe target: `splash run <type> <variant>` boots 
 
 ## How it works (current state)
 
-Two TOML files are loaded independently and unioned at read time — the local file is never
-merged into the recipe on disk. Both documents are validated completely before their values
-are used:
+The committed recipe, per-checkout file, and optional machine-wide global config are loaded
+independently and combined at read time. Neither override file is merged into the recipe on disk,
+and every document is validated completely before its values are used:
 
 - The committed recipe is parsed into a `Recipe`; unknown top-level sections and fields are
   hard errors, and its `[targets.*]` tables go through the shared target validator.
-- The per-checkout file is parsed into a `LocalConfig` (`src/splashdown/recipe.py:877`),
+- The per-checkout file is parsed into a `LocalConfig` (`src/splashdown/recipe.py`),
   using the same target validator. Its only permitted top-level sections are `settings` and
   `targets`; both are fully validated, including unknown nested fields. `LocalConfig.load`
   returns an empty config when the file is absent, so a checkout with no local variants is
   the normal case.
-- `merged_targets` (`src/splashdown/recipe.py:988`) unions the two catalogs. It copies the
+- The machine-wide config is parsed into `GlobalConfig`. Physical `device` targets are available
+  in every project; global simulators/emulators appear only when the project already declares that
+  target type.
+- `merged_targets` (`src/splashdown/recipe.py`) starts with the recipe and local catalogs. It copies the
   recipe's per-type variant dicts, then folds in each local variant — and **raises** if a
-  `(type, variant)` pair already exists in the recipe bucket. This is the collision rule.
-- `resolve_variant` (`src/splashdown/recipe.py:1028`) selects one variant from a single
+  `(type, variant)` pair already exists in the recipe bucket. Global variants fold in last; a
+  recipe or local variant silently shadows a same-named global variant so shared configuration
+  cannot break a project.
+- `resolve_variant` (`src/splashdown/recipe.py`) selects one variant from a single
   type's merged catalog for the `run`/`start`/`stop`/`destroy` verbs: explicit name wins,
   else `default`, else the sole variant, else an error listing the choices.
 
@@ -69,19 +74,19 @@ The CLI side:
 
 ## Key entry points
 
-- `src/splashdown/recipe.py:877` — `LocalConfig`, the per-checkout config type.
-- `src/splashdown/recipe.py:867` — `_TargetConfig.load` (absent file → empty).
-- `src/splashdown/recipe.py:827` — `LOCAL_SKELETON`, the commented template seeded when the
+- `src/splashdown/recipe.py` — `LocalConfig`, the per-checkout config type.
+- `src/splashdown/recipe.py` — `_TargetConfig.load` (absent file → empty).
+- `src/splashdown/recipe.py` — `LOCAL_SKELETON`, the commented template seeded when the
   file is first created.
-- `src/splashdown/recipe.py:988` — `merged_targets` (the union + collision error).
-- `src/splashdown/recipe.py:1028` — `resolve_variant`.
+- `src/splashdown/recipe.py` — `merged_targets` (the union + collision error).
+- `src/splashdown/recipe.py` — `resolve_variant`.
 - `src/splashdown/target_commands.py` — `_target_dispatch`, lifecycle commands, and fleet orchestration.
 - `src/splashdown/target_commands.py` — `_load_variant_spec` (union lookup used by target refresh).
 - `src/splashdown/targets.py` — `target_add`, `_prepare_target_remove`, and `target_remove`.
-- `src/splashdown/tomlio.py:205` / `src/splashdown/tomlio.py:214` — tomlkit writers.
-- `src/splashdown/cli.py:267` — `target add` parser and its
+- `src/splashdown/tomlio.py` — `target_add_text` and `target_remove_text`.
+- `src/splashdown/cli.py` — `target add` parser and its
   `--model/--ios/--device/--image/--name/--id/--platform` flags.
-- `src/splashdown/cli.py:293` — `target remove` parser and `--keep-instance`.
+- `src/splashdown/cli.py` — `target remove` parser and `--keep-instance`.
 
 ## Configuration
 
@@ -96,7 +101,7 @@ model = "iPhone 16"
 ios   = "17.5"
 ```
 
-`splash target add <type> <variant>` flags (`src/splashdown/cli.py:267`) are optional, but
+`splash target add <type> <variant>` flags (`src/splashdown/cli.py`) are optional, but
 only the fields belonging to the selected type are accepted:
 
 | Flag | Field | Used by |
@@ -114,7 +119,7 @@ All supplied values must be non-empty strings; `platform` is restricted to `ios`
 tables.
 
 `splash target remove <type> <variant>` takes `--keep-instance`
-(`src/splashdown/cli.py:293`): edit the TOML only, leaving the sim/emulator and registry row
+(`src/splashdown/cli.py`): edit the TOML only, leaving the sim/emulator and registry row
 intact. Without it, the prepared TOML is written after successful instance deletion and before
 the registry row is removed (no lifecycle effect for physical `device` targets, which have no
 instance or registry row).
@@ -150,12 +155,12 @@ and to the `Settings` dataclass.
   not meant to be shared. If `.gitignore` is missing the entry, the file is tracked, every
   fresh clone inherits it, and `splash target add` mutating it pollutes `git status`
   permanently. The seeded skeleton's first line announces it is gitignored
-  (`src/splashdown/recipe.py:827`), but nothing re-enforces the ignore on every run — verify
+  (`src/splashdown/recipe.py`), but nothing re-enforces the ignore on every run — verify
   the entry exists. (Matches README "Gotchas".)
 - **Add-only, by hard rule.** A local variant whose name duplicates a recipe variant is an
   error in three places — at write time in `target_add`
   (`src/splashdown/targets.py`), at read time in `merged_targets`
-  (`src/splashdown/recipe.py:988`), and `_prepare_target_remove` refuses to select a recipe
+  (`src/splashdown/recipe.py`), and `_prepare_target_remove` refuses to select a recipe
   variant for removal. To change a shared target, edit `splashdown.toml`; to shadow one locally,
   pick a different variant name.
 - **Target fields are type-specific.** The CLI exposes all target flags on one parser, but

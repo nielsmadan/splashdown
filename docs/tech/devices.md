@@ -14,7 +14,7 @@
   - [Capability boundaries](#capability-boundaries)
   - [Physical devices: discovered, never created](#physical-devices-discovered-never-created)
   - [ensure_fresh_sim: reconcile-on-drift](#ensure_fresh_sim-reconcile-on-drift)
-  - [The info handoff contract](#the-info-handoff-contract)
+  - [The launch-destination contract](#the-launch-destination-contract)
   - [Framework launch](#framework-launch)
 - [Key entry points](#key-entry-points)
 - [Gotchas](#gotchas)
@@ -32,7 +32,7 @@ registry; physical devices are only *discovered* and never persisted.
 
 Target catalog writers live in `targets.py`, while lifecycle and fleet command composition lives
 in `target_commands.py`. Compatibility re-exports remain in this module for existing extensions.
-The `splash status --all` summary formatting helpers remain here until status extraction.
+Status report construction lives in `status.py`; text and JSON rendering live in `cli_output.py`.
 
 ## How it works (current state)
 
@@ -138,7 +138,8 @@ failure for one platform produces one warning and the other discovery path still
 deduplicates warnings across several target variants. `_physical_match` filters by the spec's `id` (exact) or `name`
 (case-insensitive substring). `ensure_physical` in `devices.py` requires exactly one match —
 zero raises a setup hint from `_physical_no_match_msg`, two-or-more raises an
-"narrow with id/name/platform" error — and returns the `info` dict. `physical_status`
+"narrow with id/name/platform" error — and returns an `IOSDestination` or
+`AndroidDestination` with `owned=False`. `physical_status`
 maps the same match to `connected`/`absent`/`ambiguous` for `splash targets`.
 
 ### ensure_fresh_sim: reconcile-on-drift
@@ -167,9 +168,6 @@ is a separate, explicit step. A pinned variant's OS does not drift merely becaus
 or image is installed; edits to its model, device profile, or emulator name can still require
 recreation. `latest` variants additionally drift when Xcode/SDK moves the floor.
 
-The `if not stale:` block contains a `row is None` re-check that "never fires" — `stale` is True
-whenever `row is None`, so the guard exists purely to narrow the Optional for mypy.
-
 ### The launch-destination contract
 
 Every resolve path returns a discriminated `IOSDestination` or `AndroidDestination`, which is
@@ -184,7 +182,7 @@ types narrow the native identifier and rule out cross-platform key combinations.
 Compatibility mapping access still accepts `kind`/`udid`/`serial` for callers of the old internal
 helpers, but production consumers use the typed attributes.
 
-### Framework launch (`launching.py`)
+### Framework launch
 
 `detect_framework` (`launching.py`) honors a `[project] framework` override (`"auto"` means the
 same as omitting it), else probes every registered `Profile.detect` in `PROFILES` insertion order.
@@ -226,7 +224,7 @@ the shell's exit status.
 - `_android_avd_names` / `_android_running_serial` — `device_android.py` — AVD discovery.
 - `run_finite` / `check_output_finite` — `device_tools.py` — finite-operation deadlines.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py` — typed dispatch.
-- `detect_framework` / `resolve_app_dir` / `device_run` — `launching.py:13`, `:40`, `:65`.
+- `detect_framework` / `resolve_app_dir` / `device_run` — `launching.py`.
 - `target_add` / `target_remove` — `targets.py` — local-file variant writers, re-exported here for compatibility.
 
 ## Gotchas

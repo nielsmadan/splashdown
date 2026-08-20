@@ -72,8 +72,9 @@ splash init
 #   shell loader      → mise
 # wrote splashdown.toml + splashdown.local.toml + mise.toml + post-checkout hook
 # updated AGENTS.md
-# allocating ports…  PORT=9081  WEB_DEV_PORT=5174
-# wrote splashdown.env
+#   PORT (changed)
+#   WEB_DEV_PORT (changed)
+#   -> splashdown.env: 2 vars (changed)
 ```
 
 (Pass `--no-sync` to scaffold the files without reserving ports.)

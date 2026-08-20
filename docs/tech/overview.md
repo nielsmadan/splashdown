@@ -27,6 +27,8 @@ carries the short contributor summary; these docs go deeper, per subsystem.
   audited subprocess-failure contract.
 - [bootstrap.md](bootstrap.md) — clone trust, worktree completion, lifecycle locking, and the
   creation-only post-checkout execution path.
+- [release.md](release.md) — versioning, changelog generation, release tags, GitHub publishing,
+  and the Homebrew tap update.
 
 ## Data flow (end to end)
 `scanner.py` (detect → `ProjectInventory`) → categorized `profiles_*.py` implementations
@@ -40,7 +42,8 @@ synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, resc
 `hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
 `loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
 `bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.
-`status.py` gathers typed reports and `cli_output.py` is the sole operational renderer.
+`status.py` gathers typed reports and `cli_output.py` renders ordinary registry-backed command
+output; trust/bootstrap and the hidden hook keep their early, command-specific boundary.
 `src/splashdown/__init__.py` is the seam that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)

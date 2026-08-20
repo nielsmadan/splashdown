@@ -36,11 +36,8 @@ refresh`/`prune` manage the machine-wide fleet. Physical devices are **discovere
 splashdown hands the connected device's native id to the launcher but never creates or destroys
 hardware.
 
-| Target | macOS | Linux |
-| --- | --- | --- |
-| iOS simulator/device | Xcode required | Unsupported; explicit commands return an actionable error |
-| Android emulator/device | Android SDK required | Android SDK required |
-| Ports, environment, and config | Supported | Supported |
+The builder-facing host-support matrix and subprocess failure policy are maintained in
+[Platform capabilities and subprocess boundaries](../tech/platform-capabilities.md).
 
 ## How it works (current state)
 
@@ -79,7 +76,8 @@ back to a recipe-derived name.
 
 **Type and variant inference.** When the user omits `TYPE`, `_infer_dtype`
 (`src/splashdown/target_commands.py`) resolves it to the single declared target type, or errors with
-the list when there are zero or several. `_resolve_variant_for_cli` (`:1056`) loads the full
+the list when there are zero or several. `_resolve_variant_for_cli` in
+`src/splashdown/target_commands.py` loads the full
 recipe + local + global catalog and picks the variant (`resolve_variant`): an explicit arg,
 else `default`, else the sole declared variant.
 
@@ -93,7 +91,7 @@ the always-available global `device` type into inference instead would make bare
 in *every* mobile repo the moment a user adds one global test phone, break the `splash run d`
 type-prefix invariant in a sim-only project, and break variant completion. The CLI parser additionally reinterprets a lone non-type token as the
 variant (`splash run lowest-supported`) in `cli.py` (validated post-parse by
-`_normalize_device_args` (`src/splashdown/cli.py:328`)).
+`_normalize_device_args` (`src/splashdown/cli.py`)).
 
 **Prefix matching.** When the `prefix_match` setting is on (the default — see
 [per-checkout-overrides](per-checkout-overrides.md#settings)), both `TYPE` and `VARIANT` accept
@@ -115,8 +113,8 @@ one app is declared). `device_run` (`src/splashdown/launching.py`) dispatches to
 directory rather than the workspace root. Launchers:
 flutter (`flutter run -d <id>`), react-native, expo, ios-native (`xcodebuild build` then `xcrun
 simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_native_run`,
-`src/splashdown/runners.py:265`), and android-native (`./gradlew :module:installVariant` then
-`adb shell am start` — `_android_native_run`, `src/splashdown/runners.py:364`).
+`src/splashdown/runners.py`), and android-native (`./gradlew :module:installVariant` then
+`adb shell am start` — `_android_native_run`, `src/splashdown/runners.py`).
 Missing fixed launchers and non-executable SDK tools become actionable errors without a traceback;
 a launcher that starts and exits nonzero keeps its normal exit status.
 
@@ -126,9 +124,9 @@ a launcher that starts and exits nonzero keeps its normal exit status.
 2. *Eager*, fleet-wide: `splash target refresh` → `cmd_target_refresh`
    walks every registry device row, first loading every relevant live checkout's
    recipe/local/global catalog. Any malformed config aborts the entire sweep before mutation.
-   It then recreates each that is stale
-   or missing-but-declared (including pinned variants whose sim was hand-deleted), leaves fresh ones
-   alone, and drops rows for defunct checkouts or undeclared variants. Every registered instance is
+   It then recreates each registered target that is stale or whose underlying sim/AVD was deleted,
+   leaves fresh ones alone, and drops rows for defunct checkouts or undeclared variants. A declared
+   target with no registry row is provisioned by `splash run`, not by refresh. Every registered instance is
    shut down before deletion, whether teardown comes from reconcile, refresh, GC, or explicit
    removal. Like
    reconcile, it leaves recreated sims **Shutdown**. The recreate decision is taken *before* the
@@ -156,7 +154,8 @@ instance is recreated at its declared version, while GC treats it like any other
 
 **Physical devices are discovered, not owned.** A `device` target resolves to a *connected* phone
 (`ensure_physical`, `src/splashdown/devices.py`; `_physical_match` filters by
-`platform`/`id`/`name`). `cmd_run` skips booting for `info["physical"]` and goes straight to the
+`platform`/`id`/`name`). `cmd_run` uses the typed destination's ownership flag to skip booting
+physical hardware and goes straight to the
 launcher (`src/splashdown/target_commands.py`). Physical devices are never written to the registry;
 `status`/`target` show `connected` / `absent` / `ambiguous` (`physical_status:644`).
 
@@ -189,10 +188,10 @@ Adding a variant that already exists in the recipe is an error.
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/target_commands.py` (`cmd_target_prune`) |
 | `target add` / `remove` (local variants) | Catalog edits in `src/splashdown/targets.py`; orchestration in `src/splashdown/target_commands.py` |
 | Framework launcher selection | `src/splashdown/launching.py` (`detect_framework`, `device_run`) |
-| iOS-native / Android-native launch | `src/splashdown/runners.py:265` / `:364` |
+| iOS-native / Android-native launch | `src/splashdown/runners.py` |
 | Physical-device discovery | Cross-platform policy in `src/splashdown/devices.py`; platform probes in `device_ios.py` and `device_android.py` |
-| CLI parsers: run/start/stop/destroy loop | `src/splashdown/cli.py:220` (note: `--yes` only on `destroy`, `:237`) |
-| CLI parsers: `target refresh`/`prune`/`add`/`remove` | `src/splashdown/cli.py:243` / `:254` / `:267` / `:293` |
+| CLI parsers: run/start/stop/destroy loop | `src/splashdown/cli.py` (`--yes` exists only on `destroy`) |
+| CLI parsers: `target refresh`/`prune`/`add`/`remove` | `src/splashdown/cli.py` |
 
 ## Configuration
 
@@ -283,10 +282,10 @@ CLI surface:
 splash run [type] [variant]            # reconcile + boot + build + launch
 splash start | stop | destroy [...]    # destroy prompts [y/N]; --yes skips
 splash target                          # list declared variants + live state
-splash target refresh [ios|android]    # eager auto-upgrade of stale 'latest' sims (no boot)
-splash target prune [ios|android] [--dry-run] [--yes]   # remove non-managed sims/AVDs
-splash target add <type> <variant> [--model --ios --device --image --name --id --platform]
-splash target remove <type> <variant> [--keep-instance]
+splash target refresh [ios|android|all]    # reconcile stale registered sims/AVDs (no boot)
+splash target prune [ios|android|all] [--dry-run] [--yes]   # remove non-managed sims/AVDs
+splash target add <type> <variant> [--model --ios --device --image --name --id --platform] [--global]
+splash target remove <type> <variant> [--keep-instance] [--global]
 ```
 
 ## Gotchas
@@ -300,15 +299,15 @@ splash target remove <type> <variant> [--keep-instance]
   skipped by auto-upgrade when its declared version is still present. Forgetting to pin a
   backward-compat variant means it silently rides the latest OS.
 - **`destroy` now prompts.** Interactive `[y/N]` via `_confirm` (`target_commands.py`); scripts/agents must pass
-  `--yes`. `--yes` exists *only* on `destroy` among the four verbs (`src/splashdown/cli.py:237`) and
-  on `target prune` (`:262`) — not on `stop`/`start`/`run`.
+  `--yes`. `--yes` exists *only* on `destroy` among the four verbs (`src/splashdown/cli.py`) and
+  on `target prune` — not on `stop`/`start`/`run`.
 - **`prune` is machine-wide and aggressive.** It destroys every sim/AVD *not* in splashdown's
   registry — including hand-made sims you care about. Use `--dry-run` first; the kill list is
   printed before the prompt.
 - **`target refresh`/`prune` are not `gc`.** `gc` (`cmd_gc`, `target_commands.py`) drops dead-checkout
   instances and rows plus live orphan rows; it does **not** recreate an orphan whose checkout still
   exists — `target refresh` does. The `status --check` footer routes each issue to the right command
-  (`_print_check_summary`, `commands.py:452`).
+  (`_print_check_summary`, `commands.py`).
 - **Unavailable is not broken state.** Status and target catalog views render an unsupported or
   missing platform as `unavailable`, warn once per capability, and do not increment missing,
   stale, or orphan counters. Fleet GC preserves skipped device rows while still removing portable
@@ -342,10 +341,10 @@ splash target remove <type> <variant> [--keep-instance]
   is ever written to the registry.
 - **ios-native needs a scheme.** Scanner-driven init normally writes it, but a hand-authored
   recipe without `[project.ios] scheme` still errors at run time (`_ios_native_run` in
-  `src/splashdown/runners.py:265`). For `react-native` the scheme is optional but
+  `src/splashdown/runners.py`). For `react-native` the scheme is optional but
   forwards to `run-ios --scheme` when set; Android resolves `application_id` from Gradle if unset, but
   that costs a Gradle round-trip — set it explicitly to skip it.
-- **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/runners.py:155`)
+- **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/runners.py`)
   passes only `--device`. `expo run:ios --scheme` names a *URL* scheme, not an Xcode scheme, so
   `[project.ios] scheme` has no correct mapping here — don't "fix" the asymmetry with react-native by
   forwarding it. Use `[project] run` (the custom-run escape hatch) for an Expo app that needs extra
