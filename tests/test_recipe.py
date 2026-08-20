@@ -121,6 +121,8 @@ def test_registry_rejects_control_chars_in_device_field(registry):
 
 
 def test_ios_boot_raises_deviceerror_on_boot_failure(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     def fake_run(cmd, *a, **k):
         if "boot" in cmd:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boot failed: no space")
@@ -132,6 +134,8 @@ def test_ios_boot_raises_deviceerror_on_boot_failure(monkeypatch):
 
 
 def test_ios_boot_tolerates_already_booted_race(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     def fake_run(cmd, *a, **k):
         if "boot" in cmd:
             return subprocess.CompletedProcess(

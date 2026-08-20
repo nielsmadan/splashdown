@@ -251,6 +251,8 @@ def test_device_add_physical_writes_id_and_platform(tmp_path):
 
 
 def test_ios_native_run_physical_uses_devicectl(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     # Build a fake .app with an Info.plist so the run path reaches install/launch.
     app = tmp_path / "Demo.app"
     app.mkdir()

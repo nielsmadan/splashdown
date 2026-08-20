@@ -205,6 +205,8 @@ def test_physical_status_states(monkeypatch):
 
 
 def test_ios_physical_devices_parses_devicectl(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     payload = json.dumps(
         {
             "result": {
@@ -918,6 +920,8 @@ def test_resolve_device_name_rejects_leading_dash(tmp_path):
     ],
 )
 def test_device_destroy_reports_command_failure(monkeypatch, destroy, destroy_args, message):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
     monkeypatch.setattr(
         sd.devices.subprocess,
@@ -972,6 +976,8 @@ def test_android_home_missing_is_capability_error(tmp_path, monkeypatch):
 
 
 def test_ios_tool_permission_error_is_capability_error(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     monkeypatch.setattr(
         sd.devices.subprocess,
         "run",
@@ -2189,6 +2195,8 @@ def test_ios_runtime_models_excludes_non_iphone_types(monkeypatch):
 
 
 def test_ios_create_failure_explains_incompatible_model(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     _fake_runtimes(monkeypatch)
     monkeypatch.setattr(sd.device_ios, "_ios_find_device_by_name", lambda name: None)
     monkeypatch.setattr(

@@ -238,6 +238,8 @@ def test_expo_profile_emits_metro_port(tmp_path):
 
 
 def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
     app = tmp_path / "Demo.app"
     app.mkdir()
     import plistlib
