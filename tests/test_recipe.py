@@ -5,10 +5,15 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
 import splashdown as sd
+
+
+def test_example_recipe_is_valid():
+    sd.Recipe.load(Path(__file__).parent.parent / "examples" / "splashdown.toml")
 
 
 def test_template_basic_vars(tmp_path):
