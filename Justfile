@@ -16,6 +16,11 @@ test:
 test-verbose:
     @uv run pytest tests/ -v
 
+# Networked compatibility canary: latest Vite + real init + worktree hook + two servers.
+# Not part of `check`; use SPLASH_SMOKE_KEEP=1 to retain its temporary workspace and logs.
+smoke-first-use:
+    @bash tests/smoke/first-use-vite.sh
+
 # Run tests with a coverage report (terminal + HTML in htmlcov/).
 cov:
     @uv run pytest --cov --cov-report=term-missing --cov-report=html -q

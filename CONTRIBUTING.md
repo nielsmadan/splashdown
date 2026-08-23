@@ -15,6 +15,32 @@ just check                 # ruff + import cycles + format-check + mypy + tests
 
 `just check` is exactly what CI runs. Keep it green before opening a pull request.
 
+## Real first-use canary
+
+`just check` is deterministic and does not contact a Node registry. The separate first-use
+canary installs the current Splashdown source, scaffolds `create-vite@latest`, runs plain
+`splash init`, creates a worktree through the managed post-checkout hook, and starts both Vite
+applications on their allocated ports:
+
+```sh
+just smoke-first-use
+```
+
+It requires Git, uv, Node, npm, curl, and network access, and can take several minutes. Its Node
+commands use a disposable home and npm cache with a minimal environment, so they do not inherit
+your npm credentials. The Python installation still uses indexes and credentials configured for
+uv. This is not an OS-level filesystem sandbox; run it only when you intend to exercise the
+current public Python and npm packages. Run it before a release and after changing init, scanning,
+provisioning, loaders, hooks, or Vite support. It is intentionally not a required pull-request
+check because `create-vite@latest` and the package registries are external moving parts.
+
+Failed runs print the relevant log tail. Preserve the complete temporary repository and logs for
+inspection with:
+
+```sh
+SPLASH_SMOKE_KEEP=1 just smoke-first-use
+```
+
 ## Making changes
 
 - **Tests**: new behavior gets a test in the matching `tests/test_<module>.py`. Run `just test`
