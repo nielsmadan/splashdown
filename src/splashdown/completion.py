@@ -13,9 +13,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .constants import LOCAL_NAME
-from .recipe import GlobalConfig, LocalConfig, _global_config_path, merged_targets
-from .targets import _load_recipe_or_empty
+from .constants import LOCAL_NAME, TARGET_TYPES
+from .recipe import GlobalConfig, LocalConfig, _global_config_path, load_settings, merged_targets
+from .targets import (
+    _load_recipe_or_empty,
+    _match_target_type_prefix,
+    _target_types_for_variant,
+)
 
 
 def _catalog(
@@ -41,8 +45,23 @@ def variant_completer(prefix: str, parsed_args: argparse.Namespace, **kwargs: ob
     try:
         catalog = _catalog(parsed_args)
         dtype = getattr(parsed_args, "dtype", None)
-        if dtype and dtype in catalog:
-            names = set(catalog[dtype])
+        if dtype:
+            project = [
+                target_type
+                for target_type, variants in _catalog(parsed_args, include_global=False).items()
+                if variants
+            ]
+            resolved_type = dtype if dtype in TARGET_TYPES else None
+            if (
+                resolved_type is None
+                and load_settings(
+                    Path(getattr(parsed_args, "cwd", None) or os.getcwd()).resolve()
+                ).prefix_match
+            ):
+                resolved_type = _match_target_type_prefix(dtype, project)
+            if resolved_type is None:
+                return []
+            names = set(catalog.get(resolved_type, {}))
         else:
             non_empty = [v for v in catalog.values() if v]
             if len(non_empty) == 1:
@@ -58,20 +77,24 @@ def device_arg_completer(
     prefix: str, parsed_args: argparse.Namespace, **kwargs: object
 ) -> list[str]:
     """Slot 1 for run/start/stop/destroy: declared type name(s) plus variant
-    names when exactly one type is declared, so `splash run <TAB>` offers
-    variants in the common inferred-type case."""
+    names that identify exactly one type, so `splash run <TAB>` offers every
+    unambiguous shorthand."""
     try:
         catalog = _catalog(parsed_args)
         declared = [t for t, v in catalog.items() if v]
         cands = set(declared)
-        # Offer variants only when there's effectively one type to run — scoped to
-        # the project's own types (fall back to the merged set only if the project
-        # declares none) so an always-available global device doesn't suppress a
-        # sim-only project's variant completions.
         project = [t for t, v in _catalog(parsed_args, include_global=False).items() if v]
-        effective = project or declared
-        if len(effective) == 1:
-            cands |= set(catalog.get(effective[0], {}))
+        prefix_match = load_settings(
+            Path(getattr(parsed_args, "cwd", None) or os.getcwd()).resolve()
+        ).prefix_match
+        variants = {name for entries in catalog.values() for name in entries}
+        cands |= {
+            name
+            for name in variants
+            if len(_target_types_for_variant(catalog, name)) == 1
+            and name not in TARGET_TYPES
+            and not (prefix_match and _match_target_type_prefix(name, project))
+        }
         return sorted(c for c in cands if c.startswith(prefix))
     except Exception:  # noqa: BLE001 — a completer must never raise on <Tab>
         return []

@@ -171,6 +171,35 @@ def test_ensure_physical_platform_scopes_autopick(monkeypatch):
     assert info["serial"] == "PXL1234"
 
 
+def test_global_android_variant_scopes_react_native_launch(tmp_path, registry, monkeypatch):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[project]\nframework = "react-native"\n[targets.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.pixel]\nplatform = "android"\nname = "Pixel_9a"\n')
+    selected = {"id": "192.0.2.10:42137", "name": "Pixel_9a", "platform": "android"}
+    _stub_physical(monkeypatch, android=[selected, _PIXEL])
+    calls: list[tuple[list[str], dict]] = []
+
+    def call(args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(sd.runners.subprocess, "call", call)
+
+    assert sd.cmd_run(tmp_path, registry, None, "pixel") == 0
+    args, kwargs = calls[0]
+    assert args == [
+        "npx",
+        "react-native",
+        "run-android",
+        "--deviceId",
+        "192.0.2.10:42137",
+    ]
+    assert kwargs["env"]["ANDROID_SERIAL"] == "192.0.2.10:42137"
+
+
 def test_ensure_physical_errors_when_none(monkeypatch):
     _stub_physical(monkeypatch)
     with pytest.raises(sd.DeviceError, match="no connected physical device"):

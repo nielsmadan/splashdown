@@ -74,24 +74,31 @@ no-ops with an explanatory message because splashdown owns no hardware. Managed 
 persisted simulator UDID or AVD name; if no registry row exists it reports a no-op and never falls
 back to a recipe-derived name.
 
-**Type and variant inference.** When the user omits `TYPE`, `_infer_dtype`
-(`src/splashdown/target_commands.py`) resolves it to the single declared target type, or errors with
-the list when there are zero or several. `_resolve_variant_for_cli` in
+**Type and variant inference.** When the user omits `TYPE` but supplies an exact variant name,
+`_infer_dtype` (`src/splashdown/target_commands.py`) first finds that name in the merged recipe +
+local + global catalog. One matching type is selected; multiple matching types require the user to
+name the type. When no exact variant selects a type, `_infer_dtype` resolves the single
+project-declared target type, falling back to the global-inclusive catalog only when the project
+declares none, or errors with the list when there are zero or several. `_resolve_variant_for_cli` in
 `src/splashdown/target_commands.py` loads the full
 recipe + local + global catalog and picks the variant (`resolve_variant`): an explicit arg,
 else `default`, else the sole declared variant.
 
-**Global targets are a *resolution*-scope concept, never an *inference*-scope one.** Type inference
-and type-prefix matching call `_declared_target_types(cwd, include_global=False)` — the project's own
+**Global targets do not affect implicit type inference.** Bare-command type inference and
+type-prefix matching call `_declared_target_types(cwd, include_global=False)` — the project's own
 recipe + local types only — and fall back to the global-inclusive list only when the project declares
-none (`src/splashdown/target_commands.py`; `src/splashdown/cli.py`). Resolution
+none (`src/splashdown/target_commands.py`; `src/splashdown/cli.py`). Exact explicit variant names are
+the exception described above. Resolution
 (`_resolve_variant_for_cli`, `_gather_targets_declared`) always uses the full merged catalog. Folding
 the always-available global `device` type into inference instead would make bare
 `splash run`/`start`/`stop`/`destroy` fail with `multiple target types declared (device, simulator)`
 in *every* mobile repo the moment a user adds one global test phone, break the `splash run d`
 type-prefix invariant in a sim-only project, and break variant completion. The CLI parser additionally reinterprets a lone non-type token as the
 variant (`splash run lowest-supported`) in `cli.py` (validated post-parse by
-`_normalize_device_args` (`src/splashdown/cli.py`)).
+`_normalize_device_args` (`src/splashdown/cli.py`)). First-slot completion includes only exact
+variant shorthands the parser can execute: it omits cross-type duplicates and names claimed by a
+canonical type or enabled project type prefix. Once a first-slot shorthand supplies the variant,
+second-slot completion offers nothing because an additional token would be invalid.
 
 **Prefix matching.** When the `prefix_match` setting is on (the default — see
 [per-checkout-overrides](per-checkout-overrides.md#settings)), both `TYPE` and `VARIANT` accept

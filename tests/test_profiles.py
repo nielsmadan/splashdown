@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import socket
 import subprocess
+from contextlib import nullcontext
 
 import pytest
 
@@ -65,6 +67,91 @@ def test_rn_run_ios_and_android(tmp_path, monkeypatch):
     assert any("run-android" in c and "--deviceId S1" in c for c in flat)
     # Bare recipe forwards no scheme/mode.
     assert not any("--scheme" in c or "--mode" in c for c in flat)
+
+
+def test_rn_run_scopes_android_tools_to_selected_serial(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("SPLASHDOWN_TEST_SENTINEL", "kept")
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda args, **kwargs: calls.append((args, kwargs)) or 0,
+    )
+
+    sd.runners._rn_run(
+        tmp_path,
+        sd.Recipe({}, tmp_path / "x.toml"),
+        {"kind": "android", "serial": "S1"},
+    )
+
+    _, kwargs = calls[0]
+    assert kwargs["env"]["ANDROID_SERIAL"] == "S1"
+    assert kwargs["env"]["SPLASHDOWN_TEST_SENTINEL"] == "kept"
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        {"kind": "ios", "udid": "U1"},
+        {"kind": "android", "serial": "S1"},
+    ],
+)
+def test_rn_run_warns_only_when_configured_metro_is_not_listening(
+    tmp_path, monkeypatch, capsys, destination
+):
+    monkeypatch.setenv("RCT_METRO_PORT", "8099")
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *args, **kwargs: 0)
+
+    def connect(address, *, timeout):
+        assert address[0] == "localhost"
+        assert timeout == 0.25
+        if address[1] == 8099:
+            raise ConnectionRefusedError
+        return nullcontext()
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+
+    sd.runners._rn_run(
+        tmp_path,
+        sd.Recipe({}, tmp_path / "x.toml"),
+        destination,
+    )
+    monkeypatch.setenv("RCT_METRO_PORT", "8100")
+    sd.runners._rn_run(
+        tmp_path,
+        sd.Recipe({}, tmp_path / "x.toml"),
+        destination,
+    )
+
+    err = capsys.readouterr().err
+    assert err.count("Metro is not listening") == 1
+    assert "Metro is not listening on RCT_METRO_PORT=8099" in err
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        {"kind": "ios", "udid": "U1"},
+        {"kind": "android", "serial": "S1"},
+    ],
+)
+def test_rn_run_does_not_probe_metro_after_failed_launch(tmp_path, monkeypatch, destination):
+    monkeypatch.setenv("RCT_METRO_PORT", "8099")
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(
+        socket,
+        "create_connection",
+        lambda *args, **kwargs: pytest.fail("failed launches must not probe Metro"),
+    )
+
+    assert (
+        sd.runners._rn_run(
+            tmp_path,
+            sd.Recipe({}, tmp_path / "x.toml"),
+            destination,
+        )
+        == 1
+    )
 
 
 def test_rn_run_forwards_scheme_and_mode(tmp_path, monkeypatch):

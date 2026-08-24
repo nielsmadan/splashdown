@@ -13,6 +13,7 @@ import os
 import plistlib
 import re
 import shlex
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -89,6 +90,26 @@ def _rn_android_flags(recipe: Recipe) -> list[str]:
     return []
 
 
+def _warn_if_metro_unavailable() -> None:
+    raw_port = os.environ.get("RCT_METRO_PORT")
+    if raw_port is None:
+        return
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return
+    try:
+        with socket.create_connection(("localhost", port), timeout=0.25):
+            return
+    except OSError:
+        print(
+            f"splashdown: app launched, but Metro is not listening on "
+            f"RCT_METRO_PORT={port}; source changes will not propagate until Metro "
+            "starts and the app reconnects",
+            file=sys.stderr,
+        )
+
+
 def _rn_ios_arch_hint(cwd: Path) -> str | None:
     """Advisory hint when the app's CocoaPods exclude arm64 for the iOS simulator
     (a vendored SDK like Google ML Kit ships no arm64-sim slice). Such an app can
@@ -155,6 +176,8 @@ def _rn_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
             rc = subprocess.call(cmd, cwd=cwd)
         if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
             print(hint, file=sys.stderr)
+        if rc == 0:
+            _warn_if_metro_unavailable()
         return rc
     cmd = [
         "npx",
@@ -164,8 +187,13 @@ def _rn_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
         device_id,
         *_rn_android_flags(recipe),
     ]
+    env = os.environ.copy()
+    env["ANDROID_SERIAL"] = device_id
     with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
-        return subprocess.call(cmd, cwd=cwd)
+        rc = subprocess.call(cmd, cwd=cwd, env=env)
+    if rc == 0:
+        _warn_if_metro_unavailable()
+    return rc
 
 
 def _expo_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:

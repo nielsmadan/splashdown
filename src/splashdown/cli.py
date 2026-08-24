@@ -36,6 +36,7 @@ from .target_commands import (
     cmd_start,
     cmd_stop,
 )
+from .targets import _match_target_type_prefix
 
 
 class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
@@ -254,15 +255,13 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
 
     for verb in ("run", "start", "stop", "destroy"):
         p = sub.add_parser(verb, help=argparse.SUPPRESS)
-        # dtype optional: if there's exactly one declared target type for this
-        # checkout, that's what's used. No argparse `choices` here so a lone
-        # variant token (`splash run small-screen`) is accepted; validated in
-        # _normalize_device_args.
+        # No argparse `choices`: a lone variant token (`splash run small-screen`)
+        # lands here first, then normalization and target resolution infer its type.
         dtype_arg = p.add_argument(
             "dtype",
             metavar="TYPE",
             nargs="?",
-            help="target type (simulator|emulator|device); inferred if one is declared",
+            help="target type (simulator|emulator|device), or an exact variant unique across types",
         )
         dtype_arg.completer = device_arg_completer  # type: ignore[attr-defined]
         variant_arg = p.add_argument(
@@ -352,14 +351,6 @@ def _resolve_cwd(args: object) -> Path:
     return Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
 
 
-def _match_type_prefix(token: str, candidates: list[str]) -> str | None:
-    """Expand an abbreviated type token to a unique match among `candidates`
-    (the types the checkout actually declares). Returns the match, or None when
-    zero or more than one candidate shares the prefix."""
-    matches = [t for t in candidates if t.startswith(token)]
-    return matches[0] if len(matches) == 1 else None
-
-
 def _normalize_device_args(args: argparse.Namespace) -> None:
     """For run/start/stop/destroy: the `dtype` slot no longer uses argparse
     `choices`, so a lone non-type token (`splash run small-screen`) lands in
@@ -379,7 +370,9 @@ def _normalize_device_args(args: argparse.Namespace) -> None:
         and args.dtype not in TARGET_TYPES
         and load_settings(cwd := _resolve_cwd(args)).prefix_match
     ):
-        expanded = _match_type_prefix(args.dtype, _declared_target_types(cwd, include_global=False))
+        expanded = _match_target_type_prefix(
+            args.dtype, _declared_target_types(cwd, include_global=False)
+        )
         if expanded is not None:
             args.dtype = expanded
     if args.dtype is not None and args.dtype not in TARGET_TYPES and args.variant is None:

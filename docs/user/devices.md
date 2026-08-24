@@ -12,7 +12,7 @@ splash stop    [type] [variant]    # shut down the device (preserves it)
 splash destroy [type] [variant]    # delete the device + its registry entry
 ```
 
-Both `type` and `variant` are optional. `type` is inferred when exactly one target type is declared. Otherwise pass `simulator`, `emulator`, or `device`. `variant` defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
+Both `type` and `variant` are optional. `type` is inferred when exactly one project target type is declared. An explicit, exact variant name also infers its type when that name exists under only one type in the merged project, local, and global catalog, so `splash run iphone17` can select a global physical device from a simulator-enabled project. A name shared by multiple types requires an explicit `simulator`, `emulator`, or `device`. Canonical type names and enabled project type prefixes win over same-named variants in the first slot; name the type explicitly to select such a variant. Without an explicit variant, it defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
 ## Platform support
 
@@ -35,6 +35,7 @@ splash run simulator                  # picks `default`
 splash run sim                        # prefix → simulator
 splash run sim low                    # prefix → simulator / lowest-supported
 splash run simulator lowest-supported
+splash run iphone17                   # exact unique variant → its target type
 
 splash target                         # show every declared variant + its live sim state
 splash stop    simulator              # shut down the running sim

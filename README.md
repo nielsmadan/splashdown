@@ -128,6 +128,12 @@ splash target                         # list declared variants + which are boote
 splash stop simulator                 # shut the sim down (keeps it)
 ```
 
+A lone exact variant name also selects its target type when that name is unique across the merged
+project, local, and global catalog, for example `splash run iphone17` for a global physical device.
+If two target types use the same variant name, include the type. Type names and enabled project type
+prefixes take precedence in the first slot, so use the explicit two-token form for a colliding
+variant.
+
 When a new iOS (or Android system image) lands, recreate the `latest` sims in place and clear out the cruft Xcode/`avdmanager` leave behind:
 
 ```sh

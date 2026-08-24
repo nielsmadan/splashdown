@@ -41,6 +41,7 @@ from .registry import Registry
 from .targets import (
     _load_recipe_or_empty,
     _prepare_target_remove,
+    _target_types_for_variant,
     global_target_add,
     global_target_remove,
     target_add,
@@ -321,9 +322,22 @@ def _declared_target_types(cwd: Path, *, include_global: bool = True) -> list[st
     return [dtype for dtype, variants in merged_targets(recipe, local, glob).items() if variants]
 
 
-def _infer_dtype(cwd: Path, dtype: str | None) -> str:
+def _infer_dtype(cwd: Path, dtype: str | None, variant_arg: str | None = None) -> str:
     if dtype:
         return dtype
+    if variant_arg is not None:
+        recipe = _load_recipe_or_empty(cwd)
+        local = LocalConfig.load(cwd / LOCAL_NAME)
+        glob = GlobalConfig.load(_global_config_path())
+        catalog = merged_targets(recipe, local, glob)
+        matches = _target_types_for_variant(catalog, variant_arg)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise DeviceError(
+                f"variant `{variant_arg}` exists under multiple target types "
+                f"({', '.join(sorted(matches))}); specify the type"
+            )
     declared = _declared_target_types(cwd, include_global=False) or _declared_target_types(cwd)
     if len(declared) == 1:
         return declared[0]
@@ -351,7 +365,7 @@ def _resolve_variant_for_cli(
 def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     abspath = str(cwd.resolve())
     with registry.operation_lock(abspath):
-        dtype = _infer_dtype(cwd, dtype)
+        dtype = _infer_dtype(cwd, dtype, variant_arg)
         variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
         validate_device_run(cwd, recipe, kind)
@@ -370,7 +384,7 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
 def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     abspath = str(cwd.resolve())
     with registry.operation_lock(abspath):
-        dtype = _infer_dtype(cwd, dtype)
+        dtype = _infer_dtype(cwd, dtype, variant_arg)
         variant, spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         destination = as_launch_destination(ensure_fresh_sim(registry, cwd, dtype, variant, spec))
         if not destination.owned:
@@ -390,7 +404,7 @@ def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str
 def cmd_stop(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:
     abspath = str(cwd.resolve())
     with registry.operation_lock(abspath):
-        dtype = _infer_dtype(cwd, dtype)
+        dtype = _infer_dtype(cwd, dtype, variant_arg)
         variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         if dtype == "device":
             print(
@@ -415,7 +429,7 @@ def cmd_destroy(
     *,
     yes: bool = False,
 ) -> int:
-    dtype = _infer_dtype(cwd, dtype)
+    dtype = _infer_dtype(cwd, dtype, variant_arg)
     variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
     if dtype == "device":
         print(

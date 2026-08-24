@@ -624,6 +624,37 @@ def test_global_device_does_not_break_inference_in_mobile_project(tmp_path):
     assert sd.target_commands._infer_dtype(tmp_path, None) == "simulator"
 
 
+def test_exact_global_variant_selects_device_type_in_mobile_project(tmp_path):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\n')
+
+    assert sd.target_commands._infer_dtype(tmp_path, None, "iphone17") == "device"
+
+
+def test_exact_variant_shared_by_target_types_requires_explicit_type(tmp_path):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.shared]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.shared]\nplatform = "ios"\n')
+
+    with pytest.raises(sd.DeviceError, match="variant `shared` exists under multiple target types"):
+        sd.target_commands._infer_dtype(tmp_path, None, "shared")
+
+
+@pytest.mark.parametrize("verb", ["start", "stop", "destroy"])
+def test_cli_lifecycle_accepts_unique_global_variant_shorthand(tmp_path, monkeypatch, verb):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\nname = "Niels\'s iPhone"\n')
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+
+    assert sd.main(["--cwd", str(tmp_path), verb, "iphone17"]) == 0
+
+
 def test_global_device_type_prefix_stays_project_scoped(tmp_path):
     # `splash run d` in a sim-only project stays a variant prefix, not the global `device` type
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')

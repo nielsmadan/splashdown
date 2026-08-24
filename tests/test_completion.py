@@ -82,7 +82,7 @@ def test_device_arg_completer_offers_only_type_names_for_multi_type(checkout):
         '[targets.simulator.default]\nmodel = "A"\n[targets.emulator.default]\nimage = "X"\n',
     )
     args = Namespace(cwd=str(checkout), dtype=None)
-    # Two declared types: offer only type names, no variants.
+    # `default` is ambiguous across the two types, so only the type names are offered.
     assert device_arg_completer("", args) == ["emulator", "simulator"]
 
 
@@ -313,3 +313,43 @@ def test_device_arg_completer_offers_project_variants_despite_global_device(chec
     assert "default" in out
     assert "tablet" in out
     assert "device" in out
+
+
+def test_device_arg_completer_offers_unique_global_variant_in_mobile_project(checkout):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\n')
+    args = Namespace(cwd=str(checkout), dtype=None)
+
+    assert "iphone17" in device_arg_completer("", args)
+
+
+def test_device_arg_completer_offers_only_valid_commands_for_cross_type_duplicate(checkout):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.shared]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.shared]\nplatform = "ios"\n')
+    args = Namespace(cwd=str(checkout), dtype=None)
+
+    assert device_arg_completer("", args) == ["device", "simulator"]
+
+
+def test_device_arg_completer_does_not_offer_variant_claimed_by_type_prefix(checkout):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.sim]\nplatform = "ios"\n')
+    args = Namespace(cwd=str(checkout), dtype=None)
+
+    assert device_arg_completer("", args) == ["default", "device", "simulator"]
+
+
+def test_variant_completer_stops_after_unique_first_slot_shorthand(checkout):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
+    p = sd._global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\n')
+    args = Namespace(cwd=str(checkout), dtype="iphone17")
+
+    assert variant_completer("", args) == []

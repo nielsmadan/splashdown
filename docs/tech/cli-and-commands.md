@@ -120,7 +120,7 @@ The four device verbs share one parser shape, built in a loop in `cli.py`:
 
 #### `_normalize_device_args`
 
-`_normalize_device_args` (`cli.py`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_type_prefix` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs.
+`_normalize_device_args` (`cli.py`) cleans up after the choice-less `dtype` slot. First, when `prefix_match` is enabled (the default; resolved via `load_settings(_resolve_cwd(args))`), a non-canonical `dtype` token is expanded by `_match_target_type_prefix` from `targets.py` against the types the checkout *declares* (`_declared_target_types`) — `sim` → `simulator`. Scoping to declared types means a short token never gets claimed by an undeclared type: `splash run d` in a sim-only project does *not* become `device`; it stays a variant prefix. If `dtype` still holds a non-type token and `variant` is empty, it shifts it over: `dtype, variant = None, dtype` (so an abbreviated *variant* falls through to the variant slot, where `resolve_variant` does its own prefix matching). Then it validates — anything still sitting in `dtype` that isn't a real `TARGET_TYPES` member raises `DeviceError`. Type names win over equally-named variants, and a type prefix wins over an identically-prefixed variant (see [Gotchas](#gotchas)). It is called from `main()` only for the four device verbs.
 
 #### Top-level exception handler
 
@@ -261,10 +261,11 @@ renderer prints the message and returns exit 2; no application handler calls `sy
 #### Device lifecycle handlers
 
 `target_commands.py` owns `cmd_run`/`cmd_start`/`cmd_stop`/`cmd_destroy`. They share a prelude:
-`_infer_dtype` resolves an
-omitted TYPE to the single project-declared target type (falling back to global only when the
-project declares none), and `_resolve_variant_for_cli` loads the full recipe/local/global catalog
-and picks the variant. Each calls `devices.py` for target reconciliation and boot, then
+`_infer_dtype` first resolves an exact variant name that occurs under one type in the merged
+recipe/local/global catalog. A cross-type duplicate is an error. Without an exact variant match,
+it resolves an omitted TYPE to the single project-declared target type (falling back to global only
+when the project declares none). `_resolve_variant_for_cli` then loads the full catalog and picks
+the variant. Each calls `devices.py` for target reconciliation and boot, then
 `launching.py` for framework preflight and final app dispatch. The target subcommand machinery
 iterates registry device rows and reconciles them against live sims/AVDs.
 

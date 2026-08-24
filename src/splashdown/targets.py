@@ -21,6 +21,15 @@ def _load_recipe_or_empty(cwd: Path) -> Recipe:
     return Recipe.load(path) if path.exists() else Recipe({}, path)
 
 
+def _match_target_type_prefix(token: str, candidates: list[str]) -> str | None:
+    matches = [dtype for dtype in candidates if dtype.startswith(token)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _target_types_for_variant(catalog: dict[str, dict[str, Any]], variant: str) -> list[str]:
+    return [dtype for dtype, variants in catalog.items() if variant in variants]
+
+
 def target_source(
     dtype: str, variant: str, recipe: Recipe, local: LocalConfig, glob: GlobalConfig
 ) -> str:
