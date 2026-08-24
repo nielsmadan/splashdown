@@ -33,6 +33,8 @@ uv. This is not an OS-level filesystem sandbox; run it only when you intend to e
 current public Python and npm packages. Run it before a release and after changing init, scanning,
 provisioning, loaders, hooks, or Vite support. It is intentionally not a required pull-request
 check because `create-vite@latest` and the package registries are external moving parts.
+Keep the harness Vite-specific until a second real scenario demonstrates which boundaries are
+actually reusable.
 
 Failed runs print the relevant log tail. Preserve the complete temporary repository and logs for
 inspection with:

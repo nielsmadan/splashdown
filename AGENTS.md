@@ -112,6 +112,9 @@ Project docs start at [docs/overview.md](docs/overview.md). Feature behavior liv
 `docs/features/`, implementation details in `docs/tech/`, product material in `docs/product/`, and
 user guides in `docs/user/`.
 
+Cross-cutting rationale lives in [docs/decisions/](docs/decisions/overview.md). Accepted ADRs are
+append-only; supersede them with a new record rather than rewriting their history.
+
 The user and builder audiences stay separate. The public site publishes only `docs/user/` via
 `mkdocs.yml`; some user/builder duplication is intentional, but duplicate builder explanations
 should have one canonical owner and links elsewhere. User prose in `README.md` and `docs/user/`

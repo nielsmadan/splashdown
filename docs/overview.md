@@ -19,13 +19,13 @@ Map of the `docs/` tree. `README.md` (repo root) is the authoritative user-facin
   behavior reference for contributors and agents. Owned by the `doc` skill.
 - [tech/](tech/overview.md): module internals, data flow, cross-cutting patterns (re-export hub,
   import order, hot-path discipline, the TSV registry). Owned by the `doc` skill.
+- [decisions/](decisions/overview.md): append-only records of cross-cutting choices and their
+  tradeoffs. Current behavior remains in `features/` and `tech/`.
 - [product/](product/overview.md): personas, jobs-to-be-done, dated product reviews (the
   why / for-whom layer). Owned by the `review-product` skill.
-- [superpowers/](superpowers/): historical design plans and specs (point-in-time records; not
-  kept in sync with code).
 
 ## Layering
 `product/` (who & why) → `features/` (what it does, tracks code) → `tech/` + source in
 `src/splashdown/` (how). `user/` is the human-facing view of the same behavior, in walkthrough
-form. `doc --update` keeps `features/` and `tech/` in sync with code; `review-product` checks
-`product/` ↔ `features/`.
+form. `decisions/` records why cross-cutting constraints were adopted. `doc --update` keeps
+`features/` and `tech/` in sync with code; `review-product` checks `product/` ↔ `features/`.

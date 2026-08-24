@@ -115,6 +115,13 @@ helper: when automatic output would need mangling, it writes a structure-only re
 user to choose explicit monorepo resources. The mangling helper remains the shared catalog
 mechanism for already-explicit/rescan flows.
 
+`_should_defer_monorepo()` (`scanner.py`) has a second conservative trigger: an immediate sibling
+Xcode or Gradle project that no enumerated app claims. `_unclaimed_native_dirs()` treats native
+directories inside or containing a detected app as claimed, so the ordinary `ios/` and `android/`
+subdirectories of a root React Native, Expo, or Flutter app do not cause deferral. Compose is not a
+trigger. `cmd_init` decides whether to defer before it adds project-level Compose resources, because
+a compose file alongside an otherwise unambiguous app does not make the scanner output unsafe.
+
 `PROFILES` is declared in dependency-free `catalog.py`, filled in precedence order by
 `profiles.py` at import, and read by scanner, recipe validation, launch dispatch, doctor,
 and agent guidance. Those consumers share the catalog without importing one another.
@@ -361,7 +368,8 @@ never runs an approval command.
 ## Why
 
 The detection side is split from the integration side on purpose. `Scanner` is pure,
-side-effect-free inspection so it can be re-run cheaply (init, refresh-inventory, status)
+side-effect-free inspection so it can be re-run cheaply (`splash init`, `splash init --rescan`,
+status)
 and unit-tested without touching disk state. The integration side uses small implementation
 modules behind shared catalogs. `profiles.py` centralizes profile assembly because precedence
 is behavior, while `LOADERS` remains a compact module-local registry. There is no priority
@@ -386,3 +394,5 @@ instructions instead.
   selection, and what gets written.
 - `docs/tech/wiring.md` — the doctor / `WiringCheck` internals that `wiring_checks()`
   feeds (see also `docs/features/framework-wiring.md` for the user-facing wiring behavior).
+- [`0003: Separate inferred frameworks from explicit intent`](../decisions/0003-separate-inferred-frameworks-from-explicit-intent.md)
+  — why Profiles, intent presets, and secondary capabilities remain separate concepts.

@@ -101,9 +101,10 @@ the checkout *declares* (via `_declared_target_types`) — `sim` → `simulator`
 hit wins; 2+ matches error with the candidate list). Scoping the type match to declared types is
 deliberate: a short token like `d` in a simulator-only project is *not* claimed by the undeclared
 `device` type — it stays in the variant slot and resolves e.g. `default`. A type prefix wins over an
-identically-prefixed variant of a declared type. With the setting off, both slots require exact names
-(today's behavior). `load_settings` (`src/splashdown/recipe.py`) resolves the flag from the global
-config + local file.
+identically-prefixed variant of a declared type. A variant whose exact name is also a type remains
+reachable by supplying both slots, for example `splash run simulator simulator`; in the lone-token
+form the type wins. With the setting off, both slots require exact names (today's behavior).
+`load_settings` (`src/splashdown/recipe.py`) resolves the flag from the global config + local file.
 
 **Framework launcher (UC2 build/launch).** `detect_framework` (`src/splashdown/launching.py`)
 picks the launcher from filesystem signals, overridable via `[project] framework`, and falls back

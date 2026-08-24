@@ -20,6 +20,12 @@ example, two apps that both want a resource named `PORT`), writing a structure-o
 monorepo detected (N apps) — resources not auto-configured; see https://splashdown.dev/monorepos/
 ```
 
+It also defers when a workspace contains an unclaimed sibling Xcode or Gradle project that its
+selected workspace manager did not enumerate. Native folders owned by a detected React Native,
+Expo, or Flutter app are already claimed by that app and do not trigger this fallback. A Compose
+file alone does not trigger it either, because a normal app plus infrastructure can still be
+scaffolded correctly.
+
 That message points here. The patterns below are the copy-pasteable recipes to reach for
 when init defers. Hand-author the `[resources.*]` section with distinct env names per app.
 The scanner-produced `[project]` and `[apps.*]` sections are already correct.

@@ -65,7 +65,11 @@ matched `Profile.resources(app)` for the resources it wants. If several apps cla
 canonical resource name, init writes a structure-only recipe and directs the user to configure
 explicit monorepo resources instead of guessing names or ranges. Collision-free projects continue
 through `_build_resource_catalog`, which produces the flat resource table and each app's resource
-list together.
+list together. `_should_defer_monorepo` (`scanner.py`) also chooses the structure-only path when
+the workspace contains an unclaimed sibling Xcode or Gradle project. A detected React Native,
+Expo, or Flutter app claims its own native subdirectories, so they do not cause a false deferral.
+Compose resources are collected only after this decision; a Compose file by itself is not a
+deferral trigger.
 
 **Electron overlay.** Scanner-detected Electron apps can add a stable
 `ELECTRON_PROFILE_ID` through `_add_electron_resources` (`commands.py`). Interactive
@@ -251,6 +255,10 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   but does **not** itself sync; `cli.py` runs `_cmd_provision_inner` afterward. So
   calling `cmd_init` directly (or with `--no-sync`) leaves the checkout scaffolded but
   **without** allocated ports or `splashdown.env`.
+
+- **The local skeleton is create-only.** Init and sync preserve an existing regular
+  `splashdown.local.toml`. A symlink or other non-regular entry is an error, so the automatic
+  post-checkout path cannot follow it or replace its target.
 
 - **`--rescan` is a separate code path that never scaffolds.** It is dispatched before
   `cmd_init` (`cli.py`), requires an existing recipe, and rewrites only `[project]`/

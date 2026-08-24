@@ -300,6 +300,11 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `device_arg_completer` (`completion.py`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
 - Both share `_catalog` (`completion.py`), which mirrors `cli._resolve_cwd` (honour an already-typed `--cwd`, else `$PWD`, then `.resolve()`).
 
+Completion reads declared recipe/local/global variants, not registry instances. `stop` and
+`destroy` can therefore suggest a declared variant that has not been provisioned yet. Slot-one
+variant suggestions use project-declared types first, so an always-available global physical
+device does not hide simulator variants in a simulator-only project.
+
 `install` (`completion.py`) is a no-op — and imports nothing — unless `_ARGCOMPLETE` is in the environment, so the normal CLI and hook paths pay zero cost. Only an active completion triggers the `import argcomplete` + `autocomplete()`. This is why `main()` calls `install` immediately before `parse_args`: `autocomplete()` parses `COMP_LINE` itself and exits the process before `parse_args` ever returns.
 
 ## Key entry points
@@ -334,7 +339,10 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
   argparse's normal behavior. Application handlers raise typed errors and never terminate the
   process themselves.
 - **`KNOWN_CMDS` is a second source of truth.** It is maintained by hand alongside the `add_parser` calls so `_ensure_subcommand` can pre-classify argv. Add a subcommand and you must update both, or bare-`splash` rewriting will misfire on it.
-- **A variant named like a type is unreachable.** Because run/start/stop/destroy drop argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves type-vs-variant by "type names win". A variant literally named `simulator`/`emulator`/`device` can never be selected positionally — the token is always read as the type. Name variants something else.
+- **A variant named like a type needs both positionals.** Because run/start/stop/destroy drop
+  argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves a lone
+  `simulator`/`emulator`/`device` token as the type. Name the type and variant explicitly to select
+  such a variant: `splash run simulator simulator`.
 - **`--yes` exists only on `destroy`** among the four device verbs. `run`/`start`/`stop` are non-destructive and never prompt, so they have no flag.
 
 ## Why
@@ -351,3 +359,7 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - [device-targets.md](../features/device-targets.md) — the device-target model behind `run`/`start`/`stop`/`destroy`/`target`.
 - [platform-capabilities.md](platform-capabilities.md) — subprocess classification and host/tool
   failure semantics.
+- [`0002: Use argcomplete for context-aware completion`](../decisions/0002-use-argcomplete-for-context-aware-completion.md)
+  — why dynamic completion is a runtime dependency with a lazy, fail-silent boundary.
+- [`0004: Organize the CLI around daily verbs and noun groups`](../decisions/0004-organize-the-cli-around-daily-verbs-and-noun-groups.md)
+  — why the command surface and tiered help have their current shape.

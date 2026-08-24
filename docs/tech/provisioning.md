@@ -61,6 +61,11 @@ Entry: `provision()` at `provisioning.py`.
 Operations for different checkouts remain independent, while the narrower per-file locks still
 coordinate their shared machine-wide TSVs.
 
+Local-config creation inside this boundary is create-only. `_create_local_skeleton()`
+(`commands.py`) opens `splashdown.local.toml` with exclusive creation, no-follow where supported,
+mode `0600`, and a regular-file descriptor check. An existing regular file is preserved; a symlink
+or other non-regular entry is rejected instead of being opened or replaced.
+
 This is serialization, not rollback: each registry TSV and output file is atomically replaced on
 its own, but a later writer failure can still leave an earlier registry change committed. Setup
 commands deliberately run after the operation lock is released because arbitrary user-authored
@@ -174,3 +179,5 @@ switches it to `resolved`.
 - [ports-and-env.md](../features/ports-and-env.md) — user-facing model for ports, env vars, and `splashdown.env`.
 - [registry.md](./registry.md) — the machine-wide port/kv/device coordinator that `provision()` allocates against.
 - [recipe-and-templates.md](./recipe-and-templates.md) — `Recipe` parsing, `topo_sort`, the template engine, and scope functions.
+- [`0001: Separate shared, local, and generated state`](../decisions/0001-separate-shared-local-and-generated-state.md)
+  — why recipe intent, local overrides, and generated output have separate owners.

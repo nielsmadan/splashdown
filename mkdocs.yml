@@ -5,8 +5,8 @@ repo_url: https://github.com/nielsmadan/splashdown
 repo_name: nielsmadan/splashdown
 copyright: '<a href="/legal/">Legal notice</a> · <a href="/privacy/">Privacy</a>'
 
-# Publish the USER docs only. Developer/LLM docs (features/, tech/, product/,
-# superpowers/) live outside this dir and are never part of the site build.
+# Publish the USER docs only. Builder docs (features/, tech/, decisions/, product/)
+# live outside this dir and are never part of the site build.
 docs_dir: docs/user
 
 theme:
