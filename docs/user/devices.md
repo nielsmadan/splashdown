@@ -63,6 +63,8 @@ Framework auto-detected for `run`:
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Tunable via `[project.android] module`/`variant`/`application_id`/`launch_activity`.
 - Override via `[project] framework = "..."`
 
+`splash run` stays attached to the framework or custom launcher and leaves its standard streams connected, so interactive controls continue to work. Splashdown does not redact launcher output. Disable third-party SDK logging that prints credentials or tokens before running in shared terminals, recorded sessions, CI logs, or agent transcripts.
+
 ## Custom run command
 
 Set `[project] run` when the built-in launcher isn't what you want: a different package manager (`yarn`/`pnpm` instead of `npx`), a monorepo subdir, `expo start --dev-client`, or any custom wrapper. It **replaces** the framework launcher (and skips framework detection), so it also works on a project splashdown doesn't recognize. splashdown still reconciles and boots the declared `[targets.*]` first. Your command is the launch step, run in a shell at the repo root.
