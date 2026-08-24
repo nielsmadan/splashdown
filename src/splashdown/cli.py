@@ -418,7 +418,14 @@ def _resolve_format(args: object) -> str:
     return getattr(args, "format", None) or "text"
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — one return/branch per subcommand; this is the dispatch table
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _dispatch(argv)
+    except KeyboardInterrupt:
+        return 130
+
+
+def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — one return/branch per subcommand; this is the dispatch table
     if argv is None:
         argv = sys.argv[1:]
     argv = _ensure_subcommand(list(argv))

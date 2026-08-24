@@ -37,6 +37,15 @@ def test_cli_help_shows_tiers(capsys):
     assert "provision" not in out  # old word is gone
 
 
+def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sd.cli, "cmd_status", interrupt)
+
+    assert sd.main(["--cwd", str(tmp_path), "status"]) == 130
+
+
 def test_localconfig_missing_file_is_empty(tmp_path):
     lc = sd.LocalConfig.load(tmp_path / "splashdown.local.toml")
     assert lc.targets == {}
