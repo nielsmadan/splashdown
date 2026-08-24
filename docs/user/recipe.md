@@ -64,7 +64,7 @@ type = "set"
 # default = "local-development-token"   # optional
 ```
 
-Set one with `splash env set API_TOKEN=VALUE`. The command requires the resource to be declared as `type = "set"`; it rejects missing or malformed recipes, undeclared keys, and generated or allocated resource types. Without a default, sync exits 1 until a value is set. Manual values persist across syncs, including `--force`; `splash env release API_TOKEN` clears one.
+Set one with `splash env set API_TOKEN=VALUE`. The command requires the resource to be declared as `type = "set"`; it rejects missing or malformed recipes, undeclared keys, and generated or allocated resource types. Run `splash sync` afterward to materialize the new value in its configured writer destination. Without a default, sync exits 1 until a value is set. Manual values persist across syncs, including `--force`; `splash env release API_TOKEN` clears one.
 
 A common pattern for consumers that need a stable short identifier (e.g. Docker Compose project names have a practical length limit):
 
