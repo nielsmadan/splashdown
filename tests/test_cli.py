@@ -152,6 +152,153 @@ def test_cli_init_named_preset_is_positional(tmp_path, monkeypatch):
     assert "[resources.DATABASE_URL]" in recipe
 
 
+def test_cli_init_rejects_nested_git_directory_before_writes(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    rc = sd.main(["--cwd", str(nested), "init", "minimal", "--no-sync"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert str(root.resolve()) in err
+    assert "--allow-nested" in err
+    assert not (nested / sd.RECIPE_NAME).exists()
+    assert not (nested / sd.LOCAL_NAME).exists()
+    assert not (nested / ".gitignore").exists()
+    assert not (state / "splashdown").exists()
+
+
+def test_cli_init_allows_explicit_nested_project(tmp_path):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+
+    rc = sd.main(["--cwd", str(nested), "init", "minimal", "--allow-nested", "--no-sync"])
+
+    assert rc == 0
+    assert "[resources.RUN_ID]" in (nested / sd.RECIPE_NAME).read_text()
+
+
+def test_cli_init_nested_project_skips_root_checkout_hook(tmp_path, capsys):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+
+    rc = sd.main(["--cwd", str(nested), "init", "minimal", "--allow-nested", "--no-sync"])
+
+    assert rc == 0
+    assert not (root / ".git" / "hooks" / "post-checkout").exists()
+    err = capsys.readouterr().err
+    assert "post-checkout hook not installed for nested project" in err
+    assert f"splash --cwd {nested.resolve()} sync" in err
+
+
+def test_cli_nested_existing_project_rescans_without_override(tmp_path):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    sd.cmd_init(nested, preset="minimal", options=sd.InitOptions(allow_nested=True))
+
+    rc = sd.main(["--cwd", str(nested), "init", "--rescan"])
+
+    assert rc == 0
+    assert "[apps.main]" in (nested / sd.RECIPE_NAME).read_text()
+
+
+def test_cli_nested_existing_project_overwrites_without_nested_override(tmp_path):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    sd.cmd_init(nested, preset="minimal", options=sd.InitOptions(allow_nested=True))
+
+    rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
+
+    assert rc == 0
+    assert "[resources.PORT]" in (nested / sd.RECIPE_NAME).read_text()
+
+
+def test_cli_init_rejects_symlinked_nested_recipe_before_overwrite(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    outside = tmp_path / "outside.toml"
+    original = '[project]\nloader = "none"\n'
+    outside.write_text(original)
+    (nested / sd.RECIPE_NAME).symlink_to(outside)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
+
+    assert rc == 2
+    assert "not a regular file" in capsys.readouterr().err
+    assert outside.read_text() == original
+    assert not (state / "splashdown").exists()
+
+
+def test_cli_init_rescan_rejects_symlinked_recipe(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    outside = tmp_path / "outside.toml"
+    original = '[project]\nworkspace = "single"\nloader = "none"\n'
+    outside.write_text(original)
+    (nested / sd.RECIPE_NAME).symlink_to(outside)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    rc = sd.main(["--cwd", str(nested), "init", "--rescan"])
+
+    assert rc == 2
+    assert "not a regular file" in capsys.readouterr().err
+    assert outside.read_text() == original
+    assert not (state / "splashdown").exists()
+
+
+def test_cli_init_overwrite_replaces_recipe_hardlink_without_mutating_target(tmp_path):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    outside = tmp_path / "outside.toml"
+    original = '[project]\nloader = "none"\n'
+    outside.write_text(original)
+    os.link(outside, nested / sd.RECIPE_NAME)
+
+    rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
+
+    assert rc == 0
+    assert outside.read_text() == original
+    assert "[resources.PORT]" in (nested / sd.RECIPE_NAME).read_text()
+
+
+def test_cli_init_rescan_replaces_recipe_hardlink_without_mutating_target(tmp_path):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    outside = tmp_path / "outside.toml"
+    original = '[project]\nworkspace = "single"\nloader = "none"\n'
+    outside.write_text(original)
+    os.link(outside, nested / sd.RECIPE_NAME)
+
+    rc = sd.main(["--cwd", str(nested), "init", "--rescan"])
+
+    assert rc == 0
+    assert outside.read_text() == original
+    assert "[apps.main]" in (nested / sd.RECIPE_NAME).read_text()
+
+
 @pytest.mark.parametrize(
     "preset", ["rn", "react-native", "flutter", "ios-native", "android-native", "nextjs"]
 )
@@ -503,7 +650,12 @@ def test_init_adds_mise_file_directive_existing_env_table(tmp_path):
 
 def test_init_mise_directive_idempotent(tmp_path):
     sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
-    sd.cmd_init(tmp_path, preset="minimal", force=True, loader_override="mise")
+    sd.cmd_init(
+        tmp_path,
+        preset="minimal",
+        options=sd.InitOptions(overwrite=True),
+        loader_override="mise",
+    )
     mise = (tmp_path / "mise.toml").read_text()
     assert mise.count('_.file = "splashdown.env"') == 1
 
@@ -520,7 +672,12 @@ def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, exist
     # Adding `_.file` must not crash or produce a double-declared/unparseable
     # `[env]._` when the table already exists.
     (tmp_path / "mise.toml").write_text(existing)
-    sd.cmd_init(tmp_path, preset="minimal", force=True, loader_override="mise")
+    sd.cmd_init(
+        tmp_path,
+        preset="minimal",
+        options=sd.InitOptions(overwrite=True),
+        loader_override="mise",
+    )
     text = (tmp_path / "mise.toml").read_text()
     data = tomllib.loads(text)  # must stay valid TOML
     assert data["env"]["_"]["file"] == "splashdown.env"

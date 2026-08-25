@@ -12,7 +12,7 @@ splash [--cwd PATH] [--format text|json] [--show-values] …
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
-splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite]
+splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite] [--allow-nested]
                     [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
 splash trust                        # authorize automatic handling for this clone
@@ -51,6 +51,12 @@ Routine status, env-list, and sync JSON output hides resolved values; add the ro
 `--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
 single-value read. `splash sync --force` reallocates ports. `splash init` scans the project,
 scaffolds the project files, and runs the first sync (`--no-sync` scaffolds only).
+First-time init must target the Git worktree root; `--allow-nested` explicitly creates an
+independent Splashdown project below it. That location override does not replace `--overwrite`,
+which remains the separate opt-in for replacing an existing recipe. Non-Git projects and existing
+regular nested recipes keep their current behavior. Recipe symlinks are rejected rather than
+followed. Nested init skips automatic post-checkout hook wiring and prints the explicit
+`splash --cwd PATH sync` command to run after checkout.
 
 Named presets are limited to choices that project scanning cannot infer:
 

@@ -61,7 +61,7 @@ eval "$(splash completion bash)"
 
 ## Quick start
 
-In any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, wires your loader and the post-checkout hook, then allocates ports for this checkout. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports. Most popular frameworks are auto-detected, nothing to declare:
+At the Git worktree root of any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, wires your loader and the post-checkout hook, then allocates ports for this checkout. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports. Most popular frameworks are auto-detected, nothing to declare:
 
 ```sh
 splash init
@@ -78,6 +78,12 @@ splash init
 ```
 
 (Pass `--no-sync` to scaffold the files without reserving ports.)
+
+First-time init below a Git worktree root stops before writing anything. Run it from the root, use
+top-level `--cwd PATH` to target the root explicitly, or pass `--allow-nested` when the nested
+directory is intentionally an independent Splashdown project. Nested init does not install the
+worktree-root post-checkout hook because Git runs that hook from the root. It prints the explicit
+`splash --cwd PATH sync` command to run after checkout instead.
 
 Splashdown validates the complete recipe before reserving anything or changing generated
 files. Unknown sections or fields, invalid resource writers, bad template references, and

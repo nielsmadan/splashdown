@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .cli_output import render_application_error, render_untyped_error
 from .commands import (
+    InitOptions,
     _cmd_provision,
     _cmd_provision_inner,
     _env_dispatch,
@@ -182,6 +183,11 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser
         help="override loader auto-detection (none = write a dotenv file, wire nothing)",
     )
     p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
+    p.add_argument(
+        "--allow-nested",
+        action="store_true",
+        help="initialize below the Git worktree root",
+    )
     p.add_argument(
         "--rescan",
         action="store_true",
@@ -454,8 +460,6 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
             parser.error("hook requires an event")
         return cmd_post_checkout_hook(cwd, None, args.old, args.new, args.flag)
 
-    registry = Registry()
-
     try:
         if args.cmd in ("run", "start", "stop", "destroy"):
             _normalize_device_args(args)
@@ -465,14 +469,19 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
             cmd_init(
                 cwd,
                 preset=args.preset,
-                force=args.overwrite,
+                options=InitOptions(
+                    overwrite=args.overwrite,
+                    allow_nested=args.allow_nested,
+                ),
                 loader_override=args.loader,
                 electron_profile=args.electron_profile,
                 ios_scheme=args.ios_scheme,
             )
             if args.no_sync:
                 return 0
-            return _cmd_provision_inner(cwd, registry, show_values=args.show_values)
+            return _cmd_provision_inner(cwd, Registry(), show_values=args.show_values)
+
+        registry = Registry()
 
         if args.cmd == "deinit":
             return cmd_deinit(cwd, registry)

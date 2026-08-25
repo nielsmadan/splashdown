@@ -27,7 +27,7 @@ wiring checks (the same engine as `splash doctor --fix`), and finishes with the 
 `splashdown.env`). The promise: a checkout has working, collision-free resources in one
 command — a bad first run means abandonment.
 
-Seven options reshape that flow:
+Eight options reshape that flow:
 
 - `splash init <preset>` — write a named intent scaffold from `SCAFFOLDS`,
   bypassing the scanner entirely.
@@ -36,6 +36,8 @@ Seven options reshape that flow:
 - `splash init --no-sync` — scaffold and wire only; skip the first sync (no port allocation,
   no `splashdown.env`).
 - `splash init --overwrite` — replace an existing recipe (init refuses otherwise).
+- `splash init --allow-nested` — explicitly create a Splashdown project below the Git worktree
+  root; first-time init refuses that location otherwise.
 - `splash init --rescan` — re-detect `[project]`/`[apps.*]` against the current filesystem
   in an existing recipe **without** scaffolding or touching `[resources.*]`.
 - `splash init --electron-profile=isolated|shared` — make the scanner-driven Electron
@@ -45,9 +47,19 @@ Seven options reshape that flow:
 
 ## How it works (current state)
 
-**Refusal guard.** `cmd_init` refuses to clobber an existing `splashdown.toml` unless
-`--overwrite` is passed. It raises `UsageError` before any scan or write; the CLI renders that
-typed failure as exit 2, while direct callers receive the exception.
+**Refusal guards.** Before scanning or writing, `cmd_init` refuses first-time initialization below
+the current Git worktree root unless `--allow-nested` is passed. The guard is creation-only: an
+existing regular nested recipe proves intent, so `--rescan` remains usable and `--overwrite` is the
+only flag required to replace it. Symlinked and other non-regular recipe entries are rejected rather
+than followed. Non-Git projects remain supported. Separately, init refuses to
+clobber an existing `splashdown.toml` unless `--overwrite` is passed. Both failures raise
+`UsageError`; the CLI renders them as exit 2, while direct callers receive the exception. Init is
+dispatched before `Registry` construction so either refusal leaves machine state untouched.
+
+**Nested hook behavior.** Git invokes its post-checkout hook from the worktree root, where a nested
+recipe is not visible. An explicitly allowed nested init therefore skips automatic hook wiring and
+prints the nested `splash --cwd PATH sync` command to run after checkout. It never installs a hook
+that would silently sync the wrong project.
 
 **Scan.** The default (no preset) path runs `Scanner().scan(cwd)` (`scanner.py`), which:
 detects the workspace manager (pnpm/yarn/npm/cargo/gradle/`single`) via `_detect_workspace`
@@ -217,6 +229,9 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - **`--loader mise|direnv|devbox|none`** — override loader auto-detection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
+- **`--allow-nested`** — acknowledge that a new recipe below the Git worktree root is an
+  intentional independent project. It does not imply `--overwrite` or install an automatic
+  post-checkout hook.
 - **`--no-sync`** — scaffold + wire only; skip port allocation and `splashdown.env`. The opt-out
   for CI / scaffold-only runs: generate the committable files without touching the machine registry.
 - **`--rescan`** — re-detect `[project]`/`[apps.*]` in an existing recipe; preserves

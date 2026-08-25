@@ -5,8 +5,10 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -255,7 +257,9 @@ def _apply_no_loader_fallback(
     return msg
 
 
-def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
+def _write_minimal_monorepo_recipe(
+    cwd: Path, inv: ProjectInventory, *, wire_checkout_hook: bool
+) -> None:
     """Defer path: write a structural-only recipe ([project] + [apps.*], no
     resources/targets) plus loader/hook wiring, and tell the user where to look.
     Used when init detects an ambiguous monorepo it should not auto-configure."""
@@ -264,7 +268,7 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     recipe_path = cwd / RECIPE_NAME
     rendered = render_scanned_recipe(inv, {}, {}, cwd)
     Recipe.parse(rendered, recipe_path)
-    recipe_path.write_text(rendered)
+    _write_init_recipe(recipe_path, rendered)
     print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
     print(
         f"monorepo detected ({len(inv.apps)} apps) — resources not auto-configured; "
@@ -277,7 +281,7 @@ def _write_minimal_monorepo_recipe(cwd: Path, inv: ProjectInventory) -> None:
     loader = LOADERS[inv.loader]
     if loader.wire(cwd):
         loader.approve(cwd, announce=True)
-    _ensure_post_checkout_hook(cwd)
+    _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
     _trust_generated_sync(cwd)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
@@ -398,10 +402,75 @@ def _trust_generated_sync(cwd: Path) -> None:
         record_trust(git_dirs(cwd), bootstrap=False)
 
 
+def _git_worktree_root(cwd: Path) -> Path | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    root = result.stdout.strip()
+    if result.returncode != 0 or not root:
+        return None
+    return Path(root).resolve()
+
+
+def _wire_init_checkout_hook(cwd: Path, *, enabled: bool) -> None:
+    if enabled:
+        _ensure_post_checkout_hook(cwd)
+        return
+    print(
+        "note: post-checkout hook not installed for nested project; "
+        f"run `splash --cwd {cwd.resolve()} sync` after checkout",
+        file=sys.stderr,
+    )
+
+
+@dataclass(frozen=True)
+class InitOptions:
+    overwrite: bool = False
+    allow_nested: bool = False
+
+
+def _init_recipe_mode(path: Path) -> int | None:
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise UsageError(f"could not inspect `{path}`: {error}") from error
+    if not stat.S_ISREG(entry.st_mode):
+        raise UsageError(f"refusing to use `{path}`: destination is not a regular file")
+    return stat.S_IMODE(entry.st_mode)
+
+
+def _init_recipe_exists(path: Path) -> bool:
+    return _init_recipe_mode(path) is not None
+
+
+def _write_init_recipe(path: Path, text: str) -> None:
+    mode = _init_recipe_mode(path)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+            os.fchmod(file.fileno(), mode if mode is not None else 0o644)
+            file.write(text)
+        os.replace(temp_path, path)
+    except OSError as error:
+        raise ValueError(f"could not safely write `{path}`: {error}") from error
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional integration
     cwd: Path,
     preset: str | None = None,
-    force: bool = False,
+    options: InitOptions | None = None,
     loader_override: str | None = None,
     electron_profile: str | None = None,
     ios_scheme: str | None = None,
@@ -409,8 +478,17 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
     """Scaffold splashdown.toml from a project scan (default) or from a named
     intent preset (`splash init <preset>`)."""
 
+    options = options or InitOptions()
     recipe_path = cwd / RECIPE_NAME
-    if recipe_path.exists() and not force:
+    recipe_exists = _init_recipe_exists(recipe_path)
+    worktree_root = _git_worktree_root(cwd)
+    nested = worktree_root is not None and worktree_root != cwd.resolve()
+    if not recipe_exists and nested and not options.allow_nested:
+        raise UsageError(
+            f"refusing to initialize {cwd.resolve()} below Git worktree root "
+            f"{worktree_root}; run `splash init` there or pass --allow-nested"
+        )
+    if recipe_exists and not options.overwrite:
         raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
     if preset is not None:
@@ -418,7 +496,12 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
             raise ValueError("--electron-profile is only valid with scanner-driven `splash init`")
         if ios_scheme is not None:
             raise ValueError("--ios-scheme is only valid with scanner-driven `splash init`")
-        return _cmd_init_preset(cwd, preset, loader_override=loader_override)
+        return _cmd_init_preset(
+            cwd,
+            preset,
+            loader_override=loader_override,
+            wire_checkout_hook=not nested,
+        )
 
     # Scanner-driven path.
     inv = Scanner().scan(cwd)
@@ -442,7 +525,7 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
             continue
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
     if _should_defer_monorepo(cwd, res_by_app, inv.apps):
-        _write_minimal_monorepo_recipe(cwd, inv)
+        _write_minimal_monorepo_recipe(cwd, inv, wire_checkout_hook=not nested)
         return
     electron_isolated = _add_electron_resources(cwd, inv, res_by_app, electron_profile)
     merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
@@ -471,7 +554,7 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
         project_metadata,
     )
     Recipe.parse(rendered, recipe_path)
-    recipe_path.write_text(rendered)
+    _write_init_recipe(recipe_path, rendered)
     print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
     if _create_local_skeleton(cwd):
@@ -483,7 +566,7 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
         loader.approve(cwd, announce=True)
     if no_loader_msg:
         print(f"  {no_loader_msg}", file=sys.stderr)
-    _ensure_post_checkout_hook(cwd)
+    _wire_init_checkout_hook(cwd, enabled=not nested)
     _trust_generated_sync(cwd)
     if electron_isolated:
         resource_names = [
@@ -517,7 +600,13 @@ def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
                     print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
 
 
-def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = None) -> None:
+def _cmd_init_preset(
+    cwd: Path,
+    preset: str,
+    *,
+    loader_override: str | None = None,
+    wire_checkout_hook: bool = True,
+) -> None:
     """`splash init NAME` path: write the intent preset, then wire the
     detected (or overridden) shell-env loader and the post-checkout hook."""
     from .scaffolds import SCAFFOLDS  # noqa: PLC0415
@@ -530,7 +619,7 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
     recipe_path = cwd / RECIPE_NAME
     rendered = scaffold.replace("__SPLASH_LOADER__", loader_name)
     Recipe.parse(rendered, recipe_path)
-    recipe_path.write_text(rendered)
+    _write_init_recipe(recipe_path, rendered)
     print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
 
     if _create_local_skeleton(cwd):
@@ -544,7 +633,7 @@ def _cmd_init_preset(cwd: Path, preset: str, *, loader_override: str | None = No
         # Preset scaffolds are written verbatim, so we can't re-route resources to
         # a dotenv file here — but we must not leave the user with a silent no-op.
         print(f"  {_NO_LOADER_INSTRUCTIONS}", file=sys.stderr)
-    _ensure_post_checkout_hook(cwd)
+    _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
     _trust_generated_sync(cwd)
     if preset == "electron":
         _print_electron_integration([_ELECTRON_PROFILE_RESOURCE])
@@ -646,7 +735,7 @@ def cmd_refresh_inventory(cwd: Path) -> int:
     [resources.*] sections verbatim. Used both for picking up new apps and for
     upgrading legacy recipes to the new shape."""
     recipe_path = cwd / RECIPE_NAME
-    if not recipe_path.exists():
+    if not _init_recipe_exists(recipe_path):
         print(f"no {RECIPE_NAME} in {cwd}; run `splash init` instead", file=sys.stderr)
         return 1
     existing = Recipe.load(recipe_path)
@@ -670,7 +759,7 @@ def cmd_refresh_inventory(cwd: Path) -> int:
 
     rebuilt = refresh_recipe(recipe_path.read_text(), inv, profile_emitted, app_resource_names, cwd)
     Recipe.parse(rebuilt, recipe_path)
-    recipe_path.write_text(rebuilt)
+    _write_init_recipe(recipe_path, rebuilt)
     n_resources = len(tomllib.loads(rebuilt).get("resources", {}))
     print(
         f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {n_resources} resource(s)",

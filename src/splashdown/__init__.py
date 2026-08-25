@@ -67,6 +67,7 @@ from .catalog import PROFILES
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
 from .cli_output import _short_path, _summary_string
 from .commands import (
+    InitOptions,
     _cmd_init_preset,
     _env_dispatch,
     _resolve_no_loader_delivery,

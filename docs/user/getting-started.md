@@ -41,6 +41,13 @@ Run this once at the repo root:
 splash init
 ```
 
+If you run first-time init from a subdirectory, Splashdown names the detected Git worktree root
+and exits before creating project or registry files. Change to that root, target it with
+`splash --cwd PATH init`, or pass `--allow-nested` when the subdirectory is intentionally an
+independent project. Existing nested recipes do not need the flag for `--rescan` or `--overwrite`.
+Nested init does not install the worktree-root post-checkout hook because Git invokes that hook from
+the root. Init prints the `splash --cwd PATH sync` command to run manually after checkout.
+
 Splashdown scans the filesystem, detects your workspace layout and framework, and does five things:
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.

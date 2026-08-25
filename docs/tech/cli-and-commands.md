@@ -66,12 +66,13 @@ submodule imports inside handlers.
 3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
 4. `parse_args`, dispatch completion before checkout resolution, then resolve `cwd` (`_resolve_cwd`,
    honours `--cwd`, else `$PWD`, always `.resolve()`d).
-5. Dispatch `trust`, `untrust`, `bootstrap`, and the hidden hook event before constructing a
-   Registry. This is security-relevant for the hook: an untrusted event can return without touching
-   machine-wide registry state or output writers.
-6. Construct the shared `Registry`, then enter the ordinary flat dispatch table. The final
-   fall-through is `sync` (the default), so both bare `splash` and explicit `splash sync` land on
-   `_cmd_provision`.
+5. Dispatch `trust`, `untrust`, `bootstrap`, the hidden hook event, and `init` before constructing a
+   Registry. This is security-relevant for the hook and init: an untrusted event or rejected nested
+   init can return without touching machine-wide registry state or output writers. A successful
+   init constructs a Registry only when it proceeds to the first sync.
+6. Construct the shared `Registry` for the remaining commands, then enter the ordinary flat
+   dispatch table. The final fall-through is `sync` (the default), so both bare `splash` and
+   explicit `splash sync` land on `_cmd_provision`.
 
 The handler signature shows the orchestration boundary: `main()` resolves `cwd`, creates a Registry
 only when needed, and threads dependencies into handlers. Each branch returns the process exit code.
@@ -124,17 +125,18 @@ The four device verbs share one parser shape, built in a loop in `cli.py`:
 
 #### Top-level exception handler
 
-Ordinary registry-backed dispatch has one application-error renderer. `ApplicationError` carries
+Ordinary dispatch has one application-error renderer. `ApplicationError` carries
 an exit code and whether the message receives an `error:` prefix; `UsageError`,
 `MissingRecipeError`, and `SetupError` model exit-2 usage failures, the hook-compatible exit-0
 missing-recipe notice, and setup failures. `DeviceError` and configuration `ValueError` enter the
 same renderer as exit-1 failures. These handlers raise rather than terminating the process, so
 direct callers can handle failures and CLI output is emitted exactly once.
 
-Trust, untrust, bootstrap, and the hidden post-checkout event are dispatched before Registry
-construction and before that ordinary renderer. They retain command-specific output and retry
-handling because the untrusted hook path must be able to return without touching machine-wide
-state. New registry-backed commands belong inside the shared boundary; changes to those early
+Trust, untrust, bootstrap, and the hidden post-checkout event are dispatched before that ordinary
+renderer. They retain command-specific output and retry handling because the untrusted hook path
+must be able to return without touching machine-wide state. Init remains inside the renderer but
+runs before Registry construction so its refusal guards have no machine-state side effects. New
+registry-backed commands belong inside the shared boundary; changes to those early
 security-sensitive paths must preserve their explicit rendering contract.
 
 ### `commands.py` — the orchestration layer
@@ -171,10 +173,14 @@ recipe through `Recipe.load`, then validates the fully rebuilt document before
 replacing it. Invalid fields cannot be erased by the rewrite, and preserved
 stale fields abort the rescan instead of being blessed. This keeps
 generator/profile/loader drift from producing a file that the next sync cannot
-load.
+load. Every generated-recipe write uses same-directory atomic replacement, preserving an existing
+regular file's mode while replacing its directory entry. Symlinks and non-regular entries are
+rejected; hardlinks are safely broken rather than truncating their shared inode.
 
 `cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader → hook →
-sync-only clone trust → framework wiring. An intent preset short-circuits to `_cmd_init_preset`.
+sync-only clone trust → framework wiring. For an explicitly allowed nested project, the hook step
+prints a manual nested sync command instead because Git invokes checkout hooks from the worktree
+root. An intent preset short-circuits to `_cmd_init_preset`.
 Refusal and invalid-preset paths raise `UsageError`; `main()` renders them and returns exit 2. The
 first sync runs after init unless `--no-sync`; `--rescan` diverts to `cmd_refresh_inventory`. Init
 never grants bootstrap trust.
