@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from .capabilities import warn_capability
 from .constants import LOCAL_NAME, RECIPE_NAME, TARGET_TYPES
@@ -14,8 +14,17 @@ from .device_android import (
     android_destroy,
     android_shutdown,
 )
+from .device_claims import (
+    claim_available_target,
+    claim_configured_target,
+    configured_physical_targets,
+    discover_physical_snapshot,
+    match_physical_target,
+    notices_for_displaced,
+    resolve_physical_target,
+)
 from .device_ios import _ios_current_state, _xcrun_json, ios_boot, ios_destroy, ios_shutdown
-from .device_types import AndroidDestination, IOSDestination, as_launch_destination
+from .device_types import AndroidDestination, IOSDestination, PhysicalClaim, as_launch_destination
 from .devices import (
     _is_orphan_device,
     _resolve_device_name,
@@ -24,9 +33,8 @@ from .devices import (
     device_shutdown_row,
     device_status,
     ensure_fresh_sim,
-    physical_status,
 )
-from .errors import CapabilityError, DeviceError
+from .errors import CapabilityError, DeviceError, UsageError
 from .launching import device_run, validate_device_run
 from .recipe import (
     GlobalConfig,
@@ -51,7 +59,10 @@ from .targets import (
 _PLATFORM_OF_DTYPE = {"simulator": "ios", "emulator": "android"}
 
 
-def cmd_targets_list(cwd: Path, fmt: str) -> int:
+def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
+    from .cli_output import render_target_inventory  # noqa: PLC0415
+    from .status import TargetInventoryRow  # noqa: PLC0415
+
     recipe = _load_recipe_or_empty(cwd)
     local = LocalConfig.load(cwd / LOCAL_NAME)
     glob = GlobalConfig.load(_global_config_path())
@@ -59,42 +70,94 @@ def cmd_targets_list(cwd: Path, fmt: str) -> int:
     if not catalog:
         print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
         return 0
-    rows: list[tuple[str, str, str, str, str]] = []
+
+    physical_targets = configured_physical_targets(cwd, allow_missing_recipe=True)
+    claims = registry.all_claims()
     warned: set[str] = set()
-    for dtype, variants in catalog.items():
-        for variant, spec in variants.items():
-            source = target_source(dtype, variant, recipe, local, glob)
-            if dtype == "device":
-                resolved = spec.get("id") or spec.get("name") or spec.get("platform") or "auto"
-            else:
-                resolved = _resolve_device_name(spec, cwd, variant, dtype)
+    unavailable: set[str] = set()
+    if physical_targets:
+        snapshot = discover_physical_snapshot("any", warned=warned, unavailable=unavailable)
+    else:
+        snapshot = ()
+    rows: list[TargetInventoryRow] = []
+    for target in physical_targets:
+        platform = str(target.spec.get("platform", "any"))
+        configured_name = str(
+            target.spec.get("id")
+            or target.spec.get("name")
+            or target.spec.get("platform")
+            or "auto"
+        )
+        destination = None
+        connection = (
+            "unavailable"
+            if platform in unavailable or (platform == "any" and unavailable)
+            else "disconnected"
+        )
+        if connection != "unavailable":
             try:
-                status = (
-                    physical_status(spec, warned=warned)
-                    if dtype == "device"
-                    else device_status(dtype, resolved)
-                )
-            except CapabilityError as error:
-                warn_capability(error, warned)
-                status = "unavailable"
+                destination = match_physical_target(target, snapshot)
             except DeviceError as error:
-                status = f"error: {error}"
-            rows.append((dtype, variant, source, resolved, status))
-    if fmt == "json":
-        print(
-            json.dumps(
-                [
-                    dict(
-                        zip(("type", "variant", "source", "device_name", "status"), r, strict=False)
-                    )
-                    for r in rows
-                ],
-                indent=2,
+                connection = (
+                    "ambiguous"
+                    if str(error).startswith("multiple connected physical devices")
+                    else "disconnected"
+                )
+            else:
+                connection = "connected"
+                platform = destination.platform
+        owner_claim = next(
+            (claim for claim in claims if claim.catalog_identity == target.catalog_identity),
+            None,
+        )
+        if owner_claim is None and destination is not None:
+            owner_claim = next(
+                (
+                    claim
+                    for claim in claims
+                    if claim.platform == destination.platform
+                    and claim.hardware_id == (destination.identifier or "")
+                ),
+                None,
+            )
+        rows.append(
+            TargetInventoryRow(
+                "device",
+                target.variant,
+                target_source("device", target.variant, recipe, local, glob),
+                destination.name if destination is not None else configured_name,
+                platform,
+                connection,
+                "claimed" if owner_claim is not None else "free",
+                owner_claim.owner_checkout if owner_claim is not None else "",
             )
         )
-    else:
-        for dtype, variant, source, resolved, status in rows:
-            print(f"{dtype}\t{variant}\t{source}\t{resolved}\t{status}")
+    for dtype, variants in catalog.items():
+        if dtype == "device":
+            continue
+        for variant, spec in variants.items():
+            source = target_source(dtype, variant, recipe, local, glob)
+            resolved = _resolve_device_name(spec, cwd, variant, dtype)
+            try:
+                connection = device_status(dtype, resolved)
+            except CapabilityError as error:
+                warn_capability(error, warned)
+                connection = "unavailable"
+            except DeviceError as error:
+                connection = f"error: {error}"
+            rows.append(
+                TargetInventoryRow(
+                    dtype,
+                    variant,
+                    source,
+                    resolved,
+                    _PLATFORM_OF_DTYPE.get(dtype, ""),
+                    connection,
+                    "not-applicable",
+                    "",
+                )
+            )
+    render_target_inventory(rows, fmt)
     return 0
 
 
@@ -369,7 +432,14 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
         variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
         validate_device_run(cwd, recipe, kind)
-        destination = as_launch_destination(ensure_fresh_sim(registry, cwd, dtype, variant, spec))
+        if dtype == "device":
+            target = resolve_physical_target(cwd, variant)
+            selection = claim_configured_target(registry, cwd, target)
+            destination = selection.destination
+        else:
+            destination = as_launch_destination(
+                ensure_fresh_sim(registry, cwd, dtype, variant, spec)
+            )
         if destination.owned:
             if isinstance(destination, IOSDestination):
                 ios_boot(destination.identifier, _ios_current_state(destination.identifier))
@@ -548,9 +618,118 @@ def _target_prune(args: Any, registry: Registry) -> int:
     )
 
 
-def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
+def _add_claim_notices(
+    registry: Registry,
+    displaced: tuple[PhysicalClaim, ...],
+    *,
+    action: Literal["transfer", "release"],
+    actor_checkout: str,
+) -> None:
+    if not displaced:
+        return
+    notices = notices_for_displaced(
+        displaced,
+        action=action,
+        actor_checkout=actor_checkout,
+        event_at=datetime.now(UTC),
+    )
+    try:
+        registry.add_claim_notices(notices)
+    except OSError as error:
+        print(f"warning: could not record claim notice: {error}", file=sys.stderr)
+
+
+def cmd_target_claim(
+    cwd: Path,
+    registry: Registry,
+    variant: str | None,
+    *,
+    available: str | None,
+    force: bool,
+    fmt: str,
+) -> int:
+    from .cli_output import render_claim_selection  # noqa: PLC0415
+
+    checkout = str(cwd.resolve())
+    with registry.operation_lock(checkout):
+        if available is None:
+            target = resolve_physical_target(cwd, variant)
+            selection = claim_configured_target(registry, cwd, target, force=force)
+        else:
+            selection = claim_available_target(
+                registry, cwd, cast(Literal["ios", "android", "any"], available)
+            )
+        if force:
+            _add_claim_notices(
+                registry,
+                selection.displaced,
+                action="transfer",
+                actor_checkout=checkout,
+            )
+        render_claim_selection(selection, fmt, available=available is not None)
+    return 0
+
+
+def _release_busy_error(variant: str, conflict: PhysicalClaim) -> DeviceError:
+    return DeviceError(
+        f"physical target `{variant}` is claimed by {conflict.owner_checkout} "
+        f"since {conflict.claimed_at}; inspect with `splash target claims` or release with "
+        f"`splash target release {variant} --force`"
+    )
+
+
+def cmd_target_release(
+    cwd: Path,
+    registry: Registry,
+    variant: str | None,
+    *,
+    all_owned: bool,
+    force: bool,
+) -> int:
+    checkout = str(cwd.resolve())
+    if all_owned:
+        with registry.operation_lock(checkout):
+            released = registry.release_claims(checkout)
+            print(f"released {len(released)} physical claim(s)", file=sys.stderr)
+        return 0
+
+    with registry.operation_lock(checkout):
+        target = resolve_physical_target(cwd, variant)
+        result = registry.release_claim(target.catalog_identity, checkout, force=force)
+        if result.status == "busy":
+            raise _release_busy_error(target.variant, result.conflicts[0])
+        displaced = tuple(row for row in result.released if row.owner_checkout != checkout)
+        if force:
+            _add_claim_notices(registry, displaced, action="release", actor_checkout=checkout)
+        if result.status == "missing":
+            print(f"no claim for {target.variant}; nothing to release", file=sys.stderr)
+        else:
+            print(f"released {target.variant}", file=sys.stderr)
+    return 0
+
+
+def cmd_target_claims(registry: Registry, fmt: str) -> int:
+    from .cli_output import render_claim_rows  # noqa: PLC0415
+    from .status import ClaimListRow  # noqa: PLC0415
+
+    rows = tuple(
+        ClaimListRow(
+            claim.target_label,
+            claim.catalog_identity.split(":", 1)[0],
+            claim.platform,
+            claim.hardware_id,
+            claim.owner_checkout,
+            claim.claimed_at,
+        )
+        for claim in registry.all_claims()
+    )
+    render_claim_rows(rows, fmt)
+    return 0
+
+
+def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:  # noqa: PLR0911
     if args.target_cmd is None:
-        return cmd_targets_list(cwd, getattr(args, "format", None) or "text")
+        return cmd_targets_list(cwd, registry, getattr(args, "format", None) or "text")
     if args.target_cmd == "add":
         return _target_add(args, cwd, registry)
     if args.target_cmd == "remove":
@@ -559,5 +738,33 @@ def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
         return _target_refresh(args, registry)
     if args.target_cmd == "prune":
         return _target_prune(args, registry)
+    fmt = getattr(args, "target_format", None) or getattr(args, "format", None) or "text"
+    if args.target_cmd == "claims":
+        return cmd_target_claims(registry, fmt)
+    if args.target_cmd == "claim":
+        if bool(args.variant) == bool(args.available):
+            raise UsageError("splash target claim requires exactly one of VARIANT or --available")
+        if args.force and args.available:
+            raise UsageError("splash target claim --force requires VARIANT")
+        return cmd_target_claim(
+            cwd,
+            registry,
+            args.variant,
+            available=args.available,
+            force=args.force,
+            fmt=fmt,
+        )
+    if args.target_cmd == "release":
+        if bool(args.variant) == bool(args.all_owned):
+            raise UsageError("splash target release requires exactly one of VARIANT or --all")
+        if args.force and args.all_owned:
+            raise UsageError("splash target release --force requires VARIANT")
+        return cmd_target_release(
+            cwd,
+            registry,
+            args.variant,
+            all_owned=args.all_owned,
+            force=args.force,
+        )
     print(f"splash target {args.target_cmd}: unknown action", file=sys.stderr)
     return 2

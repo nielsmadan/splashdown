@@ -2,7 +2,12 @@
 
 ## Purpose
 
-`Registry` (`src/splashdown/registry.py`) is the machine-wide coordinator that pins per-checkout resources — allocated ports, key/value entries (uuids, template results, `set` values), and managed sim/AVD devices — so concurrent checkouts never collide. Mutations take a per-file lock and atomically replace the complete TSV; inspection reads take an unlocked old-or-new snapshot. A separate checkout-scoped operation lock serializes sync, env mutation, deinit, target edits, and device lifecycle operations through their external side effects.
+`Registry` (`src/splashdown/registry.py`) is the machine-wide coordinator that pins per-checkout
+resources: allocated ports, key/value entries, managed sim/AVD devices, and exclusive physical
+device claims. Mutations take a per-file lock and atomically replace the complete TSV; inspection
+reads take an unlocked old-or-new snapshot. A separate checkout-scoped operation lock serializes
+sync, env mutation, deinit, target edits, device lifecycle operations, and claim orchestration
+through their external side effects.
 
 ## Table of contents
 
@@ -12,7 +17,8 @@
   - [Read/write helpers](#readwrite-helpers)
   - [`_tsv_field` and row forgery](#_tsv_field-and-row-forgery)
   - [Port allocation](#port-allocation)
-  - [KV and devices](#kv-and-devices)
+  - [KV and managed devices](#kv-and-managed-devices)
+  - [Physical claims and notices](#physical-claims-and-notices)
   - [Garbage collection and reconciliation](#garbage-collection-and-reconciliation)
 - [Key entry points](#key-entry-points)
 - [Gotchas](#gotchas)
@@ -23,45 +29,56 @@
 
 ### On-disk layout
 
-Three flat TSV files live under `$XDG_STATE_HOME/splashdown/` (falling back to
+Five flat TSV files live under `$XDG_STATE_HOME/splashdown/` (falling back to
 `~/.local/state/splashdown/`). `state_directory()` resolves that root at call time, and every
 `Registry` resolves and exposes it as `state_dir` at construction. Android emulator logging gets
 that same resolved directory from the command composition root, so registry rows and logs cannot
 split across two XDG roots when the environment changes after import. Exported path constants remain
 compatibility snapshots; production state writes do not read them. The constructor creates the
-directory and all three owner-only files before use.
+directory and all five owner-only data files before use.
 
 The column layouts and field counts are declared together in `registry.py`:
 
 - `ports.tsv` — `port \t abspath \t key` (3 fields)
 - `kv.tsv` — `abspath \t key \t value` (3 fields)
 - `devices.tsv` — `abspath \t dtype \t variant \t identifier \t model \t runtime \t created_at` (7 fields). Explicit codecs preserve the historical bytes while decoding simulator rows to `SimulatorRecord` and emulator rows to `EmulatorRecord`; Android's three payload slots mean AVD name, device profile, and system image.
+- `claims.tsv` — `catalog_identity \t platform \t hardware_id \t target_label \t owner_checkout \t claimed_at` (6 fields).
+- `claim-notices.tsv` — `previous_owner \t catalog_identity \t target_label \t action \t actor_checkout \t event_at \t expires_at` (7 fields). `action` is `transfer` or `release`.
 
-`abspath` is the checkout/worktree directory — the cross-row primary-key prefix used by every per-checkout query (`all_for`, `release`, `devices_for`, GC existence checks).
+For ports, KV entries, and managed devices, `abspath` is the checkout/worktree directory and the
+primary-key prefix used by per-checkout queries such as `all_for`, `release`, `devices_for`, and GC
+existence checks. Claims store their canonical owner path in `owner_checkout`. Notices address the
+displaced checkout through `previous_owner` and identify the checkout that forced the change through
+`actor_checkout`. Every data file and replacement temporary is mode `0600`.
 
 ### Locking: the sidecar `.lock`
 
 Every per-file mutation runs inside `_lock(path)` (`registry.py`), a context manager that takes an exclusive `fcntl.flock` on a **sidecar** `<file>.lock` rather than on the TSV itself. Atomic replacement changes the TSV inode, so locking the data file would strand the lock on the old inode; the stable sidecar continues to coordinate later openers. The lock is process-level advisory (`flock`), so it coordinates concurrent `splash` invocations on one machine, not across NFS.
 
-`operation_lock(abspath)` (`registry.py`) hashes the canonical checkout path into one of 256 stable sidecars beside `kv.tsv`. The bounded shard set avoids leaking a permanent inode for every deleted worktree; two unrelated checkouts can occasionally share a shard, which only adds temporary serialization. `_cmd_provision_inner` holds the lock from the pre-provision snapshot through all output writers; env mutation, deinit, local target edits, and device lifecycle commands use the same boundary. `run` releases it before launching the long-lived app process. Fleet refresh/GC locks and rereads one checkout row at a time. Per-file registry locks are acquired only inside the operation lock, never the reverse. Setup commands run after it is released so an arbitrary user command cannot block later syncs indefinitely.
+`operation_lock(abspath)` (`registry.py`) hashes the canonical checkout path into one of 256 stable sidecars beside `kv.tsv`. The bounded shard set avoids leaking a permanent inode for every deleted worktree; two unrelated checkouts can occasionally share a shard, which only adds temporary serialization. `_cmd_provision_inner` holds the lock from the pre-provision snapshot through all output writers; env mutation, deinit, local target edits, device lifecycle commands, and claim commands use the same boundary. `run` performs physical discovery and the claim transaction inside it, then releases it before launching the long-lived app process. Fleet refresh/GC locks and rereads one checkout row at a time. Per-file registry locks are acquired only inside the operation lock, never the reverse. Setup commands run after it is released so an arbitrary user command cannot block later syncs indefinitely.
 
-Locks are per-file. `release`, `gc`, and `reconcile_with_recipes` acquire the ports, kv, and device locks **sequentially, never nested** (e.g. `release` at `registry.py`), so there is no lock-ordering deadlock risk between them.
+Locks are per-file. `release` and `gc` acquire ports, kv, devices, claims, and notices
+**sequentially, never nested**. `reconcile_with_recipes` likewise takes only one file lock at a
+time. The operation lock is always outermost. Claims and notices locks are never nested: forced
+ownership changes commit under the claims lock, release it, then write best-effort notices under the
+notices lock. Discovery occurs before the claims lock is acquired.
 
 ### Read/write helpers
 
-Each file has a `_read_*`/`_write_*` pair in `registry.py`. `_read_ports`, `_read_kv`, and
-`_read_devices` split on `\t`, skip blank lines, and **silently drop any row whose field count
+Each file has a `_read_*`/`_write_*` pair in `registry.py`. The readers split on `\t`, skip blank
+lines, and **silently drop any row whose field count
 doesn't match** the expected width — malformed rows are ignored rather than fatal. `_read_ports`
 additionally drops rows whose port column isn't an int. `_read_kv` uses `split("\t", 2)` so a
-value may itself contain tabs on read — but the write side forbids that (see below).
+value may itself contain tabs on read — but the write side forbids that (see below). Claim-notice
+rows also reject unknown actions and missing or timezone-naive expiry timestamps.
 
-Writes serialize and validate every row before `_atomic_write` (`registry.py`) creates a mode-`0600` same-directory temporary file and calls `os.replace`. An unlocked reader therefore sees either the complete prior inode or the complete replacement, never an in-place truncation window. `_write_ports`, `_write_kv`, and `_write_devices` all use this one path.
+Writes serialize and validate every row before `_atomic_write` (`registry.py`) creates a mode-`0600` same-directory temporary file and calls `os.replace`. An unlocked reader therefore sees either the complete prior inode or the complete replacement, never an in-place truncation window. Every registry writer uses this one path.
 
 Public mutators are read-modify-write under the lock: `set_kv`/`remove_kv` filter out the matching `(abspath, key)` then optionally re-append (`registry.py`); `record_simulator` / `record_emulator` construct typed records, and `set_managed_device` / `remove_device` replace by `(checkout, dtype, variant)`. The legacy `set_device` signature remains as a compatibility adapter. `get_or_create_kv` (`registry.py`) performs lookup, factory invocation, and append under one kv lock, so concurrent UUID provisioning returns the one committed value. There is no in-memory cache: every call re-reads the file, which keeps concurrent invocations consistent at the cost of re-parsing.
 
 ### `_tsv_field` and row forgery
 
-Because the TSV format has **no escaping**, a field containing a tab or newline would forge or corrupt rows on the next read — e.g. a value like `"a\n/other\tKEY\tval"` parses as a second, well-formed row for a *different* checkout. `_tsv_field` (`registry.py`) rejects `\t`, `\n`, and `\r` (`_TSV_FORBIDDEN`, `registry.py`) at **write** time, raising `ValueError`. It is applied to every field on write across all three files. These chars never legitimately appear in checkout paths, resource keys, ports, or resolved values, so rejection is a guard, not a constraint users will hit.
+Because the TSV format has **no escaping**, a field containing a tab or newline would forge or corrupt rows on the next read — e.g. a value like `"a\n/other\tKEY\tval"` parses as a second, well-formed row for a *different* checkout. `_tsv_field` (`registry.py`) rejects `\t`, `\n`, and `\r` (`_TSV_FORBIDDEN`, `registry.py`) at **write** time, raising `ValueError`. It is applied to every field on write across all five files. These chars never legitimately appear in checkout paths, resource keys, ports, or resolved values, so rejection is a guard, not a constraint users will hit.
 
 ### Port allocation
 
@@ -74,20 +91,50 @@ Because the TSV format has **no escaping**, a field containing a tab or newline 
 
 `_port_in_use` (`registry.py`) is a best-effort live probe: it attempts a real `bind()` on `127.0.0.1` and `::1` with `SO_REUSEADDR`, treating `EADDRINUSE`/`EACCES` as "in use". This catches ports held by processes that aren't in any registry (other tools, system services) — the registry's own pins (step 2) cover ports reserved but not currently listening. The two layers are complementary: pins survive a dev server being temporarily down; live probes catch non-splashdown occupants.
 
-### KV and devices
+### KV and managed devices
 
 KV is the catch-all for non-port resources: `set_kv`/`get_kv`/`get_or_create_kv`/`remove_kv` (`registry.py`) and `all_for(abspath)` (`registry.py`), which merges this checkout's ports (stringified) **and** kv into one `{key: value}` dict — the shape `provision()` consumes when emitting `splashdown.env`.
 
 Devices track sims/AVDs splashdown created. Lookups: `get_device`/`devices_for`/`all_devices`/`managed_udids` (`registry.py`). `managed_udids` is how device code distinguishes splashdown-owned devices from the user's own.
 
+### Physical claims and notices
+
+Claims are current ownership, not managed hardware rows. The domain layer constructs catalog
+identities as `source:scope:device:variant`: recipe scope is the Git common directory, local scope
+is the checkout, and global scope is the global config path. `attempt_claim` removes dead-owner
+rows, then conflicts on either equal catalog identity or equal `(platform, hardware_id)`. The first
+key preserves one recipe target across linked worktrees and Android endpoint changes. The second
+key prevents differently named targets from claiming the same resolved phone.
+
+`attempt_claim` is one claims-lock transaction. A different live owner yields `busy` unless
+`force=True`; force removes every conflicting row and appends the requester's row atomically. A
+same-owner catalog claim is idempotent and updates a changed hardware ID while retaining the
+original claim time, after checking it does not conflict elsewhere. Generic allocation may lose a
+race after discovery, but it can continue to later configured candidates from the same snapshot.
+
+`release_claim` addresses one catalog identity and normally refuses another live owner's row.
+`release_claims` removes every row owned by one checkout. `all_claims(gc=True)` is registry-only
+inspection that lazily drops dead owners without device discovery.
+
+Claim notices form a pending inbox keyed by `(previous_owner, catalog_identity)`. Upserting the
+same key replaces its older notice. Forced transfer and forced release write notices only after the
+claim transaction has released its lock, so notice failure cannot invalidate correct ownership.
+`consume_claim_notices` returns and removes one checkout's live notices while also pruning notices
+for deleted checkouts and notices whose 30-day expiry has passed.
+
 ### Garbage collection and reconciliation
 
 GC is **lazy** — it piggybacks on reads rather than running on a timer. `busy_ports(gc=True)` prunes dead-checkout port rows on every allocation. The explicit cleanup paths:
 
-- `gc()` — drop port/kv rows whose `abspath` no longer exists, optionally fold in `gc_devices()`, then run `reconcile_with_recipes()`. Returns total removed.
+- `gc()` — drop port/kv rows and claims whose checkout no longer exists, optionally fold in
+  `gc_devices()`, prune expired/dead-owner notices, then run `reconcile_with_recipes()`. Returns
+  total removed.
 - `gc_devices(orphan_check=None)` — always drops device rows whose checkout dir is gone. A higher orchestration layer may supply an external-resource predicate, but Registry never imports the device lifecycle layer. The CLI performs live sim/AVD reconciliation through `cmd_target_gc` before registry cleanup.
 - `reconcile_with_recipes()` (`registry.py`) — for each live checkout, load its `splashdown.toml` and drop port/kv rows for keys the current recipe no longer declares (e.g. a leftover `DART_PORT`). Crucially, a recipe that is **missing or won't parse yields `None`, which means skip pruning that checkout** (`registry.py`) — an unloadable recipe must never be read as "declares nothing" and nuke live entries. Results are cached per path within the call.
-- `release(abspath)` (`registry.py`) — remove *all* rows for one checkout across all three files; returns count removed. Used by `splash env release` (no key) — *not* by `splash destroy`, which drops a single device row via `remove_device`.
+- `release(abspath)` (`registry.py`) — remove *all* rows owned by or addressed to one checkout
+  across all five files; returns count removed. It backs checkout-wide teardown including
+  `deinit`. `splash destroy` still drops only one managed-device row, and physical `stop`/`destroy`
+  never release claims.
 
 `all_checkouts` (`registry.py`) and `summary_for` (`registry.py`) are read-only inspection helpers backing `splash status`.
 
@@ -103,13 +150,17 @@ GC is **lazy** — it piggybacks on reads rather than running on a timer. `busy_
 - `remove_port` / `_remove_port_unlocked` — `registry.py`
 - `set_kv` / `get_or_create_kv` / `get_kv` / `all_for` — `registry.py`
 - `set_device` / `remove_device` / `devices_for` — `registry.py`
-- `gc` / `gc_devices` / `reconcile_with_recipes` / `release` — `registry.py`, `350-360`, `390-452`
+- `attempt_claim` / `release_claim` / `release_claims` / `all_claims` — `registry.py`
+- `add_claim_notices` / `consume_claim_notices` — `registry.py`
+- `gc` / `gc_devices` / `reconcile_with_recipes` / `release` — `registry.py`
 
 ## Gotchas
 
 - **`busy_ports(gc=True)` writes.** The public method takes the ports lock before pruning. `allocate_port`, which already holds that lock, calls `_busy_ports_unlocked` instead to avoid a self-deadlock (`registry.py`).
 - **Unlocked helpers assume the caller holds the lock.** `_busy_ports_unlocked(gc=True)` and `_remove_port_unlocked` may rewrite `ports.tsv`; only call them from an already-locked path in `registry.py`.
-- **Locks are non-reentrant.** Every `_lock` call opens a fresh fd, so taking the same sidecar twice in one process can self-deadlock. The operation lock is a different sidecar and is always outermost; multi-file operations acquire ports, kv, and device locks sequentially.
+- **Locks are non-reentrant.** Every `_lock` call opens a fresh fd, so taking the same sidecar twice in one process can self-deadlock. The operation lock is a different sidecar and is always outermost; multi-file operations acquire ports, kv, devices, claims, and notices sequentially.
+- **Claim and notice locks never nest.** Ownership is authoritative and commits first. A crash or
+  write failure before notice persistence can lose a warning, but cannot create two owners.
 - **Operation locks are hash-sharded.** The 256-file bound means unrelated checkouts can occasionally serialize on the same sidecar. Correctness does not depend on each checkout receiving a unique inode.
 - **In-range bound pins are never reallocated here.** If you want a *different* port, you must `remove_port` first — `allocate_port` alone will hand back the same one (`registry.py`).
 - **Malformed rows vanish silently.** A wrong-width or non-int-port row is dropped on read with no warning (`registry.py`). A future rewrite will not preserve it.

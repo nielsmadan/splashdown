@@ -5,6 +5,8 @@ import json
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -167,6 +169,52 @@ def test_ensure_physical_platform_scopes_autopick(monkeypatch):
     assert info["serial"] == "PXL1234"
 
 
+def test_physical_discovery_once_per_run_including_busy_result(tmp_path, registry, monkeypatch):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "old")
+    )
+    probes: list[str] = []
+    launches: list[str] = []
+
+    def discover(platform, **_kwargs):
+        probes.append(platform)
+        return (_PIXEL,)
+
+    def launch(_cwd, _recipe, destination):
+        launches.append(destination["serial"])
+        assert registry.all_claims()[0].hardware_id == destination["serial"]
+        return 0
+
+    monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", discover)
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(
+        sd.target_commands,
+        "ensure_fresh_sim",
+        lambda *_args, **_kwargs: pytest.fail("physical runs must not reconcile managed devices"),
+    )
+    monkeypatch.setattr(sd.target_commands, "device_run", launch)
+
+    with pytest.raises(sd.DeviceError, match="claimed by"):
+        sd.cmd_run(tmp_path, registry, "device", "pixel")
+
+    assert probes == ["android"]
+    assert launches == []
+
+    assert (
+        registry.release_claim(target.catalog_identity, str(owner), force=True).status == "released"
+    )
+    assert sd.cmd_run(tmp_path, registry, "device", "pixel") == 0
+
+    assert probes == ["android", "android"]
+    assert launches == ["PXL1234"]
+
+
 def test_global_android_variant_scopes_react_native_launch(tmp_path, registry, monkeypatch):
     (tmp_path / sd.RECIPE_NAME).write_text(
         '[project]\nframework = "react-native"\n[targets.simulator.default]\nmodel = "iPhone 17"\n'
@@ -176,6 +224,9 @@ def test_global_android_variant_scopes_react_native_launch(tmp_path, registry, m
     p.write_text('[targets.device.pixel]\nplatform = "android"\nname = "Pixel_9a"\n')
     selected = {"id": "192.0.2.10:42137", "name": "Pixel_9a", "platform": "android"}
     _stub_physical(monkeypatch, android=[selected, _PIXEL])
+    monkeypatch.setattr(
+        sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: (selected, _PIXEL)
+    )
     calls: list[tuple[list[str], dict]] = []
 
     def call(args, **kwargs):
@@ -291,6 +342,122 @@ def test_android_physical_devices_excludes_emulators(monkeypatch):
     monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: out)
     devices = sd._android_physical_devices()
     assert devices == [{"id": "PXL1234", "name": "Pixel_7", "platform": "android"}]
+
+
+def test_ios_physical_devices_forwards_timeout_budget(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    seen: dict[str, object] = {}
+
+    def run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["timeout"] = kwargs["timeout"]
+        return b'{"result": {"devices": []}}'
+
+    monkeypatch.setattr(sd.device_ios, "check_output_finite", run)
+
+    assert sd._ios_physical_devices(timeout=5) == []
+    assert seen == {
+        "argv": ["xcrun", "devicectl", "list", "devices", "--json-output", "-"],
+        "timeout": 5,
+    }
+
+
+def test_android_physical_devices_forwards_timeout_budget(monkeypatch):
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/adb")
+    seen: dict[str, object] = {}
+
+    def run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["timeout"] = kwargs["timeout"]
+        return b"List of devices attached\n"
+
+    monkeypatch.setattr(sd.device_android, "check_output_finite", run)
+
+    assert sd._android_physical_devices(timeout=5) == []
+    assert seen == {"argv": ["/fake/adb", "devices", "-l"], "timeout": 5}
+
+
+def test_physical_snapshot_any_is_concurrent_and_platform_ordered(monkeypatch):
+    calls: list[str] = []
+    budgets: list[float] = []
+
+    def ios(*, timeout):
+        budgets.append(timeout)
+        time.sleep(0.02)
+        calls.append("ios")
+        return [_IPHONE]
+
+    def android(*, timeout):
+        budgets.append(timeout)
+        calls.append("android")
+        return [_PIXEL]
+
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", ios)
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", android)
+
+    assert sd.discover_physical_snapshot("any", timeout=5) == (_IPHONE, _PIXEL)
+    assert calls == ["android", "ios"]
+    assert len(budgets) == 2
+    assert all(4.9 < budget <= 5 for budget in budgets)
+
+
+def test_physical_snapshot_any_raises_device_error_at_shared_deadline(monkeypatch):
+    def ios(**_kwargs):
+        return [_IPHONE]
+
+    def android(**_kwargs):
+        time.sleep(1.5)
+        return [_PIXEL]
+
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", ios)
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", android)
+
+    started = time.monotonic()
+    with pytest.raises(sd.DeviceError, match="physical device discovery timed out"):
+        sd.discover_physical_snapshot("any", timeout=1)
+
+    assert time.monotonic() - started < 1.3
+
+
+def test_physical_snapshot_any_warns_once_and_keeps_supported_platform(monkeypatch, capsys):
+    def ios(**_kwargs):
+        raise sd.CapabilityError("ios", "iOS requires Xcode")
+
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", ios)
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", lambda **_kwargs: [_PIXEL])
+
+    warned: set[str] = set()
+    assert sd.discover_physical_snapshot("any", warned=warned) == (_PIXEL,)
+    assert sd.discover_physical_snapshot("any", warned=warned) == (_PIXEL,)
+    assert capsys.readouterr().err.count("warning: skipping iOS") == 1
+
+
+def test_physical_snapshot_single_platform_propagates_capability_error(monkeypatch):
+    def ios(**_kwargs):
+        raise sd.CapabilityError("ios", "iOS requires Xcode")
+
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", ios)
+
+    with pytest.raises(sd.CapabilityError, match="iOS requires Xcode"):
+        sd.discover_physical_snapshot("ios")
+
+
+def test_match_physical_target_filters_supplied_snapshot_without_discovery(monkeypatch):
+    target = sd.ConfiguredPhysicalTarget(
+        variant="pixel",
+        source="recipe",
+        catalog_identity="recipe:test:device:pixel",
+        spec={"platform": "android", "name": "pixel"},
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("unexpected discovery"),
+    )
+
+    destination = sd.match_physical_target(target, (_IPHONE, _PIXEL))
+
+    assert destination == sd.AndroidDestination("Pixel_7", "PXL1234", owned=False)
 
 
 def test_cli_run_default_variant(tmp_path, monkeypatch):
@@ -1696,8 +1863,269 @@ def test_status_text_and_target_list_render_unavailable(registry, checkout, monk
     assert "simulator.default" in captured.err
     assert "unavailable" in captured.err
 
-    assert sd.cmd_targets_list(checkout, "json") == 0
-    assert json.loads(capsys.readouterr().out)[0]["status"] == "unavailable"
+    assert sd.cmd_targets_list(checkout, registry, "json") == 0
+    assert json.loads(capsys.readouterr().out)[0]["connection"] == "unavailable"
+
+
+def test_target_inventory_uses_one_snapshot_and_keeps_connection_and_claim_independent(
+    registry, checkout, monkeypatch, capsys
+):
+    (checkout / sd.RECIPE_NAME).write_text(
+        """
+[targets.device.pixel]
+platform = "android"
+id = "PXL1234"
+
+[targets.device.xiaomi]
+platform = "android"
+id = "XIAOMI"
+
+[targets.device.iphone17]
+platform = "ios"
+id = "00008-PHONE"
+
+[targets.device.pixel-alias]
+platform = "android"
+id = "PXL1234"
+
+[targets.simulator.ios-dev]
+name = "ios-dev"
+
+[targets.emulator.android-dev]
+name = "android-dev"
+"""
+    )
+    pixel, _xiaomi, iphone, _alias = sd.configured_physical_targets(checkout)
+    pixel_owner = checkout / "feature-pixel"
+    iphone_owner = checkout / "feature-iphone"
+    pixel_owner.mkdir()
+    iphone_owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            pixel.catalog_identity,
+            "android",
+            "PXL1234",
+            "pixel",
+            str(pixel_owner.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            iphone.catalog_identity,
+            "ios",
+            "00008-PHONE",
+            "iphone17",
+            str(iphone_owner.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
+    calls: list[str] = []
+
+    def discover_ios(**_kwargs):
+        calls.append("ios")
+        return []
+
+    def discover_android(**_kwargs):
+        calls.append("android")
+        return [_PIXEL, {"id": "XIAOMI", "name": "Xiaomi", "platform": "android"}]
+
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", discover_ios)
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", discover_android)
+    monkeypatch.setattr(
+        sd.target_commands,
+        "device_status",
+        lambda dtype, _name: {"simulator": "shutdown", "emulator": "running"}[dtype],
+    )
+
+    assert sd.cmd_targets_list(checkout, registry, "json") == 0
+
+    rows = json.loads(capsys.readouterr().out)
+    assert sorted(calls) == ["android", "ios"]
+    assert rows == [
+        {
+            "type": "device",
+            "variant": "pixel",
+            "source": "recipe",
+            "device_name": "Pixel_7",
+            "platform": "android",
+            "connection": "connected",
+            "claim": "claimed",
+            "owner": str(pixel_owner.resolve()),
+        },
+        {
+            "type": "device",
+            "variant": "xiaomi",
+            "source": "recipe",
+            "device_name": "Xiaomi",
+            "platform": "android",
+            "connection": "connected",
+            "claim": "free",
+            "owner": "",
+        },
+        {
+            "type": "device",
+            "variant": "iphone17",
+            "source": "recipe",
+            "device_name": "00008-PHONE",
+            "platform": "ios",
+            "connection": "disconnected",
+            "claim": "claimed",
+            "owner": str(iphone_owner.resolve()),
+        },
+        {
+            "type": "device",
+            "variant": "pixel-alias",
+            "source": "recipe",
+            "device_name": "Pixel_7",
+            "platform": "android",
+            "connection": "connected",
+            "claim": "claimed",
+            "owner": str(pixel_owner.resolve()),
+        },
+        {
+            "type": "simulator",
+            "variant": "ios-dev",
+            "source": "recipe",
+            "device_name": "ios-dev",
+            "platform": "ios",
+            "connection": "shutdown",
+            "claim": "not-applicable",
+            "owner": "",
+        },
+        {
+            "type": "emulator",
+            "variant": "android-dev",
+            "source": "recipe",
+            "device_name": "android-dev",
+            "platform": "android",
+            "connection": "running",
+            "claim": "not-applicable",
+            "owner": "",
+        },
+    ]
+
+
+def test_target_inventory_discovers_platforms_concurrently_under_shared_budget(
+    registry, checkout, monkeypatch, capsys
+):
+    (checkout / sd.RECIPE_NAME).write_text(
+        '[targets.device.iphone]\nplatform = "ios"\n[targets.device.pixel]\nplatform = "android"\n'
+    )
+    ios_started = threading.Event()
+    android_started = threading.Event()
+    budgets: dict[str, float] = {}
+
+    def ios(*, timeout):
+        budgets["ios"] = timeout
+        ios_started.set()
+        assert android_started.wait(0.5)
+        return [_IPHONE]
+
+    def android(*, timeout):
+        budgets["android"] = timeout
+        android_started.set()
+        assert ios_started.wait(0.5)
+        return [_PIXEL]
+
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", ios)
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", android)
+
+    started = time.monotonic()
+    assert sd.cmd_targets_list(checkout, registry, "json") == 0
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert set(budgets) == {"ios", "android"}
+    assert all(29.9 < budget <= 30 for budget in budgets.values())
+    assert [row["connection"] for row in json.loads(capsys.readouterr().out)] == [
+        "connected",
+        "connected",
+    ]
+
+
+def test_target_inventory_keeps_claims_when_connection_is_ambiguous_or_unavailable(
+    registry, checkout, monkeypatch, capsys
+):
+    (checkout / sd.RECIPE_NAME).write_text(
+        """
+[targets.device.ambiguous]
+platform = "android"
+
+[targets.device.iphone]
+platform = "ios"
+id = "00008-PHONE"
+"""
+    )
+    _ambiguous, iphone = sd.configured_physical_targets(checkout)
+    owner = checkout / "feature-iphone"
+    owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            iphone.catalog_identity,
+            "ios",
+            "00008-PHONE",
+            "iphone",
+            str(owner.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "_ios_physical_devices",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS physical-device support requires macOS and Xcode")
+        ),
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "_android_physical_devices",
+        lambda **_kwargs: [_PIXEL, {"id": "OTHER", "name": "Other", "platform": "android"}],
+    )
+
+    assert sd.cmd_targets_list(checkout, registry, "json") == 0
+
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["connection"] == "ambiguous"
+    assert rows[0]["claim"] == "free"
+    assert rows[1]["connection"] == "unavailable"
+    assert rows[1]["claim"] == "claimed"
+    assert rows[1]["owner"] == str(owner.resolve())
+
+
+def test_target_inventory_marks_platform_agnostic_target_unavailable_for_partial_snapshot(
+    registry, checkout, monkeypatch, capsys
+):
+    (checkout / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nid = "PXL1234"\n')
+    target = sd.configured_physical_targets(checkout)[0]
+    owner = checkout / "feature-pixel"
+    owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            target.catalog_identity,
+            "android",
+            "PXL1234",
+            "pixel",
+            str(owner.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
+
+    monkeypatch.setattr(
+        sd.device_claims,
+        "_ios_physical_devices",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            sd.CapabilityError("ios", "iOS physical-device support requires macOS and Xcode")
+        ),
+    )
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", lambda **_kwargs: [_PIXEL])
+
+    assert sd.cmd_targets_list(checkout, registry, "json") == 0
+
+    row = json.loads(capsys.readouterr().out)[0]
+    assert row["connection"] == "unavailable"
+    assert row["claim"] == "claimed"
+    assert row["owner"] == str(owner.resolve())
 
 
 def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):

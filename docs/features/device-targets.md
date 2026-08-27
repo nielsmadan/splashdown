@@ -32,9 +32,9 @@ Which devices a project supports is **code**: the committed recipe declares a `[
 catalog (UC10), and per-checkout add-only variants live in the gitignored local file. Variants
 declared `ios = "latest"` auto-recreate when a newer iOS lands (UC4); pinned variants like
 `ios = "17.0"` are deliberate version coverage and are never upgraded. `splash target
-refresh`/`prune` manage the machine-wide fleet. Physical devices are **discovered, not owned** —
-splashdown hands the connected device's native id to the launcher but never creates or destroys
-hardware.
+refresh`/`prune` manage the machine-wide fleet. Physical hardware is discovered and never
+created or destroyed, while a separate machine-wide claim registry gives one live checkout at a
+time exclusive use of each configured phone.
 
 The builder-facing host-support matrix and subprocess failure policy are maintained in
 [Platform capabilities and subprocess boundaries](../tech/platform-capabilities.md).
@@ -70,9 +70,9 @@ reconcile leaves the new sim **Shutdown** — it never boots anything, so the OS
 shuts the registered instance down but preserves it. `cmd_destroy` deletes the registered instance
 and its registry row, gated behind a `[y/N]` prompt (`_confirm`,
 `src/splashdown/target_commands.py`), bypassable with `--yes`. For `type = device`, stop/destroy are
-no-ops with an explanatory message because splashdown owns no hardware. Managed teardown uses the
-persisted simulator UDID or AVD name; if no registry row exists it reports a no-op and never falls
-back to a recipe-derived name.
+no-ops with an explanatory message because splashdown owns no hardware. They do not release a
+physical claim. Managed teardown uses the persisted simulator UDID or AVD name; if no registry row
+exists it reports a no-op and never falls back to a recipe-derived name.
 
 **Type and variant inference.** When the user omits `TYPE` but supplies an exact variant name,
 `_infer_dtype` (`src/splashdown/target_commands.py`) first finds that name in the merged recipe +
@@ -160,12 +160,31 @@ local variants so any checkout — or any agent — resolves the same matrix. Be
 neither `ensure_fresh_sim` nor `target refresh` upgrades a healthy instance. A missing pinned
 instance is recreated at its declared version, while GC treats it like any other registered row.
 
-**Physical devices are discovered, not owned.** A `device` target resolves to a *connected* phone
-(`ensure_physical`, `src/splashdown/devices.py`; `_physical_match` filters by
-`platform`/`id`/`name`). `cmd_run` uses the typed destination's ownership flag to skip booting
-physical hardware and goes straight to the
-launcher (`src/splashdown/target_commands.py`). Physical devices are never written to the registry;
-`status`/`target` show `connected` / `absent` / `ambiguous` (`physical_status:644`).
+**Physical-device claims.** Only configured `device` targets from the recipe, local config, and
+global config participate. `configured_physical_targets` (`src/splashdown/device_claims.py`) walks
+them in recipe, local, then global declaration order. Xcode/ADB hardware that matches no configured
+target is never selected. Discovery takes one snapshot per requested platform, with iOS and Android
+running concurrently for `any`; matching applies `platform`/`id`/`name` selectors to that snapshot.
+
+`cmd_run` validates the launcher, resolves the target, and calls `claim_configured_target` while
+the checkout operation lock is held. A free connected phone is claimed before `device_run`; the
+current owner's claim is idempotent; another live owner's claim and a disconnected or ambiguous
+target fail before framework build/install. The launch runs after the operation lock is released,
+but its success or failure never releases the claim. Catalog identity catches the same declaration
+across linked worktrees, while `(platform, hardware_id)` catches aliases that resolve to one phone.
+
+`target claim VARIANT`, `target claim --available ios|android|any`, `target claims`, and
+`target release VARIANT|--all` expose allocation and inspection. Generic allocation skips
+connected targets that are busy or already owned by the requester and returns the first free
+candidate from the same snapshot. Specific `--force` claim atomically transfers ownership; forced
+release clears ownership without taking it. Both queue a best-effort notice after the ownership
+transaction, and the displaced checkout consumes it on a later ordinary command. `target claims`
+is registry-only and does not discover devices.
+
+Claims persist across process exit and launch failure. Owner release, `deinit`, forced operations,
+dead-checkout cleanup during allocation, and `gc` remove them. `claim-notices.tsv` is a bounded
+pending inbox: notices are consumed once and expire after 30 days or when the addressed checkout
+disappears. The physical hardware itself remains unmanaged and is never stored in `devices.tsv`.
 
 **Declaring variants programmatically.** `splash target add` writes an add-only
 `[targets.<type>.<variant>]` table into the gitignored local file (`target_add`,
@@ -198,8 +217,13 @@ Adding a variant that already exists in the recipe is an error.
 | Framework launcher selection | `src/splashdown/launching.py` (`detect_framework`, `device_run`) |
 | iOS-native / Android-native launch | `src/splashdown/runners.py` |
 | Physical-device discovery | Cross-platform policy in `src/splashdown/devices.py`; platform probes in `device_ios.py` and `device_android.py` |
+| Physical catalog identity, snapshot matching, and allocation | `src/splashdown/device_claims.py` |
+| Claim and notice persistence, conflict checks, release, and GC | `src/splashdown/registry.py` |
+| Claim/inspect/release commands and physical pre-run gate | `src/splashdown/target_commands.py` |
+| Forced-notice and claim/inventory rendering | `src/splashdown/cli.py`; `src/splashdown/cli_output.py`; `src/splashdown/status.py` |
+| Linked-worktree allocation policy and hook orchestration | Validation in `src/splashdown/recipe.py`; execution in `src/splashdown/commands.py` |
 | CLI parsers: run/start/stop/destroy loop | `src/splashdown/cli.py` (`--yes` exists only on `destroy`) |
-| CLI parsers: `target refresh`/`prune`/`add`/`remove` | `src/splashdown/cli.py` |
+| CLI parsers: target lifecycle and claim actions | `src/splashdown/cli.py` |
 
 ## Configuration
 
@@ -252,8 +276,8 @@ Field meaning by type:
   version like `"17.0"`), `name` (instance-name override).
 - **emulator**: `device` (AVD device profile), `image` (`"latest"` default, or e.g.
   `"android-34"`), `name` (override).
-- **device**: `platform` / `id` / `name` — all optional selectors; with one device connected, no
-  config is needed.
+- **device**: `platform` / `id` / `name` — all optional selectors on a required configured target.
+  Undeclared discovered phones never participate in claims.
 
 Every field above is optional, but supplied values must be non-empty strings. `device.platform`
 must be `ios` or `android`. Fields do not cross target types: for example, `model` is valid only
@@ -294,7 +318,24 @@ splash target refresh [ios|android|all]    # reconcile stale registered sims/AVD
 splash target prune [ios|android|all] [--dry-run] [--yes]   # remove non-managed sims/AVDs
 splash target add <type> <variant> [--model --ios --device --image --name --id --platform] [--global]
 splash target remove <type> <variant> [--keep-instance] [--global]
+splash target claims [--format text|json]
+splash target claim <variant> [--force] [--format text|json]
+splash target claim --available <ios|android|any> [--format text|json]
+splash target release <variant> [--force]
+splash target release --all
 ```
+
+Linked-worktree auto-allocation is the strict project policy:
+
+```toml
+[project.worktree]
+claim_device = "android" # ios | android | any
+```
+
+It runs only for a validated linked-worktree creation event, after provisioning and any successful
+trusted bootstrap. Generic discovery has a five-second total budget. No match, missing platform
+capability, and timeout print the manual `target claim --available` retry and leave hook success
+unchanged.
 
 ## Gotchas
 
@@ -345,8 +386,9 @@ splash target remove <type> <variant> [--keep-instance] [--global]
   flag, but the selected type determines which ones are legal. Incompatible flags and invalid
   values fail before either local or global config is written.
 - **Physical-device verbs differ.** For `type = device`, `stop`/`destroy` are no-op messages and
-  `start` just confirms connectivity (`src/splashdown/target_commands.py`); nothing
-  is ever written to the registry.
+  `start` just confirms connectivity (`src/splashdown/target_commands.py`). These verbs never
+  release a claim. Ownership is persisted in `claims.tsv`, separate from managed lifecycle rows in
+  `devices.tsv`.
 - **ios-native needs a scheme.** Scanner-driven init normally writes it, but a hand-authored
   recipe without `[project.ios] scheme` still errors at run time (`_ios_native_run` in
   `src/splashdown/runners.py`). For `react-native` the scheme is optional but
@@ -367,8 +409,9 @@ splash target remove <type> <variant> [--keep-instance] [--global]
   into existence only from declared `[targets.<type>.<variant>]` tables, created lazily by
   `splash run`/`start` (via `ensure_fresh_sim`). A checkout whose recipe declares only non-device
   resources (e.g. a port) gets **zero** sim/emulator rows. The exception: a **global** `device`
-  variant is available in every project regardless, because it creates nothing (`ensure_physical` just
-  matches connected hardware, `device_needs_recreate` returns `False`, no registry row). So bare
+  variant is available in every project regardless, because it creates nothing (`ensure_physical`
+  just matches connected hardware and `device_needs_recreate` returns `False`). Its claims still
+  use the separate claim registry. So bare
   `splash run` in an otherwise-target-less repo *does* resolve a lone global physical device.
 - **`splash init` scaffolds target tables only on first generation.** It writes the `[targets.*]`
   tables when it creates `splashdown.toml`, but on re-run it preserves existing comments and valid
@@ -390,5 +433,6 @@ no human is watching any single checkout. Pinning vs `latest` turns "which OSes 
 into committed configuration instead of one engineer's memory (UC10), and reconcile-on-run plus
 `target refresh` absorb the recurring pain of Xcode/SDK bumps without manual `simctl delete` surgery
 (UC4). Refresh deliberately never boots so a fleet-wide fix can't exhaust the host's
-booted-simulator budget. Physical devices stay discovery-only because owning hardware lifecycle is
-both unsafe and unnecessary — the connected device's native id is all the launcher needs.
+booted-simulator budget. Physical hardware stays discovery-only because owning its lifecycle is
+both unsafe and unnecessary. Persistent checkout claims coordinate exclusive use without implying
+that Splashdown controls the phone.

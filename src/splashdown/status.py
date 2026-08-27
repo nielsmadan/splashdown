@@ -19,7 +19,6 @@ from .devices import (
 from .errors import CapabilityError
 from .recipe import GlobalConfig, LocalConfig, Recipe, _global_config_path, merged_targets
 from .registry import Registry, _port_in_use
-from .target_commands import _load_variant_spec
 from .targets import _load_recipe_or_empty, target_source
 
 
@@ -41,6 +40,35 @@ class TargetStatus:
     stale: bool = False
     undeclared: bool = False
     missing: bool = False
+
+
+@dataclass(frozen=True)
+class ClaimListRow:
+    target: str
+    source: str
+    platform: str
+    hardware_id: str
+    owner: str
+    claimed_at: str
+
+
+@dataclass(frozen=True)
+class TargetInventoryRow:
+    type: str
+    variant: str
+    source: str
+    device_name: str
+    platform: str
+    connection: str
+    claim: str
+    owner: str
+
+
+def _load_variant_spec(cwd: Path, dtype: str, variant: str) -> dict[str, Any] | None:
+    recipe = _load_recipe_or_empty(cwd)
+    local = LocalConfig.load(cwd / LOCAL_NAME)
+    glob = GlobalConfig.load(_global_config_path())
+    return merged_targets(recipe, local, glob).get(dtype, {}).get(variant)
 
 
 @dataclass(frozen=True)
@@ -300,7 +328,11 @@ def _gather_checkout(
     resources = registry.all_for(checkout)
     if check and not exists:
         context.summary.defunct_checkouts += 1
-        context.summary.defunct_rows += len(resources) + len(registry.devices_for(checkout))
+        context.summary.defunct_rows += (
+            len(resources)
+            + len(registry.devices_for(checkout))
+            + registry.summary_for(checkout)["claim"]
+        )
 
     targets: tuple[TargetStatus, ...]
     if show_all:

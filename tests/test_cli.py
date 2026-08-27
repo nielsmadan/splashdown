@@ -26,6 +26,73 @@ def test_cli_prog_name_is_splash():
     assert sd._build_parser().prog == "splash"
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (("target", "claims"), {"target_cmd": "claims", "target_format": None}),
+        (
+            ("target", "claims", "--format", "json"),
+            {"target_cmd": "claims", "target_format": "json"},
+        ),
+        (("target", "claim", "pixel"), {"variant": "pixel", "available": None}),
+        (
+            ("target", "claim", "--available", "android"),
+            {"variant": None, "available": "android"},
+        ),
+        (
+            ("target", "claim", "--available", "ios"),
+            {"variant": None, "available": "ios"},
+        ),
+        (
+            ("target", "claim", "--available", "any"),
+            {"variant": None, "available": "any"},
+        ),
+        (("target", "claim", "pixel", "--force"), {"variant": "pixel", "force": True}),
+        (("target", "release", "pixel"), {"variant": "pixel", "all_owned": False}),
+        (("target", "release", "--all"), {"variant": None, "all_owned": True}),
+        (
+            ("target", "release", "pixel", "--force"),
+            {"variant": "pixel", "force": True},
+        ),
+    ],
+)
+def test_target_claim_parser_accepts_command_surface(argv, expected):
+    parsed = sd._build_parser().parse_args(list(argv))
+
+    assert {name: getattr(parsed, name) for name in expected} == expected
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("target", "claim"),
+        ("target", "claim", "pixel", "--available", "android"),
+        ("target", "claim", "--available", "android", "--force"),
+        ("target", "release"),
+        ("target", "release", "pixel", "--all"),
+        ("target", "release", "--all", "--force"),
+    ],
+)
+def test_target_claim_dispatch_rejects_invalid_shapes(tmp_path, argv, capsys):
+    assert sd.main(["--cwd", str(tmp_path), *argv]) == 2
+    assert "requires" in capsys.readouterr().err
+
+
+def test_target_claim_post_subcommand_format_matches_top_level_format(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        sd.target_commands,
+        "cmd_target_claims",
+        lambda _registry, fmt: calls.append(fmt) or 0,
+        raising=False,
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "target", "claims"]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "target", "claims", "--format", "json"]) == 0
+
+    assert calls == ["json", "json"]
+
+
 def test_cli_help_shows_tiers(capsys):
     with pytest.raises(SystemExit):
         sd.main(["--help"])
@@ -33,6 +100,178 @@ def test_cli_help_shows_tiers(capsys):
     for token in ("run", "sync", "status", "init", "target", "env"):
         assert token in out
     assert "provision" not in out
+
+
+def _pending_claim_notice(checkout, *, action="transfer"):
+    return sd.ClaimNotice(
+        previous_owner=str(checkout.resolve()),
+        catalog_identity="recipe:/repo:device:pixel",
+        target_label="pixel",
+        action=action,
+        actor_checkout=str((checkout.parent / "new-owner").resolve()),
+        event_at="2026-08-26T10:00:00+00:00",
+        expires_at="2099-09-25T10:00:00+00:00",
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "handler"),
+    [
+        (("sync",), "_cmd_provision"),
+        (("status",), "cmd_status"),
+        (("run",), "cmd_run"),
+        (("target", "claims"), "_target_dispatch"),
+        (("trust",), "cmd_trust"),
+        (("untrust",), "cmd_untrust"),
+        (("bootstrap",), "cmd_bootstrap"),
+    ],
+)
+def test_claim_notice_next_checkout_command_prints_and_consumes_once(
+    tmp_path, monkeypatch, capsys, argv, handler
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry = sd.Registry()
+    notice = _pending_claim_notice(checkout)
+    registry.add_claim_notices([notice])
+    monkeypatch.setattr(sd.cli, handler, lambda *_args, **_kwargs: 0)
+
+    assert sd.main(["--cwd", str(checkout), *argv]) == 0
+    assert sd.main(["--cwd", str(checkout), *argv]) == 0
+
+    warning = (
+        f"warning: physical target pixel was claimed by {notice.actor_checkout} "
+        f"at {notice.event_at}; this checkout no longer owns it"
+    )
+    assert capsys.readouterr().err.count(warning) == 1
+    assert registry.consume_claim_notices(str(checkout.resolve())) == ()
+
+
+def test_claim_notice_is_consumed_before_a_command_that_later_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry = sd.Registry()
+    notice = _pending_claim_notice(checkout, action="release")
+    registry.add_claim_notices([notice])
+
+    def fail_later(*_args, **_kwargs):
+        raise ValueError("later failure")
+
+    monkeypatch.setattr(sd.cli, "_cmd_provision", fail_later)
+
+    assert sd.main(["--cwd", str(checkout), "sync"]) == 1
+
+    err = capsys.readouterr().err
+    assert "physical target pixel was force-released" in err
+    assert "error: later failure" in err
+    assert registry.consume_claim_notices(str(checkout.resolve())) == ()
+
+
+@pytest.mark.parametrize("boundary", ["completion", "help", "version", "argcomplete", "hook"])
+def test_claim_notice_early_boundary_does_not_construct_registry_or_consume(
+    tmp_path, monkeypatch, boundary
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry = sd.Registry()
+    notice = _pending_claim_notice(checkout)
+    registry.add_claim_notices([notice])
+    monkeypatch.setattr(
+        sd.cli,
+        "Registry",
+        lambda: pytest.fail(f"{boundary} constructed a registry"),
+    )
+
+    expects_exit = boundary in ("help", "version", "argcomplete")
+    if boundary == "completion":
+        monkeypatch.setattr(sd.cli, "cmd_completion", lambda _shell: 0)
+        argv = ["--cwd", str(checkout), "completion"]
+    elif boundary == "help":
+        argv = ["--cwd", str(checkout), "--help"]
+    elif boundary == "version":
+        monkeypatch.setattr("splashdown._version.resolve_version", lambda: "test")
+        argv = ["--cwd", str(checkout), "--version"]
+    elif boundary == "argcomplete":
+        monkeypatch.setattr(
+            sd.completion,
+            "install",
+            lambda _parser: (_ for _ in ()).throw(SystemExit(0)),
+        )
+        argv = ["--cwd", str(checkout), "status"]
+    else:
+        monkeypatch.setattr(sd.cli, "cmd_post_checkout_hook", lambda *_args: 0)
+        argv = ["--cwd", str(checkout), "hook", "post-checkout", "old", "new", "1"]
+
+    if expects_exit:
+        with pytest.raises(SystemExit) as error:
+            sd.main(argv)
+        assert error.value.code == 0
+    else:
+        assert sd.main(argv) == 0
+
+    assert registry.consume_claim_notices(str(checkout.resolve())) == (notice,)
+
+
+def test_claim_notice_bootstrap_reuses_consuming_registry(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry = sd.Registry(
+        port_file=tmp_path / "registry" / "ports.tsv",
+        kv_file=tmp_path / "registry" / "kv.tsv",
+        device_file=tmp_path / "registry" / "devices.tsv",
+        claim_file=tmp_path / "registry" / "claims.tsv",
+        claim_notice_file=tmp_path / "registry" / "claim-notices.tsv",
+    )
+    registry.add_claim_notices([_pending_claim_notice(checkout)])
+    received = []
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    monkeypatch.setattr(
+        sd.cli,
+        "cmd_bootstrap",
+        lambda _cwd, passed_registry=None, *, rerun: received.append(passed_registry) or 0,
+    )
+
+    assert sd.main(["--cwd", str(checkout), "bootstrap"]) == 0
+
+    assert received == [registry]
+
+
+def test_claim_notice_store_error_warns_and_continues_to_handler(tmp_path, monkeypatch, capsys):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry = sd.Registry(
+        port_file=tmp_path / "registry" / "ports.tsv",
+        kv_file=tmp_path / "registry" / "kv.tsv",
+        device_file=tmp_path / "registry" / "devices.tsv",
+        claim_file=tmp_path / "registry" / "claims.tsv",
+        claim_notice_file=tmp_path / "registry" / "claim-notices.tsv",
+    )
+    notice = _pending_claim_notice(checkout)
+    registry.add_claim_notices([notice])
+    consume = registry.consume_claim_notices
+    handled: list[str] = []
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    monkeypatch.setattr(
+        registry,
+        "consume_claim_notices",
+        lambda _owner: (_ for _ in ()).throw(OSError("notice store unavailable")),
+    )
+    monkeypatch.setattr(
+        sd.cli,
+        "_cmd_provision",
+        lambda *_args, **_kwargs: handled.append("sync") or 0,
+    )
+
+    assert sd.main(["--cwd", str(checkout), "sync"]) == 0
+
+    assert handled == ["sync"]
+    err = capsys.readouterr().err
+    assert "warning: unable to consume physical target notices: notice store unavailable" in err
+    assert "Traceback" not in err
+    assert consume(str(checkout.resolve())) == (notice,)
 
 
 def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):

@@ -239,14 +239,14 @@ def android_destroy(avd_name: str) -> None:
         )
 
 
-def _android_physical_devices() -> list[dict[str, str]]:
+def _android_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
     """Return connected Android hardware, excluding emulator serials."""
     try:
         with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
             out = check_output_finite(
                 [_android_bin("adb"), "devices", "-l"],
                 operation="adb devices",
-                timeout=DISCOVERY_TIMEOUT,
+                timeout=timeout,
                 stderr=subprocess.DEVNULL,
             ).decode()
     except subprocess.CalledProcessError as error:

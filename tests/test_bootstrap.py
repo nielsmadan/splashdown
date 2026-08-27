@@ -8,6 +8,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +38,32 @@ def _commit_recipe(cwd: Path) -> str:
         check=True,
     )
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cwd, text=True).strip()
+
+
+def _linked_worktree_with_recipe(
+    tmp_path: Path,
+    text: str,
+    *,
+    bootstrap_trusted: bool = True,
+) -> tuple[Path, Path, str]:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git_init(primary)
+    (primary / sd.RECIPE_NAME).write_text(text)
+    head = _commit_recipe(primary)
+    sd.record_trust(sd.git_dirs(primary), bootstrap=bootstrap_trusted)
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(linked), head], cwd=primary, check=True
+    )
+    return primary, linked, head
+
+
+def _claim_policy_recipe(policy: str, bootstrap: str | None = None) -> str:
+    text = f'[project.worktree]\nclaim_device = "{policy}"\n'
+    if bootstrap is not None:
+        text += f"\n[bootstrap]\nrun = {json.dumps(bootstrap)}\n"
+    return text
 
 
 def _wait_for(path: Path, timeout: float = 5) -> None:
@@ -139,7 +166,7 @@ def test_trust_without_bootstrap_authorizes_only_automatic_sync(tmp_path, capsys
     assert "next: run `splash bootstrap`" not in output
 
 
-def test_untrusted_bootstrap_fails_before_outputs_or_registry(tmp_path, monkeypatch):
+def test_untrusted_bootstrap_fails_before_outputs_or_allocations(tmp_path, monkeypatch):
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     _git_init(tmp_path)
@@ -149,7 +176,7 @@ def test_untrusted_bootstrap_fails_before_outputs_or_registry(tmp_path, monkeypa
 
     assert not (tmp_path / "bootstrap-ran").exists()
     assert not (tmp_path / sd.ENV_FILE_NAME).exists()
-    assert not state.exists()
+    assert sd.Registry().all_for(str(tmp_path.resolve())) == {}
 
 
 def test_bootstrap_runs_once_and_rerun_is_explicit(tmp_path, monkeypatch):
@@ -286,6 +313,378 @@ def test_hook_bootstraps_only_a_linked_worktree_creation(tmp_path, monkeypatch):
     assert not sd.is_worktree_creation(primary_dirs, "0" * 40, head, "1")
     assert sd.is_worktree_creation(linked_dirs, "0" * 64, "a" * 64, "1")
     assert not sd.is_worktree_creation(linked_dirs, "0" * 40, head, "0")
+
+
+def test_worktree_claim_policy_ignores_ineligible_checkout_events(tmp_path, monkeypatch):
+    primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("android"),
+    )
+    monkeypatch.setattr(
+        sd.commands,
+        "_provision_locked",
+        lambda *_args, **_kwargs: SimpleNamespace(resolved={}),
+    )
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sd.commands,
+        "claim_available_target",
+        lambda *_args, **_kwargs: pytest.fail("ineligible checkout event claimed a device"),
+        raising=False,
+    )
+    registry = sd.Registry()
+
+    for cwd, old, flag in (
+        (linked, head, "1"),
+        (linked, "0" * len(head), "0"),
+        (primary, "0" * len(head), "1"),
+    ):
+        assert (
+            sd.commands._post_checkout_messages(
+                cwd,
+                registry,
+                sd.git_dirs(cwd),
+                old,
+                head,
+                flag,
+            )
+            is None
+        )
+
+    (linked / sd.RECIPE_NAME).write_text("")
+    assert (
+        sd.commands._post_checkout_messages(
+            linked,
+            registry,
+            sd.git_dirs(linked),
+            "0" * len(head),
+            head,
+            "1",
+        )
+        is None
+    )
+
+
+def test_worktree_claim_without_bootstrap_runs_after_provision_once(tmp_path, monkeypatch, capsys):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("android"),
+    )
+    events = []
+    calls = []
+
+    def provision(*_args, **_kwargs):
+        events.append("provision")
+        return SimpleNamespace(resolved={})
+
+    def claim(registry, cwd, policy, *, timeout):
+        events.append("claim")
+        calls.append((registry, cwd, policy, timeout))
+        return SimpleNamespace(target=SimpleNamespace(variant="pixel"))
+
+    registry = sd.Registry()
+    monkeypatch.setattr(sd.commands, "_provision_locked", provision)
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sd.commands, "claim_available_target", claim, raising=False)
+
+    messages = sd.commands._post_checkout_messages(
+        linked,
+        registry,
+        sd.git_dirs(linked),
+        "0" * len(head),
+        head,
+        "1",
+    )
+
+    assert messages is None
+    assert events == ["provision", "claim"]
+    assert calls == [(registry, linked, "android", 5)]
+    assert capsys.readouterr().err.splitlines()[-1] == "claimed physical device: pixel"
+
+
+def test_worktree_claim_allocator_and_output_run_inside_operation_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("android"),
+    )
+    active = False
+    events = []
+    output_lock_states = []
+
+    @contextmanager
+    def track_lock(checkout):
+        nonlocal active
+        assert checkout == str(linked.resolve())
+        active = True
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+            active = False
+
+    def claim(*_args, **_kwargs):
+        assert active is True
+        events.append("claim")
+        return SimpleNamespace(target=SimpleNamespace(variant="pixel"))
+
+    class _Stderr:
+        def write(self, text):
+            if text:
+                output_lock_states.append(active)
+
+        def flush(self):
+            return None
+
+    registry = sd.Registry()
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(
+        sd.commands,
+        "_provision_locked",
+        lambda *_args, **_kwargs: SimpleNamespace(resolved={}),
+    )
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sd.commands, "claim_available_target", claim)
+    monkeypatch.setattr(sd.commands.sys, "stderr", _Stderr())
+
+    assert (
+        sd.commands._post_checkout_messages(
+            linked,
+            registry,
+            sd.git_dirs(linked),
+            "0" * len(head),
+            head,
+            "1",
+        )
+        is None
+    )
+    assert events == ["enter", "claim", "exit"]
+    assert output_lock_states and all(output_lock_states)
+
+
+def test_worktree_claim_with_bootstrap_runs_after_completion_is_recorded(tmp_path, monkeypatch):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("any", "true"),
+    )
+    events = []
+
+    def provision(*_args, **_kwargs):
+        events.append("provision")
+        return SimpleNamespace(resolved={})
+
+    def bootstrap(*_args, **_kwargs):
+        events.append("bootstrap")
+        return ["ready"]
+
+    def complete(_dirs):
+        events.append("complete")
+
+    def claim(*_args, **_kwargs):
+        events.append("claim")
+        return SimpleNamespace(target=SimpleNamespace(variant="iphone"))
+
+    monkeypatch.setattr(sd.commands, "_provision_locked", provision)
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sd.commands, "run_bootstrap", bootstrap)
+    monkeypatch.setattr(sd.commands, "mark_bootstrap_complete", complete)
+    monkeypatch.setattr(sd.commands, "claim_available_target", claim, raising=False)
+
+    messages = sd.commands._post_checkout_messages(
+        linked,
+        sd.Registry(),
+        sd.git_dirs(linked),
+        "0" * len(head),
+        head,
+        "1",
+    )
+
+    assert messages == ["ready"]
+    assert events == ["provision", "bootstrap", "complete", "claim"]
+
+
+def test_worktree_claim_does_not_run_after_bootstrap_failure(tmp_path, monkeypatch):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("ios", "exit 7"),
+    )
+    events = []
+
+    def provision(*_args, **_kwargs):
+        events.append("provision")
+        return SimpleNamespace(resolved={})
+
+    def bootstrap(*_args, **_kwargs):
+        events.append("bootstrap")
+        raise RuntimeError("bootstrap failed")
+
+    monkeypatch.setattr(sd.commands, "_provision_locked", provision)
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sd.commands, "run_bootstrap", bootstrap)
+    monkeypatch.setattr(
+        sd.commands,
+        "claim_available_target",
+        lambda *_args, **_kwargs: pytest.fail("claim ran after bootstrap failed"),
+        raising=False,
+    )
+
+    assert (
+        sd.commands.cmd_post_checkout_hook(
+            linked,
+            sd.Registry(),
+            "0" * len(head),
+            head,
+            "1",
+        )
+        == 1
+    )
+    assert events == ["provision", "bootstrap"]
+
+
+def test_worktree_claim_runs_after_already_complete_bootstrap(tmp_path, monkeypatch):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("ios", "true"),
+    )
+    sd.mark_bootstrap_complete(sd.git_dirs(linked))
+    events = []
+
+    def provision(*_args, **_kwargs):
+        events.append("provision")
+        return SimpleNamespace(resolved={})
+
+    def claim(*_args, **_kwargs):
+        events.append("claim")
+        return SimpleNamespace(target=SimpleNamespace(variant="iphone"))
+
+    monkeypatch.setattr(sd.commands, "_provision_locked", provision)
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sd.commands,
+        "run_bootstrap",
+        lambda *_args, **_kwargs: pytest.fail("completed bootstrap reran"),
+    )
+    monkeypatch.setattr(sd.commands, "claim_available_target", claim, raising=False)
+
+    assert (
+        sd.commands._post_checkout_messages(
+            linked,
+            sd.Registry(),
+            sd.git_dirs(linked),
+            "0" * len(head),
+            head,
+            "1",
+        )
+        is None
+    )
+    assert events == ["provision", "claim"]
+
+
+def test_untrusted_worktree_bootstrap_policy_does_not_claim(tmp_path, monkeypatch):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("android", "true"),
+        bootstrap_trusted=False,
+    )
+    events = []
+
+    def provision(*_args, **_kwargs):
+        events.append("provision")
+        return SimpleNamespace(resolved={})
+
+    monkeypatch.setattr(sd.commands, "_provision_locked", provision)
+    monkeypatch.setattr(sd.commands, "_emit_provision", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        sd.commands,
+        "claim_available_target",
+        lambda *_args, **_kwargs: pytest.fail("untrusted bootstrap policy claimed a device"),
+        raising=False,
+    )
+
+    assert (
+        sd.commands._post_checkout_messages(
+            linked,
+            sd.Registry(),
+            sd.git_dirs(linked),
+            "0" * len(head),
+            head,
+            "1",
+        )
+        is None
+    )
+    assert events == ["provision"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        sd.DeviceError("no configured, connected, free android physical target"),
+        sd.CapabilityError("android", "install Android SDK platform-tools"),
+        sd.DeviceError("physical device discovery timed out after 5s"),
+    ],
+)
+def test_worktree_claim_device_errors_are_nonfatal(tmp_path, monkeypatch, capsys, error):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("android"),
+    )
+    monkeypatch.setattr(
+        sd.commands,
+        "claim_available_target",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+        raising=False,
+    )
+
+    assert (
+        sd.main(
+            [
+                "--cwd",
+                str(linked),
+                "hook",
+                "post-checkout",
+                "0" * len(head),
+                head,
+                "1",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "no physical device claimed; retry: splash target claim --available android"
+    )
+
+
+def test_worktree_claim_registry_error_retains_hook_failure(tmp_path, monkeypatch, capsys):
+    _primary, linked, head = _linked_worktree_with_recipe(
+        tmp_path,
+        _claim_policy_recipe("any"),
+    )
+    monkeypatch.setattr(
+        sd.commands,
+        "claim_available_target",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("claims registry failed")),
+        raising=False,
+    )
+
+    assert (
+        sd.main(
+            [
+                "--cwd",
+                str(linked),
+                "hook",
+                "post-checkout",
+                "0" * len(head),
+                head,
+                "1",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().err
+    assert "error: claims registry failed" in output
+    assert "retry with `splash bootstrap` after fixing the problem" in output
 
 
 def test_untrusted_worktree_hook_writes_nothing_and_runs_nothing(tmp_path, monkeypatch, capsys):

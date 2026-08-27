@@ -8,12 +8,21 @@ import socket
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeAlias
+from typing import Literal, TypeAlias, cast
 
 from .constants import state_directory
-from .device_types import EmulatorRecord, ManagedDevice, SimulatorRecord
+from .device_types import (
+    ClaimAttempt,
+    ClaimNotice,
+    ClaimRelease,
+    EmulatorRecord,
+    ManagedDevice,
+    PhysicalClaim,
+    SimulatorRecord,
+)
 
 DeviceRow: TypeAlias = ManagedDevice
 
@@ -23,6 +32,8 @@ DeviceRow: TypeAlias = ManagedDevice
 _PORT_ROW_FIELDS = 3  # (port, checkout, key)
 _KV_ROW_FIELDS = 3  # (checkout, key, value)
 _DEVICE_ROW_FIELDS = 7
+_CLAIM_ROW_FIELDS = 6
+_CLAIM_NOTICE_ROW_FIELDS = 7
 _OPERATION_LOCK_SHARDS = 256
 
 # The registry files are flat tab/newline-delimited TSV with no escaping, so a
@@ -70,6 +81,65 @@ def _encode_device_row(row: ManagedDevice) -> tuple[str, ...]:
     )
 
 
+def _decode_claim_row(fields: list[str]) -> PhysicalClaim:
+    return PhysicalClaim(*fields)
+
+
+def _encode_claim_row(row: PhysicalClaim) -> tuple[str, ...]:
+    return (
+        row.catalog_identity,
+        row.platform,
+        row.hardware_id,
+        row.target_label,
+        row.owner_checkout,
+        row.claimed_at,
+    )
+
+
+def _decode_claim_notice_row(fields: list[str]) -> ClaimNotice | None:
+    previous_owner, catalog_identity, target_label, action, actor_checkout, event_at, expires_at = (
+        fields
+    )
+    if action not in ("transfer", "release") or _parse_claim_notice_expiry(expires_at) is None:
+        return None
+    return ClaimNotice(
+        previous_owner,
+        catalog_identity,
+        target_label,
+        cast(Literal["transfer", "release"], action),
+        actor_checkout,
+        event_at,
+        expires_at,
+    )
+
+
+def _encode_claim_notice_row(row: ClaimNotice) -> tuple[str, ...]:
+    if _parse_claim_notice_expiry(row.expires_at) is None:
+        raise ValueError(
+            "registry claim notice expires_at must be a timezone-aware ISO timestamp: "
+            f"{row.expires_at!r}"
+        )
+    return (
+        row.previous_owner,
+        row.catalog_identity,
+        row.target_label,
+        row.action,
+        row.actor_checkout,
+        row.event_at,
+        row.expires_at,
+    )
+
+
+def _parse_claim_notice_expiry(value: str) -> datetime | None:
+    try:
+        expiry = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if expiry.tzinfo is None or expiry.utcoffset() is None:
+        return None
+    return expiry
+
+
 def _atomic_write(path: Path, text: str) -> None:
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(temp_name)
@@ -90,14 +160,24 @@ class Registry:
         port_file: Path | None = None,
         kv_file: Path | None = None,
         device_file: Path | None = None,
+        claim_file: Path | None = None,
+        claim_notice_file: Path | None = None,
     ):
         registry_dir = state_directory()
         self.port_file = port_file or (registry_dir / "ports.tsv")
         self.kv_file = kv_file or (registry_dir / "kv.tsv")
         self.device_file = device_file or (registry_dir / "devices.tsv")
+        self.claim_file = claim_file or (registry_dir / "claims.tsv")
+        self.claim_notice_file = claim_notice_file or (registry_dir / "claim-notices.tsv")
         self.state_dir = self.kv_file.parent
         self.port_file.parent.mkdir(parents=True, exist_ok=True)
-        for f in (self.port_file, self.kv_file, self.device_file):
+        for f in (
+            self.port_file,
+            self.kv_file,
+            self.device_file,
+            self.claim_file,
+            self.claim_notice_file,
+        ):
             f.touch(exist_ok=True)
             # kv.tsv can hold secret set-type/template values, and the registry
             # is machine-wide — keep it owner-only rather than umask-default 0644
@@ -226,6 +306,16 @@ class Registry:
             kept_dev = [r for r in dev_rows if r.checkout != abspath]
             removed += len(dev_rows) - len(kept_dev)
             self._write_devices(kept_dev)
+        with self._lock(self.claim_file):
+            claim_rows = self._read_claims()
+            kept_claims = [r for r in claim_rows if r.owner_checkout != abspath]
+            removed += len(claim_rows) - len(kept_claims)
+            self._write_claims(kept_claims)
+        with self._lock(self.claim_notice_file):
+            notice_rows = self._read_claim_notices()
+            kept_notices = [r for r in notice_rows if r.previous_owner != abspath]
+            removed += len(notice_rows) - len(kept_notices)
+            self._write_claim_notices(kept_notices)
         return removed
 
     def _read_kv(self) -> list[tuple[str, str, str]]:
@@ -319,6 +409,194 @@ class Registry:
             for row in rows
         ]
         _atomic_write(self.device_file, "\n".join(lines) + ("\n" if lines else ""))
+
+    def _read_claims(self) -> list[PhysicalClaim]:
+        out: list[PhysicalClaim] = []
+        for line in self.claim_file.read_text().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) != _CLAIM_ROW_FIELDS:
+                continue
+            out.append(_decode_claim_row(parts))
+        return out
+
+    def _write_claims(self, rows: Iterable[PhysicalClaim]) -> None:
+        field_names = (
+            "catalog_identity",
+            "platform",
+            "hardware_id",
+            "target_label",
+            "owner_checkout",
+            "claimed_at",
+        )
+        lines = [
+            "\t".join(
+                _tsv_field(field, what=f"claim {name}")
+                for name, field in zip(field_names, _encode_claim_row(row), strict=True)
+            )
+            for row in rows
+        ]
+        _atomic_write(self.claim_file, "\n".join(lines) + ("\n" if lines else ""))
+
+    def _read_claim_notices(self) -> list[ClaimNotice]:
+        out: list[ClaimNotice] = []
+        for line in self.claim_notice_file.read_text().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) != _CLAIM_NOTICE_ROW_FIELDS:
+                continue
+            if row := _decode_claim_notice_row(parts):
+                out.append(row)
+        return out
+
+    def _write_claim_notices(self, rows: Iterable[ClaimNotice]) -> None:
+        field_names = (
+            "previous_owner",
+            "catalog_identity",
+            "target_label",
+            "action",
+            "actor_checkout",
+            "event_at",
+            "expires_at",
+        )
+        lines = [
+            "\t".join(
+                _tsv_field(field, what=f"claim notice {name}")
+                for name, field in zip(field_names, _encode_claim_notice_row(row), strict=True)
+            )
+            for row in rows
+        ]
+        _atomic_write(self.claim_notice_file, "\n".join(lines) + ("\n" if lines else ""))
+
+    def attempt_claim(self, row: PhysicalClaim, *, force: bool = False) -> ClaimAttempt:
+        with self._lock(self.claim_file):
+            rows = self._read_claims()
+            live_rows = [existing for existing in rows if Path(existing.owner_checkout).exists()]
+            conflicts = tuple(
+                existing
+                for existing in live_rows
+                if existing.catalog_identity == row.catalog_identity
+                or (existing.platform == row.platform and existing.hardware_id == row.hardware_id)
+            )
+            other_owner = tuple(
+                existing for existing in conflicts if existing.owner_checkout != row.owner_checkout
+            )
+            same_catalog = next(
+                (
+                    existing
+                    for existing in conflicts
+                    if existing.owner_checkout == row.owner_checkout
+                    and existing.catalog_identity == row.catalog_identity
+                ),
+                None,
+            )
+            same_hardware = next(
+                (
+                    existing
+                    for existing in conflicts
+                    if existing.owner_checkout == row.owner_checkout
+                    and existing.platform == row.platform
+                    and existing.hardware_id == row.hardware_id
+                ),
+                None,
+            )
+
+            if other_owner and not force:
+                if len(live_rows) != len(rows):
+                    self._write_claims(live_rows)
+                return ClaimAttempt("busy", None, other_owner, ())
+
+            if force and conflicts:
+                kept = [existing for existing in live_rows if existing not in conflicts]
+                kept.append(row)
+                self._write_claims(kept)
+                return ClaimAttempt("claimed", row, (), other_owner)
+
+            if same_catalog is not None:
+                updated = replace(row, claimed_at=same_catalog.claimed_at)
+                updated_rows = [
+                    updated if existing == same_catalog else existing for existing in live_rows
+                ]
+                self._write_claims(updated_rows)
+                return ClaimAttempt("owned", updated, (), ())
+
+            if same_hardware is not None:
+                if len(live_rows) != len(rows):
+                    self._write_claims(live_rows)
+                return ClaimAttempt("owned", same_hardware, (), ())
+
+            rows = live_rows
+            rows.append(row)
+            self._write_claims(rows)
+        return ClaimAttempt("claimed", row, (), ())
+
+    def release_claim(
+        self, catalog_identity: str, requester: str, *, force: bool = False
+    ) -> ClaimRelease:
+        with self._lock(self.claim_file):
+            rows = self._read_claims()
+            matching = tuple(row for row in rows if row.catalog_identity == catalog_identity)
+            if not matching:
+                return ClaimRelease("missing", (), ())
+            conflicts = tuple(row for row in matching if row.owner_checkout != requester)
+            if conflicts and not force:
+                return ClaimRelease("busy", (), conflicts)
+            kept = [row for row in rows if row.catalog_identity != catalog_identity]
+            self._write_claims(kept)
+            return ClaimRelease("released", matching, ())
+
+    def release_claims(self, requester: str) -> tuple[PhysicalClaim, ...]:
+        with self._lock(self.claim_file):
+            rows = self._read_claims()
+            released = tuple(row for row in rows if row.owner_checkout == requester)
+            kept = [row for row in rows if row.owner_checkout != requester]
+            self._write_claims(kept)
+            return released
+
+    def all_claims(self, *, gc: bool = True) -> tuple[PhysicalClaim, ...]:
+        if not gc:
+            return tuple(self._read_claims())
+        with self._lock(self.claim_file):
+            rows = self._read_claims()
+            kept = [row for row in rows if Path(row.owner_checkout).exists()]
+            if len(kept) != len(rows):
+                self._write_claims(kept)
+            return tuple(kept)
+
+    def add_claim_notices(self, rows: Iterable[ClaimNotice]) -> None:
+        with self._lock(self.claim_notice_file):
+            notices = self._read_claim_notices()
+            for row in rows:
+                notices = [
+                    existing
+                    for existing in notices
+                    if not (
+                        existing.previous_owner == row.previous_owner
+                        and existing.catalog_identity == row.catalog_identity
+                    )
+                ]
+                notices.append(row)
+            self._write_claim_notices(notices)
+
+    def consume_claim_notices(
+        self, owner: str, *, now: datetime | None = None
+    ) -> tuple[ClaimNotice, ...]:
+        with self._lock(self.claim_notice_file):
+            rows = self._read_claim_notices()
+            current = now or datetime.now(UTC)
+            live = [
+                row
+                for row in rows
+                if Path(row.previous_owner).exists()
+                and (expiry := _parse_claim_notice_expiry(row.expires_at)) is not None
+                and expiry > current
+            ]
+            consumed = tuple(row for row in live if row.previous_owner == owner)
+            kept = [row for row in live if row.previous_owner != owner]
+            self._write_claim_notices(kept)
+            return consumed
 
     def get_device(self, abspath: str, dtype: str, variant: str) -> ManagedDevice | None:
         for r in self._read_devices():
@@ -425,8 +703,7 @@ class Registry:
             return len(rows) - len(kept)
 
     def all_checkouts(self) -> list[str]:
-        """Every checkout path the registry knows about across ports.tsv,
-        kv.tsv, and devices.tsv. Deduped + sorted."""
+        """Every checkout path represented by a resource, device, or claim."""
         seen: set[str] = set()
         for prow in self._read_ports():
             seen.add(prow[1])
@@ -434,13 +711,13 @@ class Registry:
             seen.add(krow[0])
         for drow in self._read_devices():
             seen.add(drow.checkout)
+        for crow in self._read_claims():
+            seen.add(crow.owner_checkout)
         return sorted(seen)
 
     def summary_for(self, abspath: str) -> dict[str, int]:
-        """Per-checkout row counts grouped by source. Always returns all four
-        keys (`port`, `kv`, `simulator`, `emulator`) even when zero, so callers
-        can format without key-existence checks."""
-        counts = {"port": 0, "kv": 0, "simulator": 0, "emulator": 0}
+        """Per-checkout row counts grouped by registry source."""
+        counts = {"port": 0, "kv": 0, "simulator": 0, "emulator": 0, "claim": 0}
         for prow in self._read_ports():
             if prow[1] == abspath:
                 counts["port"] += 1
@@ -450,6 +727,9 @@ class Registry:
         for drow in self._read_devices():
             if drow.checkout == abspath and drow.dtype in counts:
                 counts[drow.dtype] += 1
+        for crow in self._read_claims():
+            if crow.owner_checkout == abspath:
+                counts["claim"] += 1
         return counts
 
     def reconcile_with_recipes(self) -> int:
@@ -512,6 +792,23 @@ class Registry:
             self._write_kv(kept_kv)
         if include_devices:
             removed += self.gc_devices(device_orphan_check)
+        with self._lock(self.claim_file):
+            claim_rows = self._read_claims()
+            kept_claims = [row for row in claim_rows if Path(row.owner_checkout).exists()]
+            removed += len(claim_rows) - len(kept_claims)
+            self._write_claims(kept_claims)
+        with self._lock(self.claim_notice_file):
+            notice_rows = self._read_claim_notices()
+            now = datetime.now(UTC)
+            kept_notices = [
+                row
+                for row in notice_rows
+                if Path(row.previous_owner).exists()
+                and (expiry := _parse_claim_notice_expiry(row.expires_at)) is not None
+                and expiry > now
+            ]
+            removed += len(notice_rows) - len(kept_notices)
+            self._write_claim_notices(kept_notices)
         removed += self.reconcile_with_recipes()
         return removed
 

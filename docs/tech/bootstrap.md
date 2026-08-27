@@ -43,6 +43,37 @@ untrust, and hook handling therefore fail instead of waiting on a non-reentrant 
 Completion means at least one full command sequence succeeded. First-run failure leaves no marker;
 failed `--rerun` leaves a prior marker untouched. Recipe changes never invalidate the marker.
 
+## Linked-worktree device allocation
+
+`[project.worktree] claim_device = "ios" | "android" | "any"` is a committed machine-local
+allocation policy, not a project command. `recipe.py` validates `project.worktree` as a strict table
+whose only field is `claim_device`.
+
+The post-checkout handler evaluates the policy only when `is_worktree_creation` confirms a genuine
+linked worktree: the checkout has a private Git directory distinct from the common directory,
+Git's checkout flag is `1`, the old object ID is all zeroes, and the new object ID is a nonzero
+valid ID of the same width. Primary-checkout initialization, ordinary branch switches, file
+checkouts, and other post-checkout events do not allocate a phone.
+
+The transaction order in `commands.py` is:
+
+1. provision and render the checkout's resources;
+2. run a trusted incomplete bootstrap, then persist its completion marker;
+3. take the checkout operation lock and call the generic physical allocator;
+4. print the selected target or an actionable manual retry.
+
+An already-complete bootstrap skips step 2 but still permits step 3 on the qualifying creation
+event. A bootstrap failure prevents allocation. The allocation uses one discovery snapshot with a
+five-second total budget and claims at most one configured target. No connected/free match,
+unavailable platform tooling, and discovery timeout print
+`splash target claim --available PLATFORM` and remain non-fatal. The generated outer hook absorbs
+handler failures so Git never turns a completed worktree creation into a nonzero result.
+
+The lifecycle lock remains outermost for the hook, followed by shared clone trust. Provisioning
+and claim allocation each take and release the checkout operation lock within that boundary. The
+claims-file lock is acquired only inside the allocation transaction after discovery; notice locks
+are not involved in automatic allocation.
+
 ## Hook path
 
 The generated native/Husky hook and Lefthook job resolve `splash` once, normalize a relative PATH

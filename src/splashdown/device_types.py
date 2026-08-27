@@ -127,6 +127,42 @@ LaunchDestination: TypeAlias = IOSDestination | AndroidDestination
 DestinationLike: TypeAlias = LaunchDestination | Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class PhysicalClaim:
+    catalog_identity: str
+    platform: str
+    hardware_id: str
+    target_label: str
+    owner_checkout: str
+    claimed_at: str
+
+
+@dataclass(frozen=True)
+class ClaimNotice:
+    previous_owner: str
+    catalog_identity: str
+    target_label: str
+    action: Literal["transfer", "release"]
+    actor_checkout: str
+    event_at: str
+    expires_at: str
+
+
+@dataclass(frozen=True)
+class ClaimAttempt:
+    status: Literal["claimed", "owned", "busy"]
+    claim: PhysicalClaim | None
+    conflicts: tuple[PhysicalClaim, ...]
+    displaced: tuple[PhysicalClaim, ...]
+
+
+@dataclass(frozen=True)
+class ClaimRelease:
+    status: Literal["released", "missing", "busy"]
+    released: tuple[PhysicalClaim, ...]
+    conflicts: tuple[PhysicalClaim, ...]
+
+
 def as_launch_destination(value: DestinationLike) -> LaunchDestination:
     if isinstance(value, (IOSDestination, AndroidDestination)):
         return value

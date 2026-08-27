@@ -12,7 +12,7 @@
   - [iOS via xcrun simctl](#ios-via-xcrun-simctl)
   - [Android via the SDK toolchain](#android-via-the-sdk-toolchain)
   - [Capability boundaries](#capability-boundaries)
-  - [Physical devices: discovered, never created](#physical-devices-discovered-never-created)
+  - [Physical discovery and claim selection](#physical-discovery-and-claim-selection)
   - [ensure_fresh_sim: reconcile-on-drift](#ensure_fresh_sim-reconcile-on-drift)
   - [The launch-destination contract](#the-launch-destination-contract)
   - [Framework launch](#framework-launch)
@@ -28,7 +28,8 @@ destination. `devices.py` owns cross-platform discovery, reconciliation, health,
 dispatch. `device_ios.py` owns Xcode, `simctl`, and `devicectl`; `device_android.py` owns the
 Android SDK, AVD, emulator, and ADB operations. `device_tools.py` supplies the shared finite-call
 deadline boundary. Simulators and emulators are *created/destroyed/reconciled* and tracked in the
-registry; physical devices are only *discovered* and never persisted.
+managed-device registry. Physical hardware is only *discovered* and never persisted as a managed
+device; checkout ownership is persisted separately as a claim.
 
 Target catalog writers live in `targets.py`, while lifecycle and fleet command composition lives
 in `target_commands.py`. Compatibility re-exports remain in this module for existing extensions.
@@ -121,7 +122,7 @@ Fleet operations catch it per row or platform, warn once, and continue supported
 registry row is preserved so cleanup can be retried later on a capable host. See
 [platform-capabilities.md](platform-capabilities.md) for the complete subprocess audit.
 
-### Physical devices: discovered, never created
+### Physical discovery and claim selection
 
 Physical hardware cannot be created/booted/destroyed; the only operation is *discovery*.
 `_devicectl_json` in `device_ios.py` wraps `xcrun devicectl … --json-output -` (Xcode 15+) the
@@ -132,15 +133,42 @@ until a launch-time tunnel) and excludes `unavailable` tunnels, returning
 `adb devices -l`, skipping `emulator-*` serials (those are the `emulator` dtype), returning
 `{id (serial), name, platform: "android"}`.
 
-`physical_discover` merges both, and is forgiving by design: with `platform=None` a capability
+`physical_discover` in `devices.py` merges both for legacy resolution and status, and is forgiving
+by design: with `platform=None` a capability
 failure for one platform produces one warning and the other discovery path still runs. An
 *explicitly requested* platform re-raises its capability error. The optional shared `warned` set
 deduplicates warnings across several target variants. `_physical_match` filters by the spec's `id` (exact) or `name`
 (case-insensitive substring). `ensure_physical` in `devices.py` requires exactly one match —
 zero raises a setup hint from `_physical_no_match_msg`, two-or-more raises an
 "narrow with id/name/platform" error — and returns an `IOSDestination` or
-`AndroidDestination` with `owned=False`. `physical_status`
-maps the same match to `connected`/`absent`/`ambiguous` for `splash targets`.
+`AndroidDestination` with `owned=False`. `physical_status` maps the same match to
+`connected`/`absent`/`ambiguous` for operational `splash status` checks.
+
+Bare `splash target` uses the claim-aware inventory path instead. It runs one concurrent iOS and
+Android snapshot under the shared interactive deadline, matches every configured physical target
+against that snapshot, and renders connection state independently from registry ownership. A
+configured target with no match renders `disconnected`; it can still render `claimed` when its
+catalog identity has a persisted claim. A platform capability failure renders that platform's
+targets `unavailable` without discarding the other platform's snapshot.
+
+Claim-aware allocation lives in `device_claims.py`. `configured_physical_targets` builds the only
+eligible catalog from recipe, local, then global declarations, preserving declaration order within
+each source. It assigns a catalog identity scoped to the Git common directory for recipe targets,
+the checkout for local targets, and the global config path for global targets. Discovered hardware
+that has no configured target is never considered.
+
+`discover_physical_snapshot` invokes each requested platform once. An `any` request runs iOS and
+Android discovery concurrently under one deadline. Interactive claims and physical runs use the
+normal 30-second discovery budget. The worktree hook passes a five-second total budget.
+`match_physical_target` applies every candidate's selectors to the shared snapshot and returns a
+typed destination only for exactly one match.
+
+Specific selection calls `Registry.attempt_claim` after matching. Generic selection reads one
+claim snapshot, walks the configured catalog, skips disconnected, ambiguous, busy, and
+already-owned candidates, and tries later candidates from the same device snapshot when it loses a
+claim race. Device discovery never runs under the claims-file lock. Registry transactions enforce
+both catalog-identity and `(platform, hardware_id)` conflicts, so aliases cannot allocate the same
+phone and recipe targets collide across linked worktrees.
 
 ### ensure_fresh_sim: reconcile-on-drift
 
@@ -149,7 +177,8 @@ maps the same match to `connected`/`absent`/`ambiguous` for `splash targets`.
 inspection cannot diverge from refresh. `ensure_fresh_sim` is the mutation entry point and
 dispatches on `dtype`:
 
-- `device` → delegates to `ensure_physical` (no registry, no reconcile).
+- `device` → delegates to `ensure_physical` (no managed-device row and no reconcile). Physical
+  `run` uses the claim-aware path in `device_claims.py` instead.
 - `simulator` / `emulator` → resolve the target OS image (`latest` expands to the live latest
   via `_ios_latest_runtime_version` / `_android_latest_image`; an explicit value is taken
   verbatim, i.e. *pinned*). It reads the registry row for `(checkout, dtype, variant)` and
@@ -221,6 +250,12 @@ the shell's exit status.
 - `CapabilityError` / `require_macos` / `translate_tool_errors` — `errors.py` and
   `capabilities.py` — typed host/tool availability boundary.
 - `_xcrun_json` / `_devicectl_json` — `device_ios.py` — subprocess JSON wrappers.
+- `configured_physical_targets` / `discover_physical_snapshot` / `match_physical_target` —
+  `device_claims.py` — configured catalog, one-snapshot discovery, and matching.
+- `claim_configured_target` / `claim_available_target` — `device_claims.py` — specific and generic
+  physical allocation orchestration.
+- `PhysicalClaim` / `ClaimNotice` / `ClaimAttempt` / `ClaimRelease` — `device_types.py` —
+  dependency-free storage and orchestration records.
 - `_android_avd_names` / `_android_running_serial` — `device_android.py` — AVD discovery.
 - `run_finite` / `check_output_finite` — `device_tools.py` — finite-operation deadlines.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py` — typed dispatch.
@@ -260,10 +295,10 @@ row records what was created; when the live latest drifts past it, the stale sim
 rebuilt. Pinned variants encode an intentional version (e.g. "lowest supported OS, committed to
 version control"), so they are explicitly exempt from this churn.
 
-**Physical devices are not owned** because splashdown cannot meaningfully create or destroy
-hardware, and writing them to the machine-wide registry would be meaningless across reboots and
-unplugs. So they are discovered fresh each time and their native ids are passed straight through
-to the launcher, never persisted.
+**Physical hardware is not lifecycle-owned** because Splashdown cannot meaningfully create or
+destroy it. Hardware is discovered fresh and its native ID is passed straight to the launcher.
+The separate claim registry persists checkout ownership because process lifetime, reboots, and
+temporary disconnects must not let another live worktree silently take the same configured phone.
 
 ## Related
 

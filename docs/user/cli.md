@@ -34,6 +34,12 @@ splash target refresh [ios|android|all]
                                       # recreate stale registered sims/emulators
 splash target prune   [ios|android|all] [--dry-run] [--yes]
                                       # destroy sims/emulators splashdown didn't create
+splash target claims [--format text|json]
+                                      # inspect machine-wide physical claims
+splash target claim VARIANT [--force] [--format text|json]
+splash target claim --available ios|android|any [--format text|json]
+splash target release VARIANT [--force]
+splash target release --all
 
 splash env [--checkout PATH]        # list a checkout's resolved keys
 splash env get KEY [--checkout PATH]
@@ -47,7 +53,7 @@ splash completion [bash|zsh]        # print shell-completion script (eval it in 
 
 `splash status` answers "what's the state of this checkout?": resource keys (with `[in use]` /
 `[free]` for ports), declared device variants and whether each is booted, and stale registry rows.
-Routine status, env-list, and sync JSON output hides resolved values; add the root-level
+Routine status, env-list, and sync JSON output hides resolved values. Add the root-level
 `--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
 single-value read. `splash sync --force` reallocates ports. `splash init` scans the project,
 scaffolds the project files, and runs the first sync (`--no-sync` scaffolds only).
@@ -125,3 +131,30 @@ capabilities without needing a valid recipe. See
 Commands that load configuration validate the complete document before provisioning or project-file mutation. Unknown sections and fields, wrong types, invalid templates, and malformed target definitions exit 1 with a qualified error and no traceback.
 
 `splash target add` applies the same target schema as TOML files before writing. `simulator` accepts `--model`, `--ios`, and `--name`. `emulator` accepts `--device`, `--image`, and `--name`. Physical `device` accepts `--id`, `--name`, and `--platform=ios|android`. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.
+
+Physical claim commands act only on configured `device` targets from the recipe, local config,
+and global config. `splash run pixel` claims a free connected target before framework build or
+installation. A busy or disconnected target fails before that work starts. The claim persists
+after process exit and launch failure, and `splash stop device pixel` does not release it.
+
+`splash target claims` reads registry ownership without device discovery. Its text output and JSON
+output include the target, source, platform, hardware ID, canonical owner checkout, and claim time.
+Specific `target claim VARIANT` writes its human diagnostic to stderr. Generic allocation prints
+only the chosen variant to stdout in text mode, so scripts can capture it:
+
+```sh
+device=$(splash target claim --available android)
+splash run device "$device"
+```
+
+For either claim form, `--format json` writes `target`, `source`, `platform`, `hardware_id`,
+`owner`, `claimed_at`, and `status` to stdout. Generic allocation checks configured targets in
+recipe, local, then global order and skips disconnected or busy matches. `claim VARIANT --force`
+atomically transfers a live owner's claim. `release VARIANT --force` clears it without taking it.
+`release --all` removes only claims owned by the current checkout.
+
+A forced transfer or release queues a warning for the displaced checkout. Its next ordinary
+checkout-scoped command prints and consumes the warning once. Completion, help, version output,
+and the hidden post-checkout command do not consume it. `splash deinit` releases the checkout's
+claims and pending notices. `splash gc` removes claims for deleted checkouts and expired or
+dead-checkout notices.

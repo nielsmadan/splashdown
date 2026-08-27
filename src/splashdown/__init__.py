@@ -17,6 +17,9 @@ from pathlib import Path
 
 from ._version import resolve_version as _resolve_version
 from .constants import (
+    CLAIM_NOTICE_DAYS,
+    CLAIM_NOTICE_REGISTRY,
+    CLAIM_REGISTRY,
     DEVICE_REGISTRY,
     ENV_FILE_NAME,
     ENV_NAME_RE,
@@ -65,7 +68,14 @@ from .bootstrap import (
 )
 from .catalog import PROFILES
 from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
-from .cli_output import _short_path, _summary_string
+from .cli_output import (
+    _short_path,
+    _summary_string,
+    render_claim_notices,
+    render_claim_rows,
+    render_claim_selection,
+    render_target_inventory,
+)
 from .commands import (
     InitOptions,
     _cmd_init_preset,
@@ -77,12 +87,27 @@ from .commands import (
     cmd_refresh_inventory,
     cmd_status,
 )
+from .device_claims import (
+    ConfiguredPhysicalTarget,
+    PhysicalSelection,
+    claim_available_target,
+    claim_configured_target,
+    configured_physical_targets,
+    discover_physical_snapshot,
+    match_physical_target,
+    notices_for_displaced,
+    resolve_physical_target,
+)
 from .device_types import (
     AndroidDestination,
+    ClaimAttempt,
+    ClaimNotice,
+    ClaimRelease,
     EmulatorRecord,
     IOSDestination,
     LaunchDestination,
     ManagedDevice,
+    PhysicalClaim,
     SimulatorRecord,
 )
 from .devices import (
@@ -194,15 +219,19 @@ from .scanner import (
     _enumerate_apps,
     _expand_workspace_globs,
 )
+from .status import ClaimListRow, TargetInventoryRow
 from .target_commands import (
     cmd_destroy,
     cmd_gc,
     cmd_run,
     cmd_start,
     cmd_stop,
+    cmd_target_claim,
+    cmd_target_claims,
     cmd_target_gc,
     cmd_target_prune,
     cmd_target_refresh,
+    cmd_target_release,
     cmd_targets_list,
 )
 from .targets import global_target_add, global_target_remove, target_add, target_remove

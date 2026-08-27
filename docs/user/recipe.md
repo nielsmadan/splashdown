@@ -54,7 +54,7 @@ Each resource type has a small, strict shape:
 
 Every resource also accepts the optional `writer` field. Fields belonging to another resource type are errors.
 
-Templates are derived values and re-render on every sync. Referenced resource changes therefore propagate immediately. For a stable generated component, declare it separately as `type = "uuid"` and reference that resource from the template; calling `uuid()` directly in a template creates a new value on every sync.
+Templates are derived values and re-render on every sync. Referenced resource changes therefore propagate immediately. For a stable generated component, declare it separately as `type = "uuid"` and reference that resource from the template. Calling `uuid()` directly in a template creates a new value on every sync.
 
 `set` resources hold manually supplied values:
 
@@ -64,7 +64,7 @@ type = "set"
 # default = "local-development-token"   # optional
 ```
 
-Set one with `splash env set API_TOKEN=VALUE`. The command requires the resource to be declared as `type = "set"`; it rejects missing or malformed recipes, undeclared keys, and generated or allocated resource types. Run `splash sync` afterward to materialize the new value in its configured writer destination. Without a default, sync exits 1 until a value is set. Manual values persist across syncs, including `--force`; `splash env release API_TOKEN` clears one.
+Set one with `splash env set API_TOKEN=VALUE`. The command requires the resource to be declared as `type = "set"`. It rejects missing or malformed recipes, undeclared keys, and generated or allocated resource types. Run `splash sync` afterward to materialize the new value in its configured writer destination. Without a default, sync exits 1 until a value is set. Manual values persist across syncs, including `--force`. `splash env release API_TOKEN` clears one.
 
 A common pattern for consumers that need a stable short identifier (e.g. Docker Compose project names have a practical length limit):
 
@@ -72,7 +72,7 @@ A common pattern for consumers that need a stable short identifier (e.g. Docker 
 [resources.COMPOSE_PROJECT_NAME]
 type     = "template"
 template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
-# → "myapp-test-352e9e09" — stable per checkout path, 8-char truncated SHA256
+# → "myapp-test-352e9e09", stable per checkout path, 8-char truncated SHA256
 ```
 
 The same pattern gives every checkout its own database inside one shared Postgres container, with no new resource type. A database name needs no machine-wide coordination the way a port does, so a plain function of the checkout directory is enough and stays stable across reallocations:
@@ -86,7 +86,7 @@ writer   = "envfile=apps/api/.env"
 
 Three things to know before you add it:
 
-1. `slug()` lowercases and turns every non-alphanumeric run into a hyphen, so the readable part for a checkout named `myapp.feat-x` becomes `myapp-feat-x`. The truncated hash keeps identical path tails under different roots distinct. Mixing the literal underscore with the slug's hyphens is safe only if the database quotes the identifier; use a different literal separator when it does not.
+1. `slug()` lowercases and turns every non-alphanumeric run into a hyphen, so the readable part for a checkout named `myapp.feat-x` becomes `myapp-feat-x`. The truncated hash keeps identical path tails under different roots distinct. Mixing the literal underscore with the slug's hyphens is safe only if the database quotes the identifier. Use a different literal separator when it does not.
 2. The first sync takes over any hand-set `DB_NAME=` line already in `apps/api/.env` and replaces it with the computed value. Other keys in that file are left alone. Check the file before you add the resource.
 3. There is no per-checkout exception. The resource applies to every checkout including your primary one, so the base database from your compose file simply goes unused there. You cannot express "compute this only in worktrees".
 
@@ -120,6 +120,21 @@ completion model. It never runs until the clone is authorized with `splash trust
 once per checkout through `splash bootstrap` or a qualifying worktree-creation hook. See
 [Trusted worktree bootstrap](bootstrap.md).
 
+To claim one configured physical device after a linked worktree is created, add the exact project
+policy:
+
+```toml
+[project.worktree]
+claim_device = "android" # ios | android | any
+```
+
+`project.worktree` is a strict table containing only `claim_device`, whose value is exactly `ios`,
+`android`, or `any`. The policy runs only for a genuine linked-worktree creation event. It does not
+run for the primary checkout or ordinary branch and file checkouts. The hook attempts the claim
+after successful provisioning and trusted bootstrap, with a five-second discovery budget. No free
+device, unavailable platform tooling, or a discovery timeout is non-fatal. The hook prints a
+manual `splash target claim --available PLATFORM` retry.
+
 **For mobile**, the recipe also declares a `[targets.*]` catalog: the simulator and emulator variants the team agrees this project supports. Sim *instances* are created lazily per checkout, named `<parent>/<cwd>/<variant>-<path-hash>`. With `ios = "latest"` (the default), the sim is auto-recreated whenever a newer iOS lands. Pin an explicit version like `ios = "18.5"` for fixed coverage.
 
 ```toml
@@ -134,7 +149,11 @@ ios   = "17.0"
 device = "pixel_9"
 ```
 
-For a **plugged-in phone**, declare a `device` target (or just rely on auto-pick). Unlike sims/emulators, splashdown doesn't create or own physical hardware, it discovers what's connected and hands the native id to the launcher. All fields are optional. With one device connected, no config is needed at all.
+For a **plugged-in phone**, declare a `device` target. Unlike sims and emulators, Splashdown does
+not create or own physical hardware. It discovers what is connected and hands the native ID to the
+launcher. Recipe, local, and global physical targets all participate in machine-wide claims.
+Undeclared discovered phones never participate. The fields are optional selectors, but the target
+declaration itself is required before a phone can be claimed or run.
 
 ```toml
 [targets.device.default]
@@ -157,7 +176,14 @@ All supplied target values must be non-empty strings. A field for the wrong type
 
 Splashdown validates the complete recipe whenever it loads it. Unknown sections or fields, wrong value types, unknown workspace/loader/profile names, malformed targets, and invalid resource definitions are hard errors. `[apps.NAME]` must contain `path`, `profile`, and a unique `resources` list whose entries are declared under `[resources]`.
 
-`[project]` accepts `workspace`, `loader`, `framework`, `run`, `ios`, and `android`. `run` is either one non-empty command string or a table containing `ios` and/or `android` commands. The `ios` table accepts `scheme`, `mode`, `configuration`, `workspace`, and `project`; the `android` table accepts `mode`, `module`, `variant`, `application_id`, and `launch_activity`. All supplied leaf values are non-empty strings. App profiles use a built-in profile name or `unknown`. `framework` takes a built-in profile name, or `"auto"` to state auto-detection explicitly. Omitting the key auto-detects too, so `"auto"` is only worth writing when you want the intent visible in the file.
+`[project]` accepts `workspace`, `loader`, `framework`, `run`, `worktree`, `ios`, and `android`.
+`run` is either one non-empty command string or a table containing `ios` and/or `android`
+commands. `worktree` has the strict shape shown above. The `ios` table accepts `scheme`, `mode`,
+`configuration`, `workspace`, and `project`. The `android` table accepts `mode`, `module`,
+`variant`, `application_id`, and `launch_activity`. All supplied leaf values are non-empty
+strings. App profiles use a built-in profile name or `unknown`. `framework` takes a built-in
+profile name, or `"auto"` to state auto-detection explicitly. Omitting the key auto-detects too,
+so `"auto"` is only worth writing when you want the intent visible in the file.
 
 Templates are also checked up front: expressions must use the documented restricted syntax, every referenced name must exist, and resource dependency cycles are rejected. Validation finishes before registry allocation or generated-file updates, so a mistake anywhere in the document cannot leave a partially provisioned checkout. Errors identify the source and qualified field, for example `splashdown.toml: [resources.PORT.range] ...`.
 

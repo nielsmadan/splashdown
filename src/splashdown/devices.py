@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess as subprocess  # noqa: PLC0414
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -167,14 +167,24 @@ def _physical_match(
 ) -> list[dict[str, str]]:
     """Discover and filter physical devices by a variant spec's platform/id/name."""
     devices = physical_discover(spec.get("platform"), warned=warned, on_warning=on_warning)
+    return physical_match_snapshot(spec, devices)
+
+
+def physical_match_snapshot(
+    spec: dict[str, Any], devices: Sequence[dict[str, str]]
+) -> list[dict[str, str]]:
+    filtered = list(devices)
+    platform = spec.get("platform")
+    if platform:
+        filtered = [device for device in filtered if device["platform"] == platform]
     want_id = spec.get("id")
     want_name = spec.get("name")
     if want_id:
-        devices = [device for device in devices if device["id"] == want_id]
+        filtered = [device for device in filtered if device["id"] == want_id]
     elif want_name:
         needle = str(want_name).lower()
-        devices = [device for device in devices if needle in device["name"].lower()]
-    return devices
+        filtered = [device for device in filtered if needle in device["name"].lower()]
+    return filtered
 
 
 def ensure_physical(

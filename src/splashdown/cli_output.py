@@ -2,20 +2,31 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .errors import ApplicationError
 
 if TYPE_CHECKING:
+    from .device_claims import PhysicalSelection
+    from .device_types import ClaimNotice
     from .provisioning import WriterResult
-    from .status import CheckoutStatus, StatusReport, StatusSummary
+    from .status import (
+        CheckoutStatus,
+        ClaimListRow,
+        StatusReport,
+        StatusSummary,
+        TargetInventoryRow,
+    )
 
 _SUMMARY_PARTS = (
     ("port", "port", "ports"),
     ("kv", "var", "vars"),
     ("simulator", "sim", "sims"),
     ("emulator", "emu", "emus"),
+    ("claim", "claim", "claims"),
 )
 
 
@@ -28,6 +39,62 @@ def _short_path(abspath: str) -> str:
     if abspath.startswith(home + "/"):
         return "~" + abspath[len(home) :]
     return abspath
+
+
+def render_claim_notices(notices: Sequence[ClaimNotice]) -> None:
+    for notice in notices:
+        action = "claimed" if notice.action == "transfer" else "force-released"
+        print(
+            f"warning: physical target {notice.target_label} was {action} by "
+            f"{notice.actor_checkout} at {notice.event_at}; this checkout no longer owns it",
+            file=sys.stderr,
+        )
+
+
+def render_claim_selection(selection: PhysicalSelection, fmt: str, *, available: bool) -> None:
+    payload = {
+        "target": selection.target.variant,
+        "source": selection.target.source,
+        "platform": selection.destination.platform,
+        "hardware_id": selection.destination.identifier or "",
+        "owner": selection.claim.owner_checkout,
+        "claimed_at": selection.claim.claimed_at,
+        "status": selection.status,
+    }
+    if fmt == "json":
+        print(json.dumps(payload, indent=2))
+    elif available:
+        print(selection.target.variant)
+    else:
+        print(
+            f"claimed {selection.target.variant} ({selection.destination.platform} "
+            f"{selection.destination.identifier}) for {selection.claim.owner_checkout}",
+            file=sys.stderr,
+        )
+
+
+def render_claim_rows(rows: Sequence[ClaimListRow], fmt: str) -> None:
+    if fmt == "json":
+        print(json.dumps([asdict(row) for row in rows], indent=2))
+        return
+    print("TARGET\tSOURCE\tPLATFORM\tHARDWARE ID\tOWNER\tCLAIMED AT")
+    for row in rows:
+        print(
+            f"{row.target}\t{row.source}\t{row.platform}\t{row.hardware_id}\t"
+            f"{row.owner}\t{row.claimed_at}"
+        )
+
+
+def render_target_inventory(rows: Sequence[TargetInventoryRow], fmt: str) -> None:
+    if fmt == "json":
+        print(json.dumps([asdict(row) for row in rows], indent=2))
+        return
+    print("TARGET\tSOURCE\tPLATFORM\tCONNECTION\tCLAIM\tOWNER")
+    for row in rows:
+        owner = Path(row.owner).name if row.owner else ""
+        print(
+            f"{row.variant}\t{row.source}\t{row.platform}\t{row.connection}\t{row.claim}\t{owner}"
+        )
 
 
 def _summary_string(counts: dict[str, int]) -> str:

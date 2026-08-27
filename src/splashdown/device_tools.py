@@ -13,7 +13,7 @@ def run_finite(
     argv: list[str],
     *,
     operation: str,
-    timeout: int,
+    timeout: float,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[Any]:
     check = bool(kwargs.pop("check", False))
@@ -27,7 +27,7 @@ def check_output_finite(
     argv: list[str],
     *,
     operation: str,
-    timeout: int,
+    timeout: float,
     **kwargs: Any,
 ) -> bytes:
     try:
@@ -40,7 +40,7 @@ def call_finite(
     argv: list[str],
     *,
     operation: str,
-    timeout: int,
+    timeout: float,
     **kwargs: Any,
 ) -> int:
     return int(run_finite(argv, operation=operation, timeout=timeout, **kwargs).returncode)

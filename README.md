@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 
-**Per-checkout or per-worktree simulators, emulators, and dev ports for development.**
+**Per-checkout simulators, emulators, dev ports, and exclusive physical-device claims.**
 
 <p align="center"><img src="docs/user/assets/demo.gif" alt="splashdown demo: two git worktrees automatically get different, non-colliding ports" width="750"></p>
 
@@ -17,12 +17,13 @@ Do you have any of these problems?
 
 * You installed an app on a simulator / emulator but you forgot which one.
 * You created two worktrees from the same project, and now the ports are clashing during dev or e2e testing.
+* Two worktrees are trying to build and launch on the same connected phone.
 * You want to select a free port for a new project, so it doesn't conflict, but you don't know which one is free.
 
 Splashdown solves them. Pin system resources to your checkouts, keep track of them globally, automatically select free ones when creating new worktrees.
 
 - **Automatic.** A `post-checkout` git hook allocates this checkout's free ports and env vars on every branch switch or `git worktree add`, with no manual editing.
-- **Machine-wide.** A global registry coordinates resources across every repo and worktree, so two checkouts never grab the same port.
+- **Machine-wide.** A global registry coordinates ports and physical-device claims across every repo and worktree.
 - **Framework-aware.** It detects your stack and wires the env loader, the git hook, and per-checkout iOS simulators and Android emulators.
 
 📖 **Full documentation: [splashdown.dev](https://splashdown.dev)**
@@ -114,7 +115,7 @@ run = ["pnpm install --frozen-lockfile", "python manage.py migrate"]
 ```
 
 Review the recipe, then run `splash trust` and `splash bootstrap`. Trust belongs to this clone and
-is shared by its linked worktrees; another clone starts untrusted and its hook writes nothing.
+is shared by its linked worktrees. Another clone starts untrusted and its hook writes nothing.
 Future `git worktree add` operations provision the checkout and run bootstrap once, while ordinary
 branch switches only sync resources. Trust covers code in future refs too, including scripts called
 by an unchanged command. `splash init` grants only automatic sync trust, never bootstrap trust.
@@ -140,6 +141,31 @@ If two target types use the same variant name, include the type. Type names and 
 prefixes take precedence in the first slot, so use the explicit two-token form for a colliding
 variant.
 
+Configured physical targets from `splashdown.toml`, `splashdown.local.toml`, and the global config
+also participate in machine-wide claims. Undeclared phones are never allocated. A physical run
+claims a free connected target before the framework builds. A target owned by another live
+checkout, or a configured target that is disconnected, fails before build or installation.
+
+```sh
+splash run pixel                       # claim if free, then build and launch
+splash target claims                   # inspect every claim without device discovery
+device=$(splash target claim --available android)
+splash target release pixel
+splash target claim pixel --force      # explicitly transfer a busy claim
+```
+
+Claims belong to the checkout and survive process exit and failed launches. `splash stop device`
+does not release them. Use `splash target release --all`, `splash deinit`, or `splash gc` for
+cleanup. A project can claim one available phone after successful linked-worktree setup:
+
+```toml
+[project.worktree]
+claim_device = "android" # ios | android | any
+```
+
+Automatic allocation is limited to five seconds and is non-fatal when no device can be selected.
+The hook prints the manual `splash target claim --available android` retry command.
+
 When a new iOS (or Android system image) lands, recreate the `latest` sims in place and clear out the cruft Xcode/`avdmanager` leave behind:
 
 ```sh
@@ -148,11 +174,11 @@ splash target prune ios               # delete every sim splashdown did NOT crea
 splash gc                             # drop registry entries for checkouts you've since deleted
 ```
 
-Variants pinned to a fixed version (`ios = "17.0"`) are never touched by `refresh` — they're deliberate version coverage. See [Running and managing devices](https://splashdown.dev/devices/) for the full lifecycle.
+Variants pinned to a fixed version (`ios = "17.0"`) are never touched by `refresh` because they are deliberate version coverage. See [Running and managing devices](https://splashdown.dev/devices/) for the full lifecycle.
 
 | Target | macOS | Linux |
 | --- | --- | --- |
-| iOS simulator/device | Xcode required | Unsupported; explicit commands return an actionable error |
+| iOS simulator/device | Xcode required | Unsupported. Explicit commands return an actionable error |
 | Android emulator/device | Android SDK required | Android SDK required |
 | Ports, environment, and config | Supported | Supported |
 
@@ -164,12 +190,12 @@ ios`, return exit 1 with the missing macOS/Xcode requirement and no traceback.
 
 Full guides and reference live at **[splashdown.dev](https://splashdown.dev)**:
 
-- [How it works](https://splashdown.dev/how-it-works/) — the git-hook + env-loader glue.
-- [The recipe: `splashdown.toml`](https://splashdown.dev/recipe/) — apps, resources, mobile targets.
-- [Running and managing devices](https://splashdown.dev/devices/) — sims, emulators, physical devices.
-- [Framework wiring (`splash doctor`)](https://splashdown.dev/framework-wiring/) — patch configs that hardcode the port.
-- [Monorepos](https://splashdown.dev/monorepos/) — multi-app workspaces, worked end to end.
-- [CLI reference](https://splashdown.dev/cli/) — every `splash` subcommand.
+- [How it works](https://splashdown.dev/how-it-works/): the git-hook + env-loader glue.
+- [The recipe: `splashdown.toml`](https://splashdown.dev/recipe/): apps, resources, mobile targets.
+- [Running and managing devices](https://splashdown.dev/devices/): sims, emulators, physical devices.
+- [Framework wiring (`splash doctor`)](https://splashdown.dev/framework-wiring/): patch configs that hardcode the port.
+- [Monorepos](https://splashdown.dev/monorepos/): multi-app workspaces, worked end to end.
+- [CLI reference](https://splashdown.dev/cli/): every `splash` subcommand.
 
 ## Development
 

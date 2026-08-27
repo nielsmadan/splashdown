@@ -31,6 +31,7 @@ from .bootstrap import (
 from .catalog import PROFILES
 from .cli_output import render_env_list, render_status, render_sync
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME
+from .device_claims import claim_available_target
 from .devices import DeviceError, device_destroy_row
 from .doctor import _resolve_doctor_framework, _wiring_checks_for_framework, cmd_doctor
 from .errors import MissingRecipeError, UsageError
@@ -1018,24 +1019,39 @@ def _post_checkout_messages(
         registry = registry or Registry()
         result = _provision_locked(cwd, registry, recipe)
         _emit_provision(result, fmt="text")
-        if recipe.bootstrap is None or not is_worktree_creation(dirs, old, new, flag):
+        created = is_worktree_creation(dirs, old, new, flag)
+        if not created:
             return None
-        if not trusted.bootstrap:
-            print(
-                "splashdown: bootstrap skipped because its commands are not trusted; "
-                "review them and run `splash trust`, then `splash bootstrap`",
-                file=sys.stderr,
-            )
-            return None
-        if bootstrap_complete(dirs):
-            return None
-        messages = run_bootstrap(
-            cwd,
-            recipe,
-            result.resolved,
-            extra_env=lifecycle_environment(),
-        )
-        mark_bootstrap_complete(dirs)
+        messages = None
+        if recipe.bootstrap is not None:
+            if not trusted.bootstrap:
+                print(
+                    "splashdown: bootstrap skipped because its commands are not trusted; "
+                    "review them and run `splash trust`, then `splash bootstrap`",
+                    file=sys.stderr,
+                )
+                return None
+            if not bootstrap_complete(dirs):
+                messages = run_bootstrap(
+                    cwd,
+                    recipe,
+                    result.resolved,
+                    extra_env=lifecycle_environment(),
+                )
+                mark_bootstrap_complete(dirs)
+        policy = recipe.project.get("worktree", {}).get("claim_device")
+        if policy is not None:
+            with registry.operation_lock(str(cwd.resolve())):
+                try:
+                    selection = claim_available_target(registry, cwd, policy, timeout=5)
+                except DeviceError:
+                    print(
+                        f"no physical device claimed; retry: "
+                        f"splash target claim --available {policy}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"claimed physical device: {selection.target.variant}", file=sys.stderr)
         return messages
 
 

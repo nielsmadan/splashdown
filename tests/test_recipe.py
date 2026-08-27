@@ -249,6 +249,49 @@ def test_recipe_accepts_auto_framework(tmp_path):
     assert recipe.project["framework"] == "auto"
 
 
+@pytest.mark.parametrize("policy", ["ios", "android", "any"])
+def test_recipe_accepts_worktree_claim_device_policy(tmp_path, policy):
+    recipe = sd.Recipe.parse(
+        f'[project.worktree]\nclaim_device = "{policy}"\n',
+        tmp_path / "splashdown.toml",
+    )
+
+    assert recipe.project["worktree"] == {"claim_device": policy}
+
+
+@pytest.mark.parametrize(
+    ("text", "path", "expected"),
+    [
+        (
+            '[project]\nworktree = "android"\n',
+            "project.worktree",
+            'a table containing exactly `claim_device = "ios" | "android" | "any"`',
+        ),
+        (
+            "[project.worktree]\n",
+            "project.worktree",
+            'exactly `claim_device = "ios" | "android" | "any"`',
+        ),
+        (
+            '[project.worktree]\nclaim_device = "ios"\nextra = true\n',
+            "project.worktree",
+            'exactly `claim_device = "ios" | "android" | "any"`',
+        ),
+        (
+            '[project.worktree]\nclaim_device = "windows"\n',
+            "project.worktree.claim_device",
+            "one of android, any, ios",
+        ),
+    ],
+)
+def test_recipe_rejects_invalid_worktree_claim_device_policy(tmp_path, text, path, expected):
+    with pytest.raises(
+        ValueError,
+        match=rf"splashdown\.toml: \[{re.escape(path)}\].*{re.escape(expected)}",
+    ):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
 @pytest.mark.parametrize(
     ("text", "path"),
     [

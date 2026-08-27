@@ -210,7 +210,7 @@ def template_refs(tpl: str) -> set[str]:
 _WORKSPACES = ("single", "pnpm", "yarn", "npm", "cargo", "gradle")
 _RECIPE_SECTIONS = {"project", "apps", "resources", "targets", "setup", "bootstrap"}
 _CONFIG_SECTIONS = {"settings", "targets"}
-_PROJECT_FIELDS = {"workspace", "loader", "framework", "run", "ios", "android"}
+_PROJECT_FIELDS = {"workspace", "loader", "framework", "run", "ios", "android", "worktree"}
 _PROJECT_IOS_FIELDS = {"scheme", "mode", "configuration", "workspace", "project"}
 _PROJECT_ANDROID_FIELDS = {
     "mode",
@@ -390,6 +390,28 @@ def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
                 _non_empty_string(command, source=source, path=f"project.run.{platform}")
         else:
             _non_empty_string(run, source=source, path="project.run")
+    if "worktree" in project:
+        shape = 'exactly `claim_device = "ios" | "android" | "any"`'
+        worktree = _table(
+            project["worktree"],
+            source=source,
+            path="project.worktree",
+            expected=f"a table containing {shape}",
+        )
+        if set(worktree) != {"claim_device"}:
+            unknown = sorted(set(worktree) - {"claim_device"})
+            problem = (
+                f"unknown field `{unknown[0]}`"
+                if unknown
+                else "missing required field `claim_device`"
+            )
+            _schema_error(source, "project.worktree", problem=problem, expected=shape)
+        _enum(
+            worktree["claim_device"],
+            {"ios", "android", "any"},
+            source=source,
+            path="project.worktree.claim_device",
+        )
     for key, allowed in (("ios", _PROJECT_IOS_FIELDS), ("android", _PROJECT_ANDROID_FIELDS)):
         if key not in project:
             continue

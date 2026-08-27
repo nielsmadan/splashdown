@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from .cli_output import render_application_error, render_untyped_error
+from .cli_output import render_application_error, render_claim_notices, render_untyped_error
 from .commands import (
     InitOptions,
     _cmd_provision,
@@ -123,7 +123,12 @@ KNOWN_CMDS = {
 
 
 def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser; one block per subcommand
-    from .completion import device_arg_completer, variant_completer  # noqa: PLC0415
+    from .completion import (  # noqa: PLC0415
+        available_platform_completer,
+        device_arg_completer,
+        physical_variant_completer,
+        variant_completer,
+    )
     from .scaffolds import SCAFFOLDS  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
@@ -347,6 +352,23 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser
         help="remove from the machine-wide config instead of splashdown.local.toml",
     )
 
+    claims = devsub.add_parser("claims", help="list machine-wide physical-device claims")
+    claims.add_argument("--format", choices=("text", "json"), dest="target_format")
+
+    claim = devsub.add_parser("claim", help="claim a configured physical device")
+    claim_variant = claim.add_argument("variant", nargs="?")
+    claim_variant.completer = physical_variant_completer  # type: ignore[attr-defined]
+    available = claim.add_argument("--available", choices=("ios", "android", "any"))
+    available.completer = available_platform_completer  # type: ignore[attr-defined]
+    claim.add_argument("--force", action="store_true")
+    claim.add_argument("--format", choices=("text", "json"), dest="target_format")
+
+    release = devsub.add_parser("release", help="release a configured physical-device claim")
+    release_variant = release.add_argument("variant", nargs="?")
+    release_variant.completer = physical_variant_completer  # type: ignore[attr-defined]
+    release.add_argument("--all", action="store_true", dest="all_owned")
+    release.add_argument("--force", action="store_true")
+
     return parser
 
 
@@ -419,6 +441,15 @@ def _resolve_format(args: object) -> str:
     return getattr(args, "format", None) or "text"
 
 
+def _consume_claim_notices(cwd: Path, registry: Registry) -> None:
+    try:
+        notices = registry.consume_claim_notices(str(cwd))
+    except OSError as error:
+        print(f"warning: unable to consume physical target notices: {error}", file=sys.stderr)
+        return
+    render_claim_notices(notices)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(argv)
@@ -444,21 +475,13 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
         return cmd_completion(args.shell)
 
     cwd = _resolve_cwd(args)
-    if args.cmd == "trust":
-        return cmd_trust(cwd)
-    if args.cmd == "untrust":
-        return cmd_untrust(cwd)
-    if args.cmd == "bootstrap":
-        return cmd_bootstrap(cwd, rerun=args.rerun)
     if args.cmd == "hook":
         if args.hook_cmd != "post-checkout":
             parser.error("hook requires an event")
         return cmd_post_checkout_hook(cwd, None, args.old, args.new, args.flag)
 
-    try:
-        if args.cmd in ("run", "start", "stop", "destroy"):
-            _normalize_device_args(args)
-        if args.cmd == "init":
+    if args.cmd == "init":
+        try:
             if args.rescan:
                 return cmd_refresh_inventory(cwd)
             cmd_init(
@@ -474,9 +497,27 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
             )
             if args.no_sync:
                 return 0
-            return _cmd_provision_inner(cwd, Registry(), show_values=args.show_values)
+            registry = Registry()
+            _consume_claim_notices(cwd, registry)
+            return _cmd_provision_inner(cwd, registry, show_values=args.show_values)
+        except ApplicationError as error:
+            return render_application_error(error)
+        except (DeviceError, ValueError) as error:
+            return render_untyped_error(error)
 
-        registry = Registry()
+    registry = Registry()
+    _consume_claim_notices(cwd, registry)
+
+    if args.cmd == "trust":
+        return cmd_trust(cwd)
+    if args.cmd == "untrust":
+        return cmd_untrust(cwd)
+    if args.cmd == "bootstrap":
+        return cmd_bootstrap(cwd, registry, rerun=args.rerun)
+
+    try:
+        if args.cmd in ("run", "start", "stop", "destroy"):
+            _normalize_device_args(args)
 
         if args.cmd == "deinit":
             return cmd_deinit(cwd, registry)

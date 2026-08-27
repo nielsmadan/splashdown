@@ -15,6 +15,9 @@ STATE_HOME = REGISTRY_DIR.parent
 PORT_REGISTRY = REGISTRY_DIR / "ports.tsv"
 KV_REGISTRY = REGISTRY_DIR / "kv.tsv"
 DEVICE_REGISTRY = REGISTRY_DIR / "devices.tsv"
+CLAIM_REGISTRY = REGISTRY_DIR / "claims.tsv"
+CLAIM_NOTICE_REGISTRY = REGISTRY_DIR / "claim-notices.tsv"
+CLAIM_NOTICE_DAYS = 30
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 TARGET_VARIANT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")

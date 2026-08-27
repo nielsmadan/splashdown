@@ -2,7 +2,8 @@
 
 How a `splash` invocation gets from `argv` to a handler: argument parsing and dispatch (`cli.py`),
 checkout orchestration (`commands.py`), target orchestration (`target_commands.py`), target catalog
-edits (`targets.py`), post-checkout integration (`hooks.py`), and fail-silent shell completion
+edits (`targets.py`), physical allocation (`device_claims.py`), post-checkout integration
+(`hooks.py`), and fail-silent shell completion
 (`completion.py`). Framework launch dispatch lives in `launching.py`; `doctor.py` orchestrates
 checks defined in `wiring.py`. Typed status gathering lives in `status.py`, while
 `cli_output.py` owns operational text, JSON, and application-error rendering.
@@ -66,13 +67,20 @@ submodule imports inside handlers.
 3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
 4. `parse_args`, dispatch completion before checkout resolution, then resolve `cwd` (`_resolve_cwd`,
    honours `--cwd`, else `$PWD`, always `.resolve()`d).
-5. Dispatch `trust`, `untrust`, `bootstrap`, the hidden hook event, and `init` before constructing a
-   Registry. This is security-relevant for the hook and init: an untrusted event or rejected nested
-   init can return without touching machine-wide registry state or output writers. A successful
-   init constructs a Registry only when it proceeds to the first sync.
-6. Construct the shared `Registry` for the remaining commands, then enter the ordinary flat
-   dispatch table. The final fall-through is `sync` (the default), so both bare `splash` and
-   explicit `splash sync` land on `_cmd_provision`.
+5. Dispatch the hidden hook event before constructing a Registry. Handle `init` inside the ordinary
+   error renderer but before Registry construction, so rejected, rescanned, and `--no-sync` init
+   paths do not touch machine-wide registry state or output writers.
+6. A successful init that proceeds to sync constructs the shared `Registry`, consumes pending
+   physical-claim notices, and provisions. Every other checkout command constructs the Registry
+   and consumes notices before dispatching trust, untrust, bootstrap, or the ordinary flat command
+   table. The final fall-through is `sync` (the default), so both bare `splash` and explicit
+   `splash sync` land on `_cmd_provision`.
+
+Completion generation, help, version, active argcomplete, hidden hook plumbing, and init paths that
+do not sync all exit before Registry construction and therefore do not consume pending claim
+notices. Other checkout-scoped commands consume notices before their handler runs, even when that
+handler later fails. `render_claim_notices` in `cli_output.py` names the target, transfer or
+forced-release action, actor checkout, and event time.
 
 The handler signature shows the orchestration boundary: `main()` resolves `cwd`, creates a Registry
 only when needed, and threads dependencies into handlers. Each branch returns the process exit code.
@@ -132,12 +140,12 @@ missing-recipe notice, and setup failures. `DeviceError` and configuration `Valu
 same renderer as exit-1 failures. These handlers raise rather than terminating the process, so
 direct callers can handle failures and CLI output is emitted exactly once.
 
-Trust, untrust, bootstrap, and the hidden post-checkout event are dispatched before that ordinary
-renderer. They retain command-specific output and retry handling because the untrusted hook path
-must be able to return without touching machine-wide state. Init remains inside the renderer but
-runs before Registry construction so its refusal guards have no machine-state side effects. New
-registry-backed commands belong inside the shared boundary; changes to those early
-security-sensitive paths must preserve their explicit rendering contract.
+The hidden post-checkout event is dispatched before Registry construction and before that ordinary
+renderer. Init remains inside the renderer but runs before Registry construction so its refusal
+guards have no machine-state side effects. Trust, untrust, and bootstrap retain command-specific
+output and retry handling, but run after the shared Registry has consumed any pending claim notice.
+New registry-backed commands belong inside the shared boundary; changes to the early
+security-sensitive hook and init paths must preserve their explicit rendering contracts.
 
 ### `commands.py` — the orchestration layer
 
@@ -193,7 +201,8 @@ loader and writer destinations, but a malformed recipe only disables those recip
 steps; it does not block the rest of teardown.
 
 The handler destroys every registered simulator/emulator for the checkout (hardware rows are
-not owned), releases all remaining registry rows, removes the wholly-owned `splashdown.env`,
+not owned), releases all remaining registry rows including physical claims and addressed notices,
+removes the wholly-owned `splashdown.env`,
 and asks `clear_writer_destinations` to remove only splashdown keys from user-owned
 `envfile=`/`envrc` outputs. It then calls the loader's `unwire`, reverts splashdown's gitignore
 entries and agent-guidance block,
@@ -232,6 +241,15 @@ The hidden handler checks the lifecycle recursion marker, takes the private chec
 loads one recipe snapshot. It then takes shared clone trust. Without sync trust it constructs no
 Registry and writes nothing. With sync trust it provisions output; bootstrap additionally requires
 bootstrap trust, a validated linked-worktree creation event, and no completion marker.
+
+For the same validated linked-worktree creation event, the strict
+`[project.worktree] claim_device = "ios" | "android" | "any"` policy runs after provisioning and
+after a successful trusted bootstrap or an existing completion marker. It takes the checkout
+operation lock and calls `claim_available_target` with a five-second total discovery budget. No
+configured/free match, missing platform capability, and discovery timeout print the exact manual
+`splash target claim --available PLATFORM` retry and remain non-fatal. Primary-checkout and
+ordinary branch/file events never enter this path. The outer generated hook still absorbs handler
+failure so Git's completed worktree operation returns success.
 
 Git and hook-manager subprocesses are optional integration probes. Missing and non-executable
 tools fall back to detection results or a setup note rather than escaping as Python exceptions.
@@ -275,6 +293,13 @@ the variant. Each calls `devices.py` for target reconciliation and boot, then
 `launching.py` for framework preflight and final app dispatch. The target subcommand machinery
 iterates registry device rows and reconciles them against live sims/AVDs.
 
+Physical `cmd_run` has a claim gate between launcher validation and framework dispatch. It resolves
+the configured physical target, takes one discovery snapshot, and calls `attempt_claim` while the
+checkout operation lock is held. Busy, disconnected, or ambiguous targets raise before any build
+or installation. An existing same-checkout claim is reused. The operation lock is released before
+`device_run`, and no launch return path releases the claim, including nonzero launch results.
+Physical `cmd_stop` and `cmd_destroy` remain hardware no-ops and do not release ownership.
+
 Explicit platform operations propagate `CapabilityError`. The dispatcher sets `skip_unavailable`
 only for the `all` scope, so unscoped `target refresh` and `target prune` warn once and continue the
 other platform while `target refresh ios` or `target prune ios` returns exit 1. GC performs its own
@@ -289,8 +314,20 @@ they get sub-dispatchers rather than a single handler: `_target_dispatch` and
 `_env_dispatch`. The target dispatcher lives in `target_commands.py`; env dispatch remains in
 `commands.py`. Both treat a bare invocation (`splash target` / `splash env`)
 as "list" (mirroring bare `splash` → sync). `_target_dispatch` routes to focused
-add/remove/refresh/prune handlers and receives the registry constructed by
+add/remove/refresh/prune/claim/claims/release handlers and receives the registry constructed by
 `main()`, so every registry-using target handler shares the composition-root dependency.
+
+The claim parser requires exactly one specific `VARIANT` or `--available ios|android|any`; `--force`
+is specific-only. The release parser likewise requires exactly one `VARIANT` or `--all`, with
+`--force` specific-only. Claim and release orchestration stays inside the checkout operation lock,
+including notice persistence and output. The claims-file transaction completes before a forced
+notice write, so claims and notices locks never nest.
+
+`cmd_target_claims` renders `Registry.all_claims()` without device discovery. Text generic
+allocation prints only the selected variant to stdout for shell capture, while a specific claim's
+diagnostic goes to stderr. JSON selection includes source, platform, hardware ID, canonical owner,
+claim time, and claimed/owned status. `render_target_inventory` abbreviates owner paths only in
+text; JSON always retains canonical paths.
 
 `target add` validates its CLI field map with the same `validate_target_spec`
 used by recipe, local, and global loads. Flags incompatible with the chosen type
@@ -305,6 +342,8 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 
 - `variant_completer` (`completion.py`) offers variant names for the typed-or-inferred type (slot 2).
 - `device_arg_completer` (`completion.py`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
+- `physical_variant_completer` offers configured physical variants without discovery or registry
+  reads, and `available_platform_completer` offers the fixed `ios`, `android`, and `any` filters.
 - Both share `_catalog` (`completion.py`), which mirrors `cli._resolve_cwd` (honour an already-typed `--cwd`, else `$PWD`, then `.resolve()`).
 
 Completion reads declared recipe/local/global variants, not registry instances. `stop` and
@@ -333,6 +372,12 @@ device does not hide simulator variants in a simulator-only project.
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py`
 - `_confirm` — shared target `[y/N]` gate — `target_commands.py`
 - `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `target_commands.py` / `commands.py`
+- `claim_configured_target` / `claim_available_target` — physical pre-run and generic allocation
+  — `device_claims.py`
+- `cmd_target_claim` / `cmd_target_claims` / `cmd_target_release` — physical command orchestration
+  — `target_commands.py`
+- `_consume_claim_notices` / `render_claim_notices` — one-shot warning consumption and rendering
+  — `cli.py` / `cli_output.py`
 - `variant_completer` / `device_arg_completer` / `install` — completion — `completion.py`
 
 ## Gotchas

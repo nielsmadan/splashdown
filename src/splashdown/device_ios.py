@@ -268,7 +268,7 @@ def _ios_current_state(udid: str) -> str:
     return "Unknown"
 
 
-def _devicectl_json(args: list[str]) -> Any:
+def _devicectl_json(args: list[str], *, timeout: float = DISCOVERY_TIMEOUT) -> Any:
     """Run devicectl with JSON output and parse its result."""
     require_macos("physical-device support")
     try:
@@ -276,7 +276,7 @@ def _devicectl_json(args: list[str]) -> Any:
             out = check_output_finite(
                 ["xcrun", "devicectl", *args, "--json-output", "-"],
                 operation=f"devicectl {' '.join(args)}",
-                timeout=DISCOVERY_TIMEOUT,
+                timeout=timeout,
                 stderr=subprocess.DEVNULL,
             )
     except subprocess.CalledProcessError as error:
@@ -290,9 +290,9 @@ def _devicectl_json(args: list[str]) -> Any:
         raise DeviceError(f"could not parse devicectl output: {error}") from error
 
 
-def _ios_physical_devices() -> list[dict[str, str]]:
+def _ios_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
     """Return paired, available physical iOS devices."""
-    data = _devicectl_json(["list", "devices"])
+    data = _devicectl_json(["list", "devices"], timeout=timeout)
     devices = (data.get("result") or {}).get("devices") or []
     result: list[dict[str, str]] = []
     for device in devices:

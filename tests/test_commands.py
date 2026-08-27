@@ -15,10 +15,13 @@ from conftest import (
 )
 
 
-def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
+def test_physical_run_claims_snapshot_before_launch_and_reuses_its_claim(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_physical(monkeypatch, ios=[_IPHONE])
+    monkeypatch.setattr(
+        sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: (_IPHONE,)
+    )
     monkeypatch.setattr(
         sd.devices, "ios_boot", lambda u, s: pytest.fail("should not boot hardware")
     )
@@ -29,13 +32,151 @@ def test_cli_run_physical_skips_boot_and_passes_id(tmp_path, monkeypatch):
 
     def _fake_run(cwd, recipe, info):
         captured["info"] = info
+        claim = sd.Registry().all_claims()[0]
+        assert claim.hardware_id == info["udid"]
         return 0
 
     monkeypatch.setattr(sd.target_commands, "device_run", _fake_run)
-    rc = sd.main(["--cwd", str(tmp_path), "run", "device"])
-    assert rc == 0
+    assert sd.main(["--cwd", str(tmp_path), "run", "device"]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "run", "device"]) == 0
     assert captured["info"]["udid"] == "00008-PHONE"
     assert captured["info"]["physical"] is True
+    assert [claim.target_label for claim in sd.Registry().all_claims()] == ["default"]
+
+
+def test_explicit_physical_actions_require_recipe_even_with_global_target(
+    tmp_path, registry, monkeypatch
+):
+    sd.global_target_add("device", "pixel", {"platform": "android", "id": "PXL1234"})
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(sd.target_commands, "device_run", lambda *_args: 0)
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        sd.cmd_run(tmp_path, registry, "device", "pixel")
+    with pytest.raises(FileNotFoundError):
+        sd.cmd_target_claim(tmp_path, registry, "pixel", available=None, force=False, fmt="text")
+    with pytest.raises(FileNotFoundError):
+        sd.cmd_target_claim(tmp_path, registry, None, available="android", force=False, fmt="text")
+    with pytest.raises(FileNotFoundError):
+        sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=False)
+
+
+@pytest.mark.parametrize(
+    ("source", "config"),
+    [
+        ("recipe", "splashdown.toml"),
+        ("local", "splashdown.local.toml"),
+        ("global", "xdg-config/splashdown/config.toml"),
+    ],
+)
+def test_physical_run_claims_targets_from_every_configuration_source(
+    tmp_path, monkeypatch, source, config
+):
+    config_path = tmp_path / config
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text('[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n')
+    if source != "recipe":
+        (tmp_path / sd.RECIPE_NAME).write_text("")
+    (tmp_path / "pubspec.yaml").write_text("name: demo\n")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+    launched: list[str] = []
+    monkeypatch.setattr(
+        sd.target_commands,
+        "device_run",
+        lambda _cwd, _recipe, info: launched.append(info["serial"]) or 0,
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "run", "device", "pixel"]) == 0
+
+    assert launched == ["PXL1234"]
+    assert sd.Registry().all_claims()[0].target_label == "pixel"
+
+
+def test_physical_run_claim_rejects_other_live_owner_before_framework_launch(tmp_path, monkeypatch):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    registry = sd.Registry()
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "old")
+    )
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+    monkeypatch.setattr(
+        sd.target_commands, "device_run", lambda *_args: pytest.fail("framework launched")
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "run", "device", "pixel"]) == 1
+
+    assert registry.all_claims() == (
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "old"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "message"),
+    [
+        ((), "no connected physical device"),
+        (
+            (
+                {"id": "PXL1234", "name": "Pixel", "platform": "android"},
+                {"id": "PXL5678", "name": "Pixel", "platform": "android"},
+            ),
+            "multiple connected physical devices",
+        ),
+    ],
+)
+def test_physical_run_claim_rejects_unavailable_target_before_framework_launch(
+    tmp_path, registry, monkeypatch, snapshot, message
+):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(
+        sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: snapshot
+    )
+    monkeypatch.setattr(
+        sd.target_commands, "device_run", lambda *_args: pytest.fail("framework launched")
+    )
+
+    with pytest.raises(sd.DeviceError, match=message):
+        sd.cmd_run(tmp_path, registry, "device", "pixel")
+
+    assert registry.all_claims() == ()
+
+
+def test_physical_run_claim_keeps_claim_after_framework_failure(tmp_path, registry, monkeypatch):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+    monkeypatch.setattr(sd.target_commands, "device_run", lambda *_args: 7)
+
+    assert sd.cmd_run(tmp_path, registry, "device", "pixel") == 7
+
+    assert registry.all_claims()[0].hardware_id == "PXL1234"
 
 
 def test_cli_start_physical_reports_connected_without_boot(tmp_path, monkeypatch, capsys):
@@ -53,9 +194,20 @@ def test_cli_start_physical_reports_connected_without_boot(tmp_path, monkeypatch
     assert "connected" in capsys.readouterr().err.lower()
 
 
-def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
+def test_cli_stop_physical_is_noop_and_keeps_claim(tmp_path, monkeypatch):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    target = sd.resolve_physical_target(tmp_path, "default")
+    sd.Registry().attempt_claim(
+        sd.PhysicalClaim(
+            target.catalog_identity,
+            "ios",
+            "00008-PHONE",
+            "default",
+            str(tmp_path.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
     monkeypatch.setattr(
         sd.target_commands,
         "device_shutdown_row",
@@ -63,6 +215,7 @@ def test_cli_stop_physical_is_noop(tmp_path, monkeypatch):
     )
     rc = sd.main(["--cwd", str(tmp_path), "stop", "device"])
     assert rc == 0
+    assert sd.Registry().all_claims()[0].target_label == "default"
 
 
 def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
@@ -75,6 +228,356 @@ def test_cli_destroy_physical_is_noop(tmp_path, monkeypatch):
     )
     rc = sd.main(["--cwd", str(tmp_path), "destroy", "device"])
     assert rc == 0
+
+
+def test_target_claim_specific_claims_configured_physical_variant(
+    tmp_path, registry, monkeypatch, capsys
+):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+
+    assert (
+        sd.cmd_target_claim(tmp_path, registry, "pixel", available=None, force=False, fmt="text")
+        == 0
+    )
+
+    claim = registry.all_claims()[0]
+    assert claim.target_label == "pixel"
+    assert claim.owner_checkout == str(tmp_path.resolve())
+    assert capsys.readouterr().err == f"claimed pixel (android PXL1234) for {tmp_path.resolve()}\n"
+
+
+def test_target_claim_available_prints_selected_variant_only(
+    tmp_path, registry, monkeypatch, capsys
+):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+
+    assert (
+        sd.cmd_target_claim(tmp_path, registry, None, available="android", force=False, fmt="text")
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == "pixel\n"
+    assert captured.err == ""
+
+
+def test_target_claim_available_json_includes_selection_details(
+    tmp_path, registry, monkeypatch, capsys
+):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+
+    assert (
+        sd.cmd_target_claim(tmp_path, registry, None, available="android", force=False, fmt="json")
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "target": "pixel",
+        "source": "recipe",
+        "platform": "android",
+        "hardware_id": "PXL1234",
+        "owner": str(tmp_path.resolve()),
+        "claimed_at": payload["claimed_at"],
+        "status": "claimed",
+    }
+
+
+def test_target_claims_reads_registry_without_device_discovery(
+    registry, checkout, monkeypatch, capsys
+):
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            "recipe:/repo:device:pixel",
+            "android",
+            "PXL1234",
+            "pixel",
+            str(checkout.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("claims must not discover devices"),
+    )
+
+    assert sd.cmd_target_claims(registry, "json") == 0
+
+    assert json.loads(capsys.readouterr().out) == [
+        {
+            "target": "pixel",
+            "source": "recipe",
+            "platform": "android",
+            "hardware_id": "PXL1234",
+            "owner": str(checkout.resolve()),
+            "claimed_at": "2026-08-26T10:00:00+00:00",
+        }
+    ]
+
+
+def test_target_release_specific_is_discovery_free_and_releases_owner(
+    tmp_path, registry, monkeypatch, capsys
+):
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            target.catalog_identity,
+            "android",
+            "PXL1234",
+            "pixel",
+            str(tmp_path.resolve()),
+            "2026-08-26T10:00:00+00:00",
+        )
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("release must not discover devices"),
+    )
+
+    assert sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=False) == 0
+
+    assert registry.all_claims() == ()
+    assert capsys.readouterr().err == "released pixel\n"
+
+
+def test_target_release_all_only_removes_current_checkout_claims(tmp_path, registry, capsys):
+    other = tmp_path / "other"
+    other.mkdir()
+    mine = sd.PhysicalClaim(
+        "recipe:/repo:device:pixel", "android", "PXL", "pixel", str(tmp_path), "a"
+    )
+    theirs = sd.PhysicalClaim("recipe:/repo:device:ios", "ios", "IOS", "iphone", str(other), "b")
+    registry.attempt_claim(mine)
+    registry.attempt_claim(theirs)
+
+    assert sd.cmd_target_release(tmp_path, registry, None, all_owned=True, force=False) == 0
+
+    assert registry.all_claims() == (theirs,)
+    assert capsys.readouterr().err == "released 1 physical claim(s)\n"
+
+
+def test_target_release_busy_owner_and_missing_claim_have_stable_results(
+    tmp_path, registry, capsys
+):
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            target.catalog_identity, "android", "PXL", "pixel", str(owner), "2026-08-26"
+        )
+    )
+
+    with pytest.raises(sd.DeviceError, match="claimed by"):
+        sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=False)
+    assert sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=True) == 0
+    assert sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=False) == 0
+
+    assert capsys.readouterr().err.endswith("no claim for pixel; nothing to release\n")
+
+
+def test_forced_claim_writes_notice_and_survives_notice_write_failure(
+    tmp_path, registry, monkeypatch, capsys
+):
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "a")
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+    monkeypatch.setattr(
+        registry,
+        "add_claim_notices",
+        lambda _rows: (_ for _ in ()).throw(OSError("disk")),
+    )
+
+    assert (
+        sd.cmd_target_claim(tmp_path, registry, "pixel", available=None, force=True, fmt="text")
+        == 0
+    )
+
+    assert registry.all_claims()[0].owner_checkout == str(tmp_path.resolve())
+    assert "warning: could not record claim notice: disk" in capsys.readouterr().err
+
+
+def test_forced_release_writes_notice_for_displaced_owner(tmp_path, registry):
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL", "pixel", str(owner), "a")
+    )
+
+    assert sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=True) == 0
+
+    notices = registry.consume_claim_notices(str(owner))
+    assert len(notices) == 1
+    assert notices[0].action == "release"
+    assert notices[0].actor_checkout == str(tmp_path.resolve())
+
+
+def test_forced_claim_keeps_notice_and_rendering_inside_operation_lock(
+    tmp_path, registry, monkeypatch
+):
+    from contextlib import contextmanager
+
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "a")
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+    active = False
+    lock_events: list[bool] = []
+
+    @contextmanager
+    def track_lock(_checkout):
+        nonlocal active
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    actual_add = registry.add_claim_notices
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(
+        registry,
+        "add_claim_notices",
+        lambda notices: lock_events.append(active) or actual_add(notices),
+    )
+    monkeypatch.setattr(
+        sd.cli_output,
+        "render_claim_selection",
+        lambda *_args, **_kwargs: lock_events.append(active),
+    )
+
+    assert (
+        sd.cmd_target_claim(tmp_path, registry, "pixel", available=None, force=True, fmt="text")
+        == 0
+    )
+
+    assert lock_events == [True, True]
+
+
+def test_forced_release_keeps_notice_and_output_inside_operation_lock(
+    tmp_path, registry, monkeypatch
+):
+    from contextlib import contextmanager
+
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    target = sd.resolve_physical_target(tmp_path, "pixel")
+    registry.attempt_claim(
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL", "pixel", str(owner), "a")
+    )
+    active = False
+    lock_events: list[bool] = []
+
+    @contextmanager
+    def track_lock(_checkout):
+        nonlocal active
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    class _Stderr:
+        def write(self, _text):
+            lock_events.append(active)
+
+        def flush(self):
+            return None
+
+    actual_add = registry.add_claim_notices
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(
+        registry,
+        "add_claim_notices",
+        lambda notices: lock_events.append(active) or actual_add(notices),
+    )
+    monkeypatch.setattr(sd.target_commands.sys, "stderr", _Stderr())
+
+    assert sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=True) == 0
+
+    assert lock_events and all(lock_events)
+
+
+def test_release_all_writes_output_inside_operation_lock(tmp_path, registry, monkeypatch):
+    from contextlib import contextmanager
+
+    registry.attempt_claim(
+        sd.PhysicalClaim("recipe:/repo:device:pixel", "android", "PXL", "pixel", str(tmp_path), "a")
+    )
+    active = False
+    output_lock_state: list[bool] = []
+
+    @contextmanager
+    def track_lock(_checkout):
+        nonlocal active
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    class _Stderr:
+        def write(self, _text):
+            output_lock_state.append(active)
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(registry, "operation_lock", track_lock)
+    monkeypatch.setattr(sd.target_commands.sys, "stderr", _Stderr())
+
+    assert sd.cmd_target_release(tmp_path, registry, None, all_owned=True, force=False) == 0
+
+    assert output_lock_state and all(output_lock_state)
 
 
 def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
@@ -233,10 +736,12 @@ def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_physical(monkeypatch, ios=[_IPHONE])
+    monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", lambda **_kwargs: [_IPHONE])
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", lambda **_kwargs: [])
     rc = sd.main(["--cwd", str(tmp_path), "target"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "device" in out
+    assert "default" in out
     assert "connected" in out
 
 
@@ -558,7 +1063,7 @@ def test_target_list_marks_global_source(tmp_path, monkeypatch, capsys):
     sd.global_target_add("device", "my-iphone", {"platform": "ios"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
-    assert line.split("\t")[2] == "global"
+    assert line.split("\t")[1] == "global"
 
 
 def test_target_list_annotates_shadowed_global(tmp_path, monkeypatch, capsys):
@@ -689,7 +1194,7 @@ def test_target_list_annotates_local_shadowing_global(tmp_path, monkeypatch, cap
     sd.global_target_add("device", "my-iphone", {"platform": "android"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
-    assert line.split("\t")[2] == "local (shadows global)"
+    assert line.split("\t")[1] == "local (shadows global)"
 
 
 def test_target_refresh_keeps_global_sourced_sim(tmp_path, registry, monkeypatch):
@@ -1133,6 +1638,192 @@ def test_deinit_clears_registry_rows(tmp_path, registry):
     sd.cmd_deinit(co, registry)
     assert registry.all_for(str(co)) == {}
     assert registry.all_for(str(other)) != {}
+
+
+def test_deinit_claim_cleanup_releases_owned_claims_and_addressed_notices(
+    tmp_path, registry, capsys
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / sd.RECIPE_NAME).write_text('[project]\nloader = "none"\n')
+    owner = str(checkout.resolve())
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            "recipe:/repo:device:pixel",
+            "android",
+            "PXL1234",
+            "pixel",
+            owner,
+            "2026-08-26T09:00:00+00:00",
+        )
+    )
+    registry.add_claim_notices(
+        [
+            sd.ClaimNotice(
+                owner,
+                "recipe:/repo:device:iphone",
+                "iphone",
+                "release",
+                "/checkouts/releaser",
+                "2026-08-26T10:00:00+00:00",
+                "2099-09-25T10:00:00+00:00",
+            )
+        ]
+    )
+
+    assert sd.cmd_deinit(checkout, registry) == 0
+
+    assert registry.all_claims() == ()
+    assert registry.consume_claim_notices(owner) == ()
+    assert "released 2 registry entries" in capsys.readouterr().err
+
+
+def test_gc_claim_cleanup_counts_dead_claims_and_dead_or_expired_notices(
+    tmp_path, registry, capsys
+):
+    dead_owner = tmp_path / "dead-owner"
+    live_owner = tmp_path / "live-owner"
+    dead_owner.mkdir()
+    live_owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            "recipe:/repo:device:pixel",
+            "android",
+            "PXL1234",
+            "pixel",
+            str(dead_owner),
+            "2026-08-26T09:00:00+00:00",
+        )
+    )
+    registry.add_claim_notices(
+        [
+            sd.ClaimNotice(
+                str(dead_owner),
+                "recipe:/repo:device:pixel",
+                "pixel",
+                "transfer",
+                str(live_owner),
+                "2026-08-26T10:00:00+00:00",
+                "2099-09-25T10:00:00+00:00",
+            ),
+            sd.ClaimNotice(
+                str(live_owner),
+                "recipe:/repo:device:iphone",
+                "iphone",
+                "release",
+                str(live_owner),
+                "2000-01-01T00:00:00+00:00",
+                "2000-01-31T00:00:00+00:00",
+            ),
+            sd.ClaimNotice(
+                str(live_owner),
+                "recipe:/repo:device:tablet",
+                "tablet",
+                "transfer",
+                str(live_owner),
+                "2026-08-26T10:05:00+00:00",
+                "2099-09-25T10:05:00+00:00",
+            ),
+        ]
+    )
+    dead_owner.rmdir()
+
+    assert sd.target_commands.cmd_gc(registry) == 0
+
+    assert registry.all_claims() == ()
+    remaining = registry.consume_claim_notices(str(live_owner))
+    assert [notice.target_label for notice in remaining] == ["tablet"]
+    assert "gc: removed 3 registry entries" in capsys.readouterr().err
+
+
+def test_status_claim_summary_includes_checkout_known_only_by_ownership(tmp_path, registry, capsys):
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            "recipe:/repo:device:pixel",
+            "android",
+            "PXL1234",
+            "pixel",
+            str(tmp_path.resolve()),
+            "2026-08-26T09:00:00+00:00",
+        )
+    )
+
+    assert sd.cmd_status(tmp_path, registry, "text", show_all=True) == 0
+
+    err = capsys.readouterr().err
+    assert str(tmp_path.resolve()) in err
+    assert "1 claim" in err
+
+
+def test_status_all_check_verbose_counts_defunct_physical_claim(tmp_path, registry, capsys):
+    owner = tmp_path / "defunct-owner"
+    owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            "recipe:/repo:device:pixel",
+            "android",
+            "PXL1234",
+            "pixel",
+            str(owner.resolve()),
+            "2026-08-26T09:00:00+00:00",
+        )
+    )
+    owner.rmdir()
+
+    assert (
+        sd.cmd_status(
+            tmp_path,
+            registry,
+            "text",
+            show_all=True,
+            check=True,
+            verbose=True,
+        )
+        == 0
+    )
+
+    err = capsys.readouterr().err
+    assert str(owner.resolve()) in err
+    assert "1 defunct checkout (1 registry row)." in err
+
+
+def test_status_all_check_json_counts_defunct_physical_claim(tmp_path, registry, capsys):
+    owner = tmp_path / "defunct-owner"
+    owner.mkdir()
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            "recipe:/repo:device:pixel",
+            "android",
+            "PXL1234",
+            "pixel",
+            str(owner.resolve()),
+            "2026-08-26T09:00:00+00:00",
+        )
+    )
+    owner.rmdir()
+
+    assert (
+        sd.cmd_status(
+            tmp_path,
+            registry,
+            "json",
+            show_all=True,
+            check=True,
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["defunct_checkouts"] == 1
+    assert payload["summary"]["defunct_rows"] == 1
+    assert payload["checkouts"] == [
+        {
+            "checkout": str(owner.resolve()),
+            "exists": False,
+            "resources": [],
+            "targets": [],
+        }
+    ]
 
 
 def test_deinit_destroys_simulator_by_udid(tmp_path, registry, monkeypatch):

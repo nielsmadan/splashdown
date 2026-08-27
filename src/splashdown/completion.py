@@ -100,6 +100,24 @@ def device_arg_completer(
         return []
 
 
+def physical_variant_completer(
+    prefix: str, parsed_args: argparse.Namespace, **kwargs: object
+) -> list[str]:
+    """Configured physical target names only; never inspect devices or claims."""
+    try:
+        return sorted(
+            name for name in _catalog(parsed_args).get("device", {}) if name.startswith(prefix)
+        )
+    except Exception:  # noqa: BLE001 — a completer must never raise on <Tab>
+        return []
+
+
+def available_platform_completer(
+    prefix: str, parsed_args: argparse.Namespace, **kwargs: object
+) -> list[str]:
+    return [platform for platform in ("ios", "android", "any") if platform.startswith(prefix)]
+
+
 def install(parser: argparse.ArgumentParser) -> None:
     """Enable argcomplete for `parser`. No-op (and no import) unless a shell
     completion is actively running, so the normal/hook path pays nothing."""

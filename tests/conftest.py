@@ -51,6 +51,8 @@ def registry(tmp_path: Path) -> sd.Registry:
         port_file=tmp_path / "ports.tsv",
         kv_file=tmp_path / "kv.tsv",
         device_file=tmp_path / "devices.tsv",
+        claim_file=tmp_path / "claims.tsv",
+        claim_notice_file=tmp_path / "claim-notices.tsv",
     )
 
 
@@ -66,8 +68,10 @@ def _write_recipe(checkout: Path, body: str) -> None:
 
 
 def _stub_physical(monkeypatch, ios=None, android=None):
-    monkeypatch.setattr(sd.devices, "_ios_physical_devices", lambda: list(ios or []))
-    monkeypatch.setattr(sd.devices, "_android_physical_devices", lambda: list(android or []))
+    monkeypatch.setattr(sd.devices, "_ios_physical_devices", lambda **_kwargs: list(ios or []))
+    monkeypatch.setattr(
+        sd.devices, "_android_physical_devices", lambda **_kwargs: list(android or [])
+    )
 
 
 def _write_physical_recipe(tmp_path):

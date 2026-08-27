@@ -63,6 +63,34 @@ def test_variant_completer_dedupes_across_types(checkout):
     assert variant_completer("", args) == ["default"]
 
 
+def test_physical_variant_completer_only_reads_configured_device_variants(checkout, monkeypatch):
+    from splashdown.completion import physical_variant_completer
+
+    _write_recipe(
+        checkout,
+        '[targets.device.pixel]\nplatform = "android"\n'
+        '[targets.simulator.phone]\nmodel = "iPhone"\n',
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("completion must not discover devices"),
+    )
+    monkeypatch.setattr(
+        sd.Registry,
+        "all_claims",
+        lambda *_args, **_kwargs: pytest.fail("completion must not read claims"),
+    )
+
+    assert physical_variant_completer("p", Namespace(cwd=str(checkout))) == ["pixel"]
+
+
+def test_available_platform_completer_filters_fixed_values():
+    from splashdown.completion import available_platform_completer
+
+    assert available_platform_completer("a", Namespace()) == ["android", "any"]
+
+
 def test_device_arg_completer_offers_variants_for_single_type(checkout):
     _write_recipe(
         checkout,
