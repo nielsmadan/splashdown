@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .device_types import ClaimNotice
     from .provisioning import WriterResult
     from .status import (
+        AutomationStatus,
         CheckoutStatus,
         ClaimListRow,
         StatusReport,
@@ -121,9 +122,33 @@ def _checkout_payload(checkout: CheckoutStatus, *, show_values: bool) -> dict[st
     return {
         "checkout": checkout.checkout,
         "exists": checkout.exists,
+        "automation": asdict(checkout.automation) if checkout.automation is not None else None,
         "resources": resources,
         "targets": [asdict(target) for target in checkout.targets],
     }
+
+
+def _render_automation(automation: AutomationStatus | None) -> None:
+    print("automation:", file=sys.stderr)
+    if automation is None:
+        print("  unavailable (not a live Git checkout)", file=sys.stderr)
+        return
+    print(
+        f"  sync trust: {'trusted' if automation.sync_trusted else 'untrusted'}",
+        file=sys.stderr,
+    )
+    print(
+        f"  bootstrap trust: {'trusted' if automation.bootstrap_trusted else 'untrusted'}",
+        file=sys.stderr,
+    )
+    print(
+        f"  recipe bootstrap: {'declared' if automation.bootstrap_declared else 'not declared'}",
+        file=sys.stderr,
+    )
+    print(
+        f"  completion: {automation.bootstrap_completion.replace('-', ' ')}",
+        file=sys.stderr,
+    )
 
 
 def _render_status_block(checkout: CheckoutStatus, *, show_all: bool, show_values: bool) -> None:
@@ -156,6 +181,7 @@ def _render_status_block(checkout: CheckoutStatus, *, show_all: bool, show_value
         elif target.missing:
             columns.append("[missing]")
         print("  " + "\t".join(columns), file=sys.stderr)
+    _render_automation(checkout.automation)
     if show_all:
         print("", file=sys.stderr)
 

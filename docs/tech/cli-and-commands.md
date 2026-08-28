@@ -282,6 +282,14 @@ counters, latest-OS caching, and deduplicated capability warnings. The renderer 
 detailed text blocks, JSON shaping, cleanup hints, and value redaction. Resource values are omitted
 unless `--show-values` is set; JSON format alone is never a disclosure opt-in.
 
+Detailed checkout records also carry an `AutomationStatus`. For live Git checkouts,
+`bootstrap.git_dirs` locates clone-wide trust and checkout-local completion state; the current
+recipe supplies bootstrap declaration. Completion is modeled as `not-declared`, `pending`,
+`complete`, or `invalid`, so a corrupt marker is visible without turning status into a bootstrap
+attempt. Non-Git and defunct records use `None`, rendered as JSON `null`. Compact text `status all`
+returns from the table-row path before automation gathering, preserving its no-extra-Git-probe
+contract. JSON and `status all --verbose` use detailed records and include automation state.
+
 #### The no-loader delivery fallback
 
 When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdown.env`

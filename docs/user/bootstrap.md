@@ -108,6 +108,10 @@ another explicit `--rerun`. Recipe edits do not invalidate completion automatica
 `splash deinit` clears completion for the current checkout but leaves clone trust and the shared
 hook intact. Use `splash untrust` when you want to revoke clone-wide authorization.
 
+Use `splash status` to inspect sync trust, retained bootstrap trust, whether the current recipe
+declares bootstrap, and this checkout's completion state. `splash --format json status` exposes the
+same fields under `automation`, which is `null` outside a live Git checkout.
+
 !!! note "Version requirement"
     The top-level `[bootstrap]` section requires Splashdown 0.17.0 or newer. Earlier versions
     reject the section rather than ignoring repository-controlled behavior they do not understand.

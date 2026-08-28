@@ -3,8 +3,9 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from . import bootstrap
 from .constants import LOCAL_NAME, RECIPE_NAME
 from .device_types import ManagedDevice
 from .devices import (
@@ -43,6 +44,14 @@ class TargetStatus:
 
 
 @dataclass(frozen=True)
+class AutomationStatus:
+    sync_trusted: bool
+    bootstrap_trusted: bool
+    bootstrap_declared: bool
+    bootstrap_completion: Literal["not-declared", "pending", "complete", "invalid"]
+
+
+@dataclass(frozen=True)
 class ClaimListRow:
     target: str
     source: str
@@ -77,6 +86,7 @@ class CheckoutStatus:
     exists: bool
     resources: tuple[ResourceStatus, ...]
     targets: tuple[TargetStatus, ...]
+    automation: AutomationStatus | None
 
 
 @dataclass(frozen=True)
@@ -315,6 +325,30 @@ def _gather_targets_declared(
     return tuple(entries)
 
 
+def _gather_automation(checkout_path: Path, *, exists: bool) -> AutomationStatus | None:
+    if not exists:
+        return None
+    try:
+        dirs = bootstrap.git_dirs(checkout_path)
+    except ValueError:
+        return None
+
+    trust = bootstrap.trust_state(dirs)
+    declared = _load_recipe_or_empty(checkout_path).bootstrap is not None
+    completion: Literal["not-declared", "pending", "complete", "invalid"] = "not-declared"
+    if declared:
+        try:
+            completion = "complete" if bootstrap.bootstrap_complete(dirs) else "pending"
+        except ValueError:
+            completion = "invalid"
+    return AutomationStatus(
+        sync_trusted=trust.sync,
+        bootstrap_trusted=trust.bootstrap,
+        bootstrap_declared=declared,
+        bootstrap_completion=completion,
+    )
+
+
 def _gather_checkout(
     checkout: str,
     registry: Registry,
@@ -357,6 +391,7 @@ def _gather_checkout(
         exists,
         _gather_resource_entries(checkout_path, co_exists=exists, resources=resources),
         targets,
+        _gather_automation(checkout_path, exists=exists),
     )
 
 

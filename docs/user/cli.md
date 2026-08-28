@@ -52,7 +52,8 @@ splash completion [bash|zsh]        # print shell-completion script (eval it in 
 ```
 
 `splash status` answers "what's the state of this checkout?": resource keys (with `[in use]` /
-`[free]` for ports), declared device variants and whether each is booted, and stale registry rows.
+`[free]` for ports), declared device variants and whether each is booted, automatic sync and
+bootstrap trust, bootstrap completion, and stale registry rows.
 Routine status, env-list, and sync JSON output hides resolved values. Add the root-level
 `--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
 single-value read. `splash sync --force` reallocates ports. `splash init` scans the project,

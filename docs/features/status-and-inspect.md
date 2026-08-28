@@ -6,11 +6,11 @@
 
 ## Overview
 
-`splash status` reports this checkout's resource keys, live port state, declared targets, and
-stale-row hints. `splash status all` widens that view to every tracked checkout; `--check`
-revalidates device and checkout health; `--format json` provides the same report as structured
-stdout. `splash env` is the scriptable companion for listing keys and explicitly reading,
-setting, or releasing one value.
+`splash status` reports this checkout's resource keys, live port state, declared targets,
+automation trust/bootstrap state, and stale-row hints. `splash status all` widens that view to every
+tracked checkout; `--check` revalidates device and checkout health; `--format json` provides the
+same report as structured stdout. `splash env` is the scriptable companion for listing keys and
+explicitly reading, setting, or releasing one value.
 
 Operational commands hide resolved values by default because registry entries may contain API
 tokens, credentials, or database URLs. Add the root-level `--show-values` flag when disclosure is
@@ -50,12 +50,17 @@ warnings. Detailed reports contain typed checkout, resource, and target records:
   detail view uses registry device rows instead. Both consume `device_health`, the same classifier
   used by refresh, so inspection and reconciliation agree about missing, orphaned, drifted, and
   undeclared instances.
+- Automation records use the Git private/common directories already owned by bootstrap. A live Git
+  checkout reports sync trust, retained bootstrap trust, whether the current recipe declares
+  bootstrap, and completion as `not-declared`, `pending`, `complete`, or `invalid`. Non-Git and
+  defunct checkouts use no record.
 - Capability failures become one warning plus target state `unavailable`; they never increment a
   repair counter.
 
 Compact `status all` text asks the report builder for typed table rows rather than detailed blocks.
 The renderer then produces PATH, SUMMARY, and the conditional ISSUE column. `--verbose` requests
-the detailed block view. Text goes to stderr; JSON goes to stdout.
+the detailed block view. The compact path does not inspect Git or bootstrap state. Text goes to
+stderr; JSON goes to stdout.
 
 `--check` adds a typed summary and routes each issue to the operation that can fix it:
 
@@ -73,6 +78,8 @@ Local status is one checkout object; `status all` wraps checkout objects in `{"c
 `--check` adds `summary`. Every checkout contains:
 
 - `checkout` and `exists`;
+- `automation`, either `null` or an object with `sync_trusted`, `bootstrap_trusted`,
+  `bootstrap_declared`, and `bootstrap_completion`;
 - `resources`, whose default shape is `{key, port_state}` and whose `--show-values` shape also has
   `value`;
 - `targets`, with type, variant, source, device name, status, and the health booleans.
@@ -99,6 +106,7 @@ Every form canonicalizes the checkout path exactly as provisioning does.
 - `src/splashdown/commands.py` — thin `cmd_status` wrapper and env application service.
 - `src/splashdown/cli.py` — `--format`, `--show-values`, status options, and dispatch.
 - `src/splashdown/registry.py` — `all_for`, `summary_for`, and `all_checkouts`.
+- `src/splashdown/bootstrap.py` — Git directory, trust, and completion state readers.
 
 ## Gotchas
 
@@ -108,6 +116,9 @@ Every form canonicalizes the checkout path exactly as provisioning does.
 - Local status describes declared targets; `status all` describes registered targets. A declared
   but never-created variant therefore appears only in the local view.
 - The compact table's ISSUE column is conditional. Parse JSON instead of relying on column count.
+- Bootstrap trust can remain true while `bootstrap_declared` is false because trust is clone-wide
+  and retained across refs and deinit. Completion is checkout-local and only interpreted when the
+  current recipe declares bootstrap.
 
 ## Why
 
