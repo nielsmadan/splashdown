@@ -756,6 +756,19 @@ def test_astro_autofix_injects_server_port(tmp_path):
     assert check.detect(tmp_path)[0] == "ok"
 
 
+def test_astro_autofix_refuses_symlinked_config(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-astro.config.mjs"
+    original = "export default {};\n"
+    outside.write_text(original)
+    (tmp_path / "astro.config.mjs").symlink_to(outside)
+    check = _astro_check(tmp_path)
+
+    with pytest.raises(ValueError, match="symlink"):
+        check.autofix(tmp_path)
+
+    assert outside.read_text() == original
+
+
 def test_astro_autofix_handles_bare_default_export(tmp_path):
     cfg = tmp_path / "astro.config.mjs"
     cfg.write_text("export default {\n  site: 'https://example.com',\n};\n")

@@ -36,4 +36,9 @@ splash doctor --framework=react-native   # override detection if needed
 `--framework` accepts registered profile names shown by `splash doctor --help`. An unknown name is
 a usage error rather than a successful run with no checks.
 
+Framework and hook-manager autofixes edit only regular files inside the checkout. A symlinked
+destination, a symlinked parent directory, or another non-regular entry is rejected. The native
+Git hook gets the same final-file protection in Git's resolved hooks directory. Existing modes are
+preserved and accepted changes replace the directory entry atomically, so a link is never followed.
+
 **Known limitation: RN Android.** Android's Metro port is also baked into the build (via the RN Gradle plugin / `BuildConfig`), with a different mechanism than iOS. Splashdown doesn't currently wire the Android side. For now `yarn android` works (the RN CLI propagates `RCT_METRO_PORT` to Gradle), but bare `gradle assembleDebug` may default to 8081. Tracked as a future check.

@@ -1462,6 +1462,34 @@ def test_cli_device_remove_recipe_variant_does_not_destroy(tmp_path, monkeypatch
     assert "[targets.simulator.default]" in (tmp_path / "splashdown.toml").read_text()
 
 
+def test_cli_device_remove_refuses_symlink_before_destroy(tmp_path, monkeypatch, capsys):
+    (tmp_path / "splashdown.toml").write_text("")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-remove.toml"
+    original = '[targets.simulator.repro]\nmodel = "iPhone 17"\n'
+    outside.write_text(original)
+    (tmp_path / sd.LOCAL_NAME).symlink_to(outside)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    registry = sd.Registry()
+    registry.set_device(
+        str(tmp_path.resolve()),
+        "simulator",
+        "repro",
+        "UDID",
+        "iPhone 17",
+        "18.5",
+    )
+    destroyed = []
+    monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
+
+    rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "repro"])
+
+    assert rc == 1
+    assert destroyed == []
+    assert outside.read_text() == original
+    assert registry.get_device(str(tmp_path.resolve()), "simulator", "repro") is not None
+    assert "symlink" in capsys.readouterr().err
+
+
 def test_cli_device_remove_failure_keeps_local_variant(tmp_path, monkeypatch, capsys):
     (tmp_path / "splashdown.toml").write_text("")
     local = tmp_path / "splashdown.local.toml"

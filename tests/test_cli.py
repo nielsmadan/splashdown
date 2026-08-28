@@ -295,7 +295,9 @@ def test_cli_nested_help_explains_bare_list(command, capsys):
     with pytest.raises(SystemExit) as exc:
         sd.main([command, "--help"])
     assert exc.value.code == 0
-    assert "Omit ACTION to list" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Omit ACTION to list" in out
+    assert "[ACTION]" in out.splitlines()[0]
 
 
 @pytest.mark.parametrize("command", ["sync", "status", "env"])
@@ -427,8 +429,16 @@ def test_cli_target_maintenance_help_describes_instance_lifecycle(capsys):
         sd.main(["target", "refresh", "--help"])
     assert exc.value.code == 0
     refresh_help = capsys.readouterr().out
-    for phrase in ("stale or missing", "undeclared", "dead checkouts"):
-        assert phrase in refresh_help
+    normalized_refresh_help = " ".join(refresh_help.lower().split())
+    for phrase in (
+        "all registered checkouts",
+        "without confirmation",
+        "declared runtime or image",
+        "configured as `latest`",
+        "undeclared",
+        "dead checkouts",
+    ):
+        assert phrase in normalized_refresh_help
 
     with pytest.raises(SystemExit) as exc:
         sd.main(["target", "remove", "--help"])
@@ -459,6 +469,37 @@ def test_cli_target_global_remove_rejects_keep_instance(tmp_path, monkeypatch, c
     err = capsys.readouterr().err
     assert "--global" in err
     assert "--keep-instance" in err
+
+
+def test_cli_target_physical_device_remove_rejects_keep_instance(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["target", "remove", "device", "phone", "--keep-instance"])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "device" in err
+    assert "--keep-instance" in err
+
+
+def test_cli_init_show_values_prints_first_sync_values(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    assert (
+        sd.main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--show-values",
+                "init",
+                "minimal",
+                "--loader",
+                "none",
+            ]
+        )
+        == 0
+    )
+
+    assert "RUN_ID=" in capsys.readouterr().err
 
 
 def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):

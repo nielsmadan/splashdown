@@ -11,6 +11,7 @@ from .hooks import (
     post_checkout_manual_instructions,
     post_checkout_readiness,
 )
+from .safe_files import atomic_write_text, read_editable_text
 
 # The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
 # per-framework spec shipped with the tool. Each WiringCheck names
@@ -238,7 +239,7 @@ def _rn_metro_autofix(cwd: Path) -> None:
     import sys  # noqa: PLC0415
 
     path = cwd / "metro.config.js"
-    text = path.read_text()
+    text = read_editable_text(path, root=cwd)
     if "process.env.RCT_METRO_PORT" in text:
         return
     m = _METRO_LITERAL_PORT_RE.search(text)
@@ -248,13 +249,13 @@ def _rn_metro_autofix(cwd: Path) -> None:
             + f"port: Number(process.env.RCT_METRO_PORT) || {m.group(1)}"
             + text[m.end() :]
         )
-        path.write_text(new_text)
+        atomic_write_text(path, new_text, root=cwd)
         print(f"patched metro.config.js (RCT_METRO_PORT, fallback {m.group(1)})", file=sys.stderr)
         return
     injected = _rn_metro_inject(text)
     if injected is None:
         return  # unrecognized shape — doctor will surface manual_instructions
-    path.write_text(injected)
+    atomic_write_text(path, injected, root=cwd)
     print("patched metro.config.js (added server.port, fallback 8081)", file=sys.stderr)
 
 
@@ -321,7 +322,7 @@ def _rn_pkg_autofix(cwd: Path) -> None:
     import sys  # noqa: PLC0415
 
     path = cwd / "package.json"
-    data = json.loads(path.read_text())
+    data = json.loads(read_editable_text(path, root=cwd))
     scripts = data.get("scripts") or {}
     changed = False
     for name in _pkg_scripts_with_port(data):
@@ -332,7 +333,7 @@ def _rn_pkg_autofix(cwd: Path) -> None:
     if not changed:
         return
     data["scripts"] = scripts
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", root=cwd)
     print("rewrote package.json (stripped --port from scripts)", file=sys.stderr)
 
 
@@ -404,7 +405,7 @@ def _rn_xcode_autofix(cwd: Path) -> None:
     import sys  # noqa: PLC0415
 
     path = cwd / "ios" / ".xcode.env"
-    text = path.read_text()
+    text = read_editable_text(path, root=cwd)
     if "splashdown.env" in text:
         return
     # Strip any literal-digit export so the file has one source of truth.
@@ -414,7 +415,7 @@ def _rn_xcode_autofix(cwd: Path) -> None:
     text = _XCODE_BLOCK_RE.sub("", text)
     text = text.rstrip() + ("\n\n" if text.strip() else "")
     text += _XCODE_BLOCK
-    path.write_text(text)
+    atomic_write_text(path, text, root=cwd)
     print("rewrote ios/.xcode.env (splashdown-managed RCT_METRO_PORT block)", file=sys.stderr)
 
 

@@ -133,10 +133,11 @@ a launcher that starts and exits nonzero keeps its normal exit status.
    walks every registry device row, first loading every relevant live checkout's
    recipe/local/global catalog. Any malformed config aborts the entire sweep before mutation.
    It then recreates each registered target that is stale or whose underlying sim/AVD was deleted,
-   leaves fresh ones alone, and drops rows for defunct checkouts or undeclared variants. A declared
-   target with no registry row is provisioned by `splash run`, not by refresh. Every registered instance is
-   shut down before deletion, whether teardown comes from reconcile, refresh, GC, or explicit
-   removal. Like
+   using that declaration's runtime or image and resolving only values configured as `latest`.
+   It leaves fresh ones alone and drops rows for defunct checkouts or undeclared variants without
+   confirmation. A declared target with no registry row is provisioned by `splash run`, not by
+   refresh. Every registered instance is shut down before deletion, whether teardown comes from
+   reconcile, refresh, GC, or explicit removal. Like
    reconcile, it leaves recreated sims **Shutdown**. The recreate decision is taken *before* the
    call (`device_needs_recreate`) because `ensure_fresh_sim` is a no-op for fresh devices
    and the AVD name is stable across recreation, so the return value can't reveal what happened.
@@ -190,15 +191,17 @@ disappears. The physical hardware itself remains unmanaged and is never stored i
 `[targets.<type>.<variant>]` table into the gitignored local file (`target_add`,
 `src/splashdown/targets.py`). Before writing, it applies the same type-specific target schema
 used for recipe, local, and global files, rejects incompatible CLI flags, renders the new document
-in memory, and validates the complete result. `splash target remove` first verifies that the variant
-belongs to the local file and computes the edited TOML, then destroys the instance, writes the
+in memory, and validates the complete result. Local target edits reject symlinked or non-regular
+`splashdown.local.toml` paths and use same-directory atomic replacement. `splash target remove`
+first verifies that the variant belongs to the local file and computes the edited TOML, then destroys the instance, writes the
 declaration change, and removes its registry row unless `--keep-instance`. When a registry row exists,
 deletion uses its actual simulator UDID or AVD name rather than a newly resolved config name.
 A recipe-owned or missing variant, or malformed recipe/local file, is rejected before any device
 operation. If the lifecycle step raises, the local declaration and registry row remain intact.
 Adding a variant that already exists in the recipe is an error. Global removal edits only the
 machine-wide catalog and defers instance cleanup to `target refresh`; combining `--global` with
-`--keep-instance` is rejected as redundant.
+`--keep-instance` is rejected as redundant. Physical `device` removal also rejects
+`--keep-instance` because there is no managed instance to retain.
 
 ## Key entry points
 
@@ -330,6 +333,8 @@ splash target release --all
 For `target add`, simulator fields are `--model`, `--ios`, and `--name`; emulator fields are
 `--device`, `--image`, and `--name`; physical-device fields are `--id`, `--name`, and `--platform`.
 The emulator `--device` flag names the Android hardware profile rather than physical hardware.
+`--keep-instance` applies only to simulator and emulator removal; physical `device` removal rejects
+it as an ineffective option.
 
 Linked-worktree auto-allocation is the strict project policy:
 
@@ -349,6 +354,9 @@ unchanged.
   (`src/splashdown/target_commands.py`, `ensure_fresh_sim`). A fleet-wide `target refresh`
   across many checkouts therefore won't trip the OS's max-booted-simulators limit — but it also
   means `refresh` alone does not make an app appear; you still need `splash run`/`start`.
+- **`target refresh` is machine-wide and unconfirmed.** It reconciles every registered checkout,
+  regardless of the invoking `--cwd`, and directly destroys undeclared and dead-checkout
+  instances. Use `status all --check` first when an operator needs a preview.
 - **Pinned vs `latest` is the whole UC4/UC10 distinction.** `ios = "latest"` (the default) is
   reconciled on every run and by `refresh`; a pinned `ios = "17.0"` is *deliberately* frozen and is
   skipped by auto-upgrade when its declared version is still present. Forgetting to pin a
@@ -386,7 +394,11 @@ unchanged.
   teardown to an unowned same-name device. A missing registry row is a safe no-op; the declaration
   is removed without looking up an instance by its derived name. `--keep-instance` also leaves any registry row untouched;
   a later `splash target refresh` treats that now-undeclared row as defunct and destroys the
-  retained instance.
+  retained instance. The option is rejected for physical `device` targets because they have no
+  managed instance or registry row.
+- **Local target edits never follow links.** Add and remove reject a symlinked final config,
+  symlinked parent directory, or non-regular destination before a device lifecycle mutation. A
+  regular local config is replaced atomically with its mode preserved.
 - **`splashdown.local.toml` is add-only.** A variant name that collides with a recipe-declared one
   is an error (`target_add`, `src/splashdown/targets.py`); pick a different name.
 - **The shared CLI parser does not make flags interchangeable.** `target add` shows every target

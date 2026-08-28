@@ -46,6 +46,7 @@ from .recipe import (
     resolve_variant,
 )
 from .registry import Registry
+from .safe_files import atomic_write_text, read_optional_editable_text
 from .targets import (
     _load_recipe_or_empty,
     _prepare_target_remove,
@@ -549,10 +550,15 @@ def _target_add(args: Any, cwd: Path, registry: Registry) -> int:
 def _target_remove_locked(args: Any, cwd: Path, registry: Registry, checkout: str) -> int:
     variant = args.variant
     recipe = _load_recipe_or_empty(cwd)
-    try:
-        local = LocalConfig.load(cwd / LOCAL_NAME)
-    except ValueError:
-        local = LocalConfig({}, cwd / LOCAL_NAME)
+    local_path = cwd / LOCAL_NAME
+    local_text = read_optional_editable_text(local_path, root=cwd)
+    if local_text is None:
+        local = LocalConfig({}, local_path)
+    else:
+        try:
+            local = LocalConfig.parse(local_text, local_path)
+        except ValueError:
+            local = LocalConfig({}, local_path)
     in_project = variant in recipe.targets.get(args.dtype, {}) or variant in local.targets.get(
         args.dtype, {}
     )
@@ -572,11 +578,11 @@ def _target_remove_locked(args: Any, cwd: Path, registry: Registry, checkout: st
             device_destroy_row(row)
         else:
             missing = True
-        local_path.write_text(new_local_text)
+        atomic_write_text(local_path, new_local_text, root=cwd)
         registry.remove_device(checkout, args.dtype, variant)
         destroyed = row is not None
     else:
-        local_path.write_text(new_local_text)
+        atomic_write_text(local_path, new_local_text, root=cwd)
     if destroyed:
         suffix = " (and destroyed the instance)"
     elif missing:

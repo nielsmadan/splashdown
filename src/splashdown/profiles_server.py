@@ -8,6 +8,7 @@ from typing import Any
 
 from .inventory import AppInventory
 from .profile_core import Profile, _manual_port_guidance, _profile_port
+from .safe_files import atomic_write_text, read_editable_bytes
 from .wiring import WiringCheck, _strip_hash_comments, _yaml_key_regions
 
 
@@ -256,13 +257,13 @@ def _aspnet_legacy_manual(cwd: Path) -> str:
     )
 
 
-def _read_launch_settings(path: Path) -> tuple[Any, str, str]:
+def _read_launch_settings(path: Path, *, root: Path) -> tuple[Any, str, str]:
     """Parsed JSON plus the byte conventions to write it back with. The .NET
     templates emit this file with a UTF-8 BOM and CRLF endings — a plain
     `read_text()` leaves the BOM in the string and `json.loads` then rejects a
     perfectly valid file, and a plain `write_text()` would strip both and churn
     every line for Windows-authored projects."""
-    raw = path.read_bytes()
+    raw = read_editable_bytes(path, root=root)
     encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "utf-8"
     text = raw.decode(encoding)
     return json.loads(text), encoding, "\r\n" if "\r\n" in text else "\n"
@@ -300,8 +301,8 @@ def _aspnet_launch_settings_check() -> WiringCheck:
 def _aspnet_launch_settings_detect(cwd: Path) -> tuple[str, str]:
     path = _launch_settings_path(cwd)
     try:
-        data, _, _ = _read_launch_settings(path)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        data, _, _ = _read_launch_settings(path, root=cwd)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         return ("problem", "launchSettings.json is not valid JSON")
     pinned = [
         name for name, spec in _aspnet_project_profiles(data).items() if spec.get("applicationUrl")
@@ -313,14 +314,19 @@ def _aspnet_launch_settings_detect(cwd: Path) -> tuple[str, str]:
 
 def _aspnet_launch_settings_autofix(cwd: Path) -> None:
     path = _launch_settings_path(cwd)
-    data, encoding, newline = _read_launch_settings(path)
+    data, encoding, newline = _read_launch_settings(path, root=cwd)
     changed = False
     for spec in _aspnet_project_profiles(data).values():
         changed = spec.pop("applicationUrl", None) is not None or changed
     if changed:
         # Append a bare "\n" — `newline=` translates every \n on write, so passing
         # the CRLF here too would emit a trailing \r\r\n.
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding=encoding, newline=newline)
+        atomic_write_text(
+            path,
+            json.dumps(data, indent=2) + "\n",
+            root=cwd,
+            text_format=(encoding, newline),
+        )
         print("patched Properties/launchSettings.json (dropped applicationUrl)", file=sys.stderr)
 
 

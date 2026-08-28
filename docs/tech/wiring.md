@@ -101,6 +101,13 @@ autofixes per app. The intent-preset path resolves a framework from the checkout
 `cmd_doctor(cwd, fix=True)` only when checks exist (see
 `docs/features/framework-wiring.md`).
 
+Every writable check uses `safe_files.py` for its edit. The helper rejects a final symlink,
+non-regular destination, configured-root escape, or symlinked parent component; opens existing files with
+`O_NOFOLLOW` where available; and commits through same-directory atomic replacement while
+preserving the existing mode. The .NET writer additionally passes the detected BOM encoding and
+newline convention. Lefthook, Husky, and native-hook repairs use the same helper, with executable
+mode applied to hook replacements rather than a follow-up `chmod`.
+
 ### The individual checks
 
 - **`hook`** (`_rn_hook_detect` and `_HOOK_WIRING_CHECK`) — delegates detection to

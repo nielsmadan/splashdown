@@ -116,10 +116,11 @@ Root flags are `--cwd`, `--format`, `--show-values`, and `--version`.
 `_validate_parsed_args` runs immediately after argparse and before checkout resolution, registry
 construction, or command dispatch. It owns constraints argparse cannot express cleanly across
 parser levels: `init --rescan` exclusivity, the root output-option support matrix, and the
-redundant `target remove --global --keep-instance` pair. `--format` is valid for sync, status, bare
-env, bare target, target claims, and target claim. `--show-values` is valid for sync, status,
-normal init, and bare env. Rejected combinations use `parser.error`, preserving argparse's usage
-output and exit 2.
+redundant `target remove --global --keep-instance` pair. It also rejects
+`target remove device --keep-instance`, because physical devices have no owned instance. `--format`
+is valid for sync, status, bare env, bare target, target claims, and target claim. `--show-values`
+is valid for sync, status, normal init, and bare env. Rejected combinations use `parser.error`,
+preserving argparse's usage output and exit 2.
 
 The env parent and action parsers intentionally accept `--checkout`. Action defaults use
 `argparse.SUPPRESS`, so omitting the after-action form does not overwrite a selector already parsed
@@ -191,7 +192,9 @@ without partial provisioning. Setup *execution* remains later: an unknown
 requested setup name or a failing command can occur after registry and writer
 changes and is not transactional. The renderer chooses the no-op or per-line report. JSON exposes
 `resolved_keys` by default; `--show-values` opts into `resolved`. Explicit stdout-writer values are
-always placed in the JSON `stdout` object.
+always placed in the JSON `stdout` object. In text mode, `--show-values` prints every sorted
+resolved `KEY=VALUE` line, annotating changed keys. This applies equally to normal sync, an
+up-to-date no-op sync, and init's first sync.
 
 `cmd_init` applies the same contract to generated TOML. Scanner recipes,
 minimal-monorepo recipes, and built-in presets go through `Recipe.parse` before
@@ -286,9 +289,12 @@ Detailed checkout records also carry an `AutomationStatus`. For live Git checkou
 `bootstrap.git_dirs` locates clone-wide trust and checkout-local completion state; the current
 recipe supplies bootstrap declaration. Completion is modeled as `not-declared`, `pending`,
 `complete`, or `invalid`, so a corrupt marker is visible without turning status into a bootstrap
-attempt. Non-Git and defunct records use `None`, rendered as JSON `null`. Compact text `status all`
-returns from the table-row path before automation gathering, preserving its no-extra-Git-probe
-contract. JSON and `status all --verbose` use detailed records and include automation state.
+attempt. If one live recipe cannot be read, that checkout retains trust data but uses a nullable
+bootstrap declaration plus `unavailable` completion, and gathering warns without aborting the
+remaining detailed records. Non-Git and defunct records use `None`, rendered as JSON `null`.
+Compact text `status all` returns from the table-row path before automation gathering, preserving
+its no-extra-Git-probe contract. JSON, `status all --verbose`, and `status all` with
+`--show-values` use detailed records and include automation state.
 
 #### The no-loader delivery fallback
 
@@ -360,7 +366,9 @@ text; JSON always retains canonical paths.
 `target add` validates its CLI field map with the same `validate_target_spec`
 used by recipe, local, and global loads. Flags incompatible with the chosen type
 raise `DeviceError` before rendering; the complete edited `LocalConfig` or `GlobalConfig` is
-then parsed before writing. The `env set` branch accepts only declared
+then parsed before writing. Local add/remove reopen `splashdown.local.toml` through `safe_files.py`,
+which rejects symlinked components and non-regular destinations before lifecycle mutation, then
+uses same-directory atomic replacement with mode preservation. The `env set` branch accepts only declared
 `type="set"` resources: assignment, recipe, declaration, and type failures
 return exit 2 without mutating the registry.
 

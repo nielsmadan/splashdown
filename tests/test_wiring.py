@@ -110,12 +110,53 @@ def test_wire_lefthook_creates_config_if_only_pkg_dep(tmp_path):
     assert "splashdown:" in (tmp_path / "lefthook.yml").read_text()
 
 
+def test_wire_lefthook_refuses_symlinked_config(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-lefthook.yml"
+    original = "pre-commit:\n  commands: {}\n"
+    outside.write_text(original)
+    (tmp_path / "lefthook.yml").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        sd._wire_post_checkout_lefthook(tmp_path)
+
+    assert outside.read_text() == original
+
+
 def test_wire_husky_creates_executable_hook(tmp_path):
     sd._wire_post_checkout_husky(tmp_path)
     hook = tmp_path / ".husky" / "post-checkout"
     assert hook.exists()
     assert os.access(hook, os.X_OK)
     assert "splash" in hook.read_text()
+
+
+def test_wire_husky_refuses_symlinked_hook(tmp_path):
+    husky = tmp_path / ".husky"
+    husky.mkdir()
+    outside = tmp_path.parent / f"{tmp_path.name}-husky-post-checkout"
+    original = sd.hooks.LEGACY_POST_CHECKOUT_HOOK
+    outside.write_text(original)
+    (husky / "post-checkout").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        sd._wire_post_checkout_husky(tmp_path)
+
+    assert outside.read_text() == original
+
+
+def test_wire_native_refuses_symlinked_hook(tmp_path):
+    _git_init(tmp_path)
+    hook = _native_hook(tmp_path)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path.parent / f"{tmp_path.name}-native-post-checkout"
+    original = sd.hooks.LEGACY_POST_CHECKOUT_HOOK
+    outside.write_text(original)
+    hook.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        sd._wire_post_checkout_native(tmp_path)
+
+    assert outside.read_text() == original
 
 
 def test_ensure_hook_chooses_lefthook(tmp_path):
@@ -359,6 +400,53 @@ def test_rn_metro_autofix_replaces_literal(tmp_path):
     assert "process.env.RCT_METRO_PORT" in text
     assert "|| 8083" in text
     assert sd._rn_metro_detect(tmp_path)[0] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "original", "autofix"),
+    [
+        (
+            Path("metro.config.js"),
+            "module.exports = { server: { port: 8083 } };\n",
+            sd._rn_metro_autofix,
+        ),
+        (
+            Path("package.json"),
+            json.dumps({"scripts": {"start": "react-native start --port 8083"}}),
+            sd._rn_pkg_autofix,
+        ),
+        (
+            Path("ios/.xcode.env"),
+            "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n",
+            sd._rn_xcode_autofix,
+        ),
+    ],
+)
+def test_rn_autofixes_refuse_symlinked_config(tmp_path, relative_path, original, autofix):
+    path = tmp_path / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path.parent / f"{tmp_path.name}-{path.name}"
+    outside.write_text(original)
+    path.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        autofix(tmp_path)
+
+    assert outside.read_text() == original
+
+
+def test_rn_xcode_autofix_refuses_symlinked_parent_directory(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-ios"
+    outside.mkdir()
+    config = outside / ".xcode.env"
+    original = "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n"
+    config.write_text(original)
+    (tmp_path / "ios").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        sd._rn_xcode_autofix(tmp_path)
+
+    assert config.read_text() == original
 
 
 def test_rn_metro_autofix_idempotent(tmp_path):

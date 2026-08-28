@@ -10,6 +10,7 @@ from .errors import DeviceError
 from .inventory import AppInventory
 from .package_json import package_dependencies
 from .profile_core import Profile, _manual_port_guidance, _profile_port
+from .safe_files import atomic_write_text, read_editable_text
 from .wiring import WiringCheck, _strip_js_comments
 
 _ASTRO_CONFIG_NAMES = (
@@ -79,14 +80,14 @@ def _astro_port_autofix(cwd: Path) -> None:
     cfg = _astro_config_path(cwd)
     if cfg is None:
         raise DeviceError("astro.config.* not found")
-    text = cfg.read_text()
+    text = read_editable_text(cfg, root=cwd)
     if "WEB_DEV_PORT" in text or _ASTRO_SERVER_BLOCK_RE.search(text):
         return
     m = _ASTRO_DEFAULT_EXPORT_RE.search(text)
     if m is None:  # unrecognized shape — manual_instructions covers it
         return
     block = "\n  server: { port: Number(process.env.WEB_DEV_PORT) || 4321 },"
-    cfg.write_text(text[: m.end()] + block + text[m.end() :])
+    atomic_write_text(cfg, text[: m.end()] + block + text[m.end() :], root=cwd)
     print(f"patched {cfg.name} (server.port → WEB_DEV_PORT)", file=sys.stderr)
 
 
@@ -201,7 +202,7 @@ def _vite_process_env_autofix(cwd: Path) -> None:
     cfg = _vite_config_path(cwd)
     if cfg is None:
         raise DeviceError("vite.config.* not found")
-    text = cfg.read_text()
+    text = read_editable_text(cfg, root=cwd)
     # Rewrite every `env.VAR` access to `process.env.VAR`, skipping names already
     # read from process.env elsewhere. Keep loadEnv lines untouched (the user may
     # want them for other purposes) — the new access path just bypasses them.
@@ -209,7 +210,7 @@ def _vite_process_env_autofix(cwd: Path) -> None:
     for m in reversed(_vite_unfixed_env_matches(text)):
         new_text = new_text[: m.start()] + f"process.env.{m.group(1)}" + new_text[m.end() :]
     if new_text != text:
-        cfg.write_text(new_text)
+        atomic_write_text(cfg, new_text, root=cwd)
         print(f"patched {cfg.name} (env.X → process.env.X)", file=sys.stderr)
 
 
@@ -378,7 +379,7 @@ def _angular_wire_serve_script(value: str) -> str:
 
 def _angular_pkg_port_autofix(cwd: Path) -> None:
     path = cwd / "package.json"
-    data = json.loads(path.read_text())
+    data = json.loads(read_editable_text(path, root=cwd))
     scripts = data.get("scripts")
     if not isinstance(scripts, dict):
         return
@@ -389,7 +390,7 @@ def _angular_pkg_port_autofix(cwd: Path) -> None:
         scripts[name] = _angular_wire_serve_script(value)
         changed = True
     if changed:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", root=cwd)
         print("patched package.json (ng serve --port $WEB_DEV_PORT)", file=sys.stderr)
 
 
@@ -617,7 +618,7 @@ def _deno_port_autofix(cwd: Path) -> None:
     # jsonc may carry comments that a json round-trip would delete.
     if cfg is None or cfg.name.endswith(".jsonc"):
         return
-    data = json.loads(cfg.read_text())
+    data = json.loads(read_editable_text(cfg, root=cwd))
     tasks = data.get("tasks")
     if not isinstance(tasks, dict):
         return
@@ -630,7 +631,7 @@ def _deno_port_autofix(cwd: Path) -> None:
         tasks[name] = _deno_wire_serve_task(value)
         changed = True
     if changed:
-        cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        atomic_write_text(cfg, json.dumps(data, indent=2, ensure_ascii=False) + "\n", root=cwd)
         print(f"patched {cfg.name} (deno serve --port $PORT)", file=sys.stderr)
 
 

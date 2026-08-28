@@ -64,6 +64,28 @@ export default defineConfig(({ mode }) => {
     assert rc != 0
 
 
+def test_vite_autofix_refuses_symlinked_config(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-vite.config.ts"
+    original = """\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  return { server: { port: Number(env.WEB_DEV_PORT ?? 5173) } };
+});
+"""
+    outside.write_text(original)
+    (tmp_path / "vite.config.ts").symlink_to(outside)
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    check = next(
+        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        check.autofix(tmp_path)
+
+    assert outside.read_text() == original
+
+
 def test_refresh_inventory_rejects_unknown_resource_key_without_writing(tmp_path):
     path = tmp_path / "splashdown.toml"
     path.write_text("""\
@@ -847,6 +869,33 @@ def test_aspnet_wiring_autofix_drops_application_url(tmp_path):
     assert data["profiles"]["IIS Express"]["applicationUrl"] == "http://localhost:8080"
 
 
+def test_aspnet_wiring_autofix_refuses_symlinked_launch_settings(tmp_path):
+    check = _make_aspnet(
+        tmp_path,
+        {"profiles": {"http": {"commandName": "Project"}}},
+    )
+    settings = tmp_path / "Properties" / "launchSettings.json"
+    settings.unlink()
+    outside = tmp_path.parent / f"{tmp_path.name}-launchSettings.json"
+    original = json.dumps(
+        {
+            "profiles": {
+                "http": {
+                    "commandName": "Project",
+                    "applicationUrl": "http://localhost:5062",
+                }
+            }
+        }
+    )
+    outside.write_text(original)
+    settings.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        check.autofix(tmp_path)
+
+    assert outside.read_text() == original
+
+
 def _real_launch_settings_bytes():
     """Byte-for-byte shape of what `dotnet new web` actually emits: UTF-8 BOM and
     CRLF endings. A plain read_text() leaves the BOM in the string and json.loads
@@ -1060,6 +1109,21 @@ def test_angular_wiring_flags_and_fixes_unwired_serve_script(tmp_path):
     assert scripts["start"] == "ng serve --port $WEB_DEV_PORT"
 
 
+def test_angular_autofix_refuses_symlinked_package_json(tmp_path):
+    check = _angular_app(tmp_path, "ng serve")
+    package = tmp_path / "package.json"
+    package.unlink()
+    outside = tmp_path.parent / f"{tmp_path.name}-angular-package.json"
+    original = json.dumps({"scripts": {"start": "ng serve"}})
+    outside.write_text(original)
+    package.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        check.autofix(tmp_path)
+
+    assert outside.read_text() == original
+
+
 def test_angular_wiring_replaces_literal_port(tmp_path):
     # The flag goes on `ng serve` itself rather than at the end of the script, so it
     # survives a compound command; other flags keep their order.
@@ -1164,6 +1228,21 @@ def test_deno_autofix_inserts_port_before_the_script_arg(tmp_path):
     assert task == "deno serve --port $PORT --allow-net server.ts"
     assert not task.endswith("$PORT")
     assert check.detect(tmp_path)[0] == "ok"
+
+
+def test_deno_autofix_refuses_symlinked_config(tmp_path):
+    check = _deno_app(tmp_path, "{}")
+    config = tmp_path / "deno.json"
+    config.unlink()
+    outside = tmp_path.parent / f"{tmp_path.name}-deno.json"
+    original = '{"tasks": {"dev": "deno serve server.ts"}}'
+    outside.write_text(original)
+    config.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        check.autofix(tmp_path)
+
+    assert outside.read_text() == original
 
 
 def test_deno_autofix_leaves_deno_run_tasks_alone(tmp_path):

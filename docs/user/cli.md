@@ -31,7 +31,7 @@ splash target add <type> <variant> [--model M] [--ios V] [--device D] [--image I
                   [--name N] [--id ID] [--platform ios|android] [--global]
 splash target remove <type> <variant> [--keep-instance] [--global]
 splash target refresh [ios|android|all]
-                                      # reconcile registered sims/emulators
+                                      # reconcile every registered checkout
 splash target prune   [ios|android|all] [--dry-run] [--yes]
                                       # destroy sims/emulators splashdown didn't create
 splash target claims [--format text|json]
@@ -61,6 +61,9 @@ scaffolds the project files, and runs the first sync (`--no-sync` scaffolds only
 Root output options go before the command. `--format` applies to sync, status, bare `env`, bare
 `target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, a normal
 init's first sync, and bare `env`. Other combinations are usage errors instead of accepted no-ops.
+In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync and the first
+sync performed by init. With `status all`, it selects detailed checkout blocks so those values have
+a place to appear instead of silently remaining in the compact table.
 First-time init must target the Git worktree root; `--allow-nested` explicitly creates an
 independent Splashdown project below it. That location override does not replace `--overwrite`,
 which remains the separate opt-in for replacing an existing recipe. Non-Git projects and existing
@@ -146,9 +149,13 @@ Commands that load configuration validate the complete document before provision
 Local `target remove` destroys its managed simulator or emulator by default. A global removal edits
 the machine-wide declaration only, then `splash target refresh` reaps any instance the removal made
 undeclared. Because global removal is already config-only, `--global --keep-instance` is a usage
-error. Refresh also destroys registered instances belonging to deleted checkouts and recreates
-stale or externally deleted registered instances. It does not provision declared targets that have
-never been run.
+error. Physical `device` removal has no managed instance, so combining it with `--keep-instance` is
+also a usage error.
+
+Refresh is machine-wide even when invoked from one checkout. It recreates stale or externally
+deleted registered instances at each declaration's runtime or image, resolving `latest` live. It
+also destroys undeclared instances and instances belonging to deleted checkouts without a prompt.
+It does not provision declared targets that have never been run.
 
 Physical claim commands act only on configured `device` targets from the recipe, local config,
 and global config. `splash run pixel` claims a free connected target before framework build or

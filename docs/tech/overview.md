@@ -63,6 +63,11 @@ output; trust/bootstrap and the hidden hook keep their early, command-specific b
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
   so the read path never loads it. `__version__` and other costly lookups are lazy in `__init__.py`.
   Keep the two-dependency floor (`argcomplete`, `tomlkit`) and the read path light.
+- **Safe editable files.** `safe_files.py` is the dependency-free seam for framework autofixes,
+  hook repairs, and local target changes. It rejects symlinked path components and non-regular
+  destinations, opens existing files without following the final link where the platform supports
+  it, and atomically replaces the directory entry while preserving mode and requested text
+  conventions.
 - **TSV registry contract.** All machine-wide state is flat TSV, protected by stable sidecar
   `fcntl` locks and committed with same-directory atomic replacement. Checkout-scoped operation
   locks use a bounded hash-shard set to serialize registry changes, output-file writes, target

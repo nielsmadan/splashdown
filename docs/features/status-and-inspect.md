@@ -22,6 +22,9 @@ splash --format json status           # resource objects omit "value"
 splash env                            # keys only
 splash --format json env              # sorted JSON array of keys
 splash --show-values status           # include KEY=VALUE
+splash --show-values status all       # detailed blocks with values for every checkout
+splash --show-values sync             # text sync includes every resolved KEY=VALUE
+splash --show-values init             # first text sync includes every resolved KEY=VALUE
 splash --show-values env              # include KEY=VALUE
 splash --format json --show-values env # JSON object of key/value pairs
 ```
@@ -53,14 +56,16 @@ warnings. Detailed reports contain typed checkout, resource, and target records:
 - Automation records use the Git private/common directories already owned by bootstrap. A live Git
   checkout reports sync trust, retained bootstrap trust, whether the current recipe declares
   bootstrap, and completion as `not-declared`, `pending`, `complete`, or `invalid`. Non-Git and
-  defunct checkouts use no record.
+  defunct checkouts use no record. If one live checkout's recipe cannot be read, detailed fleet
+  status keeps the checkout in the report, warns on stderr, and marks its bootstrap declaration
+  and completion as unavailable instead of aborting the other records.
 - Capability failures become one warning plus target state `unavailable`; they never increment a
   repair counter.
 
 Compact `status all` text asks the report builder for typed table rows rather than detailed blocks.
-The renderer then produces PATH, SUMMARY, and the conditional ISSUE column. `--verbose` requests
-the detailed block view. The compact path does not inspect Git or bootstrap state. Text goes to
-stderr; JSON goes to stdout.
+The renderer then produces PATH, SUMMARY, and the conditional ISSUE column. `--verbose` or
+`--show-values` requests the detailed block view. The compact path does not inspect Git or
+bootstrap state. Text goes to stderr; JSON goes to stdout.
 
 `--check` adds a typed summary and routes each issue to the operation that can fix it:
 
@@ -79,7 +84,8 @@ Local status is one checkout object; `status all` wraps checkout objects in `{"c
 
 - `checkout` and `exists`;
 - `automation`, either `null` or an object with `sync_trusted`, `bootstrap_trusted`,
-  `bootstrap_declared`, and `bootstrap_completion`;
+  `bootstrap_declared`, and `bootstrap_completion`. An unreadable recipe uses JSON `null` for
+  `bootstrap_declared` and `"unavailable"` for completion while the other checkouts remain intact;
 - `resources`, whose default shape is `{key, port_state}` and whose `--show-values` shape also has
   `value`;
 - `targets`, with type, variant, source, device name, status, and the health booleans.
@@ -119,6 +125,8 @@ Every form canonicalizes the checkout path exactly as provisioning does.
 - Bootstrap trust can remain true while `bootstrap_declared` is false because trust is clone-wide
   and retained across refs and deinit. Completion is checkout-local and only interpreted when the
   current recipe declares bootstrap.
+- Detailed fleet status isolates an unreadable recipe to its own automation record. The warning is
+  on stderr even when the JSON report itself goes to stdout.
 
 ## Why
 

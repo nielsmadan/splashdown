@@ -61,8 +61,9 @@ the devbox init-hook and the no-loader fallback, where double quotes would let
 Every `[setup.NAME]` is validated while the recipe loads, whether or not that setup was requested. The table accepts only `run`, containing either a non-empty string or a non-empty array of non-empty strings. This schema validation happens before provisioning. `splash sync --setup NAME` still executes the selected setup after provisioning and writer output; an unknown name or failing command exits nonzero, execution stops at the first failure, and registry/file changes plus earlier successful commands are not rolled back.
 
 Operational sync output is key-only by default. Text change reports already name keys without
-values; JSON returns `resolved_keys`. Add `--show-values` to replace that field with `resolved`.
-The explicit `stdout` writer remains value-bearing in either mode.
+values; JSON returns `resolved_keys`. Add `--show-values` to print every resolved `KEY=VALUE` in
+text, including an up-to-date sync and init's first sync, or to replace the JSON field with
+`resolved`. The explicit `stdout` writer remains value-bearing in either mode.
 
 ## Key entry points
 
@@ -109,7 +110,7 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
   names, so a checked-out link cannot redirect sync to another file.
 - **Templates forbid attribute access by design.** `{{ x.foo }}` won't work; the evaluator only allows scope names, calls, indexing/slicing, and arithmetic (`src/splashdown/recipe.py`).
 - **TSV has no escaping.** Resolved values containing a tab, newline, or CR are rejected at write time to prevent row forgery in the registry (`_tsv_field`, `src/splashdown/registry.py`).
-- **No-op syncs are silent.** `_write_if_changed` means a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through lefthook/husky on `git pull --rebase` (`src/splashdown/provisioning.py`).
+- **No-op syncs do not rewrite files.** `_write_if_changed` means a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through lefthook/husky on `git pull --rebase` (`src/splashdown/provisioning.py`). An explicit `--show-values` still prints the resolved values before that summary.
 - **Changing to JSON does not opt into secret disclosure.** Sync JSON contains `resolved_keys`,
   and bare env JSON is a sorted key array. Use `--show-values`, `env get`, or `writer = "stdout"`
   only when the destination is safe for the value.

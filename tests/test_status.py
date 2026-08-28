@@ -124,6 +124,46 @@ def test_detailed_status_json_uses_null_automation_for_non_git_checkout(tmp_path
     assert json.loads(capsys.readouterr().out)["automation"] is None
 
 
+def test_detailed_status_all_isolates_malformed_checkout_recipe(tmp_path, registry, capsys):
+    good = tmp_path / "good"
+    broken = tmp_path / "broken"
+    good.mkdir()
+    broken.mkdir()
+    _git_init(good)
+    _git_init(broken)
+    _write_bootstrap_recipe(good)
+    (broken / sd.RECIPE_NAME).write_text("[bootstrap\n")
+    registry.set_kv(str(good.resolve()), "GOOD", "value")
+    registry.set_kv(str(broken.resolve()), "BROKEN", "value")
+
+    assert sd.cmd_status(good, registry, "json", show_all=True) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    by_checkout = {item["checkout"]: item for item in payload["checkouts"]}
+    assert by_checkout[str(good.resolve())]["automation"]["bootstrap_declared"] is True
+    assert by_checkout[str(broken.resolve())]["automation"] == {
+        "sync_trusted": False,
+        "bootstrap_trusted": False,
+        "bootstrap_declared": None,
+        "bootstrap_completion": "unavailable",
+    }
+    assert str(broken.resolve()) in captured.err
+    assert "invalid TOML" in captured.err
+
+
+def test_status_all_show_values_uses_detailed_blocks(tmp_path, registry, capsys):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry.set_kv(str(checkout.resolve()), "TOKEN", "top-secret")
+
+    assert sd.cmd_status(checkout, registry, "text", show_all=True, show_values=True) == 0
+
+    err = capsys.readouterr().err
+    assert f"=== {checkout.resolve()} ===" in err
+    assert "TOKEN=top-secret" in err
+
+
 def test_compact_status_all_does_not_probe_git(tmp_path, registry, monkeypatch, capsys):
     checkout = tmp_path / "checkout"
     checkout.mkdir()

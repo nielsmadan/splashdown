@@ -40,6 +40,11 @@ autofix, detects again, and reports either `fixed` or the remaining problem and 
 check raising or reading an unfamiliar shape is a `✗`, never a false green. Exit status is zero
 only when no applicable check remains in the problem state.
 
+Every writable check reopens its destination through the shared safe-edit path. Checkout-owned
+config paths must stay below the checkout with no symlinked parent, and every destination must be a
+regular file. Rewrites preserve an existing mode and use same-directory atomic replacement. The
+native hook is rooted at Git's resolved hooks directory and receives the same final-file check.
+
 A check that returns `✓` is affirming its human description. Detection therefore strips comments,
 examines the relevant value slot, and reports unrecognized syntax as a problem. Implementation and
 extension rules live in [Framework wiring engine](../tech/wiring.md).

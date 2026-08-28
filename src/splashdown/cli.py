@@ -254,7 +254,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         default=None,
         help="inspect or change another checkout instead of --cwd",
     )
-    envsub = env.add_subparsers(dest="env_cmd", metavar="ACTION")
+    envsub = env.add_subparsers(dest="env_cmd", metavar="[ACTION]")
     eg = envsub.add_parser("get", help="print one resolved value")
     eg.add_argument("key")
     eg.add_argument(
@@ -323,14 +323,16 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         description="Omit ACTION to list this checkout's declared targets.",
         epilog=_FORMAT_OUTPUT_HELP,
     )
-    devsub = dev.add_subparsers(dest="target_cmd", metavar="ACTION")
+    devsub = dev.add_subparsers(dest="target_cmd", metavar="[ACTION]")
 
     ref = devsub.add_parser(
         "refresh",
-        help="reconcile managed sims and AVDs without booting",
+        help="reconcile managed sims and AVDs across all registered checkouts",
         description=(
-            "Recreate stale or missing managed simulators and emulators to the latest runtime.\n"
-            "Destroy managed instances that are undeclared or belong to dead checkouts."
+            "Across all registered checkouts, recreate stale or missing managed simulators and\n"
+            "emulators at their declared runtime or image, resolving versions configured as\n"
+            "`latest`. Without confirmation, destroy managed instances that are undeclared or\n"
+            "belong to dead checkouts. Reconciled instances are not booted."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -539,6 +541,13 @@ def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namesp
         and args.keep_instance
     ):
         parser.error("target remove --global cannot be combined with --keep-instance")
+    if (
+        args.cmd == "target"
+        and args.target_cmd == "remove"
+        and args.dtype == "device"
+        and args.keep_instance
+    ):
+        parser.error("target remove device cannot be combined with --keep-instance")
 
     supports_format = (
         args.cmd in {"sync", "status"}

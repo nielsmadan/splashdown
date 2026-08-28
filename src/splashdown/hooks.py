@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .constants import ENV_FILE_NAME, LOCAL_NAME
 from .package_json import package_dependencies
+from .safe_files import atomic_write_text, read_optional_editable_text
 
 LEGACY_POST_CHECKOUT_HOOK = """\
 #!/bin/sh
@@ -255,7 +256,7 @@ def _lefthook_run_value(line: str) -> str | None:
 
 def _wire_post_checkout_lefthook(cwd: Path) -> bool:
     path = _lefthook_config_path(cwd)
-    text = path.read_text() if path.exists() else ""
+    text = read_optional_editable_text(path, root=cwd) or ""
     lines = text.splitlines()
     owned = _lefthook_splashdown_job(lines)
     if owned is not None:
@@ -266,7 +267,12 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         if value == _LEFTHOOK_LEGACY_RUN and run_index is not None:
             run_indent = lines[run_index][: len(lines[run_index]) - len(lines[run_index].lstrip())]
             lines[run_index] = f"{run_indent}run: {_LEFTHOOK_RUN}"
-            path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") else ""))
+            atomic_write_text(
+                path,
+                "\n".join(lines) + ("\n" if text.endswith("\n") else ""),
+                root=cwd,
+                create=True,
+            )
             installed = _run_lefthook_install(cwd)
             print(f"updated post-checkout in {path.name} (lefthook)", file=sys.stderr)
             return installed
@@ -286,7 +292,7 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
             + sep
             + (f"\npost-checkout:\n  commands:\n    splashdown:\n      run: {_LEFTHOOK_RUN}\n")
         )
-        path.write_text(text)
+        atomic_write_text(path, text, root=cwd, create=True)
     else:
         end_idx = len(lines)
         for j in range(pc_idx + 1, len(lines)):
@@ -308,7 +314,12 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         else:
             addition = ["  commands:", "    splashdown:", f"      run: {_LEFTHOOK_RUN}"]
             lines = lines[: pc_idx + 1] + addition + lines[pc_idx + 1 :]
-        path.write_text("\n".join(lines) + ("\n" if text.endswith("\n") or text == "" else ""))
+        atomic_write_text(
+            path,
+            "\n".join(lines) + ("\n" if text.endswith("\n") or text == "" else ""),
+            root=cwd,
+            create=True,
+        )
     installed = _run_lefthook_install(cwd)
     print(f"wired post-checkout in {path.name} (lefthook)", file=sys.stderr)
     return installed
@@ -341,18 +352,16 @@ def _wire_post_checkout_husky(cwd: Path) -> bool:
     husky_dir = cwd / ".husky"
     husky_dir.mkdir(exist_ok=True)
     hook = husky_dir / "post-checkout"
-    if hook.exists():
-        existing = hook.read_text()
-        # Only overwrite hooks whose full contents match a Splashdown template.
-        if existing not in _OWNED_HOOKS:
-            print(
-                "existing .husky/post-checkout is not splashdown's — leaving it "
-                "untouched; use a trusted absolute splash path and forward `$1`, `$2`, `$3`",
-                file=sys.stderr,
-            )
-            return False
-    hook.write_text(POST_CHECKOUT_HOOK)
-    hook.chmod(0o755)
+    existing = read_optional_editable_text(hook, root=cwd)
+    # Only overwrite hooks whose full contents match a Splashdown template.
+    if existing is not None and existing not in _OWNED_HOOKS:
+        print(
+            "existing .husky/post-checkout is not splashdown's — leaving it "
+            "untouched; use a trusted absolute splash path and forward `$1`, `$2`, `$3`",
+            file=sys.stderr,
+        )
+        return False
+    atomic_write_text(hook, POST_CHECKOUT_HOOK, root=cwd, create=True, mode=0o755)
     print("wrote .husky/post-checkout (husky)", file=sys.stderr)
     return True
 
@@ -382,15 +391,21 @@ def _wire_post_checkout_native(cwd: Path) -> bool:
         print("note: not a Git checkout; post-checkout hook not installed", file=sys.stderr)
         return False
     hook.parent.mkdir(parents=True, exist_ok=True)
-    if hook.exists() and hook.read_text() not in _OWNED_HOOKS:
+    existing = read_optional_editable_text(hook, root=hook.parent)
+    if existing is not None and existing not in _OWNED_HOOKS:
         print(
             f"existing {hook} is not splashdown's — leaving it untouched; "
             "use a trusted absolute splash path and forward `$1`, `$2`, `$3`",
             file=sys.stderr,
         )
         return False
-    hook.write_text(POST_CHECKOUT_HOOK)
-    hook.chmod(0o755)
+    atomic_write_text(
+        hook,
+        POST_CHECKOUT_HOOK,
+        root=hook.parent,
+        create=True,
+        mode=0o755,
+    )
     print(f"wrote {hook}", file=sys.stderr)
     return True
 

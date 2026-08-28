@@ -47,8 +47,8 @@ class TargetStatus:
 class AutomationStatus:
     sync_trusted: bool
     bootstrap_trusted: bool
-    bootstrap_declared: bool
-    bootstrap_completion: Literal["not-declared", "pending", "complete", "invalid"]
+    bootstrap_declared: bool | None
+    bootstrap_completion: Literal["not-declared", "pending", "complete", "invalid", "unavailable"]
 
 
 @dataclass(frozen=True)
@@ -325,7 +325,9 @@ def _gather_targets_declared(
     return tuple(entries)
 
 
-def _gather_automation(checkout_path: Path, *, exists: bool) -> AutomationStatus | None:
+def _gather_automation(
+    checkout_path: Path, *, exists: bool, context: _StatusContext
+) -> AutomationStatus | None:
     if not exists:
         return None
     try:
@@ -334,7 +336,16 @@ def _gather_automation(checkout_path: Path, *, exists: bool) -> AutomationStatus
         return None
 
     trust = bootstrap.trust_state(dirs)
-    declared = _load_recipe_or_empty(checkout_path).bootstrap is not None
+    try:
+        declared = _load_recipe_or_empty(checkout_path).bootstrap is not None
+    except (OSError, ValueError) as error:
+        context.warnings.append(f"warning: {checkout_path}: automation recipe unavailable: {error}")
+        return AutomationStatus(
+            sync_trusted=trust.sync,
+            bootstrap_trusted=trust.bootstrap,
+            bootstrap_declared=None,
+            bootstrap_completion="unavailable",
+        )
     completion: Literal["not-declared", "pending", "complete", "invalid"] = "not-declared"
     if declared:
         try:
@@ -391,7 +402,7 @@ def _gather_checkout(
         exists,
         _gather_resource_entries(checkout_path, co_exists=exists, resources=resources),
         targets,
-        _gather_automation(checkout_path, exists=exists),
+        _gather_automation(checkout_path, exists=exists, context=context),
     )
 
 

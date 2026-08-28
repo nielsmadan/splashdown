@@ -141,10 +141,11 @@ def _render_automation(automation: AutomationStatus | None) -> None:
         f"  bootstrap trust: {'trusted' if automation.bootstrap_trusted else 'untrusted'}",
         file=sys.stderr,
     )
-    print(
-        f"  recipe bootstrap: {'declared' if automation.bootstrap_declared else 'not declared'}",
-        file=sys.stderr,
-    )
+    if automation.bootstrap_declared is None:
+        bootstrap_label = "unavailable"
+    else:
+        bootstrap_label = "declared" if automation.bootstrap_declared else "not declared"
+    print(f"  recipe bootstrap: {bootstrap_label}", file=sys.stderr)
     print(
         f"  completion: {automation.bootstrap_completion.replace('-', ' ')}",
         file=sys.stderr,
@@ -292,7 +293,7 @@ def render_status(
             payload["summary"] = asdict(report.summary)
         print(json.dumps(payload, indent=2))
         return
-    if report.show_all and not verbose:
+    if report.show_all and not verbose and not show_values:
         _render_status_table(report)
     else:
         for checkout in report.checkouts:
@@ -367,6 +368,11 @@ def render_sync(
 
     for key, value in stdout_values.items():
         print(f"{key}={value}")
+    if show_values:
+        changed_set = set(changed_keys)
+        for key, value in sorted(resolved.items()):
+            suffix = " (changed)" if key in changed_set else ""
+            print(f"  {key}={value}{suffix}", file=sys.stderr)
     if not changed:
         files = sum(1 for result in writer_results if result.writer not in ("stdout", "none"))
         print(
@@ -374,8 +380,9 @@ def render_sync(
             file=sys.stderr,
         )
         return
-    for key in changed_keys:
-        print(f"  {key} (changed)", file=sys.stderr)
+    if not show_values:
+        for key in changed_keys:
+            print(f"  {key} (changed)", file=sys.stderr)
     for result in writer_results:
         if result.changed:
             print(f"  -> {result.message} (changed)", file=sys.stderr)

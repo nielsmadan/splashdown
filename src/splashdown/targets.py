@@ -14,6 +14,7 @@ from .recipe import (
     _global_config_path,
     validate_target_spec,
 )
+from .safe_files import atomic_write_text, read_optional_editable_text
 
 
 def _load_recipe_or_empty(cwd: Path) -> Recipe:
@@ -66,9 +67,11 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
     validated_fields = _validate_target_fields(dtype, variant, fields)
 
     path = cwd / LOCAL_NAME
-    existing_text = path.read_text() if path.exists() else LOCAL_SKELETON
+    existing_text = read_optional_editable_text(path, root=cwd)
+    if existing_text is None:
+        existing_text = LOCAL_SKELETON
     recipe = _load_recipe_or_empty(cwd)
-    local = LocalConfig.load(path)
+    local = LocalConfig.parse(existing_text, path)
     if variant in recipe.targets.get(dtype, {}):
         raise DeviceError(
             f"target `{dtype}.{variant}` is declared in the recipe; "
@@ -83,7 +86,7 @@ def target_add(cwd: Path, dtype: str, variant: str, fields: dict[str, str | None
 
     rendered = target_add_text(existing_text, dtype, variant, validated_fields)
     LocalConfig.parse(rendered, path)
-    path.write_text(rendered)
+    atomic_write_text(path, rendered, root=cwd, create=True)
 
 
 def _prepare_target_remove(cwd: Path, dtype: str, variant: str) -> tuple[dict[str, Any], Path, str]:
@@ -93,15 +96,16 @@ def _prepare_target_remove(cwd: Path, dtype: str, variant: str) -> tuple[dict[st
             f"`{dtype}.{variant}` is declared in the recipe; edit {RECIPE_NAME} to remove it"
         )
     path = cwd / LOCAL_NAME
-    if not path.exists():
+    existing_text = read_optional_editable_text(path, root=cwd)
+    if existing_text is None:
         raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
-    spec = LocalConfig.load(path).targets.get(dtype, {}).get(variant)
+    spec = LocalConfig.parse(existing_text, path).targets.get(dtype, {}).get(variant)
     if spec is None:
         raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
 
     from .tomlio import target_remove_text  # noqa: PLC0415
 
-    new_text = target_remove_text(path.read_text(), dtype, variant)
+    new_text = target_remove_text(existing_text, dtype, variant)
     if new_text is None:
         raise DeviceError(f"no target `{dtype}.{variant}` in {LOCAL_NAME}")
     return spec, path, new_text
@@ -109,7 +113,7 @@ def _prepare_target_remove(cwd: Path, dtype: str, variant: str) -> tuple[dict[st
 
 def target_remove(cwd: Path, dtype: str, variant: str) -> None:
     _spec, path, new_text = _prepare_target_remove(cwd, dtype, variant)
-    path.write_text(new_text)
+    atomic_write_text(path, new_text, root=cwd)
 
 
 def global_target_add(dtype: str, variant: str, fields: dict[str, str | None]) -> Path:

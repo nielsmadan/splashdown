@@ -166,15 +166,20 @@ claim_device = "android" # ios | android | any
 Automatic allocation is limited to five seconds and is non-fatal when no device can be selected.
 The hook prints the manual `splash target claim --available android` retry command.
 
-When a new iOS (or Android system image) lands, recreate the `latest` sims in place and clear out the cruft Xcode/`avdmanager` leave behind:
+When a new iOS or Android system image lands, reconcile the managed fleet and clear out the cruft
+Xcode and `avdmanager` leave behind:
 
 ```sh
-splash target refresh                 # reconcile stale/missing managed devices and remove undeclared ones
+splash target refresh                 # reconcile registered devices across every tracked checkout
 splash target prune ios               # delete every sim splashdown did NOT create (the Xcode template pile)
 splash gc                             # drop registry entries for checkouts you've since deleted
 ```
 
-Variants pinned to a fixed version (`ios = "17.0"`) are never touched by `refresh` because they are deliberate version coverage. See [Running and managing devices](https://splashdown.dev/devices/) for the full lifecycle.
+`target refresh` is machine-wide. It recreates stale or externally deleted registered instances at
+their declared runtime or image, resolving `latest` live. It also destroys undeclared instances
+and instances from deleted checkouts without confirmation. It does not create a declared variant
+that has never been run. A healthy variant pinned to a fixed version such as `ios = "17.0"` is not
+upgraded. See [Running and managing devices](https://splashdown.dev/devices/) for the full lifecycle.
 
 | Target | macOS | Linux |
 | --- | --- | --- |

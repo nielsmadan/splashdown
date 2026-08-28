@@ -929,6 +929,18 @@ def test_device_add_writes_nested_table(tmp_path):
     assert 'ios = "17.5"' in text
 
 
+def test_device_add_refuses_symlinked_local_config(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-add.toml"
+    original = "# outside checkout\n"
+    outside.write_text(original)
+    (tmp_path / sd.LOCAL_NAME).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        sd.target_add(tmp_path, "simulator", "repro", {"model": "iPhone 17"})
+
+    assert outside.read_text() == original
+
+
 def test_device_add_rejects_collision_with_local(tmp_path):
     sd.target_add(tmp_path, "simulator", "repro", {"model": "A"})
     with pytest.raises(sd.DeviceError, match="already exists"):
@@ -1819,6 +1831,7 @@ def test_status_all_check_json_counts_defunct_physical_claim(tmp_path, registry,
         {
             "checkout": str(owner.resolve()),
             "exists": False,
+            "automation": None,
             "resources": [],
             "targets": [],
         }

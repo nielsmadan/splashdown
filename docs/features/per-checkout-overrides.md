@@ -121,8 +121,12 @@ tables.
 `splash target remove <type> <variant>` takes `--keep-instance`
 (`src/splashdown/cli.py`): edit the TOML only, leaving the sim/emulator and registry row
 intact. Without it, the prepared TOML is written after successful instance deletion and before
-the registry row is removed (no lifecycle effect for physical `device` targets, which have no
-instance or registry row).
+the registry row is removed. Physical `device` targets have no instance or registry row, so their
+removal rejects the ineffective `--keep-instance` option.
+
+Both local target actions preflight `splashdown.local.toml` as a regular file below the checkout.
+They reject symlinked path components and non-regular destinations, then commit the validated edit
+with same-directory atomic replacement while preserving an existing mode.
 
 ## Settings
 
@@ -175,6 +179,8 @@ and to the `Settings` dataclass.
 - **Malformed config blocks removal.** A missing committed recipe is treated as an empty one, but
   an existing recipe or local file that cannot be parsed aborts the ownership preflight before
   any device or registry operation.
+- **A linked local config is never an edit target.** Symlinks, including a symlinked parent path,
+  are rejected before add or before removal can destroy an instance.
 
 ## Why
 

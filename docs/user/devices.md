@@ -57,7 +57,8 @@ It removes the local declaration but leaves any instance and registry row untouc
 exists, a later `splash target refresh` sees it as undeclared and destroys the retained instance.
 Global removal is configuration-only and tells you to run refresh to reap instances that become
 undeclared. `--global --keep-instance` is rejected because those two flags request the same
-config-only behavior.
+config-only behavior. Physical `device` targets have no managed instance, so their removal also
+rejects `--keep-instance` instead of accepting an ineffective flag.
 
 Framework auto-detected for `run`:
 
@@ -101,7 +102,7 @@ The command runs via a shell, so pipes, `&&`, `$ENV`, and `cd` work. In a monore
 
 ## Auto-upgrade: no more manual `mksim`/`simctl delete` after Xcode updates
 
-Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. Pinned variants (`ios = "17.0"`) are left alone forever. They're explicit version coverage.
+Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. A healthy pinned variant such as `ios = "17.0"` is not upgraded. If its registered instance is missing, refresh recreates it at that declared runtime.
 
 Some apps *require* a pinned older runtime: a pod that excludes arm64 for the simulator (e.g. Google ML Kit) only builds on an x86_64 sim, which only iOS ≤ 18.x provides. Against the default (newest, arm64-only) sim, `xcodebuild` fails with an opaque "Unable to find a destination". Pin `ios = "18.5"`. On a failed `react-native` iOS run, splash detects the exclusion and prints this hint.
 
@@ -111,6 +112,10 @@ splash target refresh               # reconcile registered devices, including un
 splash target prune [ios|android]   # destroys every sim/AVD splashdown did NOT create
                                     # (the Xcode default-template pile, hand-made sims, etc.)
 ```
+
+`target refresh` checks all registered checkouts, not only the current one. It removes undeclared
+and dead-checkout instances without confirmation. Use `status all --check` first when you want a
+fleet preview.
 
 ## iOS sim management
 

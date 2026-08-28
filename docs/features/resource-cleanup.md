@@ -30,7 +30,9 @@ most-automatic to most-explicit:
 2. **`splash gc`** — explicit, machine-wide sweep. Does everything lazy GC does, destroys
    dead-checkout sims/AVDs, drops orphaned rows, and reconciles port/key recipes.
 3. **`splash target refresh [ios|android]`** — reconciles every registered managed device,
-   including stale, missing, undeclared, and dead-checkout rows.
+   including stale, missing, undeclared, and dead-checkout rows. It is machine-wide and has no
+   confirmation step: stale or missing rows are recreated at the declared runtime/image, while
+   undeclared and dead-checkout instances are destroyed directly.
 4. **`splash target prune [ios|android]`** — destroys sims/AVDs splashdown did *not*
    create (the Xcode default-template pile, hand-made sims). Orthogonal to GC: it targets
    *foreign* devices, not dead-checkout ones.

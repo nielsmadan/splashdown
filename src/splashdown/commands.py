@@ -131,7 +131,7 @@ def cmd_status(  # noqa: PLR0913 — compatibility wrapper mirrors CLI status op
     verbose: bool = False,
     show_values: bool = False,
 ) -> int:
-    detailed = fmt == "json" or not (show_all and not verbose)
+    detailed = fmt == "json" or show_values or not (show_all and not verbose)
     report = build_status_report(
         cwd,
         registry,
