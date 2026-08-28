@@ -51,9 +51,7 @@ class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
 
 
 class _VersionAction(argparse.Action):
-    """Like argparse's built-in version action, but resolves the version
-    lazily (only when `--version` is given) so the hot path skips the
-    ~20ms metadata lookup."""
+    """Resolve the version only for --version so normal startup skips the metadata lookup."""
 
     def __init__(
         self,
@@ -389,9 +387,6 @@ def _normalize_device_args(args: argparse.Namespace) -> None:
         )
 
 
-# Top-level flags whose value lives in the next argv slot (`--flag value`). Used
-# by _ensure_subcommand to skip past them when deciding where to inject the
-# default `sync` subcommand.
 _TOP_LEVEL_VALUE_FLAGS = {"--cwd", "--format"}
 _TOP_LEVEL_BOOL_FLAGS = {"--show-values"}
 
@@ -406,17 +401,17 @@ def _ensure_subcommand(argv: list[str]) -> list[str]:
     while i < len(argv):
         a = argv[i]
         if a in KNOWN_CMDS:
-            return argv  # explicit subcommand already present
+            return argv
         if a in _TOP_LEVEL_VALUE_FLAGS:
-            i += 2  # flag + value
+            i += 2
             continue
         if a in _TOP_LEVEL_BOOL_FLAGS:
             i += 1
             continue
         if a.startswith("--") and "=" in a:
-            i += 1  # --flag=value
+            i += 1
             continue
-        break  # first non-flag, non-subcommand token: insert sync here
+        break
     return [*argv[:i], "sync", *argv[i:]]
 
 

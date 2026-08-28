@@ -1,5 +1,3 @@
-"""Tests for splashdown devices behavior."""
-
 from __future__ import annotations
 
 import hashlib
@@ -97,7 +95,6 @@ def test_ensure_fresh_recreates_when_model_changed(registry, checkout, monkeypat
     monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: lifecycle.append(("shutdown", u)))
     monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: lifecycle.append(("destroy", u)))
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
-    # Recipe bumped from iPhone 17 -> iPhone 18.
     sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 18"})
     assert lifecycle == [("shutdown", "UDID-OLD"), ("destroy", "UDID-OLD")]
 
@@ -106,7 +103,6 @@ def test_ensure_fresh_emulator_destroys_old_avd_on_rename(registry, checkout, mo
     """When the resolved AVD name changes, the old AVD (row.udid) must be destroyed,
     not the new name — otherwise the old one is orphaned on disk. Mirrors iOS."""
     abspath = str(checkout.resolve())
-    # Emulator rows store the AVD name in the udid column.
     registry.set_device(abspath, "emulator", "default", "old-avd", "pixel_9", "android-34")
     lifecycle: list[tuple[str, str]] = []
     # Only the OLD avd exists on disk; the freshly-resolved name does not (→ stale).
@@ -125,7 +121,7 @@ def test_ensure_fresh_emulator_destroys_old_avd_on_rename(registry, checkout, mo
 def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
     abspath = str(checkout.resolve())
     registry.set_device(abspath, "simulator", "default", "UDID-X", "iPhone 17", "18.5")
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: False)  # user nuked the sim
+    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: False)
     monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
     monkeypatch.setattr(sd.devices, "ios_ensure", lambda n, m, i: ("UDID-NEW", "Shutdown"))
     info = sd.ensure_fresh_sim(registry, checkout, "simulator", "default", {"model": "iPhone 17"})
@@ -471,7 +467,6 @@ framework = "react-native"
         return 0
 
     monkeypatch.setattr(sd.target_commands, "device_run", _fake_run)
-    # No TYPE given — should resolve to the only declared type (simulator).
     rc = sd.main(["--cwd", str(tmp_path), "run"])
     assert rc == 0
     assert captured["info"]["kind"] == "ios"
@@ -481,10 +476,9 @@ def test_cli_status_reports_resources_and_port_state(tmp_path, monkeypatch, caps
     (tmp_path / "splashdown.toml").write_text("""
 [resources.MY_PORT]
 type  = "port"
-range = [19000, 19010]
+    range = [19000, 19010]
 """)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    # Provision first so the registry has an entry to report on.
     rc = sd.main(["--cwd", str(tmp_path)])
     assert rc == 0
     capsys.readouterr()  # discard provision output
@@ -500,7 +494,6 @@ range = [19000, 19010]
 
 
 def test_cli_status_local_positional_matches_bare(tmp_path, monkeypatch, capsys):
-    """`splash status local` must produce the same output as bare `splash status`."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text(
         '[resources.MY_PORT]\ntype = "port"\nrange = [19030, 19040]\n'
@@ -515,7 +508,6 @@ def test_cli_status_local_positional_matches_bare(tmp_path, monkeypatch, capsys)
 
 
 def test_cli_status_local_json_shape(tmp_path, monkeypatch, capsys):
-    """Default-mode JSON must include checkout + resources + devices keys."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text(
         '[resources.J_PORT]\ntype = "port"\nrange = [19050, 19060]\n'
@@ -553,10 +545,9 @@ def test_cli_status_physical_device_shows_connection_state(tmp_path, monkeypatch
 
 
 def test_cli_status_check_physical_device_absent_marks_missing(tmp_path, monkeypatch, capsys):
-    """`status --check` must flag an unplugged physical device as missing, not error."""
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    _stub_physical(monkeypatch)  # nothing connected
+    _stub_physical(monkeypatch)
     rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "local", "--check"])
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
@@ -566,7 +557,6 @@ def test_cli_status_check_physical_device_absent_marks_missing(tmp_path, monkeyp
 
 
 def test_cli_status_all_on_empty_registry_renders_only_cwd(tmp_path, monkeypatch, capsys):
-    """`splash status all` against a fresh state still produces a usable header row."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     rc = sd.main(["--cwd", str(tmp_path), "status", "all"])
     assert rc == 0
@@ -576,17 +566,14 @@ def test_cli_status_all_on_empty_registry_renders_only_cwd(tmp_path, monkeypatch
 
 
 def test_cli_init_loader_override_writes_devbox_wiring(tmp_path, monkeypatch):
-    """`splash init NAME --loader=devbox` wires devbox instead of mise."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     rc = sd.main(["--cwd", str(tmp_path), "init", "minimal", "--loader=devbox"])
     assert rc == 0
     assert (tmp_path / "devbox.json").exists()
-    # mise.toml must NOT be present when devbox was explicitly requested.
     assert not (tmp_path / "mise.toml").exists()
 
 
 def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys):
-    """Unknown platform → argparse usage error, no destructive call."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     called = {"prune": False}
 
@@ -710,7 +697,6 @@ def test_cli_status_check_table_status_column_flags_defunct(tmp_path, monkeypatc
     rc = sd.main(["--cwd", str(alive), "status", "all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
-    # In the table, status column reads `defunct` (no brackets).
     assert "defunct" in err
     assert "defunct checkout" in err
     assert "`splash gc`" in err
@@ -757,11 +743,9 @@ def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch
     rc = sd.main(["--cwd", str(a), "status", "all", "--check"])
     assert rc == 0
     err = capsys.readouterr().err
-    # In the table, status column reads `orphan` (no brackets).
     assert "orphan" in err
     assert "orphan device" in err
-    # Orphans are recreated by `device refresh` (plain `gc` won't touch an orphan
-    # whose checkout still exists).
+    # Orphans require `splash target refresh`; `gc` leaves rows for live checkouts untouched.
     assert "`splash target refresh`" in err
 
 
@@ -853,7 +837,7 @@ range = [19600, 19610]
     rc = sd.main(["--cwd", str(tmp_path), "env", "release", "GONE"])
     assert rc == 0
     rc = sd.main(["--cwd", str(tmp_path), "env", "get", "GONE"])
-    assert rc == 1  # key gone
+    assert rc == 1
 
 
 def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
@@ -861,11 +845,11 @@ def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
         '[resources.PORT]\ntype = "port"\nrange = [19700, 19710]\n'
     )
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    sd.main(["--cwd", str(tmp_path)])  # sync → allocate PORT
+    sd.main(["--cwd", str(tmp_path)])
     capsys.readouterr()
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "PORT"]) == 0
     assert capsys.readouterr().out.strip().isdigit()
-    assert sd.main(["--cwd", str(tmp_path), "env"]) == 0  # bare list
+    assert sd.main(["--cwd", str(tmp_path), "env"]) == 0
     assert capsys.readouterr().out.strip() == "PORT"
     assert sd.main(["--cwd", str(tmp_path), "--show-values", "env"]) == 0
     assert "PORT=" in capsys.readouterr().out
@@ -893,7 +877,6 @@ def test_cli_env_set_rejects_undeclared_key_when_recipe_present(tmp_path, monkey
     (tmp_path / sd.RECIPE_NAME).write_text('[resources.KNOWN]\ntype = "set"\n')
     assert sd.main(["--cwd", str(tmp_path), "env", "set", "UNKNOWN=x"]) == 2
     assert "not a resource" in capsys.readouterr().err
-    # A declared key still works.
     assert sd.main(["--cwd", str(tmp_path), "env", "set", "KNOWN=y"]) == 0
 
 
@@ -926,11 +909,9 @@ def test_cli_env_set_release_honor_checkout(tmp_path, monkeypatch, capsys):
     other = tmp_path / "other"
     other.mkdir()
     (other / sd.RECIPE_NAME).write_text('[resources.K]\ntype = "set"\n')
-    # set/release can target another checkout, the same way get already can.
     assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1", "--checkout", str(other)]) == 0
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 0
     assert capsys.readouterr().out.strip() == "v1"
-    # ...and it's scoped: this checkout doesn't see it.
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 1
     assert sd.main(["--cwd", str(tmp_path), "env", "release", "K", "--checkout", str(other)]) == 0
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 1
@@ -1262,7 +1243,6 @@ def test_device_gc_rereads_row_after_checkout_lock(registry, tmp_path, monkeypat
 
 
 def test_device_gc_drops_defunct_emulator_and_destroys_avd(registry, tmp_path, monkeypatch):
-    """gc destroys the AVD (not just the sim) of a dead checkout's emulator row."""
     gone = tmp_path / "gone"
     gone.mkdir()
     registry.set_device(str(gone), "emulator", "default", "AVD-GONE", "pixel_9", "android-34")
@@ -1317,12 +1297,11 @@ def test_cli_gc_destroys_orphan_sims_and_prunes_rows(tmp_path, monkeypatch, caps
     monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
     monkeypatch.setattr(sd.devices, "ios_shutdown", lambda u: lifecycle.append(("shutdown", u)))
     monkeypatch.setattr(sd.devices, "ios_destroy", lambda u: lifecycle.append(("destroy", u)))
-    # dead/ never created on disk → it's a defunct checkout
     rc = sd.main(["--cwd", str(tmp_path), "gc"])
     assert rc == 0
     assert lifecycle == [("shutdown", "UDID-DEAD"), ("destroy", "UDID-DEAD")]
     assert reg.get_device(str(dead), "simulator", "default") is None
-    assert str(dead) not in reg.all_checkouts()  # port row pruned too
+    assert str(dead) not in reg.all_checkouts()
 
 
 def test_gc_preserves_unavailable_device_rows(tmp_path, monkeypatch, capsys):
@@ -1534,7 +1513,7 @@ def test_device_refresh_ios_skips_emulator(registry, tmp_path, monkeypatch):
     monkeypatch.setattr(sd.devices, "android_ensure", lambda *a: touched.append("ensure"))
     rc = sd.cmd_target_refresh(registry, platforms=("ios",))
     assert rc == 0
-    assert touched == []  # emulator row skipped entirely
+    assert touched == []
     assert {r.udid for r in registry.all_devices()} == {"avd-name"}
 
 
@@ -1821,7 +1800,7 @@ def test_device_prune_explicit_unavailable_platform_fails(registry, monkeypatch)
 
 
 def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
-    """`splash device prune ios` should pass platforms=("ios",) only."""
+    """`splash target prune ios` passes only the iOS platform."""
     state = tmp_path / "injected"
     registry = sd.Registry(
         state / "ports.tsv",
@@ -1846,7 +1825,6 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
 
 
 def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
-    """No positional → both platforms."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
 
@@ -1863,7 +1841,6 @@ def test_cli_device_prune_default_is_both(tmp_path, monkeypatch):
 
 
 def test_cli_device_prune_all_is_both(tmp_path, monkeypatch):
-    """Explicit `all` matches the no-arg default."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     captured = {}
 
@@ -1894,7 +1871,7 @@ def test_ios_latest_runtime_sorts_numerically(monkeypatch):
                 {"identifier": "x.iOS-17-0", "version": "17.0", "isAvailable": True},
                 {"identifier": "x.iOS-9-0", "version": "9.0", "isAvailable": True},
                 {"identifier": "x.iOS-18-5", "version": "18.5", "isAvailable": True},
-                {"identifier": "x.iOS-19-0", "version": "19.0", "isAvailable": False},  # filtered
+                {"identifier": "x.iOS-19-0", "version": "19.0", "isAvailable": False},
             ]
         },
     )
@@ -1914,7 +1891,7 @@ def test_ios_device_type_identifier_selection(monkeypatch):
             ]
         },
     )
-    assert sd.devices._ios_device_type_identifier(None).endswith("iPhone-17-Pro")  # latest Pro
+    assert sd.devices._ios_device_type_identifier(None).endswith("iPhone-17-Pro")
     assert sd.devices._ios_device_type_identifier("iPhone 16").endswith("iPhone-16")
     with pytest.raises(sd.DeviceError):
         sd.devices._ios_device_type_identifier("iPhone 99")
@@ -2011,7 +1988,7 @@ def test_android_avd_exists(monkeypatch):
 def test_detect_framework_override_and_autodetect(tmp_path):
     vite = sd.detect_framework(tmp_path, sd.Recipe({"project": {"framework": "vite"}}, tmp_path))
     assert vite == "vite"
-    (tmp_path / "pubspec.yaml").write_text("name: app\n")  # auto-detect → flutter
+    (tmp_path / "pubspec.yaml").write_text("name: app\n")
     assert sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path)) == "flutter"
 
 
@@ -2100,7 +2077,7 @@ def test_device_run_custom_command_bypasses_framework_detection(tmp_path, monkey
     monkeypatch.setattr(sd.runners.subprocess, "call", _fake_call)
     recipe = sd.Recipe({"project": {"run": "echo ran {device_id}"}}, tmp_path / "splashdown.toml")
     rc = sd.device_run(tmp_path, recipe, {"kind": "ios", "udid": "ABCD"})
-    assert rc == 7  # returns the custom command's exit code
+    assert rc == 7
     assert captured["cmd"] == "echo ran ABCD"
 
 

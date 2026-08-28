@@ -1,5 +1,3 @@
-"""Tests for splashdown registry behavior."""
-
 from __future__ import annotations
 
 import pytest
@@ -26,7 +24,6 @@ def test_allocate_port_replaces_out_of_range_pin_without_leaking_row(
     assert 3000 <= old <= 3100
     new = registry.allocate_port(str(checkout), "PORT", 4000, 4100)
     assert 4000 <= new <= 4100
-    # Exactly one row for (checkout, PORT), and get_port returns the new value.
     rows = [r for r in registry._read_ports() if r[1] == str(checkout) and r[2] == "PORT"]
     assert len(rows) == 1
     assert registry.get_port(str(checkout), "PORT") == new
@@ -53,8 +50,6 @@ def test_registry_resolves_state_directory_at_construction(tmp_path, monkeypatch
 
 
 def test_allocate_port_is_lock_serialized_under_thread_contention(registry, tmp_path, monkeypatch):
-    """Many checkouts racing for the same range must each get a distinct port with
-    no lost/duplicated rows — the flock is the module's whole reason to exist."""
     import threading
 
     monkeypatch.setattr(sd.registry, "_port_in_use", lambda port: False)
@@ -79,7 +74,6 @@ def test_allocate_port_is_lock_serialized_under_thread_contention(registry, tmp_
     ports = sorted(results.values())
     assert len(set(ports)) == n, "two checkouts double-allocated the same port"
     assert ports == list(range(9000, 9000 + n))
-    # One row per checkout, no corruption/duplication.
     assert len(registry._read_ports()) == n
 
 
@@ -101,7 +95,6 @@ def test_gc_frees_dead_checkout(registry, tmp_path):
     pa = registry.allocate_port(str(a), "X", 18101, 18110)
     a.rmdir()  # simulate worktree removal
     pb = registry.allocate_port(str(b), "X", 18101, 18110)
-    # b should be allowed to take a's port now
     assert pb == pa
 
 
@@ -228,7 +221,7 @@ def test_device_registry_set_and_get(registry, checkout):
     assert row.udid == "UDID-X"
     assert row.model == "iPhone 17"
     assert row.ios == "18.5"
-    assert row.created_at  # ISO-ish, non-empty
+    assert row.created_at
 
 
 def test_device_registry_set_overwrites(registry, checkout):
@@ -309,7 +302,6 @@ def test_registry_gc_can_preserve_device_rows(registry, tmp_path):
 
 
 def test_registry_all_checkouts_aggregates_three_files(registry, tmp_path):
-    # Distinct paths across ports.tsv, kv.tsv, devices.tsv.
     a = tmp_path / "a"
     a.mkdir()
     b = tmp_path / "b"
@@ -336,7 +328,6 @@ def test_registry_all_checkouts_empty_returns_empty_list(registry):
 
 
 def test_registry_gc_drops_orphan_device_rows(registry, tmp_path, monkeypatch):
-    # Checkout path EXISTS but the registered sim's UDID is gone from xcrun.
     a = tmp_path / "alive"
     a.mkdir()
     registry.set_device(str(a), "simulator", "default", "UDID-GONE", "iPhone 17", "18.5")
@@ -365,8 +356,6 @@ def test_registry_gc_drops_orphan_android_avd_rows(registry, tmp_path, monkeypat
 
 
 def test_registry_gc_drops_port_not_in_recipe(registry, tmp_path):
-    # Checkout exists; recipe declares PORT but not DART_PORT. The leftover
-    # DART_PORT row (from an older recipe) should be reconciled away.
     a = tmp_path / "alive"
     a.mkdir()
     _write_recipe(a, '[resources.PORT]\ntype = "port"\nrange = [3000, 3100]\n')

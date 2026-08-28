@@ -67,8 +67,7 @@ def _detect_android_native(cwd: Path) -> bool:
     return has_build and has_settings
 
 
-# Default device targets emitted by scanner-driven `splash init`. iOS sim is
-# left at implicit `latest`; Android uses pixel_9.
+# Omitting ios/image keeps scanner defaults on the latest installed runtime.
 _DEFAULT_SIM_TARGET: dict[str, dict[str, dict[str, str]]] = {
     "simulator": {"default": {"model": "iPhone 17"}}
 }

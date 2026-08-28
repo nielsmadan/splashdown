@@ -18,7 +18,6 @@ from .device_tools import (
 from .errors import CapabilityError, DeviceError
 
 _AVD_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]")
-# `adb devices` rows contain a serial and state.
 _ADB_ROW_COLS = 2
 
 

@@ -8,11 +8,7 @@ from typing import Any
 from .inventory import AppInventory
 from .wiring import WiringCheck
 
-# A Profile encodes how splashdown integrates with one framework. The Scanner
-# matches each app to a Profile by filesystem detection; Profiles contribute
-# resources (which end up in [resources.*]) and wiring checks (which the doctor
-# runs to patch consumer configs). Built-in only — to add a Profile, ship it
-# upstream as a new subclass + entry in PROFILES.
+# Built-in profiles register framework resources and wiring checks in PROFILES; there is no plugin API.
 
 
 class Profile:
@@ -21,21 +17,10 @@ class Profile:
 
     name: str = ""
 
-    # Whether an empty `wiring_checks()` means "healthy, nothing to patch" rather
-    # than "nobody has written checks yet". Only True where the framework reads
-    # its port straight from the environment — doctor turns this into a positive
-    # verdict, so a framework that actually needs config patching (expo runs
-    # Metro) must leave it False or it gets reported green while broken.
+    # True only when an empty check list means the framework reads its port directly from the environment.
     env_only: bool = False
 
-    # Whether this framework reads values from a plain dotenv file (`.env` /
-    # `.env.local`) on its own. True for server frameworks where loading a
-    # dotenv file is the conventional setup (Next.js natively; Django/FastAPI/
-    # Node via the near-ubiquitous dotenv libraries). False for frameworks that
-    # only see values already exported into the process environment — Vite
-    # (config rewritten to read `process.env`), Spring Boot (`${PORT}`
-    # placeholder), and the mobile build systems. Used to decide, when no shell
-    # loader is detected, whether a dotenv-file fallback can actually reach the app.
+    # Whether envfile delivery is expected to reach the app when no shell loader is available.
     reads_dotenv: bool = False
 
     def detect(self, app_path: Path) -> bool:

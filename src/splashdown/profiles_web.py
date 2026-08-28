@@ -66,7 +66,7 @@ def _astro_port_check() -> WiringCheck:
 
 def _astro_port_detect(cwd: Path) -> tuple[str, str]:
     cfg = _astro_config_path(cwd)
-    if cfg is None:  # applies() guarantees the astro config exists
+    if cfg is None:
         raise DeviceError("astro.config.* not found")
     if "WEB_DEV_PORT" in _strip_js_comments(cfg.read_text()):
         return ("ok", "astro.config reads WEB_DEV_PORT")
@@ -77,7 +77,7 @@ def _astro_port_detect(cwd: Path) -> tuple[str, str]:
 
 def _astro_port_autofix(cwd: Path) -> None:
     cfg = _astro_config_path(cwd)
-    if cfg is None:  # applies() guarantees the astro config exists
+    if cfg is None:
         raise DeviceError("astro.config.* not found")
     text = cfg.read_text()
     if "WEB_DEV_PORT" in text or _ASTRO_SERVER_BLOCK_RE.search(text):
@@ -157,7 +157,7 @@ def _vite_port_wired_check(port_var: str) -> WiringCheck:
 
     def detect(cwd: Path) -> tuple[str, str]:
         cfg = _vite_config_path(cwd)
-        if cfg is None:  # applies() guarantees the vite config exists
+        if cfg is None:
             raise DeviceError("vite.config.* not found")
         if port_var in _strip_js_comments(cfg.read_text()):
             return ("ok", f"vite.config references {port_var}")
@@ -189,7 +189,7 @@ def _vite_process_env_check() -> WiringCheck:
 
 def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
     cfg = _vite_config_path(cwd)
-    if cfg is None:  # applies() guarantees the vite config exists
+    if cfg is None:
         raise DeviceError("vite.config.* not found")
     text = _strip_js_comments(cfg.read_text())
     if "loadEnv" in text and _vite_unfixed_env_matches(text):
@@ -199,7 +199,7 @@ def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
 
 def _vite_process_env_autofix(cwd: Path) -> None:
     cfg = _vite_config_path(cwd)
-    if cfg is None:  # applies() guarantees the vite config exists
+    if cfg is None:
         raise DeviceError("vite.config.* not found")
     text = cfg.read_text()
     # Rewrite every `env.VAR` access to `process.env.VAR`, skipping names already
@@ -266,12 +266,6 @@ class LaravelProfile(Profile):
         return lines
 
 
-# Registered ahead of `vite`: Laravel has shipped a vite.config since Laravel 9, so
-# ViteProfile matches every modern Laravel app and would otherwise claim it — leaving
-# the PHP server's port unmanaged. Detection here needs `artisan` *and* the composer
-# entry, so it can't steal a plain Vite app.
-
-
 _NUXT_CONFIG_NAMES = ("nuxt.config.ts", "nuxt.config.js", "nuxt.config.mjs")
 
 
@@ -293,11 +287,6 @@ class NuxtProfile(Profile):
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
         port = _profile_port(port_names, "NUXT_PORT")
         return _manual_port_guidance("Nuxt", "npx nuxt dev --port {port}", port, app.project_path)
-
-
-# Ahead of `vite` for the same reason as laravel: Nuxt is Vite-based, and while the
-# minimal template ships no vite.config, a project that adds one must still resolve to
-# nuxt — ViteProfile would emit WEB_DEV_PORT that `nuxt dev` never reads.
 
 
 class AngularProfile(Profile):
@@ -362,9 +351,7 @@ def _angular_pkg_port_detect(cwd: Path) -> tuple[str, str]:
         return ("problem", f"could not read package.json: {e}")
     serving = _angular_serve_scripts(data)
     if not serving:
-        # Not a pass: Angular reads no port env var at all, so with no script to
-        # carry --port the allocated WEB_DEV_PORT reaches nothing and the app
-        # keeps binding angular.json's default in every checkout.
+        # Without an ng serve script, the allocated port cannot reach Angular.
         return (
             "problem",
             "no `ng serve` script to carry --port; WEB_DEV_PORT reaches nothing (not autofixable)",
@@ -575,7 +562,7 @@ def _deno_config_data(cfg: Path) -> dict[str, Any] | None:
 
 
 def _deno_tasks(cfg: Path) -> dict[str, str] | None:
-    """The `tasks` table, or None when the config can't be read."""
+    """Return string tasks, `{}` when absent, or `None` when the config is unreadable."""
     data = _deno_config_data(cfg)
     if data is None:
         return None

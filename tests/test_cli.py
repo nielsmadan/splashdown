@@ -1,5 +1,3 @@
-"""Tests for splashdown cli behavior."""
-
 from __future__ import annotations
 
 import io
@@ -34,7 +32,7 @@ def test_cli_help_shows_tiers(capsys):
     out = capsys.readouterr().out
     for token in ("run", "sync", "status", "init", "target", "env"):
         assert token in out
-    assert "provision" not in out  # old word is gone
+    assert "provision" not in out
 
 
 def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):
@@ -102,8 +100,6 @@ def test_normalize_device_args_prefix_disabled_demotes_type_token(tmp_path, monk
     (cfg / "config.toml").write_text("[settings]\nprefix_match = false\n")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     (tmp_path / sd.RECIPE_NAME).write_text(_ALL_TYPES_RECIPE)
-    # With prefix matching off, `sim` is no longer a type — it falls back to the
-    # variant slot (today's behavior).
     args = _device_args(tmp_path, "sim")
     sd.cli._normalize_device_args(args)
     assert args.dtype is None
@@ -316,7 +312,6 @@ def test_cli_init_no_arg_runs_scanner(tmp_path, monkeypatch):
     rc = sd.main(["--cwd", str(tmp_path), "init"])
     assert rc == 0
     recipe = (tmp_path / "splashdown.toml").read_text()
-    # Scanner emits the new shape with [apps.*] + a detected profile.
     assert "[apps." in recipe
     assert 'profile = "vite"' in recipe
 
@@ -334,7 +329,6 @@ def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
 
 
 def test_cli_init_rescan_updates_inventory(tmp_path, monkeypatch):
-    # `init --rescan` re-detects apps in an existing recipe instead of scaffolding.
     (tmp_path / "splashdown.toml").write_text('[project]\nworkspace = "single"\nloader = "mise"\n')
     (tmp_path / "pubspec.yaml").write_text("name: demo\n")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -433,7 +427,6 @@ def test_init_server_preset_writes_generic_scaffold(tmp_path):
         'template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}_'
         '{{ truncate(hash(cwd_abs), 8) }}"' in recipe
     )
-    # Generic — should not name a specific framework.
     assert "Next.js preset" not in recipe
 
 
@@ -669,8 +662,6 @@ def test_init_mise_directive_idempotent(tmp_path):
     ],
 )
 def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, existing):
-    # Adding `_.file` must not crash or produce a double-declared/unparseable
-    # `[env]._` when the table already exists.
     (tmp_path / "mise.toml").write_text(existing)
     sd.cmd_init(
         tmp_path,
@@ -679,7 +670,7 @@ def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, exist
         loader_override="mise",
     )
     text = (tmp_path / "mise.toml").read_text()
-    data = tomllib.loads(text)  # must stay valid TOML
+    data = tomllib.loads(text)
     assert data["env"]["_"]["file"] == "splashdown.env"
 
 
@@ -696,10 +687,7 @@ def test_cmd_init_auto_approves_freshly_created_mise_toml(tmp_path, monkeypatch)
 
 
 def test_cmd_init_does_not_auto_approve_pre_existing_mise_toml(tmp_path, monkeypatch):
-    # Scaffold-only (`cmd_init`, i.e. the `--no-sync` path): a pre-existing
-    # (possibly untrusted) mise.toml may carry the user's own unreviewed
-    # [tools]/[tasks], so the wiring step never auto-trusts it. The follow-on
-    # provision (full `splash init`) is what trusts — see the two tests below.
+    # A pre-existing mise.toml may contain user commands, so init must not auto-trust it.
     (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
     calls = _record_approvals(monkeypatch)
     sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
@@ -715,8 +703,6 @@ def test_full_init_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
 
 
 def test_init_no_sync_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
-    # The review-first escape hatch: `--no-sync` scaffolds without provisioning,
-    # so a pre-existing untrusted mise.toml is left untrusted for the user to vet.
     (tmp_path / "mise.toml").write_text("[env]\n")
     calls = _record_approvals(monkeypatch)
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader", "mise", "--no-sync"]) == 0
@@ -755,7 +741,7 @@ def test_sync_does_not_print_loader_approval(tmp_path, monkeypatch, capsys):
     )
     _record_approvals(monkeypatch)
     sd.main(["--cwd", str(tmp_path)])
-    assert "trusted" not in capsys.readouterr().err  # only `init` announces
+    assert "trusted" not in capsys.readouterr().err
 
 
 def test_sync_writes_env_without_loader_approval(tmp_path, monkeypatch):

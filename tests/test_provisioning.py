@@ -1,5 +1,3 @@
-"""Tests for splashdown provisioning behavior."""
-
 from __future__ import annotations
 
 import json
@@ -31,7 +29,7 @@ template = "http://localhost:{{ PORT }}"
     resolved = sd.provision(checkout, registry=registry)
     assert 18400 <= int(resolved["PORT"]) <= 18410
     assert resolved["URL"] == f"http://localhost:{resolved['PORT']}"
-    assert len(resolved["RUN_ID"]) == 36  # uuid string length
+    assert len(resolved["RUN_ID"]) == 36
 
     recipe = sd.Recipe.load(checkout / "splashdown.toml")
     sd.write_outputs(checkout, recipe, resolved)
@@ -328,7 +326,7 @@ def test_splashdown_env_writer_neutralizes_shell_injection(tmp_path):
     text = target.read_text()
     assert "X='$(touch /tmp/pwned)'" in text
     assert "Y='`id`'" in text
-    assert '"$(' not in text  # never double-quoted
+    assert '"$(' not in text
 
 
 def test_splashdown_env_writer_overwrites_wholesale(tmp_path):
@@ -512,11 +510,11 @@ writer   = "envfile={abs_target}"
 
 def test_writer_reports_changed_then_unchanged(tmp_path):
     target = tmp_path / "splashdown.env"
-    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is True  # created
+    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is True
     mtime = target.stat().st_mtime_ns
-    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is False  # identical
-    assert target.stat().st_mtime_ns == mtime  # untouched
-    assert sd.write_splashdown_env(target, {"PORT": "9000"}) is True  # value changed
+    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is False
+    assert target.stat().st_mtime_ns == mtime
+    assert sd.write_splashdown_env(target, {"PORT": "9000"}) is True
 
 
 def test_envfile_writer_reports_changed(tmp_path):
@@ -729,7 +727,7 @@ def test_write_envrc_preserves_unmanaged_and_replaces_managed(tmp_path):
     text = target.read_text()
     assert "export OLD='x'" in text and "# keep me" in text
     assert "export NEW='hello'" in text
-    sd.write_envrc(target, {"NEW": "again"})  # replace in place, not duplicate
+    sd.write_envrc(target, {"NEW": "again"})
     text2 = target.read_text()
     assert text2.count("export NEW=") == 1
     assert "export NEW='again'" in text2

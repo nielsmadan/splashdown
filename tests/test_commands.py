@@ -1,5 +1,3 @@
-"""Tests for splashdown commands behavior."""
-
 from __future__ import annotations
 
 import json
@@ -543,7 +541,6 @@ def test_target_add_global_writes_config(tmp_path):
     assert rc == 0
     gc = sd.GlobalConfig.load(sd._global_config_path())
     assert gc.targets["device"]["my-iphone"]["platform"] == "ios"
-    # nothing was written to the local file
     assert not (tmp_path / sd.LOCAL_NAME).exists()
 
 
@@ -577,7 +574,6 @@ def test_global_device_resolves_in_repo_with_no_targets(tmp_path):
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
-    # a repo declaring no targets at all still sees the global physical device
     assert sd.target_commands._declared_target_types(tmp_path) == ["device"]
     variant, spec, _ = sd.target_commands._resolve_variant_for_cli(tmp_path, "device", None)
     assert variant == "my-iphone"
@@ -588,7 +584,7 @@ def test_target_refresh_aborts_on_malformed_global(tmp_path, registry):
     registry.set_device(str(tmp_path), "simulator", "default", "UDID1", "iPhone 17", "18.0")
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("[targets.bogus.x]\n")  # unknown type -> raises on load
+    p.write_text("[targets.bogus.x]\n")
     with pytest.raises(ValueError, match="unknown target type"):
         sd.cmd_target_refresh(registry)
     # the row must survive — a malformed global config must never reap devices
@@ -615,8 +611,6 @@ def test_target_refresh_preflights_all_local_configs_before_mutation(
 
 
 def test_global_device_does_not_break_inference_in_mobile_project(tmp_path):
-    # regression: a global physical device must not make bare `splash run` ambiguous
-    # in a project that declares its own simulator.
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -656,7 +650,6 @@ def test_cli_lifecycle_accepts_unique_global_variant_shorthand(tmp_path, monkeyp
 
 
 def test_global_device_type_prefix_stays_project_scoped(tmp_path):
-    # `splash run d` in a sim-only project stays a variant prefix, not the global `device` type
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -678,13 +671,11 @@ def test_remove_global_sourced_sim_without_global_flag_does_not_destroy(
     monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "simulator", "gsim"])
     assert rc == 1
-    assert destroyed == []  # the global-only variant's instance is NOT torn down
+    assert destroyed == []
     assert "global variant" in capsys.readouterr().err
 
 
 def test_load_variant_spec_loud_on_malformed_global(tmp_path):
-    # malformed global config surfaces loudly (no silent degrade), consistent with
-    # how every other read path treats it
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("[targets.bogus.x]\n")
@@ -753,7 +744,6 @@ def test_no_loader_delivery_falls_back_to_env_local(tmp_path):
 
 
 def test_no_loader_delivery_prefers_env_over_env_local(tmp_path):
-    # Both files present → .env wins (documented precedence).
     (tmp_path / ".env").write_text("")
     (tmp_path / ".env.local").write_text("")
     writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
@@ -761,7 +751,6 @@ def test_no_loader_delivery_prefers_env_over_env_local(tmp_path):
 
 
 def test_no_loader_delivery_no_apps_routes_to_file(tmp_path):
-    # The `not inv.apps` guard: an empty repo with a .env is still file-capable.
     (tmp_path / ".env").write_text("")
     writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path))
     assert writer == "envfile=.env"
@@ -793,7 +782,7 @@ def test_no_loader_delivery_mixed_routes_to_file_with_caveat(tmp_path):
     (tmp_path / ".env").write_text("")
     writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs", "vite"))
     assert writer == "envfile=.env"
-    assert "app1" in msg  # the vite app is named in the caveat
+    assert "app1" in msg
     assert "read env from the process" in msg
 
 
@@ -1143,7 +1132,7 @@ def test_deinit_clears_registry_rows(tmp_path, registry):
     (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
     sd.cmd_deinit(co, registry)
     assert registry.all_for(str(co)) == {}
-    assert registry.all_for(str(other)) != {}  # untouched
+    assert registry.all_for(str(other)) != {}
 
 
 def test_deinit_destroys_simulator_by_udid(tmp_path, registry, monkeypatch):
@@ -1190,7 +1179,6 @@ def test_deinit_continues_when_device_destroy_fails(tmp_path, registry, monkeypa
     monkeypatch.setattr(sd.devices, "ios_shutdown", boom)
     monkeypatch.setattr(sd.devices, "ios_destroy", boom)
     rc = sd.cmd_deinit(co, registry)
-    # A failed device destroy must not abort the rest of the teardown.
     assert rc == 0
     assert not (co / "splashdown.env").exists()
     assert registry.devices_for(str(co)) == []
@@ -1227,8 +1215,6 @@ _ENVFILE_RECIPE = (
 
 
 def test_deinit_strips_splashdown_keys_from_envfile_writer(tmp_path, registry):
-    # A monorepo app that receives its port via `writer = "envfile=apps/web/.env"`:
-    # deinit must remove splashdown's key but preserve the user's own lines.
     co = tmp_path / "co"
     co.mkdir()
     (co / "splashdown.toml").write_text(_ENVFILE_RECIPE)
@@ -1242,8 +1228,6 @@ def test_deinit_strips_splashdown_keys_from_envfile_writer(tmp_path, registry):
 
 
 def test_deinit_removes_envfile_when_only_splashdown_keys(tmp_path, registry):
-    # If splashdown's key was the only content, the file is splashdown's footprint
-    # and deinit removes it entirely.
     co = tmp_path / "co"
     co.mkdir()
     (co / "splashdown.toml").write_text(_ENVFILE_RECIPE)
@@ -1255,8 +1239,6 @@ def test_deinit_removes_envfile_when_only_splashdown_keys(tmp_path, registry):
 
 
 def test_deinit_strips_splashdown_keys_from_envrc_writer(tmp_path, registry):
-    # The `envrc` writer routes into .envrc.local as `export KEY=`; deinit strips
-    # splashdown's export line and keeps the user's.
     co = tmp_path / "co"
     co.mkdir()
     (co / "splashdown.toml").write_text(
@@ -1279,7 +1261,6 @@ def test_deinit_keeps_modified_local(tmp_path, registry):
     (co / "splashdown.local.toml").write_text('[targets.simulator.mine]\nmodel = "iPhone 16"\n')
     sd.cmd_deinit(co, registry)
     assert not (co / "splashdown.toml").exists()
-    # local was hand-edited (not the skeleton) -> kept.
     assert (co / "splashdown.local.toml").exists()
 
 
@@ -1287,5 +1268,5 @@ def test_deinit_loader_none_is_noop(tmp_path, registry):
     co = tmp_path / "co"
     co.mkdir()
     (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
-    sd.cmd_deinit(co, registry)  # NoneLoader.unwire is a no-op; must not raise
+    sd.cmd_deinit(co, registry)
     assert not (co / "splashdown.toml").exists()

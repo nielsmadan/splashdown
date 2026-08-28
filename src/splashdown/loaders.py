@@ -9,12 +9,6 @@ from pathlib import Path
 from .constants import ENV_FILE_NAME
 from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive
 
-# A Loader wires the shell-env tool (mise / direnv / devbox) so it sources
-# splashdown.env when the user enters the project directory. Each loader uses
-# sentinel-wrapped blocks so wire is idempotent and visually obvious. mise and
-# direnv also gate loading behind a trust/allow step, so init approves only a
-# config file it created itself.
-
 
 def _run_ok(argv: list[str], cwd: Path) -> bool:
     """Run a loader approval command, swallowing every failure. Never raises:
@@ -108,11 +102,9 @@ class DirenvLoader(Loader):
                 text += "\n\n"
             new_text = text + _DIRENV_BLOCK
         if new_text == existing:
-            return False  # already wired
+            return False
         path.write_text(new_text)
-        # A file we created gets auto-`direnv allow`ed by the caller; but for a
-        # pre-existing .envrc we won't auto-approve the user's own commands, so
-        # tell them to re-allow (editing it invalidated direnv's trust hash).
+        # Editing an existing .envrc invalidates its trust hash, but auto-allowing user commands would be unsafe.
         if not created:
             print("wired .envrc — run `direnv allow` to load splashdown.env", file=sys.stderr)
         return created

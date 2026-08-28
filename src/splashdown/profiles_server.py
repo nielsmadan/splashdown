@@ -78,10 +78,6 @@ class FlaskProfile(Profile):
         return _manual_port_guidance("Flask", "flask run --port {port}", port, app.project_path)
 
 
-# Registered after fastapi so a project carrying both deps resolves to fastapi —
-# flask is the more common incidental dependency of the two.
-
-
 class SpringBootProfile(Profile):
     name = "springboot"
 

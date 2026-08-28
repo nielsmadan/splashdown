@@ -1,5 +1,3 @@
-"""Tests for splashdown loaders behavior."""
-
 from __future__ import annotations
 
 import json
@@ -123,7 +121,6 @@ def test_mise_loader_unwire_deletes_solely_managed_file(tmp_path):
     sd.LOADERS["mise"].wire(tmp_path)
     assert (tmp_path / "mise.toml").exists()
     sd.LOADERS["mise"].unwire(tmp_path)
-    # File contained only our directive -> removed entirely.
     assert not (tmp_path / "mise.toml").exists()
 
 
@@ -143,14 +140,12 @@ def test_mise_loader_unwire_drops_empty_env_table(tmp_path):
     sd.LOADERS["mise"].wire(tmp_path)
     sd.LOADERS["mise"].unwire(tmp_path)
     text = (tmp_path / "mise.toml").read_text()
-    # Our directive went into a fresh [env] table; removing it empties that
-    # table, which should be dropped, leaving the user's [tools] intact.
     assert "[env]" not in text
     assert 'node = "20"' in text
 
 
 def test_mise_loader_unwire_noop_when_absent(tmp_path):
-    sd.LOADERS["mise"].unwire(tmp_path)  # must not raise
+    sd.LOADERS["mise"].unwire(tmp_path)
     assert not (tmp_path / "mise.toml").exists()
 
 
@@ -189,28 +184,28 @@ def test_devbox_loader_unwire_deletes_solely_managed_file(tmp_path):
 
 
 def test_mise_loader_wire_returns_true_on_create_false_on_rerun(tmp_path):
-    assert sd.LOADERS["mise"].wire(tmp_path) is True  # created from nothing
+    assert sd.LOADERS["mise"].wire(tmp_path) is True
     assert (tmp_path / "mise.toml").exists()
-    assert sd.LOADERS["mise"].wire(tmp_path) is False  # idempotent re-run
+    assert sd.LOADERS["mise"].wire(tmp_path) is False
 
 
 def test_mise_loader_wire_returns_false_when_editing_existing_file(tmp_path):
     (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
-    assert sd.LOADERS["mise"].wire(tmp_path) is False  # edited, not created
+    assert sd.LOADERS["mise"].wire(tmp_path) is False
     assert '_.file = "splashdown.env"' in (tmp_path / "mise.toml").read_text()
 
 
 def test_direnv_loader_wire_returns_true_on_create_false_when_editing_existing(tmp_path):
-    assert sd.LOADERS["direnv"].wire(tmp_path) is True  # created
+    assert sd.LOADERS["direnv"].wire(tmp_path) is True
     (tmp_path / ".envrc").write_text("use nix\n")
-    assert sd.LOADERS["direnv"].wire(tmp_path) is False  # edited existing
+    assert sd.LOADERS["direnv"].wire(tmp_path) is False
 
 
 def test_direnv_loader_wire_manual_hint_only_when_editing_existing(tmp_path, capsys):
-    sd.LOADERS["direnv"].wire(tmp_path)  # fresh create — caller auto-allows, no hint
+    sd.LOADERS["direnv"].wire(tmp_path)
     assert "direnv allow" not in capsys.readouterr().err
     (tmp_path / ".envrc").write_text("use nix\n")
-    sd.LOADERS["direnv"].wire(tmp_path)  # edited existing — user must re-allow
+    sd.LOADERS["direnv"].wire(tmp_path)
     assert "direnv allow" in capsys.readouterr().err
 
 
@@ -237,7 +232,7 @@ def test_mise_loader_approve_targets_dot_mise_toml_when_only_that_exists(tmp_pat
 def test_mise_loader_approve_noop_when_no_config(tmp_path, monkeypatch):
     calls = _record_run_ok(monkeypatch, ok=True)
     assert sd.LOADERS["mise"].approve(tmp_path) is False
-    assert calls == []  # never shells out without a config file
+    assert calls == []
 
 
 def test_mise_loader_approve_returns_false_on_command_failure(tmp_path):
@@ -283,7 +278,7 @@ def test_mise_approve_announce_prints_fallback_on_failure(tmp_path, monkeypatch,
 def test_approve_silent_when_not_announced(tmp_path, monkeypatch, capsys):
     (tmp_path / "mise.toml").write_text("[env]\n")
     _record_run_ok(monkeypatch, ok=True)
-    sd.LOADERS["mise"].approve(tmp_path)  # announce defaults False
+    sd.LOADERS["mise"].approve(tmp_path)
     assert capsys.readouterr().err == ""
 
 

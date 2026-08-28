@@ -6,7 +6,7 @@ replaces the `[apps.*]` tables wholesale, so a standalone comment sitting in the
 gap between the last `[apps.*]` and the first `[resources.*]` is dropped; comments
 inside tables, inline comments, and the file header all survive.) Reads stay on
 `tomllib` in recipe.py. This module is the ONLY importer of tomlkit, and it is lazy-imported
-by its callers (commands.py / devices.py / hooks.py), so the git-hook hot path — which only
+by its callers (commands.py / targets.py / hooks.py), so the git-hook hot path — which only
 reads TOML — never loads tomlkit. Do not import this module at the top level of
 anything on the read path, and do not re-export it from `__init__.py`.
 

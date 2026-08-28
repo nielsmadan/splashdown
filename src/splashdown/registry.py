@@ -83,12 +83,7 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 class Registry:
-    """Machine-local registry. TSV files protected by flock.
-
-    ports.tsv:    port\tabspath\tkey
-    kv.tsv:       abspath\tkey\tvalue
-    devices.tsv:  abspath\tdtype\tvariant\tudid\tmodel\tios\tcreated_at
-    """
+    """Machine-local TSV registries protected by stable sidecar locks."""
 
     def __init__(
         self,
@@ -183,19 +178,10 @@ class Registry:
         with self._lock(self.port_file):
             existing = self.get_port(abspath, key)
             if existing is not None and lo <= existing <= hi:
-                # Keep an existing in-range pin as-is, even if the port is
-                # currently bound — a bound pin is almost always this checkout's
-                # own dev server, and reallocating would move the port out from
-                # under the running process. Deliberate reallocation goes through
-                # `splash sync --force`, which drops the pin via remove_port
-                # before getting here (so `existing` is None on that path).
+                # A bound in-range pin is usually this checkout's running server; only --force removes it.
                 return existing
             if existing is not None:
-                # An out-of-range pin (the recipe's range changed under a live
-                # allocation): drop the stale row before allocating a new one, or
-                # it lingers forever — `get_port` returns the first match, so the
-                # stale out-of-range value would keep shadowing the new one and a
-                # fresh duplicate row would accrue on every run.
+                # Remove an out-of-range row first because get_port returns the first match.
                 self._remove_port_unlocked(abspath, key)
             busy = self._busy_ports_unlocked(gc=True)
             for candidate in range(lo, hi + 1):
@@ -473,7 +459,6 @@ class Registry:
         won't parse are left untouched — a recipe we can't load must never be
         read as "declares nothing" and nuke live entries. Returns count
         removed."""
-        # Lazy import to avoid circular: registry ← recipe ← registry.
         from .constants import RECIPE_NAME  # noqa: PLC0415
         from .recipe import Recipe  # noqa: PLC0415
 

@@ -63,6 +63,7 @@ __all__ = [
     "compose_wiring_checks",
 ]
 
+# Detection is first-match-wins: Laravel and Nuxt precede Vite, and FastAPI precedes Flask, so broader or incidental signals cannot shadow the intended profile.
 _BUILTIN_PROFILES = (
     ("astro", AstroProfile()),
     ("laravel", LaravelProfile()),

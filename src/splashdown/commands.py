@@ -191,9 +191,7 @@ def _path_git_ignored(cwd: Path, name: str) -> bool:
         )
     except OSError:
         return True
-    # check-ignore: 0 = ignored, 1 = not ignored, 128 = fatal (e.g. not a repo).
-    # Only the explicit "not ignored" answer should let the warning fire; treat
-    # everything else (ignored, or any error) as "don't nag".
+    # Exit 1 is the only result that confirms the path is not ignored.
     return r.returncode != 1
 
 
@@ -209,7 +207,8 @@ def _resolve_no_loader_delivery(cwd: Path, inv: ProjectInventory) -> tuple[str |
 
     def reads_dotenv(profile: str) -> bool:
         if profile == "unknown":
-            return True  # give the benefit of the doubt; the caveat note covers it
+            # Unknown apps may read dotenv files, so prefer delivery over a false negative.
+            return True
         prof = PROFILES.get(profile)
         return bool(prof and prof.reads_dotenv)
 
@@ -260,9 +259,7 @@ def _apply_no_loader_fallback(
 def _write_minimal_monorepo_recipe(
     cwd: Path, inv: ProjectInventory, *, wire_checkout_hook: bool
 ) -> None:
-    """Defer path: write a structural-only recipe ([project] + [apps.*], no
-    resources/targets) plus loader/hook wiring, and tell the user where to look.
-    Used when init detects an ambiguous monorepo it should not auto-configure."""
+    """Write a structure-only recipe for an ambiguous monorepo and configure its integrations."""
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
     recipe_path = cwd / RECIPE_NAME
@@ -503,7 +500,6 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
             wire_checkout_hook=not nested,
         )
 
-    # Scanner-driven path.
     inv = Scanner().scan(cwd)
     if loader_override:
         inv = ProjectInventory(workspace=inv.workspace, apps=inv.apps, loader=loader_override)
@@ -517,7 +513,6 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
         rel = app.path.relative_to(cwd) if app.path != cwd else Path(".")
         print(f"  {rel}\t→ {app.profile}", file=sys.stderr)
     print(f"  shell loader\t→ {inv.loader}", file=sys.stderr)
-    # Collect per-app resources, then merge with collision-mangling.
     res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
     for app in inv.apps:
         if app.profile == "unknown":
@@ -607,8 +602,7 @@ def _cmd_init_preset(
     loader_override: str | None = None,
     wire_checkout_hook: bool = True,
 ) -> None:
-    """`splash init NAME` path: write the intent preset, then wire the
-    detected (or overridden) shell-env loader and the post-checkout hook."""
+    """Write an intent preset, then configure its loader and checkout handling."""
     from .scaffolds import SCAFFOLDS  # noqa: PLC0415
 
     scaffold = SCAFFOLDS.get(preset)
@@ -630,8 +624,7 @@ def _cmd_init_preset(
     if loader.wire(cwd):
         loader.approve(cwd, announce=True)
     if loader_name == "none":
-        # Preset scaffolds are written verbatim, so we can't re-route resources to
-        # a dotenv file here — but we must not leave the user with a silent no-op.
+        # Presets cannot reroute writers, so warn when the generated env file has no loader.
         print(f"  {_NO_LOADER_INSTRUCTIONS}", file=sys.stderr)
     _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
     _trust_generated_sync(cwd)
@@ -659,9 +652,7 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
     """Remove local state; preserve clone trust, shared hooks, and framework patches."""
     abspath = str(cwd.resolve())
 
-    # Loader name lives in the recipe; read it before we delete the recipe. A
-    # broken/legacy recipe must never abort the one command meant to clean it up,
-    # so a failed read just degrades to "loader unknown".
+    # Read the loader before deleting the recipe; parse failures must not block teardown.
     try:
         recipe = _load_recipe_or_empty(cwd)
         loader_name = recipe.project.get("loader")
@@ -673,9 +664,7 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
         recipe = None
         loader_name = None
 
-    # Iterate registry rows (not recipe variants) so orphaned instances get cleaned
-    # up too, destroying each by the identifier its row stores (UDID for sims, AVD
-    # name for emulators).
+    # Use registry identifiers so undeclared or orphaned managed devices are destroyed too.
     for row in registry.devices_for(abspath):
         try:
             device_destroy_row(row)
@@ -700,8 +689,6 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
         for relpath, action in clear_writer_destinations(cwd, recipe):
             print(f"{action} {relpath}", file=sys.stderr)
 
-    # `.get` guards an absent/unknown loader name; the "none" loader resolves to a
-    # no-op unwire.
     loader = LOADERS.get(loader_name) if loader_name else None
     if loader is not None:
         loader.unwire(cwd)
@@ -1116,7 +1103,7 @@ def _env_set(assignment: str, target: str, registry: Registry) -> int:
 def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     """`splash env …` — this checkout's resolved values. Bare = list."""
     fmt = _resolve_format_arg(args)
-    if args.env_cmd is None:  # bare `splash env` → list
+    if args.env_cmd is None:
         target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
         data = registry.all_for(target)
         render_env_list(data, target, fmt, show_values=getattr(args, "show_values", False))

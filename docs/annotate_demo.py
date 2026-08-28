@@ -97,14 +97,12 @@ def draw_overlay(size: tuple[int, int], beat: dict, *, show_port: bool) -> Image
         x0, y0, x1, y1 = beat["port_box"]
         cy = (y0 + y1) // 2
         d.rounded_rectangle((x0, y0, x1, y1), radius=6, outline=AMBER, width=2)
-        # arrow: horizontal line from the label back to the box, arrowhead at the box
         ax = x1 + 10
         tip = x1 + 6
         d.line((ax, cy, ax + 46, cy), fill=AMBER, width=3)
         d.polygon([(tip, cy), (ax + 8, cy - 6), (ax + 8, cy + 6)], fill=AMBER)
         d.text((ax + 60, cy), beat["label"], font=mono, fill=AMBER, anchor="lm")
 
-    # caption pill, centered horizontally, top edge at the beat's cap_y
     cap = beat["caption"]
     W = size[0]
     tb = d.textbbox((0, 0), cap, font=sans)
@@ -131,8 +129,6 @@ def main() -> None:
         raise SystemExit(f"expected {len(BEATS)} hold beats, detected {len(beats)}: {beats}")
 
     for (start, end), beat in zip(beats, BEATS, strict=True):
-        # phase the hold: ~500ms of bare output, then the caption, then (40% of
-        # the remaining span later) the port highlight lands on top.
         cap_start = start
         acc = 0
         while cap_start < end and acc < BARE_MS:

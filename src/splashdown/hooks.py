@@ -1,10 +1,4 @@
-"""Git-hook and env-loader wiring: install the managed post-checkout hook
-(coexisting with lefthook / husky / core.hooksPath), edit mise's `_.file`
-directive, and manage the project `.gitignore` entries.
-
-Extracted from commands.py so wiring.py and loaders.py can depend on it directly
-instead of reaching back into commands via function-local imports (which existed
-only to dodge an import cycle)."""
+"""Git-hook, mise, and gitignore wiring kept below loaders and wiring to preserve acyclic imports."""
 
 from __future__ import annotations
 
@@ -349,8 +343,7 @@ def _wire_post_checkout_husky(cwd: Path) -> bool:
     hook = husky_dir / "post-checkout"
     if hook.exists():
         existing = hook.read_text()
-        # `.husky/post-checkout` is the user's file.
-        # Never clobber a real hook — only (re)write one that's already ours.
+        # Only overwrite hooks whose full contents match a Splashdown template.
         if existing not in _OWNED_HOOKS:
             print(
                 "existing .husky/post-checkout is not splashdown's — leaving it "

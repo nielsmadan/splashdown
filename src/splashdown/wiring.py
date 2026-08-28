@@ -31,17 +31,11 @@ class WiringCheck(NamedTuple):
     manual_instructions: Callable[[Path], str] | None
 
 
-# RN wiring checks accumulate here as the rn-* helper functions are defined
-# below; ReactNativeProfile picks them up at registry-build time.
+# RN checks accumulate as helpers are defined; ReactNativeProfile returns a copy after module import completes.
 _RN_WIRING_CHECKS: list[WiringCheck] = []
 
 
-# Detection is substring- and regex-based across every check here, which makes
-# commented-out config the standing hazard: a `// server: { port: process.env.X }`
-# left behind from a previous attempt reads exactly like working wiring, and the
-# check then prints a ✓ claiming the project is wired. Every detect that scans a
-# commentable file strips comments first. These are deliberately lexical, not
-# parsers — enough to tell code from commentary, nothing more.
+# Lexical checks strip comments first so commented-out config cannot produce a false “wired” result.
 
 
 def _strip_hash_comments(text: str) -> str:
@@ -305,8 +299,6 @@ def _pkg_scripts_with_port(data: dict[str, Any]) -> list[str]:
     for name, value in scripts.items():
         if not isinstance(value, str):
             continue
-        # Target the common RN scripts, plus any script that boots Metro via
-        # `react-native start` (not merely any script mentioning react-native).
         if (name in _PKG_RN_SCRIPTS or _PKG_RN_START_RE.search(value)) and _PKG_PORT_RE.search(
             value
         ):

@@ -1,5 +1,3 @@
-"""Tests for splashdown completion behavior."""
-
 from __future__ import annotations
 
 import os
@@ -62,7 +60,6 @@ def test_variant_completer_dedupes_across_types(checkout):
         '[targets.simulator.default]\nmodel = "A"\n[targets.emulator.default]\nimage = "X"\n',
     )
     args = Namespace(cwd=str(checkout), dtype=None)
-    # `default` declared under both types must appear once.
     assert variant_completer("", args) == ["default"]
 
 
@@ -72,7 +69,6 @@ def test_device_arg_completer_offers_variants_for_single_type(checkout):
         '[targets.simulator.default]\nmodel = "A"\n[targets.simulator.tablet]\nmodel = "B"\n',
     )
     args = Namespace(cwd=str(checkout), dtype=None)
-    # type name + variant names, sorted, deduped.
     assert device_arg_completer("", args) == ["default", "simulator", "tablet"]
 
 
@@ -82,7 +78,6 @@ def test_device_arg_completer_offers_only_type_names_for_multi_type(checkout):
         '[targets.simulator.default]\nmodel = "A"\n[targets.emulator.default]\nimage = "X"\n',
     )
     args = Namespace(cwd=str(checkout), dtype=None)
-    # `default` is ambiguous across the two types, so only the type names are offered.
     assert device_arg_completer("", args) == ["emulator", "simulator"]
 
 
@@ -154,8 +149,6 @@ def test_run_accepts_lone_variant(tmp_path, monkeypatch):
 
 def test_run_rejects_nontype_with_variant_via_main(tmp_path):
     (tmp_path / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "A"\n')
-    # `foo` is not a device type and a variant is already given -> DeviceError,
-    # which main()'s try/except turns into exit code 1 (not an uncaught crash).
     rc = sd.main(["--cwd", str(tmp_path), "run", "foo", "bar"])
     assert rc == 1
 
@@ -182,12 +175,7 @@ def _argcomplete_completions(parser, comp_line, cwd):
     saved_cwd = os.getcwd()
     os.environ.update(env)
     os.chdir(cwd)
-    # argcomplete's completion protocol unconditionally reopens its debug stream
-    # via `os.fdopen(9, "w")` (finders.py) and never closes it. Under pytest, fd 9
-    # is the faulthandler's dup of stderr, so the dangling wrapper collides with
-    # pytest's own close of fd 9 at teardown ("Bad file descriptor"). Divert just
-    # that fd-9 open to an in-memory stream so argcomplete never touches the real
-    # fd. (fd 8, the completion output, is already handled via `output_stream`.)
+    # Argcomplete leaks an fd-9 wrapper that collides with pytest's faulthandler at teardown; redirect only that debug fd to memory.
     real_fdopen = os.fdopen
 
     def _fdopen(fd, *args, **kwargs):
@@ -220,7 +208,6 @@ def test_comp_line_offers_variants_for_run_single_type(tmp_path):
 def test_install_is_noop_without_argcomplete_env(monkeypatch):
     from splashdown.completion import install
 
-    # No _ARGCOMPLETE in env -> returns without importing/inspecting.
     monkeypatch.delenv("_ARGCOMPLETE", raising=False)
     assert install(sd._build_parser()) is None
 
@@ -229,7 +216,7 @@ def test_completion_zsh_outputs_native_zsh(capsys):
     rc = sd.cmd_completion("zsh")
     out = capsys.readouterr().out
     assert rc == 0
-    assert "#compdef splash" in out  # native zsh, no bashcompinit needed
+    assert "#compdef splash" in out
 
 
 def test_completion_bash_outputs_shellcode(capsys):
@@ -264,7 +251,7 @@ def test_completion_autodetect_falls_back_to_bash_when_shell_unset(monkeypatch, 
     rc = sd.cmd_completion(None)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "complete" in out  # bash shellcode, not zsh
+    assert "complete" in out
 
 
 def test_completion_autodetect_empty_shell_falls_back_to_bash(monkeypatch, capsys):
@@ -308,8 +295,6 @@ def test_device_arg_completer_offers_project_variants_despite_global_device(chec
     p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
     args = Namespace(cwd=str(checkout), dtype=None)
     out = device_arg_completer("", args)
-    # project has exactly one type (simulator) -> its variants are still offered,
-    # and the always-available global device type name is offered too
     assert "default" in out
     assert "tablet" in out
     assert "device" in out

@@ -144,7 +144,8 @@ def _classify_port_entry(entry: str) -> tuple[str | None, bool]:
     if _COMPOSE_LONG_SYNTAX_RE.search(entry):
         return _classify_long_port_entry(entry)
     spec = _COMPOSE_VAR_RE.sub(_VAR_MASK, _unquote(entry).split("/", 1)[0])
-    if spec.startswith("["):  # ipv6 host_ip
+    # Remove a bracketed IPv6 host before splitting host/container port slots.
+    if spec.startswith("["):
         spec = spec.partition("]:")[2]
     parts = spec.split(":")
     if len(parts) > _COMPOSE_MAX_PORT_FIELDS:
@@ -163,7 +164,7 @@ def _classify_port_entry(entry: str) -> tuple[str | None, bool]:
 
 def _compose_hardcoded_detect(cwd: Path) -> tuple[str, str]:
     cfg = _compose_file_path(cwd)
-    if cfg is None:  # applies() guarantees the compose file exists
+    if cfg is None:
         raise DeviceError("compose file not found")
     text = _strip_hash_comments(cfg.read_text())
     ports: set[str] = set()

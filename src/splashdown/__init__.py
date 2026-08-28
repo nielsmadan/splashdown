@@ -41,7 +41,7 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-# Import profiles — this populates PROFILES.
+# Import profiles first to populate PROFILES before catalog consumers load.
 from . import capabilities as capabilities
 from . import cli_output as cli_output
 from . import device_android as device_android
@@ -184,8 +184,6 @@ from .recipe import (
     template_refs,
     topo_sort,
 )
-
-# The profile module above populates the shared catalog before these consumers load.
 from .registry import DeviceRow, Registry, _port_in_use
 from .scaffolds import SCAFFOLDS
 from .scanner import (

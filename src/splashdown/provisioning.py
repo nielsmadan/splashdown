@@ -23,7 +23,6 @@ from .recipe import (
 )
 from .registry import Registry
 
-# A port resource's `range` is a two-element [lo, hi] list.
 _PORT_RANGE_LEN = 2
 
 
@@ -107,9 +106,7 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[W
         writer = recipe.resources[name].get("writer", "splashdown-env")
         groups.setdefault(writer, {})[name] = value
 
-    # Truncate splashdown.env if it exists but no resources target it now (e.g. the
-    # user removed the last splashdown-env resource). Without this, the old values
-    # linger and silently disagree with the recipe.
+    # Clear stale splashdown.env when the recipe no longer targets that writer.
     if "splashdown-env" not in groups and (cwd / ENV_FILE_NAME).exists():
         groups["splashdown-env"] = {}
 
@@ -124,10 +121,7 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[W
         elif writer.startswith("envfile="):
             path_arg = writer.removeprefix("envfile=")
             target = cwd / path_arg
-            # The recipe is auto-run by the post-checkout hook, so a committed
-            # `envfile=` value is untrusted input. Reject absolute paths and any
-            # `..` that escapes the checkout — otherwise it is an arbitrary-file
-            # write primitive for any cloned repo.
+            # Recipes run automatically after checkout; confine envfile writes to the checkout.
             if not target.resolve().is_relative_to(cwd.resolve()):
                 raise ValueError(
                     f"writer `envfile={path_arg}` resolves outside the checkout; "
@@ -286,8 +280,6 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
             relpath = writer.removeprefix("envfile=")
             export = False
         target = cwd / relpath
-        # Mirror write_outputs' containment guard: never touch a path a committed
-        # recipe points outside the checkout.
         if not target.resolve().is_relative_to(cwd.resolve()):
             continue
         try:

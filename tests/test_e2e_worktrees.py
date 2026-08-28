@@ -121,7 +121,6 @@ def test_two_worktrees_get_distinct_ports_and_run_concurrently(tmp_path, monkeyp
     wt2 = tmp_path / "wt2"
     _git(main, "worktree", "add", "--detach", str(wt2))
 
-    # Provision each checkout through the real CLI.
     assert sd.main(["--cwd", str(main)]) == 0
     assert sd.main(["--cwd", str(wt2)]) == 0
 
@@ -129,15 +128,12 @@ def test_two_worktrees_get_distinct_ports_and_run_concurrently(tmp_path, monkeyp
     port_wt2 = int(_read_env(wt2)["PORT"])
     assert port_main != port_wt2, "two worktrees must get distinct ports"
 
-    # The machine-wide registry has one pinned row per checkout.
     ports_tsv = tmp_path / "state" / "splashdown" / "ports.tsv"
     rows = [ln for ln in ports_tsv.read_text().splitlines() if ln.strip()]
     assert len(rows) == 2
     registered = {int(ln.split("\t", 1)[0]) for ln in rows}
     assert registered == {port_main, port_wt2}
 
-    # Spin up both "frontends" concurrently, each reading PORT from its own
-    # splashdown.env; both must bind their assigned port at once (no collision).
     procs: list[subprocess.Popen[str]] = []
     try:
         procs.append(_spawn_frontend(main, _read_env(main)))
@@ -162,7 +158,6 @@ def test_post_checkout_hook_provisions_new_worktree(tmp_path, monkeypatch):
     _git(main, "config", "user.email", "test@example.com")
     _git(main, "config", "user.name", "Test")
 
-    # Real init installs a post-checkout hook in the common Git directory.
     assert sd.main(["--cwd", str(main), "init"]) == 0
     # Commit the recipe so the shared native hook sees it in a fresh worktree.
     # splashdown.env / .local.toml are gitignored, so they are not committed.

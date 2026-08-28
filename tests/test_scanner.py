@@ -1,5 +1,3 @@
-"""Tests for splashdown scanner behavior."""
-
 from __future__ import annotations
 
 import json
@@ -63,7 +61,7 @@ export default defineConfig(({ mode }) => {
 });
 """)
     rc = sd.cmd_doctor(tmp_path)
-    assert rc != 0  # the check flags `problem` and we didn't pass --fix
+    assert rc != 0
 
 
 def test_refresh_inventory_rejects_unknown_resource_key_without_writing(tmp_path):
@@ -193,7 +191,7 @@ def test_prune_unresolvable_templates_cascades(tmp_path):
 
 
 def test_enumerate_apps_handles_pnpm_workspace_with_comments(tmp_path):
-    """pnpm-workspace.yaml with comments + missing packages key shouldn't crash."""
+    """Comments in pnpm-workspace.yaml must not interfere with package enumeration."""
     (tmp_path / "pnpm-workspace.yaml").write_text("""\
 # top comment
 packages:
@@ -208,8 +206,6 @@ packages:
 
 
 def test_enumerate_apps_handles_pnpm_workspace_with_no_packages_key(tmp_path):
-    """A pnpm-workspace.yaml that's missing `packages:` returns no apps,
-    doesn't raise."""
     (tmp_path / "pnpm-workspace.yaml").write_text("catalogMode: manual\n")
     apps = sd._enumerate_apps(tmp_path, "pnpm")
     assert apps == []
@@ -320,7 +316,6 @@ def test_detect_framework_android_native_skipped_when_flutter_present(tmp_path):
 
 
 def test_detect_framework_native_override_wins(tmp_path):
-    # No filesystem signals at all — explicit override carries it.
     r = sd.Recipe({"project": {"framework": "ios-native"}}, tmp_path / "splashdown.toml")
     assert sd.detect_framework(tmp_path, r) == "ios-native"
 
@@ -443,13 +438,11 @@ def test_cmd_init_scans_single_vite_app(tmp_path):
 def test_cmd_init_emits_mise_loader_wiring(tmp_path):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path, loader_override="mise")
-    # mise.toml created and points at splashdown.env
     assert (tmp_path / "mise.toml").exists()
     assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
 
 
 def test_cmd_init_no_loader_routes_dotenv_app_to_env_file(tmp_path):
-    # Next.js app, no shell loader, existing .env → values route into .env.
     (tmp_path / "next.config.js").write_text("module.exports = {}")
     (tmp_path / "package.json").write_text('{"dependencies": {"next": "15"}}')
     (tmp_path / ".env").write_text("")
@@ -460,8 +453,6 @@ def test_cmd_init_no_loader_routes_dotenv_app_to_env_file(tmp_path):
 
 
 def test_cmd_init_no_loader_no_dotenv_file_omits_writer_and_prints_instructions(tmp_path, capsys):
-    # Vite app (process.env only), no shell loader, no .env → no writer routing,
-    # and the user is told nothing sources splashdown.env.
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path)
     recipe_text = (tmp_path / "splashdown.toml").read_text()
@@ -495,11 +486,9 @@ def test_cmd_init_intent_preset_no_loader_prints_instructions(tmp_path, capsys):
 
 
 def test_cmd_init_unknown_framework_app_gets_unknown_profile(tmp_path):
-    # No detectable framework signals — single-app with bare directory.
     sd.cmd_init(tmp_path)
     recipe_text = (tmp_path / "splashdown.toml").read_text()
     assert 'profile = "unknown"' in recipe_text
-    # No resources for unknown profiles → [resources.*] section should be absent.
     assert "[resources." not in recipe_text
 
 
@@ -513,7 +502,6 @@ def test_cli_init_runs_first_sync(tmp_path, monkeypatch):
     assert (tmp_path / "splashdown.toml").exists()
     env_text = (tmp_path / "splashdown.env").read_text()
     assert "WEB_DEV_PORT=" in env_text
-    # The allocation is pinned in the machine-wide registry.
     ports = (tmp_path / "state" / "splashdown" / "ports.tsv").read_text()
     assert str(tmp_path.resolve()) in ports
 
@@ -522,17 +510,13 @@ def test_cli_init_overwrite_flag(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "vite.config.ts").write_text("export default {}")
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 0
-    # A second init without --overwrite refuses and names the flag (not --force).
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 2
     err = capsys.readouterr().err
     assert "--overwrite" in err and "--force" not in err
-    # --overwrite replaces the recipe.
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise", "--overwrite"]) == 0
 
 
 def test_cli_init_no_sync_skips_provision(tmp_path, monkeypatch):
-    # `--no-sync` scaffolds the files but allocates nothing: no splashdown.env,
-    # no registry entry for this checkout.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "vite.config.ts").write_text("export default {}")
     rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=mise", "--no-sync"])
@@ -552,7 +536,6 @@ def test_cmd_init_writes_post_checkout_hook(tmp_path):
 
 
 def test_refresh_inventory_updates_project_and_apps(tmp_path):
-    # Start with a recipe that knows about the api app only.
     (tmp_path / "splashdown.toml").write_text("""\
 [project]
 workspace = "single"
@@ -567,19 +550,16 @@ resources = ["PORT"]
 type  = "port"
 range = [9081, 9100]
 """)
-    # User adds vite alongside.
     (tmp_path / "vite.config.ts").write_text("export default {}")
     rc = sd.cmd_refresh_inventory(tmp_path)
     assert rc == 0
     text = (tmp_path / "splashdown.toml").read_text()
     assert 'profile = "vite"' in text
-    # Original resource block preserved verbatim.
     assert "[resources.PORT]" in text
     assert "range = [9081, 9100]" in text
 
 
 def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
-    # A legacy single-resource recipe (no [project] / [apps.*]).
     (tmp_path / "splashdown.toml").write_text('[resources.RUN_ID]\ntype = "uuid"\n')
     (tmp_path / "vite.config.ts").write_text("export default {}")
     rc = sd.cmd_refresh_inventory(tmp_path)
@@ -587,7 +567,6 @@ def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
     text = (tmp_path / "splashdown.toml").read_text()
     assert "[project]" in text
     assert "[apps." in text
-    # Existing resources are kept verbatim.
     assert "[resources.RUN_ID]" in text
 
 
@@ -862,7 +841,6 @@ def test_aspnet_wiring_autofix_drops_application_url(tmp_path):
     assert check.detect(tmp_path)[0] == "ok"
     data = json.loads((tmp_path / "Properties" / "launchSettings.json").read_text())
     assert "applicationUrl" not in data["profiles"]["http"]
-    # Unrelated keys and the IIS Express profile survive the rewrite.
     assert (
         data["profiles"]["http"]["environmentVariables"]["ASPNETCORE_ENVIRONMENT"] == "Development"
     )
@@ -890,7 +868,6 @@ def test_aspnet_wiring_check_reads_bom_and_crlf_file(tmp_path):
     check = next(
         c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
     )
-    # Must read as a pinned URL, not as "not valid JSON".
     assert check.detect(tmp_path)[0] == "problem"
     assert "http" in check.detect(tmp_path)[1]
 
@@ -898,10 +875,10 @@ def test_aspnet_wiring_check_reads_bom_and_crlf_file(tmp_path):
     assert check.detect(tmp_path)[0] == "ok"
 
     raw = settings.read_bytes()
-    assert raw.startswith(b"\xef\xbb\xbf")  # BOM survives the rewrite
+    assert raw.startswith(b"\xef\xbb\xbf")
     assert b"\r\r\n" not in raw  # translation must not double the CR
     assert raw.count(b"\n") == raw.count(b"\r\n")  # every ending stayed CRLF
-    assert b'"$schema"' in raw  # unrelated keys survive
+    assert b'"$schema"' in raw
 
 
 def test_aspnet_wiring_autofix_keeps_lf_file_lf(tmp_path):
@@ -918,7 +895,6 @@ def test_aspnet_wiring_autofix_keeps_lf_file_lf(tmp_path):
     )
     check.autofix(tmp_path)
     raw = settings.read_bytes()
-    # A BOM-less LF file must not acquire either on the way back out.
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert b"\r" not in raw
 
@@ -1049,7 +1025,7 @@ def test_aspnet_legacy_tfm_never_autofixes(tmp_path):
     status, detail = check.detect(tmp_path)
     assert status == "problem"
     assert ".NET < 8" in detail
-    assert settings.read_text() == original  # untouched
+    assert settings.read_text() == original
 
 
 def _angular_app(tmp_path, start_script):
@@ -1116,7 +1092,7 @@ def test_angular_autofix_survives_a_package_json_with_no_scripts(tmp_path):
     (tmp_path / "package.json").write_text("{}")
     app = sd.AppInventory(name="web", path=tmp_path, profile="angular")
     check = next(c for c in sd.PROFILES["angular"].wiring_checks(app) if c.id == "angular-pkg-port")
-    check.autofix(tmp_path)  # must not raise KeyError
+    check.autofix(tmp_path)
     assert check.detect(tmp_path)[0] == "problem"
 
 
@@ -1215,8 +1191,6 @@ def test_deno_autofix_skips_jsonc_to_preserve_comments(tmp_path):
 
 
 def test_deno_detect_rejects_a_port_flag_after_the_script_arg(tmp_path):
-    # The mirror of the autofix regression above: everything after the script
-    # argument is passed to the script, so this task still binds 8000.
     check = _deno_app(tmp_path, '{"tasks": {"dev": "deno serve server.ts --port $PORT"}}')
     status, detail = check.detect(tmp_path)
     assert status == "problem"
@@ -1259,8 +1233,6 @@ def test_deno_detect_reports_a_config_it_cannot_parse(tmp_path):
 
 
 def test_angular_detect_reports_when_no_ng_serve_script_exists(tmp_path):
-    # Angular reads no port env var at all, so "nothing to wire" means the
-    # allocated port reaches nothing — that is a finding, not a pass.
     check = _angular_app(tmp_path, "node scripts/dev.js")
     status, detail = check.detect(tmp_path)
     assert status == "problem"
@@ -1373,7 +1345,6 @@ def test_scanner_gradle_skips_missing_module_dir(tmp_path):
 
 
 def test_scan_drops_unknown_members_in_workspace(tmp_path):
-    # pnpm workspace: apps/web (vite) + packages/ui (no framework).
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n  - 'packages/*'\n")
     (tmp_path / "apps" / "web").mkdir(parents=True)
     (tmp_path / "apps" / "web" / "vite.config.ts").write_text("export default {}")
@@ -1431,7 +1402,6 @@ def test_init_mixed_workspace_associates_electron_only_with_desktop(tmp_path):
 
 
 def test_scan_keeps_single_unknown_app(tmp_path):
-    # Bare directory → single workspace → one unknown app, still present.
     inv = sd.Scanner().scan(tmp_path)
     assert [(a.name, a.profile) for a in inv.apps] == [("main", "unknown")]
 
@@ -1447,7 +1417,6 @@ def test_has_resource_collision_false_on_distinct_names():
 
 
 def test_unclaimed_native_dirs_finds_sibling_native(tmp_path):
-    # JS workspace app under apps/web, plus a sibling native ios/ at root.
     web = tmp_path / "apps" / "web"
     web.mkdir(parents=True)
     (tmp_path / "ios").mkdir()
@@ -1458,7 +1427,6 @@ def test_unclaimed_native_dirs_finds_sibling_native(tmp_path):
 
 
 def test_unclaimed_native_dirs_ignores_rn_subfolders(tmp_path):
-    # Single RN app at root: its own ios/ + android/ are inside the app → claimed.
     (tmp_path / "ios").mkdir()
     (tmp_path / "ios" / "App.xcodeproj").mkdir()
     (tmp_path / "android").mkdir()
@@ -1469,7 +1437,6 @@ def test_unclaimed_native_dirs_ignores_rn_subfolders(tmp_path):
 
 
 def test_init_defers_on_port_collision(tmp_path, capsys):
-    # apps/web (Next) + apps/api (Nest) → both emit PORT → defer.
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
     web = tmp_path / "apps" / "web"
     web.mkdir(parents=True)
@@ -1485,7 +1452,6 @@ def test_init_defers_on_port_collision(tmp_path, capsys):
 
 
 def test_init_defers_on_unclaimed_native_sibling(tmp_path, capsys):
-    # JS workspace + sibling native ios/ → defer.
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
     web = tmp_path / "apps" / "web"
     web.mkdir(parents=True)
@@ -1500,8 +1466,6 @@ def test_init_defers_on_unclaimed_native_sibling(tmp_path, capsys):
 
 
 def test_init_does_not_defer_on_distinct_names(tmp_path):
-    # apps/web (Vite → WEB_DEV_PORT) + apps/api (Next → PORT): distinct names, no
-    # native siblings → normal scaffold with resources.
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
     web = tmp_path / "apps" / "web"
     web.mkdir(parents=True)
@@ -1516,7 +1480,6 @@ def test_init_does_not_defer_on_distinct_names(tmp_path):
 
 
 def test_init_rn_single_app_still_scaffolds(tmp_path):
-    # Regression: a plain RN repo (own ios/+android/) must NOT defer.
     (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.74"}}')
     (tmp_path / "ios").mkdir()
     (tmp_path / "ios" / "App.xcodeproj").mkdir()
@@ -1551,7 +1514,6 @@ def test_deno_detect_accepts_jsonc_with_trailing_commas(tmp_path):
 
 
 def test_deno_detect_ignores_a_commented_out_task_in_wired_jsonc(tmp_path):
-    # The complement of the above: comments stripped, real task still read.
     check = _deno_app(
         tmp_path,
         '{\n  // "dev": "deno serve --port $PORT old.ts"\n'
@@ -1633,7 +1595,7 @@ def test_springboot_takes_the_last_declaration_like_spring_does(tmp_path):
 
 
 def test_springboot_ignores_a_trailing_comment(tmp_path):
-    # The leading-# fixture never exercised stripping: the flat regex is anchored.
+    # A trailing comment may mention `${PORT}`; only the uncommented value can satisfy wiring.
     check = _springboot_check(
         tmp_path, {"application.properties": "server.port=9090  # want ${PORT:8080}\n"}
     )

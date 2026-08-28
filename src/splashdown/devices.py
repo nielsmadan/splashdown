@@ -50,7 +50,7 @@ from .device_types import (
     SimulatorRecord,
 )
 
-# DeviceError remains available here for compatibility with existing imports.
+# Public re-export for callers that import splashdown.devices.DeviceError.
 from .errors import CapabilityError
 from .errors import DeviceError as DeviceError  # noqa: PLC0414
 from .recipe import _current_branch, _make_scope, render_template

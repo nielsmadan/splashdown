@@ -87,13 +87,7 @@ def _current_branch(cwd: Path) -> str:
         return ""
 
 
-# Restricted expression evaluator for `{{ ... }}` templates. We deliberately do
-# NOT use eval(): an empty-`__builtins__` eval is not a real sandbox (object-graph
-# walks like `().__class__.__base__.__subclasses__()` reach `os`/`subprocess`), and
-# recipes run automatically from the post-checkout hook on untrusted checkouts.
-# This walks the AST and permits only literals, names bound in `scope`, calls to
-# scope-provided helpers, indexing/slicing, and arithmetic — and forbids attribute
-# access entirely, which is the escape hatch every eval-sandbox break relies on.
+# Recipes run automatically after checkout, so evaluate an allowlisted AST; eval() permits object-graph escapes even without builtins.
 _BINOPS: dict[type[ast.operator], Any] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -107,10 +101,7 @@ _UNARYOPS: dict[type[ast.unaryop], Any] = {
     ast.USub: operator.neg,
 }
 
-# Cap sequence-repetition (`"x" * n`, `[0] * n`) size. render_template runs
-# automatically from the post-checkout hook against a *cloned, untrusted* recipe,
-# so an unbounded `{{ "x" * 999999999 }}` would OOM/hang the machine on checkout.
-# Env-var values are tiny; this ceiling is orders of magnitude above any real use.
+# Bound sequence repetition because untrusted checkout templates could otherwise exhaust memory during automatic provisioning.
 _MAX_SEQ_REPEAT = 100_000
 
 
@@ -956,7 +947,6 @@ class Settings:
     prefix_match: bool = True
 
 
-# Recognized keys in a `[settings]` table, mapped to their expected Python type.
 _SETTINGS_SCHEMA: dict[str, type] = {"prefix_match": bool}
 
 
@@ -1039,10 +1029,10 @@ def merged_targets(
     if global_config is not None:
         for type_key, variants in global_config.targets.items():
             if type_key != "device" and type_key not in merged:
-                continue  # sims/emulators only for types the project already declares
+                continue
             bucket = merged.setdefault(type_key, {})
             for variant_name, spec in variants.items():
-                bucket.setdefault(variant_name, spec)  # project wins on a name clash
+                bucket.setdefault(variant_name, spec)
     return merged
 
 
@@ -1116,11 +1106,7 @@ _ENV_SAFE_RE = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
 
 def _env_quote(value: str) -> str:
-    """Quote a dotenv value when it isn't bare-safe. Uses SINGLE quotes: this file
-    is `source`d by a shell in two paths (devbox's init_hook and the no-loader
-    `set -a; source` fallback), where double-quoted `$(...)`/backticks would
-    EXECUTE. Single quotes neutralize them, and mise/direnv read single-quoted
-    dotenv values literally too. Matches `write_envrc`'s shell-quoting."""
+    """Single-quote unsafe values because devbox and no-loader paths source the file as shell code."""
     if value and _ENV_SAFE_RE.fullmatch(value):
         return value
     return "'" + value.replace("'", "'\\''") + "'"

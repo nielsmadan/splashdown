@@ -14,7 +14,6 @@ from .recipe import _TEMPLATE_NAMES, template_refs
 
 
 def _detect_workspace(cwd: Path) -> str:
-    """Identify the workspace manager. Returns one of: pnpm, yarn, npm, cargo, gradle, single."""
     if (cwd / "pnpm-workspace.yaml").exists():
         return "pnpm"
     data = read_package_json(cwd)
@@ -70,7 +69,6 @@ def _enumerate_apps(cwd: Path, workspace: str) -> list[tuple[str, Path]]:
             globs = globs.get("packages") or []
         return _expand_workspace_globs(cwd, globs)
     if workspace == "cargo":
-        # Minimal TOML extract — Cargo's `[workspace] members = [...]`.
         data = tomllib.loads((cwd / "Cargo.toml").read_text())
         members = (data.get("workspace") or {}).get("members") or []
         return _expand_workspace_globs(cwd, members)

@@ -1,5 +1,3 @@
-"""Tests for splashdown profiles behavior."""
-
 from __future__ import annotations
 
 import hashlib
@@ -543,7 +541,7 @@ def test_astro_autofix_injects_server_port(tmp_path):
     check.autofix(tmp_path)
     text = cfg.read_text()
     assert "server: { port: Number(process.env.WEB_DEV_PORT) || 4321 }" in text
-    assert "integrations: []" in text  # existing config preserved
+    assert "integrations: []" in text
     assert check.detect(tmp_path)[0] == "ok"
 
 

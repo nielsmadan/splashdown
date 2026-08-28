@@ -1,5 +1,3 @@
-"""Tests for splashdown recipe behavior."""
-
 from __future__ import annotations
 
 import hashlib
@@ -149,7 +147,7 @@ def test_ios_boot_tolerates_already_booted_race(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sd.devices.subprocess, "run", fake_run)
-    sd.devices.ios_boot("UDID-X", "Shutdown")  # benign race must not raise
+    sd.devices.ios_boot("UDID-X", "Shutdown")
 
 
 def test_recipe_loads(tmp_path):
@@ -643,7 +641,6 @@ def test_resolve_variant_prefix_unique_hit():
 
 
 def test_resolve_variant_prefix_exact_still_wins():
-    # An exact key match short-circuits before prefix expansion.
     catalog = {"de": {"model": "X"}, "default": {"model": "Y"}}
     name, _ = sd.resolve_variant(catalog, "de", prefix_match=True)
     assert name == "de"
@@ -750,7 +747,6 @@ def test_global_config_malformed_raises(tmp_path):
 
 
 def test_merged_targets_global_device_available_everywhere(tmp_path):
-    # a project with no targets at all still gets global physical devices
     r = sd.Recipe({}, tmp_path / "splashdown.toml")
     lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
     gc = sd.GlobalConfig(
@@ -761,7 +757,6 @@ def test_merged_targets_global_device_available_everywhere(tmp_path):
 
 
 def test_merged_targets_global_sim_gated_by_declared_type(tmp_path):
-    # project declares no simulator type -> global simulator variant is NOT folded in
     r = sd.Recipe({}, tmp_path / "splashdown.toml")
     lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
     gc = sd.GlobalConfig(
@@ -817,9 +812,7 @@ def test_merged_targets_global_emulator_gated_by_declared_type(tmp_path):
         {"targets": {"emulator": {"g": {"device": "pixel_9"}}}},
         tmp_path / "config.toml",
     )
-    # no emulator declared -> global emulator does not appear
     assert "emulator" not in sd.merged_targets(sd.Recipe({}, tmp_path / "splashdown.toml"), lc, gc)
-    # ...but once the project declares an emulator, the global one folds in
     r = sd.Recipe({"targets": {"emulator": {"default": {}}}}, tmp_path / "splashdown.toml")
     assert set(sd.merged_targets(r, lc, gc)["emulator"]) == {"default", "g"}
 
@@ -893,4 +886,4 @@ def test_template_scope_helpers(tmp_path):
     assert len(h) == 64 and all(c in "0123456789abcdef" for c in h)
     p = sd.render_template("{{ port_hash('x') }}", scope)
     assert 8000 <= int(p) <= 9000
-    assert sd.render_template("{{ port_hash('x') }}", scope) == p  # deterministic
+    assert sd.render_template("{{ port_hash('x') }}", scope) == p

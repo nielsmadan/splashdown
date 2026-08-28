@@ -1,5 +1,3 @@
-"""Tests for splashdown wiring behavior."""
-
 from __future__ import annotations
 
 import json
@@ -90,8 +88,8 @@ def test_wire_lefthook_inserts_under_existing_post_checkout(tmp_path):
     )
     sd._wire_post_checkout_lefthook(tmp_path)
     text = (tmp_path / "lefthook.yml").read_text()
-    assert "notify:" in text  # existing command preserved
-    assert "splashdown:" in text  # ours added
+    assert "notify:" in text
+    assert "splashdown:" in text
     assert sum(line == "post-checkout:" for line in text.splitlines()) == 1
 
 
@@ -106,7 +104,6 @@ def test_wire_lefthook_idempotent(tmp_path):
 
 
 def test_wire_lefthook_creates_config_if_only_pkg_dep(tmp_path):
-    # Detected via package.json but no lefthook.yml yet.
     (tmp_path / "package.json").write_text('{"devDependencies": {"lefthook": "^1.0"}}')
     sd._wire_post_checkout_lefthook(tmp_path)
     assert (tmp_path / "lefthook.yml").exists()
@@ -177,7 +174,6 @@ def test_doctor_help_in_cli(capsys):
 
 
 def test_doctor_no_framework_returns_1(tmp_path, capsys):
-    # No recipe, no package.json, no pubspec — detect_framework fails.
     rc = sd.cmd_doctor(tmp_path)
     assert rc == 1
     err = capsys.readouterr().err
@@ -185,7 +181,6 @@ def test_doctor_no_framework_returns_1(tmp_path, capsys):
 
 
 def test_doctor_unknown_framework_no_checks_returns_0(tmp_path, capsys):
-    # Override to a framework that has no WIRING entries.
     rc = sd.cmd_doctor(tmp_path, framework_override="nonesuch")
     assert rc == 0
     err = capsys.readouterr().err
@@ -299,8 +294,8 @@ def test_rn_hook_lefthook_autofix_then_ok(tmp_path):
     status, _ = sd._rn_hook_detect(tmp_path)
     assert status == "ok"
     text = (tmp_path / "lefthook.yml").read_text()
-    assert "lint" in text  # existing preserved
-    assert "splashdown:" in text  # ours added
+    assert "lint" in text
+    assert "splashdown:" in text
 
 
 def test_rn_hook_husky_detect_problem(tmp_path):
@@ -324,9 +319,9 @@ def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
     (tmp_path / "metro.config.js").write_text(
         "module.exports = { server: { port: Number(process.env.RCT_METRO_PORT) || 8081 } };\n"
     )
-    assert sd.cmd_doctor(tmp_path) == 1  # not wired
-    assert sd.cmd_doctor(tmp_path, fix=True) == 0  # now wired
-    assert sd.cmd_doctor(tmp_path) == 0  # idempotent re-check
+    assert sd.cmd_doctor(tmp_path) == 1
+    assert sd.cmd_doctor(tmp_path, fix=True) == 0
+    assert sd.cmd_doctor(tmp_path) == 0
     assert _native_hook(tmp_path).read_text() == sd.hooks.POST_CHECKOUT_HOOK
 
 
@@ -356,7 +351,6 @@ def test_rn_metro_autofix_replaces_literal(tmp_path):
     text = (tmp_path / "metro.config.js").read_text()
     assert "process.env.RCT_METRO_PORT" in text
     assert "|| 8083" in text
-    # Re-detect now ok.
     assert sd._rn_metro_detect(tmp_path)[0] == "ok"
 
 
@@ -371,7 +365,6 @@ def test_rn_metro_autofix_idempotent(tmp_path):
 
 
 def test_rn_metro_autofix_injects_server_block_when_absent(tmp_path):
-    # The common RN template shape: a config object with no server block at all.
     (tmp_path / "metro.config.js").write_text(
         "const config = {\n"
         "  transformer: { babelTransformerPath: 'x' },\n"
@@ -405,12 +398,10 @@ def test_rn_metro_autofix_adds_port_to_existing_server_block(tmp_path):
 
 
 def test_rn_metro_autofix_noop_for_unrecognized_shape(tmp_path):
-    # No port literal, no server block, no config object literal to inject into.
     text = "module.exports = makeMetroConfig(__dirname);\n"
     (tmp_path / "metro.config.js").write_text(text)
     sd._rn_metro_autofix(tmp_path)
     assert (tmp_path / "metro.config.js").read_text() == text
-    # Detect still reports problem; manual instructions will be printed by doctor.
     assert sd._rn_metro_detect(tmp_path)[0] == "problem"
 
 
@@ -462,8 +453,8 @@ def test_rn_pkg_autofix_strips_port_flag(tmp_path):
     assert data["scripts"]["start"] == "react-native start"
     assert data["scripts"]["ios"] == "react-native run-ios"
     assert data["scripts"]["android"] == "react-native run-android"
-    assert data["scripts"]["test"] == "jest"  # unrelated script preserved
-    assert data["dependencies"]["react-native"] == "0.83"  # rest of file preserved
+    assert data["scripts"]["test"] == "jest"
+    assert data["dependencies"]["react-native"] == "0.83"
     assert sd._rn_pkg_detect(tmp_path)[0] == "ok"
 
 
@@ -479,7 +470,6 @@ def test_rn_pkg_autofix_idempotent(tmp_path):
 
 
 def test_rn_pkg_targets_react_native_scripts_by_command(tmp_path):
-    # An unconventional script name that still invokes react-native should be caught.
     (tmp_path / "package.json").write_text(
         json.dumps({"scripts": {"dev": "react-native start --port 8083"}})
     )
@@ -519,15 +509,11 @@ def test_rn_xcode_autofix_replaces_static(tmp_path):
     )
     sd._rn_xcode_autofix(tmp_path)
     text = (tmp_path / "ios" / ".xcode.env").read_text()
-    # Old static export gone.
     assert "export RCT_METRO_PORT=8083" not in text
-    # NODE_BINARY preserved.
     assert "export NODE_BINARY=node" in text
-    # Splashdown block present.
     assert sd._XCODE_BEGIN in text
     assert sd._XCODE_END in text
     assert "splashdown.env" in text
-    # Now wired.
     assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
 
 
@@ -546,7 +532,6 @@ def test_rn_xcode_autofix_idempotent(tmp_path):
     sd._rn_xcode_autofix(tmp_path)
     twice = (tmp_path / "ios" / ".xcode.env").read_text()
     assert once == twice
-    # Sentinels should appear exactly once.
     assert twice.count(sd._XCODE_BEGIN) == 1
     assert twice.count(sd._XCODE_END) == 1
 
@@ -580,7 +565,6 @@ def test_rn_xcode_autofix_noop_when_already_referencing_splashdown(tmp_path):
 
 def test_cmd_init_scanned_rn_wires_everything(tmp_path):
     _git_init(tmp_path)
-    # RN-shaped repo before splashdown.
     (tmp_path / "package.json").write_text(
         json.dumps(
             {
@@ -607,11 +591,9 @@ def test_cmd_init_scanned_rn_wires_everything(tmp_path):
     # Run init — should scaffold + wire. Force mise so the loader-wiring leg is
     # exercised (the repo has no loader config, so detection now yields "none").
     sd.cmd_init(tmp_path, loader_override="mise")
-    # Scaffolding present.
     assert (tmp_path / "splashdown.toml").exists()
     assert (tmp_path / "splashdown.local.toml").exists()
     assert (tmp_path / "mise.toml").exists()
-    # All four wirings applied.
     pkg = json.loads((tmp_path / "package.json").read_text())
     assert "--port" not in pkg["scripts"]["start"]
     assert "process.env.RCT_METRO_PORT" in (tmp_path / "metro.config.js").read_text()
@@ -624,12 +606,10 @@ def test_cmd_init_scanned_rn_wires_everything(tmp_path):
         ["git", "-C", str(tmp_path), "config", "--get", "core.hooksPath"], capture_output=True
     )
     assert r.returncode != 0 or not r.stdout.strip()
-    # Doctor confirms green.
     assert sd.cmd_doctor(tmp_path) == 0
 
 
 def test_cmd_init_minimal_preset_skips_doctor(tmp_path, capsys):
-    """No `[project] framework` → no framework wiring run."""
     sd.cmd_init(tmp_path, preset="minimal")
     err = capsys.readouterr().err
     assert "running framework wiring" not in err
@@ -637,7 +617,6 @@ def test_cmd_init_minimal_preset_skips_doctor(tmp_path, capsys):
 
 def test_doctor_fix_full_rn_project(tmp_path):
     _git_init(tmp_path)
-    # An RN-shaped tmp dir mirroring FlowLab's pre-wiring state.
     (tmp_path / "package.json").write_text(
         json.dumps(
             {
@@ -662,13 +641,9 @@ def test_doctor_fix_full_rn_project(tmp_path):
     (tmp_path / "lefthook.yml").write_text(
         "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
     )
-    # Initial state: all four checks problem.
     assert sd.cmd_doctor(tmp_path) == 1
-    # Fix.
     assert sd.cmd_doctor(tmp_path, fix=True) == 0
-    # All green now.
     assert sd.cmd_doctor(tmp_path) == 0
-    # Verify the concrete file states.
     pkg = json.loads((tmp_path / "package.json").read_text())
     for name in ("start", "ios", "android"):
         assert "--port" not in pkg["scripts"][name]
@@ -677,7 +652,7 @@ def test_doctor_fix_full_rn_project(tmp_path):
     lh = (tmp_path / "lefthook.yml").read_text()
     assert "post-checkout:" in lh
     assert "splashdown:" in lh
-    assert "lint:" in lh  # original entry preserved
+    assert "lint:" in lh
 
 
 def test_app_inventory_is_dataclass_with_name_path_profile(tmp_path):
@@ -736,7 +711,7 @@ def test_scanner_single_app_no_workspace(tmp_path):
     assert len(inv.apps) == 1
     assert inv.apps[0].name == "main"
     assert inv.apps[0].path == tmp_path
-    assert inv.apps[0].profile == "unknown"  # no profiles registered yet
+    assert inv.apps[0].profile == "unknown"  # no profile matches this fixture
 
 
 def test_scanner_pnpm_monorepo_enumerates_apps(tmp_path):
@@ -801,8 +776,6 @@ def test_scanner_loader_fallback_never_probes_none(tmp_path, monkeypatch):
 
 
 def test_cmd_init_wires_installed_loader_without_repo_config(tmp_path, monkeypatch):
-    # The whole point of the PATH fallback: a fresh clone with mise installed
-    # gets a wired mise.toml instead of an unread splashdown.env.
     monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path)
@@ -871,7 +844,7 @@ def test_revert_gitignore_keeps_file(tmp_path):
 
 
 def test_revert_gitignore_noop_when_absent(tmp_path):
-    sd._revert_gitignore(tmp_path)  # must not raise
+    sd._revert_gitignore(tmp_path)
     assert not (tmp_path / ".gitignore").exists()
 
 

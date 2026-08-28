@@ -1,10 +1,4 @@
-"""Build/install/launch for the mobile and native profiles.
-
-Split out of `profiles.py`: these functions are what `Profile.run` delegates to, and
-they touch xcodebuild/gradle/adb rather than the detection-and-resources contract the
-rest of that module is about. Depends on nothing in `profiles.py` — the arrow points
-one way, profiles -> runners.
-"""
+"""Build, install, and launch apps for mobile and native profiles."""
 
 from __future__ import annotations
 
@@ -222,7 +216,7 @@ def _resolve_custom_run(recipe: Recipe, kind: str) -> str | None:
     if isinstance(run, dict):
         cmd = run.get(kind)
         if cmd is None:
-            return None  # this platform isn't customized → fall back to detection
+            return None
     elif isinstance(run, str):
         cmd = run
     else:

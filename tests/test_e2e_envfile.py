@@ -16,8 +16,6 @@ from pathlib import Path
 
 import splashdown as sd
 
-# A stand-in dev server that reads its port from a dotenv FILE (argv[1]), the way
-# Vite's loadEnv / dotenv-based apps read their app-local .env — then binds it.
 _DOTENV_SERVER_SRC = (
     "import sys, socket, time;"
     "port=None;"
@@ -79,19 +77,15 @@ def test_envfile_writer_delivers_to_app_then_deinit_strips(tmp_path, monkeypatch
     web = root / "apps" / "web"
     web.mkdir(parents=True)
     (root / "splashdown.toml").write_text(_RECIPE)
-    # A user-owned line already in the app's .env — must survive both provision
-    # (splashdown merges its key in) and deinit (splashdown removes only its key).
     env_file = web / ".env"
     env_file.write_text("USER_ONLY=keep-me\n")
 
-    # Provision → splashdown injects WEB_PORT into apps/web/.env.
     assert sd.main(["--cwd", str(root)]) == 0
     after = _read_web_env(env_file)
     assert after["USER_ONLY"] == "keep-me"
     assert "WEB_PORT" in after
     port = int(after["WEB_PORT"])
 
-    # A real consumer reads the app's own .env and binds the delivered port.
     proc = subprocess.Popen(
         [sys.executable, "-c", _DOTENV_SERVER_SRC, str(env_file)],
         cwd=str(web),
@@ -109,7 +103,6 @@ def test_envfile_writer_delivers_to_app_then_deinit_strips(tmp_path, monkeypatch
             proc.kill()
             proc.wait()
 
-    # deinit strips splashdown's key but preserves the user's, leaving the file.
     assert sd.main(["--cwd", str(root), "deinit"]) == 0
     remaining = env_file.read_text()
     assert "WEB_PORT" not in remaining
