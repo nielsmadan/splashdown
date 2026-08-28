@@ -215,7 +215,9 @@ profile directory.
 
 `render_scanned_recipe` also accepts nested project metadata from scanner init. Native iOS
 scheme selection uses that path to persist `[project.ios] scheme` after explicit selection,
-single-scheme discovery, or a TTY prompt.
+single-scheme discovery, or a TTY prompt. A single Android application in a Gradle workspace
+uses the same path to persist `[project.android] module`; launches then stay at the Gradle root
+so the wrapper and module-qualified tasks resolve together.
 
 ### _env_quote
 

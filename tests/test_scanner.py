@@ -1344,6 +1344,28 @@ def test_scanner_gradle_skips_missing_module_dir(tmp_path):
     assert all(app.name != "ghost" for app in inv.apps)
 
 
+@pytest.mark.parametrize(
+    ("module", "project_path"),
+    [
+        (":app", Path("app")),
+        (":features:demo", Path("features/demo")),
+    ],
+)
+def test_scanner_gradle_resolves_android_modules_relative_to_workspace(
+    tmp_path, module, project_path
+):
+    (tmp_path / "settings.gradle.kts").write_text(f'include("{module}")\n')
+    app = tmp_path / project_path
+    app.mkdir(parents=True)
+    (app / "build.gradle.kts").write_text('plugins { id("com.android.application") }\n')
+
+    inventory = sd.Scanner().scan(tmp_path)
+
+    assert [(item.name, item.project_path, item.profile) for item in inventory.apps] == [
+        (project_path.name, project_path, "android-native")
+    ]
+
+
 def test_scan_drops_unknown_members_in_workspace(tmp_path):
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n  - 'packages/*'\n")
     (tmp_path / "apps" / "web").mkdir(parents=True)

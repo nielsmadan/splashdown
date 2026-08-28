@@ -140,15 +140,18 @@ def android_ensure(name: str, device: str | None, image: str | None) -> str:
     return name
 
 
-def _android_running_serial(avd_name: str) -> str | None:
+def _android_running_serial(avd_name: str, *, timeout: float = DISCOVERY_TIMEOUT) -> str | None:
     """Match a running emulator to an AVD through adb."""
+    if timeout <= 0:
+        return None
+    deadline = time.monotonic() + timeout
     adb = _android_bin("adb")
     try:
         with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
             out = check_output_finite(
                 [adb, "devices"],
                 operation="adb devices",
-                timeout=DISCOVERY_TIMEOUT,
+                timeout=min(DISCOVERY_TIMEOUT, timeout),
                 stderr=subprocess.DEVNULL,
             ).decode()
     except subprocess.CalledProcessError:
@@ -162,13 +165,16 @@ def _android_running_serial(avd_name: str) -> str | None:
         ):
             continue
         serial = parts[0]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
         try:
             with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
                 names = (
                     subprocess.check_output(
                         [adb, "-s", serial, "emu", "avd", "name"],
                         stderr=subprocess.DEVNULL,
-                        timeout=2,
+                        timeout=min(2, remaining),
                     )
                     .decode()
                     .splitlines()
@@ -180,34 +186,83 @@ def _android_running_serial(avd_name: str) -> str | None:
     return None
 
 
+def _android_boot_ready(serial: str, *, timeout: float = 4) -> bool:
+    if timeout <= 0:
+        return False
+    deadline = time.monotonic() + timeout
+    adb = _android_bin("adb")
+    with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
+        booted = check_output_finite(
+            [adb, "-s", serial, "shell", "getprop", "sys.boot_completed"],
+            operation="adb read boot status",
+            timeout=min(2, timeout),
+            stderr=subprocess.DEVNULL,
+        )
+        if booted.strip() != b"1":
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        package_service = check_output_finite(
+            [adb, "-s", serial, "shell", "service", "check", "package"],
+            operation="adb check package service",
+            timeout=min(2, remaining),
+            stderr=subprocess.DEVNULL,
+        )
+    return package_service.strip().endswith(b": found")
+
+
 def android_boot(avd_name: str, *, state_dir: Path | None = None) -> str:
     """Start an emulator in the background and return its adb serial."""
-    serial = _android_running_serial(avd_name)
+    deadline = time.monotonic() + 60
+    serial = _android_running_serial(
+        avd_name,
+        timeout=min(DISCOVERY_TIMEOUT, deadline - time.monotonic()),
+    )
+    should_spawn = serial is None
     if serial:
-        return serial
-    emulator = _android_bin("emulator")
+        try:
+            if _android_boot_ready(serial, timeout=deadline - time.monotonic()):
+                return serial
+        except subprocess.CalledProcessError:
+            serial = None
     from .recipe import _slug as recipe_slug  # noqa: PLC0415
 
     log = (state_dir or state_directory()) / f"emulator-{recipe_slug(avd_name)}.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    print(f"booting Android AVD '{avd_name}' (log: {log})", file=sys.stderr)
-    with (
-        log.open("ab") as file,
-        translate_tool_errors("android", "emulator", "install the Android SDK emulator"),
-    ):
-        subprocess.Popen(
-            [emulator, "-avd", avd_name],
-            stdout=file,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    for _ in range(60):
-        time.sleep(1)
-        serial = _android_running_serial(avd_name)
-        if serial:
-            return serial
-    raise DeviceError(f"AVD '{avd_name}' did not come up within 60s; see {log}")
+    if should_spawn:
+        emulator = _android_bin("emulator")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        print(f"booting Android AVD '{avd_name}' (log: {log})", file=sys.stderr)
+        with (
+            log.open("ab") as file,
+            translate_tool_errors("android", "emulator", "install the Android SDK emulator"),
+        ):
+            subprocess.Popen(
+                [emulator, "-avd", avd_name],
+                stdout=file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(min(1, remaining))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if serial is None:
+            serial = _android_running_serial(
+                avd_name,
+                timeout=min(DISCOVERY_TIMEOUT, remaining),
+            )
+            remaining = deadline - time.monotonic()
+        if serial and remaining > 0:
+            try:
+                if _android_boot_ready(serial, timeout=remaining):
+                    return serial
+            except subprocess.CalledProcessError:
+                serial = None
+    log_hint = f"; see {log}" if should_spawn else ""
+    raise DeviceError(f"AVD '{avd_name}' did not become ready within 60s{log_hint}")
 
 
 def android_shutdown(avd_name: str) -> None:

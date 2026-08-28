@@ -39,6 +39,12 @@ def detect_framework(cwd: Path, recipe: Recipe) -> str:
 
 
 def resolve_app_dir(cwd: Path, recipe: Recipe, framework: str) -> Path:
+    if (
+        framework == "android-native"
+        and recipe.project.get("workspace") == "gradle"
+        and (recipe.project.get("android") or {}).get("module")
+    ):
+        return cwd
     profile = PROFILES.get(framework)
     if profile is not None and profile.detect(cwd):
         return cwd

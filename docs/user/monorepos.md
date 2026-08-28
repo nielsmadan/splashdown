@@ -291,6 +291,9 @@ them:
 # application_id  = "com.example.myapp"
 ```
 
+After installation, splashdown normally reads the selected variant's application ID from
+AGP's build metadata. Set `application_id` only for a non-standard build that does not emit it.
+
 Run with:
 
 ```sh

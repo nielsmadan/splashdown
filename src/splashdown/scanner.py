@@ -82,9 +82,9 @@ def _enumerate_apps(cwd: Path, workspace: str) -> list[tuple[str, Path]]:
         out: list[tuple[str, Path]] = []
         for n in names:
             # Gradle module names use ':' as a path separator (':api:server' → 'api/server').
-            rel = n.replace(":", "/")
+            rel = n.removeprefix(":").replace(":", "/")
             p = cwd / rel
-            if p.is_dir():
+            if rel and ".." not in Path(rel).parts and p.is_dir():
                 out.append((p.name, p))
         return out
     return []

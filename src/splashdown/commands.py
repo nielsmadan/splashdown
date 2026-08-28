@@ -395,6 +395,27 @@ def _resolve_init_ios_scheme(inv: ProjectInventory, explicit: str | None) -> str
     return selected
 
 
+def _resolve_init_android_module(inv: ProjectInventory) -> str | None:
+    if inv.workspace != "gradle":
+        return None
+    apps = [app for app in inv.apps if app.profile == "android-native"]
+    if len(apps) != 1 or apps[0].project_path is None:
+        return None
+    parts = apps[0].project_path.parts
+    return ":".join(parts) if parts and parts != (".",) else None
+
+
+def _resolve_init_project_metadata(
+    inv: ProjectInventory, ios_scheme: str | None
+) -> dict[str, dict[str, str]] | None:
+    metadata: dict[str, dict[str, str]] = {}
+    if resolved_ios_scheme := _resolve_init_ios_scheme(inv, ios_scheme):
+        metadata["ios"] = {"scheme": resolved_ios_scheme}
+    if resolved_android_module := _resolve_init_android_module(inv):
+        metadata["android"] = {"module": resolved_android_module}
+    return metadata or None
+
+
 def _trust_generated_sync(cwd: Path) -> None:
     with suppress(OSError, ValueError):
         record_trust(git_dirs(cwd), bootstrap=False)
@@ -536,11 +557,10 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
         print(f"  skipped {name}: template references a resource no app declares", file=sys.stderr)
 
     no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
-    resolved_ios_scheme = _resolve_init_ios_scheme(inv, ios_scheme)
+    project_metadata = _resolve_init_project_metadata(inv, ios_scheme)
 
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
-    project_metadata = {"ios": {"scheme": resolved_ios_scheme}} if resolved_ios_scheme else None
     rendered = render_scanned_recipe(
         inv,
         merged_resources,

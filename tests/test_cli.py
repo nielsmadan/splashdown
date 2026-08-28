@@ -567,6 +567,48 @@ def test_cli_init_no_arg_emits_rn_metro_port(tmp_path, monkeypatch):
     assert 'resources = ["RCT_METRO_PORT"]' in recipe
 
 
+def test_init_gradle_module_runs_from_workspace_root(tmp_path, monkeypatch):
+    (tmp_path / "settings.gradle.kts").write_text('include(":features:demo")\n')
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    module = tmp_path / "features" / "demo"
+    module.mkdir(parents=True)
+    (module / "build.gradle.kts").write_text('plugins { id("com.android.application") }\n')
+
+    sd.cmd_init(tmp_path)
+
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.project["android"]["module"] == "features:demo"
+
+    metadata = module / "build" / "outputs" / "apk" / "debug"
+    metadata.mkdir(parents=True)
+    (metadata / "output-metadata.json").write_text(
+        '{"variantName":"debug","applicationId":"com.example.demo"}'
+    )
+    calls = []
+
+    def call(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return 0
+
+    monkeypatch.setattr(sd.runners.subprocess, "call", call)
+    monkeypatch.setattr(
+        sd.runners,
+        "check_output_finite",
+        lambda *_args, **_kwargs: b"com.example.demo/.MainActivity\n",
+    )
+
+    assert (
+        sd.device_run(
+            tmp_path,
+            recipe,
+            {"kind": "android", "serial": "emulator-5554"},
+        )
+        == 0
+    )
+    assert calls[0][0] == ["./gradlew", ":features:demo:installDebug"]
+    assert calls[0][1]["cwd"] == tmp_path
+
+
 def test_cli_init_rescan_updates_inventory(tmp_path, monkeypatch):
     (tmp_path / "splashdown.toml").write_text('[project]\nworkspace = "single"\nloader = "mise"\n')
     (tmp_path / "pubspec.yaml").write_text("name: demo\n")

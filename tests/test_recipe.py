@@ -127,6 +127,8 @@ def test_ios_boot_raises_deviceerror_on_boot_failure(monkeypatch):
     monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
 
     def fake_run(cmd, *a, **k):
+        if "bootstatus" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if "boot" in cmd:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boot failed: no space")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -140,6 +142,8 @@ def test_ios_boot_tolerates_already_booted_race(monkeypatch):
     monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
 
     def fake_run(cmd, *a, **k):
+        if "bootstatus" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if "boot" in cmd:
             return subprocess.CompletedProcess(
                 cmd, 149, stdout="", stderr="Unable to boot device in current state: Booted"
@@ -148,6 +152,35 @@ def test_ios_boot_tolerates_already_booted_race(monkeypatch):
 
     monkeypatch.setattr(sd.devices.subprocess, "run", fake_run)
     sd.devices.ios_boot("UDID-X", "Shutdown")
+
+
+def test_ios_boot_waits_for_simulator_readiness(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+
+    def fake_run(cmd, **kwargs):
+        if "bootstatus" in cmd:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sd.devices.subprocess, "run", fake_run)
+
+    with pytest.raises(sd.DeviceError, match="simctl boot status timed out after 120s"):
+        sd.devices.ios_boot("UDID-X", "Shutdown")
+
+
+def test_ios_booted_simulator_still_waits_for_readiness(monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    commands = []
+
+    def fake_run(cmd, **_kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sd.devices.subprocess, "run", fake_run)
+
+    sd.devices.ios_boot("UDID-X", "Booted")
+
+    assert commands == [["xcrun", "simctl", "bootstatus", "UDID-X", "-b"]]
 
 
 def test_recipe_loads(tmp_path):

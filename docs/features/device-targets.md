@@ -296,7 +296,7 @@ scheme = "MyApp"               # required for ios-native run; optional for react
 # module          = "app"      # ios-native/android-native: default "app"
 # variant         = "debug"    # android-native: default "debug"
 # mode            = "developmentDebug"    # react-native run-android --mode (optional)
-# application_id  = "com.example.myapp"   # else queried from Gradle
+# application_id  = "com.example.myapp"   # else read from the built variant
 # launch_activity = ".MainActivity"       # else uses the LAUNCHER intent
 ```
 
@@ -392,8 +392,9 @@ unchanged.
 - **ios-native needs a scheme.** Scanner-driven init normally writes it, but a hand-authored
   recipe without `[project.ios] scheme` still errors at run time (`_ios_native_run` in
   `src/splashdown/runners.py`). For `react-native` the scheme is optional but
-  forwards to `run-ios --scheme` when set; Android resolves `application_id` from Gradle if unset, but
-  that costs a Gradle round-trip — set it explicitly to skip it.
+  forwards to `run-ios --scheme` when set. Android reads `application_id` from the selected
+  variant's AGP output metadata when unset, then falls back to a Gradle properties query for
+  older builds. Set it explicitly only when the build does not emit usable metadata.
 - **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/runners.py`)
   passes only `--device`. `expo run:ios --scheme` names a *URL* scheme, not an Xcode scheme, so
   `[project.ios] scheme` has no correct mapping here — don't "fix" the asymmetry with react-native by

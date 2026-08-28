@@ -14,7 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import require_macos, translate_tool_errors
-from .device_tools import DISCOVERY_TIMEOUT, MUTATION_TIMEOUT, call_finite, run_finite
+from .device_tools import (
+    DISCOVERY_TIMEOUT,
+    MUTATION_TIMEOUT,
+    call_finite,
+    check_output_finite,
+    run_finite,
+)
 from .device_types import (
     AndroidDestination,
     DestinationLike,
@@ -354,7 +360,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
         settings = run_finite(
             [*common, "-showBuildSettings", "-json"],
             operation="xcodebuild show build settings",
-            timeout=DISCOVERY_TIMEOUT,
+            timeout=MUTATION_TIMEOUT,
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -419,12 +425,81 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
     if rc != 0:
         return rc
     with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
-        return subprocess.call(["xcrun", "simctl", "launch", udid, bundle_id])
+        return call_finite(
+            ["xcrun", "simctl", "launch", udid, bundle_id],
+            operation="simctl launch app",
+            timeout=MUTATION_TIMEOUT,
+        )
+
+
+def _android_built_application_id(cwd: Path, module: str, variant: str) -> str | None:
+    module_path = Path(*module.removeprefix(":").split(":"))
+    metadata_root = cwd / module_path / "build" / "outputs" / "apk"
+    try:
+        paths = sorted(metadata_root.rglob("output-metadata.json"))
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or data.get("variantName") != variant:
+            continue
+        app_id = data.get("applicationId")
+        if isinstance(app_id, str) and app_id:
+            return app_id
+    return None
+
+
+def _android_launcher_component(serial: str, app_id: str) -> str:
+    try:
+        with translate_tool_errors(
+            "android", "adb", "install Android SDK platform-tools and add adb to PATH"
+        ):
+            output = check_output_finite(
+                [
+                    "adb",
+                    "-s",
+                    serial,
+                    "shell",
+                    "cmd",
+                    "package",
+                    "resolve-activity",
+                    "--brief",
+                    "-a",
+                    "android.intent.action.MAIN",
+                    "-c",
+                    "android.intent.category.LAUNCHER",
+                    app_id,
+                ],
+                operation="adb resolve launcher activity",
+                timeout=DISCOVERY_TIMEOUT,
+                stderr=subprocess.DEVNULL,
+            ).decode()
+    except subprocess.CalledProcessError as error:
+        raise DeviceError(
+            "android-native: couldn't resolve a LAUNCHER activity; set "
+            "`[project.android] launch_activity` to the app's actual launcher activity "
+            '(for example, ".MainActivity") in splashdown.toml'
+        ) from error
+
+    for line in reversed(output.splitlines()):
+        package, separator, activity = line.strip().partition("/")
+        if separator and package == app_id:
+            package = _android_component("android application_id", package)
+            activity = _android_component("android launch activity", activity)
+            return f"{package}/{activity}"
+    raise DeviceError(
+        "android-native: couldn't resolve a LAUNCHER activity; set "
+        "`[project.android] launch_activity` to the app's actual launcher activity "
+        '(for example, ".MainActivity") in splashdown.toml'
+    )
 
 
 def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
     cfg = recipe.project.get("android") or {}
-    module = _no_flag("android module", cfg.get("module", "app"))
+    module = _no_flag("android module", cfg.get("module", "app")).removeprefix(":")
     variant = _no_flag("android variant", cfg.get("variant", "debug"))
     destination = as_launch_destination(destination)
     if not isinstance(destination, AndroidDestination):
@@ -445,7 +520,7 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
     if rc != 0:
         return rc
 
-    app_id = cfg.get("application_id")
+    app_id = cfg.get("application_id") or _android_built_application_id(cwd, module, variant)
     if not app_id:
         try:
             with translate_tool_errors(
@@ -479,21 +554,9 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
 
     if activity := cfg.get("launch_activity"):
         activity = _android_component("android launch_activity", activity)
-        with translate_tool_errors(
-            "android", "adb", "install Android SDK platform-tools and add adb to PATH"
-        ):
-            return subprocess.call(
-                [
-                    "adb",
-                    "-s",
-                    serial,
-                    "shell",
-                    "am",
-                    "start",
-                    "-n",
-                    f"{app_id}/{activity}",
-                ],
-            )
+        component = f"{app_id}/{activity}"
+    else:
+        component = _android_launcher_component(serial, app_id)
     with translate_tool_errors(
         "android", "adb", "install Android SDK platform-tools and add adb to PATH"
     ):
@@ -503,11 +566,9 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
                 "-s",
                 serial,
                 "shell",
-                "monkey",
-                "-p",
-                app_id,
-                "-c",
-                "android.intent.category.LAUNCHER",
-                "1",
+                "am",
+                "start",
+                "-n",
+                component,
             ],
         )

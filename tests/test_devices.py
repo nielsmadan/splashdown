@@ -1207,14 +1207,166 @@ def test_android_mutation_timeout_is_device_error(monkeypatch):
 
 def test_android_boot_writes_log_under_supplied_state_directory(tmp_path, monkeypatch):
     serials = iter((None, "emulator-5554"))
-    monkeypatch.setattr(sd.device_android, "_android_running_serial", lambda _name: next(serials))
+    monkeypatch.setattr(
+        sd.device_android,
+        "_android_running_serial",
+        lambda _name, **_kwargs: next(serials),
+    )
     monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
     monkeypatch.setattr(sd.device_android.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(sd.device_android.subprocess, "Popen", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sd.device_android,
+        "check_output_finite",
+        lambda argv, **_kwargs: (
+            b"1\n" if "sys.boot_completed" in argv else b"Service package: found\n"
+        ),
+    )
 
     state_dir = tmp_path / "state" / "splashdown"
     assert sd.device_android.android_boot("demo", state_dir=state_dir) == "emulator-5554"
     assert (state_dir / "emulator-demo.log").exists()
+
+
+def test_android_boot_waits_for_system_and_package_service(monkeypatch):
+    serial = "emulator-5554"
+    discoveries: list[str] = []
+
+    def running(name, **_kwargs):
+        discoveries.append(name)
+        return serial
+
+    monkeypatch.setattr(sd.device_android, "_android_running_serial", running)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
+    responses = iter(
+        (
+            b"0\n",
+            b"1\n",
+            b"Service package: not found\n",
+            b"1\n",
+            b"Service package: found\n",
+        )
+    )
+    commands: list[list[str]] = []
+
+    def output(argv, **_kwargs):
+        commands.append(argv)
+        return next(responses)
+
+    sleeps: list[int] = []
+    monkeypatch.setattr(sd.device_android, "check_output_finite", output)
+    monkeypatch.setattr(sd.device_android.time, "sleep", sleeps.append)
+
+    assert sd.device_android.android_boot("demo") == serial
+    assert commands == [
+        ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
+        ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
+        ["adb", "-s", serial, "shell", "service", "check", "package"],
+        ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
+        ["adb", "-s", serial, "shell", "service", "check", "package"],
+    ]
+    assert discoveries == ["demo"]
+    assert sleeps == [1, 1]
+
+
+def test_android_boot_ready_preserves_probe_failure(monkeypatch):
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
+
+    def fail(*_args, **_kwargs):
+        raise sd.DeviceError("adb read boot status timed out after 2s")
+
+    monkeypatch.setattr(sd.device_android, "check_output_finite", fail)
+
+    with pytest.raises(sd.DeviceError, match="adb read boot status timed out after 2s"):
+        sd.device_android._android_boot_ready("emulator-5554")
+
+
+def test_android_boot_rediscovers_after_transport_error_without_respawning(monkeypatch):
+    serial = "emulator-5554"
+    discoveries = []
+
+    def running(name, **_kwargs):
+        discoveries.append(name)
+        return serial
+
+    readiness_checks = []
+
+    def ready(found_serial, **_kwargs):
+        readiness_checks.append(found_serial)
+        if len(readiness_checks) == 1:
+            raise subprocess.CalledProcessError(1, ["adb", "shell"])
+        return True
+
+    monkeypatch.setattr(sd.device_android, "_android_running_serial", running)
+    monkeypatch.setattr(sd.device_android, "_android_boot_ready", ready)
+    monkeypatch.setattr(sd.device_android.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        sd.device_android.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("an existing AVD must not be started again"),
+    )
+
+    assert sd.device_android.android_boot("demo") == serial
+    assert discoveries == ["demo", "demo"]
+    assert readiness_checks == [serial, serial]
+
+
+def test_android_boot_timeout_is_wall_clock_bounded_for_existing_avd(monkeypatch):
+    serial = "emulator-5554"
+    clock = [0.0]
+
+    def running(_name, **kwargs):
+        clock[0] += min(30, kwargs.get("timeout", 30))
+        return serial
+
+    def ready(_serial, **kwargs):
+        clock[0] += min(4, kwargs.get("timeout", 4))
+        return False
+
+    monkeypatch.setattr(sd.device_android, "_android_running_serial", running)
+    monkeypatch.setattr(sd.device_android, "_android_boot_ready", ready)
+    monkeypatch.setattr(sd.device_android.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        sd.device_android.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    monkeypatch.setattr(
+        sd.device_android.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("an existing AVD must not be started again"),
+    )
+
+    with pytest.raises(sd.DeviceError, match="did not become ready within 60s") as error:
+        sd.device_android.android_boot("demo")
+
+    assert clock[0] <= 60
+    assert "; see " not in str(error.value)
+
+
+def test_android_boot_timeout_references_log_for_spawned_avd(tmp_path, monkeypatch):
+    clock = [0.0]
+
+    def running(_name, **kwargs):
+        clock[0] += min(30, kwargs.get("timeout", 30))
+
+    monkeypatch.setattr(sd.device_android, "_android_running_serial", running)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: name)
+    monkeypatch.setattr(sd.device_android.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        sd.device_android.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+    monkeypatch.setattr(sd.device_android.subprocess, "Popen", lambda *args, **kwargs: None)
+    state_dir = tmp_path / "state"
+
+    with pytest.raises(sd.DeviceError, match="did not become ready within 60s") as error:
+        sd.device_android.android_boot("demo", state_dir=state_dir)
+
+    log = state_dir / "emulator-demo.log"
+    assert log.exists()
+    assert str(error.value).endswith(f"; see {log}")
 
 
 def test_cli_version_flag(capsys):

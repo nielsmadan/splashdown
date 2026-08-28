@@ -351,7 +351,85 @@ def test_ios_native_run_simulator_uses_simctl(tmp_path, monkeypatch):
     assert not any("devicectl" in c for c in flat)
 
 
-def test_android_native_run_monkey_launcher(tmp_path, monkeypatch):
+def test_ios_native_simulator_launch_has_a_finite_deadline(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    import plistlib
+
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / "splashdown.toml",
+    )
+
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *args, **kwargs: 0)
+
+    def run(argv, **kwargs):
+        if "-showBuildSettings" in argv:
+            stdout = json.dumps(
+                [
+                    {
+                        "buildSettings": {
+                            "BUILT_PRODUCTS_DIR": str(tmp_path),
+                            "WRAPPER_NAME": "Demo.app",
+                        }
+                    }
+                ]
+            )
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
+        if "launch" in argv:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", run)
+
+    with pytest.raises(sd.DeviceError, match="simctl launch app timed out after 120s"):
+        sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+
+
+def test_ios_native_build_settings_survives_discovery_length_contention(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    import plistlib
+
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "project": "Demo.xcodeproj"}}},
+        tmp_path / "splashdown.toml",
+    )
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *args, **kwargs: 0)
+
+    settings_timeouts: list[float] = []
+
+    def run(argv, **kwargs):
+        if "-showBuildSettings" in argv:
+            settings_timeouts.append(kwargs["timeout"])
+            if kwargs["timeout"] <= 30:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            stdout = json.dumps(
+                [
+                    {
+                        "buildSettings": {
+                            "BUILT_PRODUCTS_DIR": str(tmp_path),
+                            "WRAPPER_NAME": "Demo.app",
+                        }
+                    }
+                ]
+            )
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", run)
+
+    assert sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"}) == 0
+    assert settings_timeouts == [sd.device_tools.MUTATION_TIMEOUT]
+
+
+def test_android_native_run_uses_launcher_intent(tmp_path, monkeypatch):
     recipe = sd.Recipe({"project": {"android": {}}}, tmp_path / "splashdown.toml")
     calls = _capture_profile_calls(monkeypatch)
     monkeypatch.setattr(
@@ -361,13 +439,120 @@ def test_android_native_run_monkey_launcher(tmp_path, monkeypatch):
             a[0], 0, "applicationId: com.example.app\n", ""
         ),
     )
+    queries: list[list[str]] = []
+
+    def resolve(argv, **_kwargs):
+        queries.append(argv)
+        return (
+            b"priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\n"
+            b"com.example.app/.MainActivity\n"
+        )
+
+    monkeypatch.setattr(sd.runners, "check_output_finite", resolve, raising=False)
     rc = sd.runners._android_native_run(
         tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
     )
     assert rc == 0
-    flat = [" ".join(c) for c in calls]
-    assert any(":app:installDebug" in c for c in flat)  # variant casing
-    assert any("monkey" in c and "com.example.app" in c for c in flat)
+    assert any(":app:installDebug" in command for command in calls)
+    assert queries == [
+        [
+            "adb",
+            "-s",
+            "emulator-5554",
+            "shell",
+            "cmd",
+            "package",
+            "resolve-activity",
+            "--brief",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "com.example.app",
+        ]
+    ]
+    assert [
+        "adb",
+        "-s",
+        "emulator-5554",
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "com.example.app/.MainActivity",
+    ] in calls
+
+
+@pytest.mark.parametrize(
+    "resolver_output",
+    [None, b"", b"com.example.other/.MainActivity\n"],
+    ids=["adb-error", "empty-output", "wrong-package"],
+)
+def test_android_native_launcher_failure_requests_actual_activity(
+    tmp_path, monkeypatch, resolver_output
+):
+    recipe = sd.Recipe(
+        {"project": {"android": {"application_id": "com.example.app"}}},
+        tmp_path / "splashdown.toml",
+    )
+    _capture_profile_calls(monkeypatch)
+
+    def resolve(argv, **_kwargs):
+        if resolver_output is None:
+            raise subprocess.CalledProcessError(1, argv)
+        return resolver_output
+
+    monkeypatch.setattr(sd.runners, "check_output_finite", resolve)
+
+    with pytest.raises(sd.DeviceError, match="app's actual launcher activity"):
+        sd.runners._android_native_run(
+            tmp_path,
+            recipe,
+            {"kind": "android", "serial": "emulator-5554"},
+        )
+
+
+def test_android_native_run_reads_application_id_from_built_variant(tmp_path, monkeypatch):
+    metadata = tmp_path / "app" / "build" / "outputs" / "apk" / "demo" / "debug"
+    metadata.mkdir(parents=True)
+    (metadata / "output-metadata.json").write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "artifactType": {"type": "APK", "kind": "Directory"},
+                "applicationId": "com.example.demo.debug",
+                "variantName": "demoDebug",
+                "elements": [{"type": "SINGLE", "filters": [], "outputFile": "app.apk"}],
+            }
+        )
+    )
+    recipe = sd.Recipe(
+        {"project": {"android": {"variant": "demoDebug"}}},
+        tmp_path / "splashdown.toml",
+    )
+    calls = _capture_profile_calls(monkeypatch)
+    monkeypatch.setattr(
+        sd.runners,
+        "run_finite",
+        lambda *args, **kwargs: pytest.fail(
+            "built metadata should avoid a Gradle properties query"
+        ),
+    )
+    monkeypatch.setattr(
+        sd.runners,
+        "check_output_finite",
+        lambda *args, **kwargs: b"com.example.demo.debug/.MainActivity\n",
+    )
+
+    rc = sd.runners._android_native_run(
+        tmp_path, recipe, {"kind": "android", "serial": "emulator-5554"}
+    )
+
+    assert rc == 0
+    assert any(
+        command[4:6] == ["am", "start"] and command[-1] == "com.example.demo.debug/.MainActivity"
+        for command in calls
+    )
 
 
 def test_android_native_run_launch_activity(tmp_path, monkeypatch):
@@ -380,6 +565,32 @@ def test_android_native_run_launch_activity(tmp_path, monkeypatch):
     assert rc == 0
     flat = [" ".join(c) for c in calls]
     assert any("am start -n com.x/.Main" in c for c in flat)
+
+
+def test_android_native_run_normalizes_colon_prefixed_module(tmp_path, monkeypatch):
+    recipe = sd.Recipe(
+        {
+            "project": {
+                "android": {
+                    "module": ":app",
+                    "application_id": "com.x",
+                    "launch_activity": ".Main",
+                }
+            }
+        },
+        tmp_path / "splashdown.toml",
+    )
+    calls = _capture_profile_calls(monkeypatch)
+
+    assert (
+        sd.runners._android_native_run(
+            tmp_path,
+            recipe,
+            {"kind": "android", "serial": "S1"},
+        )
+        == 0
+    )
+    assert calls[0] == ["gradle", ":app:installDebug"]
 
 
 @pytest.mark.parametrize(

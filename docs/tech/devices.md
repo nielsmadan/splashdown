@@ -78,8 +78,9 @@ On top of it:
   if present, otherwise `simctl create` and returns `(udid, "Shutdown")` — creation never boots.
 - `ios_boot` / `ios_shutdown` / `ios_destroy` wrap
   `boot`/`shutdown`/`delete`. Boot tolerates the benign "current state: Booted" race from a
-  concurrent boot; shutdown first checks `_ios_current_state` to skip the
-  noisy 405 simctl raises when the sim is already shut down.
+  concurrent boot, then blocks on `simctl bootstatus -b` before returning. Shutdown first
+  checks `_ios_current_state` to skip the noisy 405 simctl raises when the sim is already
+  shut down.
 
 ### Android via the SDK toolchain
 
@@ -96,11 +97,14 @@ install. The same implementation supports macOS and Linux.
 - `android_ensure` is find-or-create via `avdmanager create avd … --force`,
   feeding `\n` on stdin to decline the custom-hardware-profile prompt; defaults `device` to
   `pixel_9` and `image` to the latest.
-- Boot is async: `android_boot` spawns `emulator -avd <name>` detached
-  (`start_new_session=True`, output to a per-AVD log under the calling `Registry.state_dir`), then
-  polls `_android_running_serial` for up to 60s. That matcher is the load-bearing
-  bit — there is no AVD→serial map, so it lists `adb devices`, and for each `emulator-*` serial
-  asks `adb -s <serial> emu avd name` to find the one whose reported AVD name matches.
+- Boot is async: `android_boot` first looks for an existing serial and otherwise spawns
+  `emulator -avd <name>` detached (`start_new_session=True`, output to a per-AVD log under the
+  calling `Registry.state_dir`). Its 60-second deadline is wall-clock based, including discovery
+  and readiness subprocesses. The matcher is the load-bearing bit — there is no AVD→serial map,
+  so it lists `adb devices`, then asks each `emulator-*` serial for its AVD name. Once matched, the
+  serial is retained and polled directly unless ADB reports a transport failure. Transport
+  visibility is not readiness: `_android_boot_ready` also requires `sys.boot_completed=1` and the
+  package service before Gradle can install an app.
 - `android_shutdown` / `android_destroy` issue `adb emu kill` and
   `avdmanager delete avd`.
 
@@ -113,9 +117,11 @@ key used by `warn_capability` to deduplicate aggregate warnings.
 
 `device_tools.py` bounds finite external operations: discovery/list/status calls get 30 seconds,
 and create/install/delete/shutdown calls get 120 seconds. A timeout becomes a `DeviceError` that
-names the operation. The per-emulator ADB name probe keeps its 2-second deadline and emulator boot
-keeps its 60-second readiness loop. Builds, app launches, and user-authored commands remain
-unbounded because they are intentionally long-running.
+names the operation. The per-emulator ADB name probe keeps its 2-second ceiling, while emulator
+boot uses a 60-second wall-clock deadline and caps every discovery/readiness subprocess by the
+remaining budget. Native iOS post-build settings discovery also uses the 120-second budget because
+concurrent Xcode work can serialize it behind another build. Framework builds, attached launchers,
+and user-authored commands remain unbounded when they are intentionally long-running.
 
 Explicit operations propagate the error to the CLI, which prints `error: ...` and exits 1.
 Fleet operations catch it per row or platform, warn once, and continue supported work. A skipped
@@ -237,8 +243,12 @@ delegates to `PROFILES[fw].run(app_dir, recipe, destination)` — the per-profil
 
 The fixed launchers in `runners.py` use the same capability boundary for Flutter, `npx`,
 `xcodebuild`, `xcrun`, Gradle/`gradlew`, and `adb`. Native iOS builds require macOS before project
-validation or launch. User-authored `[project] run` commands remain shell boundaries and return
-the shell's exit status.
+validation or launch; product lookup, simulator install, and simulator launch use the mutation
+deadline. Android-native launch reads the selected variant's `applicationId` from AGP's
+`output-metadata.json`, with the Gradle properties query retained as a fallback. Unless
+`launch_activity` is configured, it resolves the installed package's LAUNCHER component through
+`cmd package resolve-activity` and passes that component to `am start -n`. User-authored
+`[project] run` commands remain shell boundaries and return the shell's exit status.
 
 ## Key entry points
 
@@ -247,15 +257,15 @@ the shell's exit status.
 - `_default_sim_name` / `_resolve_device_name` — `devices.py` — naming.
 - `ios_ensure` / `android_ensure` — `device_ios.py` / `device_android.py` — find-or-create.
 - `physical_discover` — `devices.py` — toolchain-tolerant cross-platform discovery.
-- `CapabilityError` / `require_macos` / `translate_tool_errors` — `errors.py` and
-  `capabilities.py` — typed host/tool availability boundary.
-- `_xcrun_json` / `_devicectl_json` — `device_ios.py` — subprocess JSON wrappers.
 - `configured_physical_targets` / `discover_physical_snapshot` / `match_physical_target` —
   `device_claims.py` — configured catalog, one-snapshot discovery, and matching.
 - `claim_configured_target` / `claim_available_target` — `device_claims.py` — specific and generic
   physical allocation orchestration.
 - `PhysicalClaim` / `ClaimNotice` / `ClaimAttempt` / `ClaimRelease` — `device_types.py` —
   dependency-free storage and orchestration records.
+- `CapabilityError` / `require_macos` / `translate_tool_errors` — `errors.py` and
+  `capabilities.py` — typed host/tool availability boundary.
+- `_xcrun_json` / `_devicectl_json` — `device_ios.py` — subprocess JSON wrappers.
 - `_android_avd_names` / `_android_running_serial` — `device_android.py` — AVD discovery.
 - `run_finite` / `check_output_finite` — `device_tools.py` — finite-operation deadlines.
 - `device_status` / `device_shutdown` / `device_destroy` — `devices.py` — typed dispatch.
@@ -280,9 +290,9 @@ the shell's exit status.
 - **The TSV stays backward compatible.** Its historical `udid/model/ios` slots still encode
   simulator identifier/model/runtime or emulator name/device/image. Only the registry codec sees
   that layout; lifecycle code receives `SimulatorRecord` or `EmulatorRecord`.
-- **Android boot has no map; it brute-forces.** `_android_running_serial` bounds the initial
-  `adb devices` list at 30 seconds, then queries each emulator serial individually with a 2-second
-  timeout.
+- **Android boot has no map; it brute-forces.** `_android_running_serial` bounds `adb devices` at
+  30 seconds, then queries each emulator serial individually with a 2-second ceiling. During boot,
+  both limits are capped by the remaining wall-clock budget.
 - **Orphan vs stale are different.** `_is_orphan_device` in `devices.py` flags a registry row
   whose underlying sim/AVD a user deleted by hand; `ensure_fresh_sim` treats a missing UDID/AVD
   as one trigger of `stale` and silently recreates.

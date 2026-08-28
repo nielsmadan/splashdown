@@ -62,9 +62,20 @@ def _detect_ios_native(cwd: Path) -> bool:
 def _detect_android_native(cwd: Path) -> bool:
     if _has_js_or_flutter(cwd):
         return False
-    has_build = (cwd / "build.gradle").exists() or (cwd / "build.gradle.kts").exists()
+    build = cwd / "build.gradle"
+    if not build.exists():
+        build = cwd / "build.gradle.kts"
+    has_build = build.exists()
     has_settings = (cwd / "settings.gradle").exists() or (cwd / "settings.gradle.kts").exists()
-    return has_build and has_settings
+    if not has_build:
+        return False
+    if has_settings:
+        return True
+    try:
+        text = build.read_text()
+    except OSError:
+        return False
+    return "com.android.application" in text or "libs.plugins.android.application" in text
 
 
 # Omitting ios/image keeps scanner defaults on the latest installed runtime.

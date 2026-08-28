@@ -197,28 +197,40 @@ def _ios_create_hint(model: str | None, ios_version: str | None, runtime: str) -
 
 def ios_boot(udid: str, state: str) -> None:
     require_macos("simulator support")
-    if state == "Booted":
-        return
+    if state != "Booted":
+        with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
+            proc = run_finite(
+                ["xcrun", "simctl", "boot", udid],
+                operation="simctl boot",
+                timeout=MUTATION_TIMEOUT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        # A concurrent boot can flip state between discovery and this call.
+        if proc.returncode != 0 and "current state: Booted" not in proc.stderr:
+            raise DeviceError(
+                f"simctl boot failed for {udid}: {proc.stderr.strip() or proc.returncode}"
+            )
+        with translate_tool_errors("ios", "open", "restore the macOS open command"):
+            run_finite(
+                ["open", "-a", "Simulator"],
+                operation="open Simulator",
+                timeout=DISCOVERY_TIMEOUT,
+                check=False,
+            )
     with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
-        proc = run_finite(
-            ["xcrun", "simctl", "boot", udid],
-            operation="simctl boot",
+        ready = run_finite(
+            ["xcrun", "simctl", "bootstatus", udid, "-b"],
+            operation="simctl boot status",
             timeout=MUTATION_TIMEOUT,
             capture_output=True,
             text=True,
             check=False,
         )
-    # A concurrent boot can flip state between discovery and this call.
-    if proc.returncode != 0 and "current state: Booted" not in proc.stderr:
+    if ready.returncode != 0:
         raise DeviceError(
-            f"simctl boot failed for {udid}: {proc.stderr.strip() or proc.returncode}"
-        )
-    with translate_tool_errors("ios", "open", "restore the macOS open command"):
-        run_finite(
-            ["open", "-a", "Simulator"],
-            operation="open Simulator",
-            timeout=DISCOVERY_TIMEOUT,
-            check=False,
+            f"simctl boot status failed for {udid}: {ready.stderr.strip() or ready.returncode}"
         )
 
 

@@ -75,9 +75,11 @@ into `[(name, path), ...]`:
 - `yarn`/`npm` read `workspaces` from `package.json`, tolerating both the array form and
   the `{ packages: [...] }` object form (`scanner.py`).
 - `cargo` extracts `[workspace] members` via stdlib `tomllib` (`scanner.py`).
-- `gradle` regex-scrapes quoted tokens out of `settings.gradle*`, mapping Gradle's `:`
-  path separator to `/` (`:api:server` → `api/server`), keeping only entries that resolve
-  to real directories (`scanner.py`).
+- `gradle` regex-scrapes quoted tokens out of `settings.gradle*`, removes the optional
+  leading `:`, and maps the remaining `:` separators to `/` (`:api:server` →
+  `api/server`). It keeps only entries that resolve to real directories (`scanner.py`).
+  A member without its own settings file is recognized as `android-native` only when its
+  build file applies the Android application plugin.
 
 Glob expansion is centralized in `_expand_workspace_globs()` (`scanner.py`). It only
 understands a single trailing-ish `*` (it splits on the first `*` and lists the parent
@@ -213,7 +215,8 @@ The `run()` overrides delegate to helpers in `runners.py` (`_flutter_run`, `_rn_
 native runners are the heavy ones — `_ios_native_run` drives `xcodebuild` and reads the
 built `.app`'s `Info.plist` for the bundle id, branching to `devicectl` for physical
 hardware vs `simctl` for simulators; `_android_native_run` drives Gradle install tasks and
-resolves `applicationId` from Gradle properties when not pinned. Recipe-supplied
+resolves `applicationId` from the installed variant's AGP output metadata when not pinned,
+falling back to Gradle properties for older builds. Recipe-supplied
 positionals passed to these tools go through `_no_flag()` in `runners.py` to reject
 leading-`-` values that argv would otherwise swallow as tool flags.
 

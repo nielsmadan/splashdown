@@ -881,12 +881,11 @@ def test_android_native_missing_adb_is_capability_error(tmp_path, monkeypatch):
         tmp_path / sd.RECIPE_NAME,
     )
 
-    def launch(args, **kwargs):
-        if args[0] == "adb":
-            raise FileNotFoundError("missing")
-        return 0
+    def missing_adb(args, **_kwargs):
+        raise FileNotFoundError(f"missing: {args[0]}")
 
-    monkeypatch.setattr(sd.runners.subprocess, "call", launch)
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(sd.device_tools.subprocess, "check_output", missing_adb)
 
     with pytest.raises(sd.CapabilityError, match="install Android SDK platform-tools") as raised:
         sd.runners._android_native_run(
