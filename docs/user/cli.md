@@ -8,7 +8,7 @@ description: Reference for every splash command, option, target action, and envi
 ```
 splash                              # sync this checkout explicitly
 splash --version
-splash [--cwd PATH] [--format text|json] [--show-values] …
+splash [--cwd PATH] [--format text|json] [--show-values] …  # root options precede the command
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
@@ -31,7 +31,7 @@ splash target add <type> <variant> [--model M] [--ios V] [--device D] [--image I
                   [--name N] [--id ID] [--platform ios|android] [--global]
 splash target remove <type> <variant> [--keep-instance] [--global]
 splash target refresh [ios|android|all]
-                                      # recreate stale registered sims/emulators
+                                      # reconcile registered sims/emulators
 splash target prune   [ios|android|all] [--dry-run] [--yes]
                                       # destroy sims/emulators splashdown didn't create
 splash target claims [--format text|json]
@@ -57,12 +57,19 @@ Routine status, env-list, and sync JSON output hides resolved values. Add the ro
 `--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
 single-value read. `splash sync --force` reallocates ports. `splash init` scans the project,
 scaffolds the project files, and runs the first sync (`--no-sync` scaffolds only).
+Root output options go before the command. `--format` applies to sync, status, bare `env`, bare
+`target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, a normal
+init's first sync, and bare `env`. Other combinations are usage errors instead of accepted no-ops.
 First-time init must target the Git worktree root; `--allow-nested` explicitly creates an
 independent Splashdown project below it. That location override does not replace `--overwrite`,
 which remains the separate opt-in for replacing an existing recipe. Non-Git projects and existing
 regular nested recipes keep their current behavior. Recipe symlinks are rejected rather than
 followed. Nested init skips automatic post-checkout hook wiring and prints the explicit
 `splash --cwd PATH sync` command to run after checkout.
+
+`splash init --rescan` only refreshes detected project and app inventory in an existing recipe. It
+cannot be combined with a preset, `--loader`, `--overwrite`, `--allow-nested`, `--no-sync`,
+`--electron-profile`, or `--ios-scheme`.
 
 Named presets are limited to choices that project scanning cannot infer:
 
@@ -128,9 +135,19 @@ capabilities without needing a valid recipe. See
 
 `splash env set KEY=VALUE` only accepts keys declared with `type = "set"` in the target checkout's recipe. It rejects invalid assignments, missing or malformed recipes, undeclared keys, and generated or allocated resources with exit 2.
 
+For nested environment actions, `--checkout PATH` may appear either immediately after `env` or
+after the action arguments. It takes precedence over root `--cwd` in both forms.
+
 Commands that load configuration validate the complete document before provisioning or project-file mutation. Unknown sections and fields, wrong types, invalid templates, and malformed target definitions exit 1 with a qualified error and no traceback.
 
-`splash target add` applies the same target schema as TOML files before writing. `simulator` accepts `--model`, `--ios`, and `--name`. `emulator` accepts `--device`, `--image`, and `--name`. Physical `device` accepts `--id`, `--name`, and `--platform=ios|android`. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.
+`splash target add` applies the same target schema as TOML files before writing. `simulator` accepts `--model`, `--ios`, and `--name`. `emulator` accepts `--device`, `--image`, and `--name`, where `--device` is the Android emulator hardware profile such as `pixel_9`. Physical `device` accepts `--id`, `--name`, and `--platform=ios|android`. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.
+
+Local `target remove` destroys its managed simulator or emulator by default. A global removal edits
+the machine-wide declaration only, then `splash target refresh` reaps any instance the removal made
+undeclared. Because global removal is already config-only, `--global --keep-instance` is a usage
+error. Refresh also destroys registered instances belonging to deleted checkouts and recreates
+stale or externally deleted registered instances. It does not provision declared targets that have
+never been run.
 
 Physical claim commands act only on configured `device` targets from the recipe, local config,
 and global config. `splash run pixel` claims a free connected target before framework build or

@@ -33,4 +33,7 @@ splash doctor --fix              # apply autofixes; print manual instructions fo
 splash doctor --framework=react-native   # override detection if needed
 ```
 
+`--framework` accepts registered profile names shown by `splash doctor --help`. An unknown name is
+a usage error rather than a successful run with no checks.
+
 **Known limitation: RN Android.** Android's Metro port is also baked into the build (via the RN Gradle plugin / `BuildConfig`), with a different mechanism than iOS. Splashdown doesn't currently wire the Android side. For now `yarn android` works (the RN CLI propagates `RCT_METRO_PORT` to Gradle), but bare `gradle assembleDebug` may default to 8081. Tracked as a future check.

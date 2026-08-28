@@ -18,6 +18,7 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
     - [`main()` flow](#main-flow)
     - [`_ensure_subcommand` — bare `splash` defaults to `sync`](#_ensure_subcommand--bare-splash-defaults-to-sync)
     - [`KNOWN_CMDS` and the parser](#known_cmds-and-the-parser)
+    - [Parsed-argument validation](#parsed-argument-validation)
     - [Tiered `--help`: `_EpilogOnlyFormatter`](#tiered---help-_epilogonlyformatter)
     - [Lazy `--version`: `_VersionAction`](#lazy---version-_versionaction)
     - [The run/start/stop/destroy parser loop](#the-runstartstopdestroy-parser-loop)
@@ -65,8 +66,8 @@ submodule imports inside handlers.
 1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py`) to inject a `sync` token if no subcommand is present.
 2. Build the parser (`_build_parser`, `cli.py`).
 3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
-4. `parse_args`, dispatch completion before checkout resolution, then resolve `cwd` (`_resolve_cwd`,
-   honours `--cwd`, else `$PWD`, always `.resolve()`d).
+4. `parse_args`, validate cross-option contracts, dispatch completion before checkout resolution,
+   then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d).
 5. Dispatch the hidden hook event before constructing a Registry. Handle `init` inside the ordinary
    error renderer but before Registry construction, so rejected, rescanned, and `--no-sync` init
    paths do not touch machine-wide registry state or output writers.
@@ -100,11 +101,29 @@ option.
 
 #### `KNOWN_CMDS` and the parser
 
-`KNOWN_CMDS` (`cli.py`) is the hand-maintained set of subcommand names. It exists only so `_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs — it is a second source of truth alongside the `sub.add_parser(...)` calls and must be kept in sync with them.
+`KNOWN_CMDS` (`cli.py`) is the hand-maintained set of subcommand names. It exists only so
+`_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs. It
+is a second source of truth alongside the `sub.add_parser(...)` calls, guarded by an exact
+parser-choice invariant. The root-help contract separately requires every public command except
+the internal `hook` event to appear in the curated map.
 
 `_build_parser` (`cli.py`) is a single flat parser with one block per subcommand. Every subparser is hidden
 from argparse's generated list because the curated epilog carries the task-oriented overview.
 Root flags are `--cwd`, `--format`, `--show-values`, and `--version`.
+
+#### Parsed-argument validation
+
+`_validate_parsed_args` runs immediately after argparse and before checkout resolution, registry
+construction, or command dispatch. It owns constraints argparse cannot express cleanly across
+parser levels: `init --rescan` exclusivity, the root output-option support matrix, and the
+redundant `target remove --global --keep-instance` pair. `--format` is valid for sync, status, bare
+env, bare target, target claims, and target claim. `--show-values` is valid for sync, status,
+normal init, and bare env. Rejected combinations use `parser.error`, preserving argparse's usage
+output and exit 2.
+
+The env parent and action parsers intentionally accept `--checkout`. Action defaults use
+`argparse.SUPPRESS`, so omitting the after-action form does not overwrite a selector already parsed
+before the action. When both root `--cwd` and env `--checkout` are present, the env selector wins.
 
 #### Tiered `--help`: `_EpilogOnlyFormatter`
 
@@ -190,7 +209,8 @@ sync-only clone trust → framework wiring. For an explicitly allowed nested pro
 prints a manual nested sync command instead because Git invokes checkout hooks from the worktree
 root. An intent preset short-circuits to `_cmd_init_preset`.
 Refusal and invalid-preset paths raise `UsageError`; `main()` renders them and returns exit 2. The
-first sync runs after init unless `--no-sync`; `--rescan` diverts to `cmd_refresh_inventory`. Init
+first sync runs after init unless `--no-sync`; `--rescan` diverts to `cmd_refresh_inventory` and is
+exclusive with every scaffold/scan option. Init
 never grants bootstrap trust.
 
 #### `deinit` teardown
@@ -390,7 +410,9 @@ device does not hide simulator variants in a simulator-only project.
 - **Argparse may still raise `SystemExit`.** Help, version, and parser-level invalid choices keep
   argparse's normal behavior. Application handlers raise typed errors and never terminate the
   process themselves.
-- **`KNOWN_CMDS` is a second source of truth.** It is maintained by hand alongside the `add_parser` calls so `_ensure_subcommand` can pre-classify argv. Add a subcommand and you must update both, or bare-`splash` rewriting will misfire on it.
+- **`KNOWN_CMDS` is a guarded second source of truth.** It is maintained by hand alongside the
+  `add_parser` calls so `_ensure_subcommand` can pre-classify argv. The exact-choice and public-help
+  tests fail if a new command is added to only one surface.
 - **A variant named like a type needs both positionals.** Because run/start/stop/destroy drop
   argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves a lone
   `simulator`/`emulator`/`device` token as the type. Name the type and variant explicitly to select

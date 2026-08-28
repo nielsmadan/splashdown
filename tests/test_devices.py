@@ -1071,17 +1071,28 @@ def test_cli_env_set_requires_recipe(tmp_path, monkeypatch, capsys):
     assert sd.RECIPE_NAME in capsys.readouterr().err
 
 
-def test_cli_env_set_release_honor_checkout(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("selector_before_action", [True, False])
+def test_cli_env_set_release_honor_checkout(tmp_path, monkeypatch, capsys, selector_before_action):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     other = tmp_path / "other"
     other.mkdir()
     (other / sd.RECIPE_NAME).write_text('[resources.K]\ntype = "set"\n')
-    assert sd.main(["--cwd", str(tmp_path), "env", "set", "K=v1", "--checkout", str(other)]) == 0
-    assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 0
+
+    def env_args(action, *values):
+        selector = ["--checkout", str(other)]
+        nested = [action, *values]
+        nested = [*selector, *nested] if selector_before_action else [*nested, *selector]
+        return ["--cwd", str(tmp_path), "env", *nested]
+
+    assert sd.main(env_args("set", "K=v1")) == 0
+    capsys.readouterr()
+    assert sd.main(["--cwd", str(tmp_path), "env", "--checkout", str(other)]) == 0
+    assert capsys.readouterr().out.strip() == "K"
+    assert sd.main(env_args("get", "K")) == 0
     assert capsys.readouterr().out.strip() == "v1"
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 1
-    assert sd.main(["--cwd", str(tmp_path), "env", "release", "K", "--checkout", str(other)]) == 0
-    assert sd.main(["--cwd", str(tmp_path), "env", "get", "K", "--checkout", str(other)]) == 1
+    assert sd.main(env_args("release", "K")) == 0
+    assert sd.main(env_args("get", "K")) == 1
 
 
 def test_resolve_device_name_rejects_leading_dash(tmp_path):

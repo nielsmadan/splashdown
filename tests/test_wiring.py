@@ -180,11 +180,18 @@ def test_doctor_no_framework_returns_1(tmp_path, capsys):
     assert "framework" in err.lower()
 
 
-def test_doctor_unknown_framework_no_checks_returns_0(tmp_path, capsys):
+def test_doctor_unknown_framework_returns_usage_error(tmp_path, capsys):
     rc = sd.cmd_doctor(tmp_path, framework_override="nonesuch")
-    assert rc == 0
+    assert rc == 2
     err = capsys.readouterr().err
-    assert "no wiring checks" in err.lower()
+    assert "unknown framework" in err.lower()
+
+
+def test_doctor_cli_rejects_unknown_framework(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["doctor", "--framework", "nonesuch"])
+    assert exc.value.code == 2
+    assert "nonesuch" in capsys.readouterr().err
 
 
 def test_doctor_known_checkless_framework_reports_healthy(tmp_path, capsys):

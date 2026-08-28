@@ -68,7 +68,8 @@ env-only success verdict.
 
 - `splash doctor` reports without writing.
 - `splash doctor --fix` applies safe autofixes and prints manual instructions for the rest.
-- `splash doctor --framework=NAME` overrides framework detection with a registered Profile name.
+- `splash doctor --framework=NAME` overrides framework detection with a registered Profile name;
+  an unknown name is a usage error and cannot pass as an empty check set.
 - Check lists are Profile-owned; there is no per-check toggle.
 - The React Native `ios/.xcode.env` block is sentinel-managed. Edits inside its marker pair are
   overwritten by the next fix.

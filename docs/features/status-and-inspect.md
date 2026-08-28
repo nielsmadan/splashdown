@@ -29,6 +29,11 @@ splash --format json --show-values env # JSON object of key/value pairs
 `splash env get KEY` always prints the selected value. It is an explicit disclosure operation and
 does not require `--show-values`.
 
+Both output flags are root options and therefore precede the command. `--format` is supported by
+sync, status, bare `env`, bare `target`, `target claims`, and `target claim`. `--show-values` is
+supported by sync, status, a normal init's first sync, and bare `env`. Other nested env/target
+actions and commands reject flags they would otherwise ignore.
+
 ## How it works
 
 `commands.cmd_status` is a thin compatibility wrapper. It asks `status.build_status_report` for a
@@ -82,7 +87,8 @@ This makes the safe schema explicit: changing to JSON format alone does not reve
 - `splash env set KEY=VALUE` accepts only a declared `type = "set"` resource. Invalid assignment,
   recipe, declaration, or type input exits 2 before mutation.
 - `splash env release [KEY]` releases one key or every registry entry for the target checkout.
-- `--checkout PATH` works with the list/get/set/release forms.
+- `--checkout PATH` works with the list/get/set/release forms. For an action, it may appear before
+  or after the action and takes precedence over root `--cwd`.
 
 Every form canonicalizes the checkout path exactly as provisioning does.
 

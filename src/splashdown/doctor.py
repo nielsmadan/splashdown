@@ -74,23 +74,7 @@ def _resolve_check_targets(
     return (framework, app_dir, targets)
 
 
-def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None = None) -> int:
-    try:
-        framework, app_dir, targets = _resolve_check_targets(cwd, framework_override)
-    except DeviceError as error:
-        print(f"doctor: {error}", file=sys.stderr)
-        print("  pass --framework=NAME to check a specific framework.", file=sys.stderr)
-        return 1
-    if framework is not None and app_dir != cwd:
-        print(f"doctor: checking {app_dir.relative_to(cwd)} (`{framework}`)", file=sys.stderr)
-    if not targets:
-        profile = PROFILES.get(framework) if framework is not None else None
-        if profile is not None and profile.env_only:
-            print(f"  ✓  no wiring checks needed for `{framework}` (env-only)", file=sys.stderr)
-        else:
-            print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
-        return 0
-
+def _run_doctor_targets(targets: list[tuple[WiringCheck, Path]], *, fix: bool) -> int:
     bad = 0
     for check, check_dir in targets:
         if not check.applies(check_dir):
@@ -123,3 +107,26 @@ def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None =
                 print(f"        {line}", file=sys.stderr)
         bad += 1
     return 0 if bad == 0 else 1
+
+
+def cmd_doctor(cwd: Path, *, fix: bool = False, framework_override: str | None = None) -> int:
+    if framework_override is not None and framework_override not in PROFILES:
+        print(f"doctor: unknown framework `{framework_override}`.", file=sys.stderr)
+        return 2
+    try:
+        framework, app_dir, targets = _resolve_check_targets(cwd, framework_override)
+    except DeviceError as error:
+        print(f"doctor: {error}", file=sys.stderr)
+        print("  pass --framework=NAME to check a specific framework.", file=sys.stderr)
+        return 1
+    if framework is not None and app_dir != cwd:
+        print(f"doctor: checking {app_dir.relative_to(cwd)} (`{framework}`)", file=sys.stderr)
+    if not targets:
+        profile = PROFILES.get(framework) if framework is not None else None
+        if profile is not None and profile.env_only:
+            print(f"  ✓  no wiring checks needed for `{framework}` (env-only)", file=sys.stderr)
+        else:
+            print(f"doctor: no wiring checks defined for framework `{framework}`.", file=sys.stderr)
+        return 0
+
+    return _run_doctor_targets(targets, fix=fix)

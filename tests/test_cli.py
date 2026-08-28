@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import os
 import sys
@@ -94,11 +95,17 @@ def test_target_claim_post_subcommand_format_matches_top_level_format(tmp_path, 
 
 
 def test_cli_help_shows_tiers(capsys):
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         sd.main(["--help"])
+    assert exc.value.code == 0
     out = capsys.readouterr().out
-    for token in ("run", "sync", "status", "init", "target", "env"):
-        assert token in out
+    visible_commands = {
+        line.split()[0] for line in out.splitlines() if line.startswith("  ") and line.split()
+    }
+    normalized = " ".join(out.split())
+    assert sd.KNOWN_CMDS - {"hook"} <= visible_commands
+    assert "output format for sync, status, env/target lists, or target claims" in normalized
+    assert "include resolved values for sync, status, normal init, or bare env" in normalized
     assert "provision" not in out
 
 
@@ -272,6 +279,186 @@ def test_claim_notice_store_error_warns_and_continues_to_handler(tmp_path, monke
     assert "warning: unable to consume physical target notices: notice store unavailable" in err
     assert "Traceback" not in err
     assert consume(str(checkout.resolve())) == (notice,)
+
+
+def test_cli_parser_commands_match_known_commands():
+    parser = sd._build_parser()
+    command_action = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+
+    assert set(command_action.choices) == sd.KNOWN_CMDS
+
+
+@pytest.mark.parametrize("command", ["env", "target"])
+def test_cli_nested_help_explains_bare_list(command, capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main([command, "--help"])
+    assert exc.value.code == 0
+    assert "Omit ACTION to list" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["sync", "status", "env"])
+def test_cli_help_points_to_supported_value_output_flags(command, capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main([command, "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "place before the command" in out
+    assert "--format" in out
+    assert "--show-values" in out
+
+
+def test_cli_target_help_points_to_supported_format_flag(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["target", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "place before the command" in out
+    assert "--format" in out
+
+
+def test_cli_init_help_points_to_supported_value_flag(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["init", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "place before the command" in out
+    assert "--show-values" in out
+
+
+def test_cli_init_rescan_rejects_every_other_init_option(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        sd.cli,
+        "cmd_refresh_inventory",
+        lambda *_args, **_kwargs: pytest.fail("rescan dispatched before validation"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        sd.main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "init",
+                "minimal",
+                "--rescan",
+                "--loader",
+                "none",
+                "--overwrite",
+                "--allow-nested",
+                "--no-sync",
+                "--electron-profile",
+                "shared",
+                "--ios-scheme",
+                "Demo",
+            ]
+        )
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    for option in (
+        "preset",
+        "--loader",
+        "--overwrite",
+        "--allow-nested",
+        "--no-sync",
+        "--electron-profile",
+        "--ios-scheme",
+    ):
+        assert option in err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--format", "json", "doctor"],
+        ["--show-values", "run"],
+        ["--format", "json", "env", "get", "KEY"],
+        ["--show-values", "env", "get", "KEY"],
+        ["--format", "json", "target", "refresh"],
+        ["--show-values", "target"],
+        ["--format", "json", "init", "minimal"],
+        ["--show-values", "init", "--no-sync"],
+        ["--show-values", "init", "--rescan"],
+    ],
+)
+def test_cli_rejects_output_flags_where_they_are_ignored(argv, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def unexpected_dispatch(*_args, **_kwargs):
+        pytest.fail("command dispatched before output-option validation")
+
+    for name in (
+        "cmd_doctor",
+        "cmd_run",
+        "cmd_init",
+        "cmd_refresh_inventory",
+        "_env_dispatch",
+        "_target_dispatch",
+    ):
+        monkeypatch.setattr(sd.cli, name, unexpected_dispatch)
+
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["--cwd", str(tmp_path), *argv])
+
+    assert exc.value.code == 2
+    assert argv[0] in capsys.readouterr().err
+
+
+def test_cli_target_add_help_explains_type_specific_options(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["target", "add", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for phrase in (
+        "iOS simulator model",
+        "iOS runtime version",
+        "Android emulator hardware profile",
+        "Android system image",
+        "simulator: --model, --ios, --name",
+        "emulator: --device, --image, --name",
+        "device: --name, --id, --platform",
+    ):
+        assert phrase in out
+
+
+def test_cli_target_maintenance_help_describes_instance_lifecycle(capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["target", "refresh", "--help"])
+    assert exc.value.code == 0
+    refresh_help = capsys.readouterr().out
+    for phrase in ("stale or missing", "undeclared", "dead checkouts"):
+        assert phrase in refresh_help
+
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["target", "remove", "--help"])
+    assert exc.value.code == 0
+    remove_help = capsys.readouterr().out
+    assert "Local removal destroys the managed simulator/emulator by default" in remove_help
+    assert "Global removal edits configuration only until target refresh" in remove_help
+
+
+def test_cli_target_global_remove_rejects_keep_instance(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    with pytest.raises(SystemExit) as exc:
+        sd.main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "target",
+                "remove",
+                "simulator",
+                "default",
+                "--global",
+                "--keep-instance",
+            ]
+        )
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--global" in err
+    assert "--keep-instance" in err
 
 
 def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):

@@ -186,6 +186,8 @@ Note this path is **not** sync-driven by itself — the post-init sync still com
 via `refresh_recipe`, preserving comments and valid existing `[resources.*]` tables. It validates
 both the source recipe and the rebuilt TOML, so an unknown key or invalid generated app/resource
 reference fails before the existing file is replaced. Use it to pick up a newly-added monorepo app.
+The CLI rejects a preset and every scaffold/scan option when `--rescan` is present, so none can be
+silently ignored by this early-return path.
 
 **Teardown.** `cmd_deinit` (`commands.py`) reverses the owned parts of init without
 blindly restoring user files: it destroys registered sims/AVDs that splashdown owns, releases
@@ -237,7 +239,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - **`--rescan`** — re-detect `[project]`/`[apps.*]` in an existing recipe; preserves
   valid `[resources.*]` tables and comments. Does not scaffold; the rescan path is dispatched
   before `cmd_init` and returns early (`cli.py`). Unknown or invalid retained fields are
-  errors, not extension data.
+  errors, not extension data. It is mutually exclusive with a preset, `--loader`, `--overwrite`,
+  `--allow-nested`, `--no-sync`, `--electron-profile`, and `--ios-scheme`.
 - **`--electron-profile=isolated|shared`** — scanner-only Electron choice. `isolated` adds a
   stable process-env profile id; `shared` explicitly declines isolation.
 - **`--ios-scheme=NAME`** — scanner-only native iOS scheme override; required for ambiguous
@@ -277,8 +280,7 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 
 - **`--rescan` is a separate code path that never scaffolds.** It is dispatched before
   `cmd_init` (`cli.py`), requires an existing recipe, and rewrites only `[project]`/
-  `[apps.*]`. Combining `--rescan` with `--overwrite`/`--no-sync` is meaningless — rescan
-  returns first.
+  `[apps.*]`. The parser rejects every scaffold/scan option alongside it before rescan dispatch.
 
 - **Any configured `core.hooksPath` is intentionally not touched.** If a project sets
   `core.hooksPath`, init only prints a warning and installs nothing — the user must wire

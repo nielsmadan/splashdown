@@ -21,25 +21,28 @@ splashdown pins per-checkout resources (ports, env vars / uuids / template value
 sim/AVD instances) into a machine-wide registry under `$XDG_STATE_HOME/splashdown/`
 (`ports.tsv`, `kv.tsv`, `devices.tsv`). When a worktree is deleted, its rows linger — the
 registry has no way to be notified that a checkout directory vanished. Cleanup therefore
-happens through five distinct, deliberately-layered mechanisms, ordered from
+happens through six distinct, deliberately-layered mechanisms, ordered from
 most-automatic to most-explicit:
 
 1. **Lazy / automatic GC** — every port allocation drops dead-checkout *port* rows (and,
    transitively on `gc()`, kv rows) before picking a free port. Mostly invisible; the
    common case needs no command.
-2. **`splash gc`** — explicit, machine-wide sweep. Does everything lazy GC does *plus*
-   destroys orphaned sims/AVDs and reconciles live checkouts against their current recipes.
-3. **`splash target prune [ios|android]`** — destroys sims/AVDs splashdown did *not*
+2. **`splash gc`** — explicit, machine-wide sweep. Does everything lazy GC does, destroys
+   dead-checkout sims/AVDs, drops orphaned rows, and reconciles port/key recipes.
+3. **`splash target refresh [ios|android]`** — reconciles every registered managed device,
+   including stale, missing, undeclared, and dead-checkout rows.
+4. **`splash target prune [ios|android]`** — destroys sims/AVDs splashdown did *not*
    create (the Xcode default-template pile, hand-made sims). Orthogonal to GC: it targets
    *foreign* devices, not dead-checkout ones.
-4. **`splash deinit`** — tears down a live checkout completely: destroy its registered
+5. **`splash deinit`** — tears down a live checkout completely: destroy its registered
    simulator/emulator instances by persisted identity, release all rows, and remove managed files.
-5. **`splash env release [KEY]`** — frees *this* checkout's own allocations (all, or one
+6. **`splash env release [KEY]`** — frees *this* checkout's own allocations (all, or one
    key), for a checkout that still exists. The manual counterpart to lazy GC.
 
 The key mental model: lazy GC and `gc` reclaim resources for checkouts that are **gone**;
-`prune` reclaims devices splashdown **never owned**; `deinit` removes splashdown from a live
-checkout; `env release` only frees that checkout's registry allocations on demand.
+`refresh` reconciles devices Splashdown **owns**; `prune` reclaims devices Splashdown **never
+owned**; `deinit` removes Splashdown from a live checkout; `env release` only frees that checkout's
+registry allocations on demand.
 
 ## How it works (current state)
 
@@ -84,6 +87,14 @@ read as "declares nothing" and nuke live entries.
 Orphan detection (`_is_orphan_device`, `src/splashdown/devices.py`) covers the case
 where the user ran `xcrun simctl delete` / `avdmanager delete avd` by hand, leaving the
 registry pointing at a ghost; `gc` removes those rows.
+
+### `splash target refresh [ios|android]` (managed-device reconcile)
+
+Refresh walks every registered simulator and emulator in scope. It recreates stale instances and
+instances deleted outside Splashdown, leaves healthy instances alone, and destroys rows whose
+variant is no longer declared or whose checkout directory is gone. A declaration with no registry
+row remains lazy and is first provisioned by `splash run` or `splash start`. Global target removal
+is configuration-only, so refresh is the operation that reaps instances made undeclared by it.
 
 ### `splash deinit` (complete live-checkout teardown)
 

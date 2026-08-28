@@ -169,7 +169,7 @@ The hook prints the manual `splash target claim --available android` retry comma
 When a new iOS (or Android system image) lands, recreate the `latest` sims in place and clear out the cruft Xcode/`avdmanager` leave behind:
 
 ```sh
-splash target refresh                 # destroy + recreate stale 'latest' sims (newer iOS landed)
+splash target refresh                 # reconcile stale/missing managed devices and remove undeclared ones
 splash target prune ios               # delete every sim splashdown did NOT create (the Xcode template pile)
 splash gc                             # drop registry entries for checkouts you've since deleted
 ```

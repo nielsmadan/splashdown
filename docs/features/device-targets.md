@@ -196,7 +196,9 @@ declaration change, and removes its registry row unless `--keep-instance`. When 
 deletion uses its actual simulator UDID or AVD name rather than a newly resolved config name.
 A recipe-owned or missing variant, or malformed recipe/local file, is rejected before any device
 operation. If the lifecycle step raises, the local declaration and registry row remain intact.
-Adding a variant that already exists in the recipe is an error.
+Adding a variant that already exists in the recipe is an error. Global removal edits only the
+machine-wide catalog and defers instance cleanup to `target refresh`; combining `--global` with
+`--keep-instance` is rejected as redundant.
 
 ## Key entry points
 
@@ -314,7 +316,7 @@ CLI surface:
 splash run [type] [variant]            # reconcile + boot + build + launch
 splash start | stop | destroy [...]    # destroy prompts [y/N]; --yes skips
 splash target                          # list declared variants + live state
-splash target refresh [ios|android|all]    # reconcile stale registered sims/AVDs (no boot)
+splash target refresh [ios|android|all]    # reconcile stale/missing and reap undeclared/dead rows
 splash target prune [ios|android|all] [--dry-run] [--yes]   # remove non-managed sims/AVDs
 splash target add <type> <variant> [--model --ios --device --image --name --id --platform] [--global]
 splash target remove <type> <variant> [--keep-instance] [--global]
@@ -324,6 +326,10 @@ splash target claim --available <ios|android|any> [--format text|json]
 splash target release <variant> [--force]
 splash target release --all
 ```
+
+For `target add`, simulator fields are `--model`, `--ios`, and `--name`; emulator fields are
+`--device`, `--image`, and `--name`; physical-device fields are `--id`, `--name`, and `--platform`.
+The emulator `--device` flag names the Android hardware profile rather than physical hardware.
 
 Linked-worktree auto-allocation is the strict project policy:
 
@@ -371,7 +377,8 @@ unchanged.
   teardown (`src/splashdown/target_commands.py`), so a mistyped scope can no longer destroy the instance
   and drop the registry row on its way to failing validation. The `--global` path edits
   `~/.config/splashdown/config.toml` only and tells you to run `splash target refresh` to reap
-  instances the removal just made undeclared.
+  instances the removal just made undeclared. `--global --keep-instance` is rejected because global
+  removal never touches instances directly.
 - **`target remove` destroys the instance by default.** Pass `--keep-instance` for a toml-only edit.
   It preflights local ownership before destruction, refuses recipe-declared variants, and leaves
   both the declaration and registry row intact when the lifecycle step raises. A registered

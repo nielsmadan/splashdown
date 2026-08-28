@@ -55,6 +55,9 @@ registry. An instance that is already absent does not block config cleanup.
 Use `--keep-instance` when the SDK is unavailable or you intentionally want a config-only removal.
 It removes the local declaration but leaves any instance and registry row untouched. If a row
 exists, a later `splash target refresh` sees it as undeclared and destroys the retained instance.
+Global removal is configuration-only and tells you to run refresh to reap instances that become
+undeclared. `--global --keep-instance` is rejected because those two flags request the same
+config-only behavior.
 
 Framework auto-detected for `run`:
 
@@ -104,7 +107,7 @@ Some apps *require* a pinned older runtime: a pod that excludes arm64 for the si
 
 ```sh
 splash gc                           # drop dead-checkout entries (ports, vars, sims)
-splash target refresh               # destroy + recreate stale 'latest' sims (newer iOS landed)
+splash target refresh               # reconcile registered devices, including undeclared/dead rows
 splash target prune [ios|android]   # destroys every sim/AVD splashdown did NOT create
                                     # (the Xcode default-template pile, hand-made sims, etc.)
 ```
@@ -116,6 +119,10 @@ Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtim
 ## Android emulator management
 
 Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_9`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached. `splash` polls `adb` for the serial to appear.
+
+For `splash target add emulator`, `--device` selects this Android hardware profile. It does not
+select a connected physical device. Use target type `device` with `--id`, `--name`, or `--platform`
+for physical hardware.
 
 After upgrading from a version that generated names without the path hash, recreate each
 default-named sim or emulator once with `splash destroy TYPE VARIANT --yes` followed by

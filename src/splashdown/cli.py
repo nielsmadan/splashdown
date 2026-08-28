@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from .catalog import PROFILES
 from .cli_output import render_application_error, render_claim_notices, render_untyped_error
 from .commands import (
     InitOptions,
@@ -99,7 +100,16 @@ More
   target   …                 declare & manage device targets   (splash target --help)
   env      …                 inspect resolved values           (splash env --help)
   gc                         drop dead-checkout entries (ports, vars, sims)
+  completion [shell]         print shell completion setup
 """
+
+_VALUE_OUTPUT_HELP = (
+    "Global output options (place before the command): --format {text,json}; --show-values."
+)
+_FORMAT_OUTPUT_HELP = "Global output option (place before the command): --format {text,json}."
+_INIT_OUTPUT_HELP = (
+    "Global output option (place before the command): --show-values applies to the first sync."
+)
 
 KNOWN_CMDS = {
     "sync",
@@ -138,16 +148,21 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         formatter_class=_EpilogOnlyFormatter,
     )
     parser.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
-    parser.add_argument("--format", choices=["text", "json"], default=None)
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default=None,
+        help="output format for sync, status, env/target lists, or target claims",
+    )
     parser.add_argument(
         "--show-values",
         action="store_true",
-        help="include resolved values in operational status, env, and sync output",
+        help="include resolved values for sync, status, normal init, or bare env",
     )
     parser.add_argument("--version", action=_VersionAction)
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
-    p = sub.add_parser("sync", help=argparse.SUPPRESS)
+    p = sub.add_parser("sync", help=argparse.SUPPRESS, epilog=_VALUE_OUTPUT_HELP)
     p.add_argument(
         "--force",
         action="store_true",
@@ -155,7 +170,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     )
     p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
 
-    p = sub.add_parser("status", help=argparse.SUPPRESS)
+    p = sub.add_parser("status", help=argparse.SUPPRESS, epilog=_VALUE_OUTPUT_HELP)
     p.add_argument(
         "scope",
         nargs="?",
@@ -171,7 +186,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         action="store_true",
         help="with `all`, expand each checkout into the per-block view",
     )
-    p = sub.add_parser("init", help=argparse.SUPPRESS)
+    p = sub.add_parser("init", help=argparse.SUPPRESS, epilog=_INIT_OUTPUT_HELP)
     p.add_argument(
         "preset",
         nargs="?",
@@ -228,18 +243,39 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     post_checkout.add_argument("new")
     post_checkout.add_argument("flag")
 
-    env = sub.add_parser("env", help=argparse.SUPPRESS)
-    env.add_argument("--checkout", default=None)  # for bare `splash env` (list)
+    env = sub.add_parser(
+        "env",
+        help=argparse.SUPPRESS,
+        description="Omit ACTION to list this checkout's resolved environment.",
+        epilog=_VALUE_OUTPUT_HELP,
+    )
+    env.add_argument(
+        "--checkout",
+        default=None,
+        help="inspect or change another checkout instead of --cwd",
+    )
     envsub = env.add_subparsers(dest="env_cmd", metavar="ACTION")
     eg = envsub.add_parser("get", help="print one resolved value")
     eg.add_argument("key")
-    eg.add_argument("--checkout", default=None)
+    eg.add_argument(
+        "--checkout",
+        default=argparse.SUPPRESS,
+        help="inspect another checkout instead of --cwd",
+    )
     es = envsub.add_parser("set", help='set a manual value (for type="set" resources)')
     es.add_argument("assignment", metavar="KEY=VALUE")
-    es.add_argument("--checkout", default=None)
+    es.add_argument(
+        "--checkout",
+        default=argparse.SUPPRESS,
+        help="change another checkout instead of --cwd",
+    )
     er = envsub.add_parser("release", help="free this checkout's allocations (all, or one KEY)")
     er.add_argument("key", nargs="?")
-    er.add_argument("--checkout", default=None)
+    er.add_argument(
+        "--checkout",
+        default=argparse.SUPPRESS,
+        help="release another checkout instead of --cwd",
+    )
 
     sub.add_parser("gc", help=argparse.SUPPRESS)
 
@@ -259,7 +295,8 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     p.add_argument(
         "--framework",
         default=None,
-        help="override framework detection (any profile name, e.g. react-native|flutter|expo|vite|springboot)",
+        choices=tuple(PROFILES),
+        help="override framework detection with a known profile",
     )
 
     for verb in ("run", "start", "stop", "destroy"):
@@ -280,11 +317,22 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         if verb == "destroy":
             p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    dev = sub.add_parser("target", help=argparse.SUPPRESS)
+    dev = sub.add_parser(
+        "target",
+        help=argparse.SUPPRESS,
+        description="Omit ACTION to list this checkout's declared targets.",
+        epilog=_FORMAT_OUTPUT_HELP,
+    )
     devsub = dev.add_subparsers(dest="target_cmd", metavar="ACTION")
 
     ref = devsub.add_parser(
-        "refresh", help="destroy + recreate stale/missing sims & AVDs to latest (no boot)"
+        "refresh",
+        help="reconcile managed sims and AVDs without booting",
+        description=(
+            "Recreate stale or missing managed simulators and emulators to the latest runtime.\n"
+            "Destroy managed instances that are undeclared or belong to dead checkouts."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ref.add_argument(
         "platform",
@@ -307,13 +355,23 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         "--dry-run", action="store_true", dest="dry_run", help="list without deleting"
     )
 
-    add = devsub.add_parser("add", help="declare a variant in splashdown.local.toml")
+    add = devsub.add_parser(
+        "add",
+        help="declare a variant in splashdown.local.toml",
+        epilog=(
+            "Type-specific options:\n"
+            "  simulator: --model, --ios, --name\n"
+            "  emulator: --device, --image, --name\n"
+            "  device: --name, --id, --platform"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     add.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
     add.add_argument("variant", help="variant name (e.g. `default`, `small-screen`)")
-    add.add_argument("--model")
-    add.add_argument("--ios")
-    add.add_argument("--device")
-    add.add_argument("--image")
+    add.add_argument("--model", help="iOS simulator model, such as `iPhone 17`")
+    add.add_argument("--ios", help="iOS runtime version; defaults to the latest installed")
+    add.add_argument("--device", help="Android emulator hardware profile, such as `pixel_9`")
+    add.add_argument("--image", help="Android system image; defaults to the latest installed")
     add.add_argument(
         "--name",
         dest="sim_name",
@@ -334,7 +392,13 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     )
 
     rm = devsub.add_parser(
-        "remove", help="remove a variant from splashdown.local.toml (and destroy its sim)"
+        "remove",
+        help="remove a declared target variant",
+        description=(
+            "Local removal destroys the managed simulator/emulator by default.\n"
+            "Global removal edits configuration only until target refresh."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     rm.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
     rm_variant = rm.add_argument("variant")
@@ -450,6 +514,51 @@ def _consume_claim_notices(cwd: Path, registry: Registry) -> None:
     render_claim_notices(notices)
 
 
+def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.cmd == "init" and args.rescan:
+        incompatible = [
+            name
+            for active, name in (
+                (args.preset is not None, "preset"),
+                (args.loader is not None, "--loader"),
+                (args.overwrite, "--overwrite"),
+                (args.allow_nested, "--allow-nested"),
+                (args.no_sync, "--no-sync"),
+                (args.electron_profile is not None, "--electron-profile"),
+                (args.ios_scheme is not None, "--ios-scheme"),
+            )
+            if active
+        ]
+        if incompatible:
+            parser.error(f"init --rescan cannot be combined with: {', '.join(incompatible)}")
+
+    if (
+        args.cmd == "target"
+        and args.target_cmd == "remove"
+        and args.global_scope
+        and args.keep_instance
+    ):
+        parser.error("target remove --global cannot be combined with --keep-instance")
+
+    supports_format = (
+        args.cmd in {"sync", "status"}
+        or (args.cmd == "env" and args.env_cmd is None)
+        or (args.cmd == "target" and args.target_cmd in {None, "claim", "claims"})
+    )
+    if args.format is not None and not supports_format:
+        parser.error(
+            "--format is only supported by sync, status, bare env, target lists, and target claims"
+        )
+
+    supports_values = (
+        args.cmd in {"sync", "status"}
+        or (args.cmd == "env" and args.env_cmd is None)
+        or (args.cmd == "init" and not args.rescan and not args.no_sync)
+    )
+    if args.show_values and not supports_values:
+        parser.error("--show-values is only supported by sync, status, normal init, and bare env")
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(argv)
@@ -469,6 +578,7 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 �
 
     _install_completion(parser)
     args = parser.parse_args(argv)
+    _validate_parsed_args(parser, args)
 
     # Needs no checkout or registry — dispatch before touching either.
     if args.cmd == "completion":
