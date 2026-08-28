@@ -68,7 +68,10 @@ def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
     glob = GlobalConfig.load(_global_config_path())
     catalog = merged_targets(recipe, local, glob)
     if not catalog:
-        print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
+        if fmt == "json":
+            print("[]")
+        else:
+            print(f"(no targets declared in {RECIPE_NAME} or {LOCAL_NAME})", file=sys.stderr)
         return 0
 
     physical_targets = configured_physical_targets(cwd, allow_missing_recipe=True)

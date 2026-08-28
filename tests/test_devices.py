@@ -2291,6 +2291,13 @@ def test_target_inventory_marks_platform_agnostic_target_unavailable_for_partial
     assert row["owner"] == str(owner.resolve())
 
 
+def test_cli_target_empty_catalog_json_is_valid(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "target"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
 def test_device_prune_lists_only_unmanaged(registry, monkeypatch, capsys):
     fake_devices = {
         "iOS 18.5": [
