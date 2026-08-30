@@ -74,6 +74,14 @@ On top of it:
   CoreSimulator identifier (`18.5` → `…SimRuntime.iOS-18-5`).
 - `_ios_device_type_identifier` resolves the `model` field, or defaults to
   the lexically-last `iPhone … Pro` device type when none is given.
+- `ios_x86_64_target` walks runtimes newest-first for one whose `supportedArchitectures`
+  includes `x86_64`, then picks a model from that same runtime's `supportedDeviceTypes`,
+  preferring a name ending in ` Pro`. It returns `(version, model)` — both, because device types
+  are per-runtime, so pinning `ios` alone against a newer default model fails creation. Returns
+  `None` when no installed runtime carries an x86_64 slice.
+- `_ios_create_hint` explains a rejected creation: when the requested `model` is absent from
+  `_ios_runtime_models(runtime)` it names the models that runtime does have. It returns an empty
+  string when the model is valid, so unrelated `simctl` failures keep their original error.
 - `ios_ensure` is find-or-create: returns the existing sim's `(udid, state)`
   if present, otherwise `simctl create` and returns `(udid, "Shutdown")` — creation never boots.
 - `ios_boot` / `ios_shutdown` / `ios_destroy` wrap

@@ -104,7 +104,7 @@ The command runs via a shell, so pipes, `&&`, `$ENV`, and `cd` work. In a monore
 
 Variants with `ios = "latest"` (the default) reconcile on every `splash run`. If the registered sim's iOS is older than the current latest, splashdown destroys the old sim and creates a new one in place. A healthy pinned variant such as `ios = "17.0"` is not upgraded. If its registered instance is missing, refresh recreates it at that declared runtime.
 
-Some apps *require* a pinned older runtime: a pod that excludes arm64 for the simulator (e.g. Google ML Kit) only builds on an x86_64 sim, which only iOS ≤ 18.x provides. Against the default (newest, arm64-only) sim, `xcodebuild` fails with an opaque "Unable to find a destination". Pin `ios = "18.5"`. On a failed `react-native` iOS run, splash detects the exclusion and prints this hint.
+Some apps *require* a pinned older runtime: a pod that excludes arm64 for the simulator (e.g. Google ML Kit) only builds on an x86_64 sim, which only iOS ≤ 18.x provides. Against the default (newest, arm64-only) sim, `xcodebuild` fails with an opaque "Unable to find a destination". On a failed `react-native` iOS run, splash detects the exclusion and prints a ready-to-paste pin. Copy **both** values it gives you — `model` and `ios` — because a device model is runtime-specific: pinning an old runtime while leaving the model at the current default makes `simctl create` fail even though the runtime is installed. If no installed runtime has an x86_64 slice, the hint tells you to add an iOS 18.x runtime from Xcode > Settings > Components first.
 
 ```sh
 splash gc                           # drop dead-checkout entries (ports, vars, sims)

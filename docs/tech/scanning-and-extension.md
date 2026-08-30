@@ -202,10 +202,18 @@ plain `react-native`. The two native profiles guard against false positives by f
 A couple of profiles carry real integration logic worth noting:
 
 - **ViteProfile** (`profiles_web.py`) emits `WEB_DEV_PORT` unconditionally, and only adds
-  `API_DEV_PORT` (as a `{{ PORT }}` template) when the Vite config contains a `proxy`
-  block — apps that don't proxy don't need the API's port. Its
+  `API_DEV_PORT` (as a `{{ PORT }}` template) when the Vite config mentions `proxy` — apps that
+  don't proxy don't need the API's port. The test is a raw substring over the file text, so a
+  commented-out proxy still counts. Because `API_DEV_PORT` renders `{{ PORT }}`, a merged `PORT`
+  resource has to exist or init/rescan aborts and writes no recipe at all. Its
   wiring check rewrites `env.VAR` (the `loadEnv` idiom) to `process.env.VAR` so values
   loaded by the shell loader are visible.
+- **The native iOS profile fails open on ambiguity.** An `.xcodeproj` is not proof of an iOS
+  app — a macOS-only project matches the same globs but has no simulator to build for.
+  `_pbxproj_targets_ios` (`profiles_mobile.py`) accepts immediately on
+  `IPHONEOS_DEPLOYMENT_TARGET` or `SDKROOT = iphoneos`, and rejects only when the pbxproj names
+  macOS and nothing names iOS. An unreadable pbxproj, a target-silent one, or a workspace-only
+  layout is accepted, because deployment settings may live in an `.xcconfig` instead.
 - **SpringBootProfile** (`profiles_server.py`) ships a wiring check whose `autofix` is
   `None` — patching Spring config is too risky to auto-rewrite, so
   it's report-only with manual instructions.

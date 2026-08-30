@@ -422,9 +422,15 @@ unchanged.
 - **Some apps need an x86_64 simulator.** A pod that excludes arm64 for the simulator
   (`EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64`, e.g. Google ML Kit) can only build on an x86_64
   sim — which only iOS ≤ 18.x provides. The default `ios = "latest"` picks the newest (arm64-only)
-  runtime and `xcodebuild` fails with an opaque "Unable to find a destination". Pin
-  `[targets.simulator.default] ios = "18.5"`; on a failed `react-native` iOS run splash detects the
-  exclusion and prints this hint (`_rn_ios_arch_hint`).
+  runtime and `xcodebuild` fails with an opaque "Unable to find a destination". Pin **both**
+  `model` and `ios` under `[targets.simulator.default]`: a device model is runtime-specific, so
+  pairing a model the pinned runtime cannot create (iPhone 17 needs iOS 26) fails `simctl create`
+  with code 403 even when that runtime is installed. On a failed `react-native` iOS run splash
+  detects the exclusion and prints a ready-to-paste pair (`_rn_ios_arch_hint` →
+  `_x86_64_sim_advice`), derived from installed CoreSimulator metadata by `ios_x86_64_target()` —
+  the newest runtime carrying an x86_64 slice plus a model that runtime can actually instantiate.
+  When no installed runtime has an x86_64 slice it says so and points at Xcode > Settings >
+  Components rather than inventing a snippet.
 - **No `[targets.*]` table means no device — with one deliberate exception.** Sims/emulators come
   into existence only from declared `[targets.<type>.<variant>]` tables, created lazily by
   `splash run`/`start` (via `ensure_fresh_sim`). A checkout whose recipe declares only non-device
