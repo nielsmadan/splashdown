@@ -4,6 +4,43 @@ All notable user-facing changes to splashdown. While the project is on `0.x` it 
 [Semantic Versioning](https://semver.org) loosely: breaking changes may land in a minor
 release and are called out under **Breaking Changes**.
 
+## [0.17.0] - 2026-08-31
+
+### Features
+
+- Add agent instructions on init
+- Simplify init presets
+- Add Electron profile isolation
+- Select native iOS schemes
+- Add trusted worktree bootstrap
+- Improve physical device workflows
+- Guard nested project initialization
+- Add physical device claims
+- Show automation state in status
+
+### Bug Fixes
+
+- Explain which models an ios runtime can create
+- Pin a model the x86_64 runtime actually has
+- Narrow argcomplete shellcode type ignore for argcomplete 3.7.2
+- Make device lifecycle validation consistent
+- Centralize device teardown
+- Make scanner resource naming consistent
+- Handle unavailable platform tools
+- Harden checkout provisioning
+- Prevent output writes through links
+- Harden checkout state updates
+- Make device teardown registry-authoritative
+- Prevent checkout identity collisions
+- Bound platform tool operations
+- Redact operational values
+- Document env set sync step
+- Handle interrupted commands cleanly
+- Harden native mobile launches
+- Make CLI options truthful
+- Return JSON for empty target lists
+- Harden command behavior
+
 ## [0.16.0] - 2026-08-01
 
 ### Features
@@ -180,6 +217,7 @@ release and are called out under **Breaking Changes**.
 
 - --cwd/--format no longer clobbered when set before a subcommand
 
+[0.17.0]: https://github.com/nielsmadan/splashdown/compare/v0.16.0..v0.17.0
 [0.16.0]: https://github.com/nielsmadan/splashdown/compare/v0.15.0..v0.16.0
 [0.15.0]: https://github.com/nielsmadan/splashdown/compare/v0.14.0..v0.15.0
 [0.14.0]: https://github.com/nielsmadan/splashdown/compare/v0.13.0..v0.14.0
