@@ -144,8 +144,10 @@ defines seven extension points and flags; subclasses override the ones that appl
 - `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
   Init supplies the recipe's actual names after collision mangling. Common guidance is
   generated automatically for every app that references a port resource.
-- `run(cwd, recipe, info)` — build+install+launch on a device. Only mobile/native profiles
-  implement it and therefore satisfy the `RunnableProfile` protocol. Web/backend profiles
+- `run` — build+install+launch on a device. Only mobile/native profiles implement
+  [`RunnableProfile`](../../src/splashdown/inventory.py). Accept its optional `env` keyword
+  and forward that environment to every build, settings, install, and launch subprocess so
+  resolved resources override stale shell values. Web/backend profiles
   deliberately expose no launch capability, and command preflight rejects them before
   provisioning or booting a target.
 - `reads_dotenv` class flag — declares whether the framework picks up

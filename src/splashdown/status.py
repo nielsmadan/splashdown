@@ -18,6 +18,7 @@ from .devices import (
     physical_status,
 )
 from .errors import CapabilityError
+from .port_inspection import PortOwner, listening_processes
 from .recipe import GlobalConfig, LocalConfig, Recipe, _global_config_path, merged_targets
 from .registry import Registry, _port_in_use
 from .targets import _load_recipe_or_empty, target_source
@@ -28,6 +29,7 @@ class ResourceStatus:
     key: str
     value: str
     port_state: str
+    owners: tuple[PortOwner, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,8 @@ class _StatusContext:
     cache: dict[str, str] = field(default_factory=dict)
     warned: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
+    listeners: dict[int, tuple[PortOwner, ...]] | None = None
+    listeners_queried: bool = False
 
     def warn(self, error: CapabilityError) -> None:
         if error.capability in self.warned:
@@ -135,7 +139,7 @@ class _StatusContext:
 
 
 def _gather_resource_entries(
-    co_path: Path, *, co_exists: bool, resources: dict[str, str]
+    co_path: Path, *, co_exists: bool, resources: dict[str, str], context: _StatusContext
 ) -> tuple[ResourceStatus, ...]:
     port_keys: set[str] = set()
     if co_exists:
@@ -152,10 +156,19 @@ def _gather_resource_entries(
     entries: list[ResourceStatus] = []
     for key, value in sorted(resources.items()):
         state = ""
+        owners: tuple[PortOwner, ...] | None = None
         if key in port_keys:
             with suppress(ValueError):
                 state = "in use" if _port_in_use(int(value)) else "free"
-        entries.append(ResourceStatus(key, value, state))
+                if state == "free":
+                    owners = ()
+                else:
+                    if not context.listeners_queried:
+                        context.listeners = listening_processes()
+                        context.listeners_queried = True
+                    if context.listeners is not None:
+                        owners = context.listeners.get(int(value))
+        entries.append(ResourceStatus(key, value, state, owners))
     return tuple(entries)
 
 
@@ -400,7 +413,9 @@ def _gather_checkout(
     return CheckoutStatus(
         checkout,
         exists,
-        _gather_resource_entries(checkout_path, co_exists=exists, resources=resources),
+        _gather_resource_entries(
+            checkout_path, co_exists=exists, resources=resources, context=context
+        ),
         targets,
         _gather_automation(checkout_path, exists=exists, context=context),
     )

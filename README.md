@@ -141,6 +141,12 @@ If two target types use the same variant name, include the type. Type names and 
 prefixes take precedence in the first slot, so use the explicit two-token form for a colliding
 variant.
 
+`splash run` refreshes the recipe's resource outputs and passes every resolved resource to the
+launcher, overriding stale shell values. It works from shells without a mise or direnv loader.
+Physical-device runs warn about loopback addresses in resources and, for React Native and Expo
+on iOS, missing or unverifiable local-network descriptions. See the
+[device guide](https://splashdown.dev/devices/) for setup and preflight limits.
+
 Configured physical targets from `splashdown.toml`, `splashdown.local.toml`, and the global config
 also participate in machine-wide claims. Undeclared phones are never allocated. A physical run
 claims a free connected target before the framework builds. A target owned by another live

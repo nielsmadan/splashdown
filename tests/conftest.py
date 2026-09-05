@@ -45,6 +45,13 @@ def _no_loader_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: False)
 
 
+@pytest.fixture(autouse=True)
+def _no_watchman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from splashdown import runtime_checks
+
+    monkeypatch.setattr(runtime_checks, "watchman_available", lambda: False)
+
+
 @pytest.fixture
 def registry(tmp_path: Path) -> sd.Registry:
     return sd.Registry(

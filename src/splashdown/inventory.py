@@ -27,4 +27,11 @@ class ProjectInventory:
 
 @runtime_checkable
 class RunnableProfile(Protocol):
-    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int: ...
+    def run(
+        self,
+        cwd: Path,
+        recipe: Recipe,
+        destination: LaunchDestination,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int: ...

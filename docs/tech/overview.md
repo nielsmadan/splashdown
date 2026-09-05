@@ -23,6 +23,8 @@ is the canonical contributor summary; `CLAUDE.md` imports it. These docs go deep
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
   `cli_output.py` + `hooks.py` + `completion.py`: entry, parse, dispatch, typed status reports,
   output/error rendering, command handlers, and git-hook installation.
+  Port-owner snapshots live in `port_inspection.py`; bounded Watchman and device-network checks
+  live in `runtime_checks.py` and are composed by doctor and launch orchestration.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
   audited subprocess-failure contract.
 - [bootstrap.md](bootstrap.md) — clone trust, worktree completion, lifecycle locking, and the

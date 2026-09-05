@@ -285,6 +285,12 @@ counters, latest-OS caching, and deduplicated capability warnings. The renderer 
 detailed text blocks, JSON shaping, cleanup hints, and value redaction. Resource values are omitted
 unless `--show-values` is set; JSON format alone is never a disclosure opt-in.
 
+`port_inspection.listening_processes` supplies one optional, three-second `lsof` snapshot for
+bound ports across a detailed report. Records carry PID/command pairs; a failed or incomplete
+snapshot leaves owners unknown. Compact fleet output and reports without bound ports avoid this
+query. The renderer adds `owners` only to JSON port records and keeps the existing port-state
+strings separate from owner details.
+
 Detailed checkout records also carry an `AutomationStatus`. For live Git checkouts,
 `bootstrap.git_dirs` locates clone-wide trust and checkout-local completion state; the current
 recipe supplies bootstrap declaration. Completion is modeled as `not-declared`, `pending`,
@@ -333,6 +339,11 @@ checkout operation lock is held. Busy, disconnected, or ambiguous targets raise 
 or installation. An existing same-checkout claim is reused. The operation lock is released before
 `device_run`, and no launch return path releases the claim, including nonzero launch results.
 Physical `cmd_stop` and `cmd_destroy` remain hardware no-ops and do not release ownership.
+
+Before that gate, `cmd_run` resolves recipe resources and refreshes file writers under the same
+operation lock. It overlays resources on a copy of the ambient environment and passes it through
+`device_run` to built-in or custom launchers. Physical destinations receive advisory network
+checks from `runtime_checks.py` before dispatch. Run does not execute setup commands.
 
 Explicit platform operations propagate `CapabilityError`. The dispatcher sets `skip_unavailable`
 only for the `all` scope, so unscoped `target refresh` and `target prune` warn once and continue the

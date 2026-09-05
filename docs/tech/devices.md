@@ -243,8 +243,13 @@ there — running either at the workspace root silently does nothing useful.
 
 Runnable profiles structurally implement `RunnableProfile`; web/backend profiles do not expose a
 `run` method. `cmd_run` checks this capability (or a matching custom `[project] run`) before device
-reconciliation or boot. `launching.device_run` repeats the capability check as a defensive boundary, then
-delegates to `PROFILES[fw].run(app_dir, recipe, destination)` — the per-profile launcher consumes the typed destination above
+reconciliation or boot. When a recipe exists, it provisions resources and writes configured
+outputs under the checkout operation lock before physical claiming or managed-device creation.
+It overlays resolved resources on a copy of `os.environ` and passes that environment through
+`device_run`, the Profile, and `runners.py` to build, install, and launch subprocesses. Custom
+shell commands receive the same overlay. The operation lock is released before the app process.
+`launching.device_run` repeats the capability check as a defensive boundary, then
+delegates to the selected Profile's `run` — the per-profile launcher consumes the typed destination above
 (`flutter run -d <udid/serial>`, `xcodebuild`/`simctl`, `gradle`, etc.). The generic
 `device_status` / `device_shutdown` / `device_destroy` dispatchers in `devices.py` drive the
 `splash start/stop/destroy` subcommands by `dtype`.
@@ -257,6 +262,27 @@ deadline. Android-native launch reads the selected variant's `applicationId` fro
 `launch_activity` is configured, it resolves the installed package's LAUNCHER component through
 `cmd package resolve-activity` and passes that component to `am start -n`. User-authored
 `[project] run` commands remain shell boundaries and return the shell's exit status.
+`_validate_run_placeholders` rejects quoted, escaped, or embedded placeholders before resource
+provisioning and device claiming. Substitution accepts standalone unquoted arguments and applies
+`shlex.quote` to device values. Commands using placeholders are restricted to simple shell
+syntax: substitutions, compound expressions, special dollar quoting, comments, here-documents,
+and line continuations belong in a separate script that receives those arguments.
+
+Expo adds `--port` from the launch environment's `RCT_METRO_PORT` for both iOS and Android.
+React Native's post-launch Metro warning also reads that environment, so a stale ambient port
+cannot redirect the probe.
+
+`device_run_preflight` in `launching.py` calls the advisory parsers in `runtime_checks.py` only
+for physical destinations. Loopback detection scans resolved resource values and emits variable
+names without their values. Physical iOS React Native/Expo runs additionally inspect
+`ios/*/Info.plist` and `ios/Info.plist`, excluding the immediate `Pods` and `build` directories.
+Extension plists and bundles identified as `BNDL` or `FMWK` are skipped, so XCTest targets do not
+receive application permission advice.
+With no native plist, Expo falls back to `app.json` unless `app.config.*` is present. Plist parsing
+supports XML and binary data. Missing or blank `NSLocalNetworkUsageDescription`, build-variable
+substitution, dynamic Expo config, and unreadable or unrecognized data produce manual-verification
+warnings. These source checks neither inspect the built app nor query signing or granted Local
+Network permission, and never block the launcher.
 
 ## Key entry points
 

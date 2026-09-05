@@ -10,6 +10,7 @@ from .inventory import AppInventory
 from .launching import detect_framework, resolve_app_dir
 from .profiles import compose_wiring_checks
 from .recipe import Recipe
+from .runtime_checks import WATCHMAN_CHECK
 from .wiring import _HOOK_WIRING_CHECK, WiringCheck
 
 
@@ -67,6 +68,8 @@ def _resolve_check_targets(
     framework_targets = [
         (check, app_dir) for check in _wiring_checks_for_framework(framework, app_dir)
     ]
+    if framework in {"react-native", "expo"}:
+        project_targets.append((WATCHMAN_CHECK, cwd))
     existing_ids = {check.id for check, _ in framework_targets}
     targets = framework_targets + [
         (check, path) for check, path in project_targets if check.id not in existing_ids

@@ -247,13 +247,12 @@ def test_doctor_known_checkless_framework_reports_healthy(tmp_path, capsys):
 
 
 def test_doctor_checkless_but_not_env_only_keeps_the_shrug(tmp_path, capsys):
-    # expo declares RCT_METRO_PORT and runs Metro, so it genuinely needs config
-    # patching nobody has written yet. Reporting it green would be a false pass.
+    # Skipping Expo's optional Watchman check must not imply its Metro config was verified.
     assert not sd.PROFILES["expo"].env_only
     rc = sd.cmd_doctor(tmp_path, framework_override="expo")
     assert rc == 0
     err = capsys.readouterr().err
-    assert "no wiring checks defined" in err
+    assert "watchman-root: not applicable" in err
     assert "no wiring checks needed for" not in err
 
 

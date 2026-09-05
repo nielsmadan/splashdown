@@ -48,7 +48,10 @@ uses one shared context for health counters, latest-OS caching, and deduplicated
 warnings. Detailed reports contain typed checkout, resource, and target records:
 
 - Resource records come from `Registry.all_for`. A parseable recipe identifies port resources,
-  which get a live `in use` or `free` probe; other keys have no port state.
+  which get a live `in use` or `free` probe; other keys have no port state. Bound ports include
+  listener PIDs and command names from one optional `lsof` snapshot per detailed report. Missing
+  tooling, incomplete output, a three-second timeout, or a vanished listener leaves the owner
+  unavailable. The probe never collects process arguments or changes a process.
 - Local target records come from the merged recipe, local, and global declarations. The `all`
   detail view uses registry device rows instead. Both consume `device_health`, the same classifier
   used by refresh, so inspection and reconciliation agree about missing, orphaned, drifted, and
@@ -87,7 +90,8 @@ Local status is one checkout object; `status all` wraps checkout objects in `{"c
   `bootstrap_declared`, and `bootstrap_completion`. An unreadable recipe uses JSON `null` for
   `bootstrap_declared` and `"unavailable"` for completion while the other checkouts remain intact;
 - `resources`, whose default shape is `{key, port_state}` and whose `--show-values` shape also has
-  `value`;
+  `value`. Port records additionally contain `owners`: a list of `{pid, command}` objects, `[]`
+  for a free port, or `null` when ownership could not be determined;
 - `targets`, with type, variant, source, device name, status, and the health booleans.
 
 This makes the safe schema explicit: changing to JSON format alone does not reveal values.

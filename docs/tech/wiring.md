@@ -84,6 +84,11 @@ are no project checks to perform. Framework and project checks are combined by i
 hook check is emitted once. A resolved framework with no checks exits 0 with either the env-only
 positive verdict or a neutral "no checks defined" note.
 
+React Native and Expo add `WATCHMAN_CHECK` from `runtime_checks.py` as a project check after
+framework resolution. It receives the checkout root even when Profile checks receive a nested
+app directory. This keeps a valid monorepo-root watch from being mistaken for a watch above the
+checkout.
+
 The run loop in `doctor.py` walks each check:
 
 1. `applies(cwd)` false → print "not applicable", skip.
@@ -142,6 +147,13 @@ mode applied to hook replacements rather than a follow-up `chmod`.
   strips any static literal export, strips any prior sentinel block, then appends a
   sentinel-wrapped managed block (`_XCODE_BLOCK`, `wiring.py`): honor a value
   already set by `run-ios`, else read `splashdown.env`, else fall back to 8083.
+- **`watchman-root`** (`watchman_watch_root` in `runtime_checks.py`) — when Watchman is installed,
+  runs `watchman --no-spawn --no-local watch-list` with a three-second timeout. JSON must contain
+  a list of absolute root paths without an error. Resolved roots that are strict ancestors of
+  the resolved checkout are problems; the checkout itself and unrelated roots pass. Missing
+  Watchman makes the check not applicable, while query errors and unfamiliar responses remain
+  problems. It never starts a daemon or changes watches. Ancestor findings recommend reviewing
+  shared use before `watchman watch-del PATH` and restarting Metro.
 - **`vite-config-process-env`** (returned by `ViteProfile.wiring_checks` in
   `profiles_web.py`) —
   rewrites the `loadEnv` idiom `env.X` to `process.env.X` in `vite.config.{ts,js,mjs}`

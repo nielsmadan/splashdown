@@ -1,6 +1,6 @@
 # Provisioning
 
-How `provisioning.py` turns a parsed recipe into resolved values and writes them to disk. This is the engine behind `splash sync` and the post-checkout git hook.
+How `provisioning.py` turns a parsed recipe into resolved values and writes them to disk. This is the engine behind `splash sync`, `splash run`, and the post-checkout git hook.
 
 For the *user-facing* contract (what gets pinned, what `splashdown.env` looks like), see [ports-and-env.md](../features/ports-and-env.md). This doc covers the internals.
 
@@ -60,6 +60,12 @@ Entry: `provision()` at `provisioning.py`.
 `splash env set`, `splash env release`, or `splash deinit` waits until that output commit finishes.
 Operations for different checkouts remain independent, while the narrower per-file locks still
 coordinate their shared machine-wide TSVs.
+
+`cmd_run` uses the same resolution and writer functions under its checkout operation lock before
+device claims, reconciliation, or boot. The launch environment overlays every resolved resource
+on an ambient environment copy, including resources assigned to `none` or `stdout` writers.
+Run refreshes file writers without rendering sync output or executing setup commands, and releases
+the lock before the launcher. See [device launch](devices.md#framework-launch).
 
 Local-config creation inside this boundary is create-only. `_create_local_skeleton()`
 (`commands.py`) opens `splashdown.local.toml` with exclusive creation, no-follow where supported,

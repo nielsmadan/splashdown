@@ -186,7 +186,7 @@ def test_physical_discovery_once_per_run_including_busy_result(tmp_path, registr
         probes.append(platform)
         return (_PIXEL,)
 
-    def launch(_cwd, _recipe, destination):
+    def launch(_cwd, _recipe, destination, env):
         launches.append(destination["serial"])
         assert registry.all_claims()[0].hardware_id == destination["serial"]
         return 0
@@ -473,7 +473,7 @@ framework = "react-native"
     _stub_ios_boot_chain(monkeypatch)
     captured = {}
 
-    def _fake_run(cwd, recipe, info):
+    def _fake_run(cwd, recipe, info, env):
         captured["info"] = info
         return 0
 
@@ -500,7 +500,7 @@ framework = "react-native"
     _stub_ios_boot_chain(monkeypatch)
     captured = {}
 
-    def _fake_run(cwd, recipe, info):
+    def _fake_run(cwd, recipe, info, env):
         captured["info"] = info
         return 0
 
@@ -629,7 +629,7 @@ framework = "react-native"
     _stub_ios_boot_chain(monkeypatch)
     captured = {}
 
-    def _fake_run(cwd, recipe, info):
+    def _fake_run(cwd, recipe, info, env):
         captured["info"] = info
         return 0
 
@@ -2740,7 +2740,7 @@ def test_device_run_no_custom_command_uses_framework(tmp_path, monkeypatch):
     monkeypatch.setattr(sd.launching, "detect_framework", lambda cwd, r: "flutter")
     called = {}
 
-    def _fw_run(cwd, r, info):
+    def _fw_run(cwd, r, info, *, env=None):
         called["fw"] = True
         return 3
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from .catalog import PROFILES
@@ -9,6 +10,7 @@ from .errors import DeviceError
 from .inventory import RunnableProfile
 from .recipe import Recipe
 from .runners import _resolve_custom_run, run_custom_command
+from .runtime_checks import local_network_warnings, loopback_warnings
 
 
 def detect_framework(cwd: Path, recipe: Recipe) -> str:
@@ -62,6 +64,8 @@ def validate_device_run(cwd: Path, recipe: Recipe, kind: str | None) -> None:
     if kind is not None and _resolve_custom_run(recipe, kind) is not None:
         return
     if kind is None and recipe.project.get("run"):
+        _resolve_custom_run(recipe, "ios")
+        _resolve_custom_run(recipe, "android")
         return
     framework = detect_framework(cwd, recipe)
     profile = PROFILES.get(framework)
@@ -69,13 +73,35 @@ def validate_device_run(cwd: Path, recipe: Recipe, kind: str | None) -> None:
         raise DeviceError(f"framework `{framework}` does not support `splash run`")
 
 
-def device_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+def device_run(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, env: dict[str, str] | None = None
+) -> int:
     destination = as_launch_destination(destination)
-    rc = run_custom_command(cwd, recipe, destination)
+    rc = run_custom_command(cwd, recipe, destination, env=env)
     if rc is not None:
         return rc
     framework = detect_framework(cwd, recipe)
     profile = PROFILES.get(framework)
     if not isinstance(profile, RunnableProfile):
         raise DeviceError(f"framework `{framework}` does not support `splash run`")
-    return int(profile.run(resolve_app_dir(cwd, recipe, framework), recipe, destination))
+    return int(profile.run(resolve_app_dir(cwd, recipe, framework), recipe, destination, env=env))
+
+
+def device_run_preflight(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, resolved: dict[str, str]
+) -> None:
+    destination = as_launch_destination(destination)
+    if destination.owned:
+        return
+    warnings = loopback_warnings(resolved)
+    if destination.platform == "ios":
+        try:
+            framework = detect_framework(cwd, recipe)
+        except DeviceError:
+            framework = "unknown"
+        if framework in {"react-native", "expo"}:
+            warnings.extend(
+                local_network_warnings(resolve_app_dir(cwd, recipe, framework), framework)
+            )
+    for warning in warnings:
+        print(f"splashdown: device preflight: {warning}", file=sys.stderr)

@@ -31,6 +31,8 @@ from .device_types import (
 from .errors import DeviceError
 from .recipe import Recipe
 
+_MAX_PORT = 65535
+
 
 def _no_flag(label: str, value: str) -> str:
     """Reject a recipe-supplied value that argv would parse as an option (leading
@@ -60,11 +62,13 @@ def _destination_id(destination: LaunchDestination) -> str:
     return destination.identifier
 
 
-def _flutter_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+def _flutter_run(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
+) -> int:
     destination = as_launch_destination(destination)
     device_id = _destination_id(destination)
     with translate_tool_errors("flutter", "flutter", "install Flutter and add it to PATH"):
-        return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd)
+        return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd, env=env)
 
 
 def _rn_ios_flags(recipe: Recipe) -> list[str]:
@@ -90,8 +94,8 @@ def _rn_android_flags(recipe: Recipe) -> list[str]:
     return []
 
 
-def _warn_if_metro_unavailable() -> None:
-    raw_port = os.environ.get("RCT_METRO_PORT")
+def _warn_if_metro_unavailable(env: dict[str, str] | None = None) -> None:
+    raw_port = (os.environ if env is None else env).get("RCT_METRO_PORT")
     if raw_port is None:
         return
     try:
@@ -167,17 +171,19 @@ def _x86_64_sim_advice() -> str:
     )
 
 
-def _rn_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+def _rn_run(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
+) -> int:
     destination = as_launch_destination(destination)
     device_id = _destination_id(destination)
     if isinstance(destination, IOSDestination):
         cmd = ["npx", "react-native", "run-ios", "--udid", device_id, *_rn_ios_flags(recipe)]
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
-            rc = subprocess.call(cmd, cwd=cwd)
+            rc = subprocess.call(cmd, cwd=cwd, env=env)
         if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
             print(hint, file=sys.stderr)
         if rc == 0:
-            _warn_if_metro_unavailable()
+            _warn_if_metro_unavailable(env)
         return rc
     cmd = [
         "npx",
@@ -187,28 +193,94 @@ def _rn_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
         device_id,
         *_rn_android_flags(recipe),
     ]
-    env = os.environ.copy()
+    env = dict(os.environ if env is None else env)
     env["ANDROID_SERIAL"] = device_id
     with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
         rc = subprocess.call(cmd, cwd=cwd, env=env)
     if rc == 0:
-        _warn_if_metro_unavailable()
+        _warn_if_metro_unavailable(env)
     return rc
 
 
-def _expo_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
-    # No scheme/mode forwarding: `expo run:ios --scheme` means a URL scheme, not
-    # an Xcode scheme, so `[project.ios] scheme` can't be mapped cleanly here.
+def _expo_run(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
+) -> int:
     destination = as_launch_destination(destination)
     device_id = _destination_id(destination)
+    port = (os.environ if env is None else env).get("RCT_METRO_PORT")
+    if port and (not port.isdecimal() or not 1 <= int(port) <= _MAX_PORT):
+        raise DeviceError("RCT_METRO_PORT must be an integer between 1 and 65535")
+    port_args = ["--port", str(int(port))] if port else []
     if isinstance(destination, IOSDestination):
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
-            return subprocess.call(["npx", "expo", "run:ios", "--device", device_id], cwd=cwd)
+            return subprocess.call(
+                ["npx", "expo", "run:ios", "--device", device_id, *port_args], cwd=cwd, env=env
+            )
     with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
-        return subprocess.call(["npx", "expo", "run:android", "--device", device_id], cwd=cwd)
+        return subprocess.call(
+            ["npx", "expo", "run:android", "--device", device_id, *port_args], cwd=cwd, env=env
+        )
 
 
 _RUN_PLACEHOLDER = re.compile(r"\{(device_id|device_name|platform)\}")
+
+
+def _validate_run_placeholders(cmd: str) -> None:
+    if not _RUN_PLACEHOLDER.search(cmd):
+        return
+    separators = " \t\n;|&()<>"
+    quote = ""
+    boundary = True
+    index = 0
+    while index < len(cmd):
+        match = _RUN_PLACEHOLDER.match(cmd, index)
+        if match:
+            if (
+                quote
+                or not boundary
+                or (match.end() < len(cmd) and cmd[match.end()] not in separators)
+            ):
+                raise DeviceError(
+                    f"{match.group()} must be an unquoted, standalone shell argument; "
+                    "Splashdown quotes device values automatically"
+                )
+            index = match.end()
+            boundary = False
+            continue
+        char = cmd[index]
+        if char == "\\" and quote != "'":
+            if _RUN_PLACEHOLDER.match(cmd, index + 1):
+                raise DeviceError("custom run placeholders must not be backslash-escaped")
+            if cmd[index + 1 : index + 2] == "\n":
+                raise DeviceError(
+                    "custom run placeholders cannot share a command with shell line continuations; "
+                    "move that shell code into a script and pass placeholders as unquoted arguments"
+                )
+            boundary = False
+            index += 2
+            continue
+        if quote != "'" and (
+            char == "`"
+            or cmd.startswith(("$(", "${", "$[", "$'", '$"'), index)
+            or (
+                not quote
+                and ((char == "#" and boundary) or cmd.startswith(("<<", "((", "[["), index))
+            )
+        ):
+            raise DeviceError(
+                "custom run placeholders cannot share a command with shell substitutions, "
+                "compound expressions, comments, or here-documents; move that shell code into "
+                "a script and pass placeholders as unquoted arguments"
+            )
+        if char in {"'", '"'}:
+            if not quote:
+                quote = char
+            elif quote == char:
+                quote = ""
+            boundary = False
+        else:
+            boundary = not quote and char in separators
+        index += 1
 
 
 def _resolve_custom_run(recipe: Recipe, kind: str) -> str | None:
@@ -231,6 +303,7 @@ def _resolve_custom_run(recipe: Recipe, kind: str) -> str | None:
         raise DeviceError(f"`[project] run` command must be a string, got {type(cmd).__name__}")
     if not cmd.strip():
         raise DeviceError("`[project] run` command is empty")
+    _validate_run_placeholders(cmd)
     return cmd
 
 
@@ -238,6 +311,7 @@ def _substitute_run_placeholders(cmd: str, destination: DestinationLike) -> str:
     """Substitute {device_id}/{device_name}/{platform} in a custom run command.
     Device values are shell-quoted so spaces/quotes can't break the command;
     unknown `{...}` sequences are left untouched (shell brace-expansion survives)."""
+    _validate_run_placeholders(cmd)
     destination = as_launch_destination(destination)
     device_id = destination.identifier or ""
     if "{device_id}" in cmd and not device_id:
@@ -250,7 +324,9 @@ def _substitute_run_placeholders(cmd: str, destination: DestinationLike) -> str:
     return _RUN_PLACEHOLDER.sub(lambda m: values[m.group(1)], cmd)
 
 
-def run_custom_command(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int | None:
+def run_custom_command(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
+) -> int | None:
     """Run the user's custom command with the booted device identifier injected.
     Returns the exit code, or None when no custom command is configured (caller
     falls back to framework detection). Runs via a shell (like `[setup.*]`) so
@@ -260,7 +336,7 @@ def run_custom_command(cwd: Path, recipe: Recipe, destination: DestinationLike) 
     if cmd is None:
         return None
     cmd = _substitute_run_placeholders(cmd, destination)
-    return subprocess.call(cmd, shell=True, cwd=cwd)  # noqa: S602 — user-authored run command by design
+    return subprocess.call(cmd, shell=True, cwd=cwd, env=env)  # noqa: S602 — user-authored run command by design
 
 
 def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
@@ -318,7 +394,9 @@ def _ios_native_schemes(cwd: Path) -> list[str]:
     return schemes
 
 
-def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+def _ios_native_run(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
+) -> int:
     require_macos("native build support")
     cfg = recipe.project.get("ios") or {}
     scheme = cfg.get("scheme")
@@ -350,7 +428,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
     with translate_tool_errors(
         "ios", "xcodebuild", "install Xcode and select it with xcode-select"
     ):
-        rc = subprocess.call([*common, "build"], cwd=cwd)
+        rc = subprocess.call([*common, "build"], cwd=cwd, env=env)
     if rc != 0:
         return rc
 
@@ -362,6 +440,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
             operation="xcodebuild show build settings",
             timeout=MUTATION_TIMEOUT,
             cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -399,6 +478,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
                 ],
                 operation="devicectl install app",
                 timeout=MUTATION_TIMEOUT,
+                env=env,
             )
         if rc != 0:
             return rc
@@ -413,7 +493,8 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
                     "--device",
                     udid,
                     bundle_id,
-                ]
+                ],
+                env=env,
             )
 
     with translate_tool_errors("ios", "xcrun", "install Xcode command-line tools"):
@@ -421,6 +502,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
             ["xcrun", "simctl", "install", udid, str(app_path)],
             operation="simctl install app",
             timeout=MUTATION_TIMEOUT,
+            env=env,
         )
     if rc != 0:
         return rc
@@ -429,6 +511,7 @@ def _ios_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> 
             ["xcrun", "simctl", "launch", udid, bundle_id],
             operation="simctl launch app",
             timeout=MUTATION_TIMEOUT,
+            env=env,
         )
 
 
@@ -452,7 +535,9 @@ def _android_built_application_id(cwd: Path, module: str, variant: str) -> str |
     return None
 
 
-def _android_launcher_component(serial: str, app_id: str) -> str:
+def _android_launcher_component(
+    serial: str, app_id: str, *, env: dict[str, str] | None = None
+) -> str:
     try:
         with translate_tool_errors(
             "android", "adb", "install Android SDK platform-tools and add adb to PATH"
@@ -475,6 +560,7 @@ def _android_launcher_component(serial: str, app_id: str) -> str:
                 ],
                 operation="adb resolve launcher activity",
                 timeout=DISCOVERY_TIMEOUT,
+                env=env,
                 stderr=subprocess.DEVNULL,
             ).decode()
     except subprocess.CalledProcessError as error:
@@ -497,7 +583,9 @@ def _android_launcher_component(serial: str, app_id: str) -> str:
     )
 
 
-def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike) -> int:
+def _android_native_run(
+    cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
+) -> int:
     cfg = recipe.project.get("android") or {}
     module = _no_flag("android module", cfg.get("module", "app")).removeprefix(":")
     variant = _no_flag("android variant", cfg.get("variant", "debug"))
@@ -510,7 +598,7 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
     gradle_tool = gradle_cmd[0]
 
     install_task = f":{module}:install{variant[:1].upper()}{variant[1:]}"
-    env = {**os.environ, "ANDROID_SERIAL": serial}
+    env = {**(os.environ if env is None else env), "ANDROID_SERIAL": serial}
     with translate_tool_errors(
         "gradle",
         gradle_tool,
@@ -556,7 +644,7 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
         activity = _android_component("android launch_activity", activity)
         component = f"{app_id}/{activity}"
     else:
-        component = _android_launcher_component(serial, app_id)
+        component = _android_launcher_component(serial, app_id, env=env)
     with translate_tool_errors(
         "android", "adb", "install Android SDK platform-tools and add adb to PATH"
     ):
@@ -571,4 +659,5 @@ def _android_native_run(cwd: Path, recipe: Recipe, destination: DestinationLike)
                 "-n",
                 component,
             ],
+            env=env,
         )

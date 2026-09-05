@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import plistlib
 import shlex
 import socket
 import subprocess
@@ -252,6 +253,187 @@ def test_expo_run_ios_and_android(tmp_path, monkeypatch):
     flat = [" ".join(c) for c in calls]
     assert any("run:ios" in c and "--device U1" in c for c in flat)
     assert any("run:android" in c and "--device S1" in c for c in flat)
+
+
+@pytest.mark.parametrize(
+    ("framework", "destination"),
+    [
+        ("flutter", sd.IOSDestination("iPhone", "U1", owned=True)),
+        ("react-native", sd.IOSDestination("iPhone", "U1", owned=True)),
+        ("react-native", sd.AndroidDestination("Pixel", "S1", owned=True)),
+        ("expo", sd.IOSDestination("iPhone", "U1", owned=True)),
+        ("expo", sd.AndroidDestination("Pixel", "S1", owned=True)),
+        ("ios-native", sd.IOSDestination("iPhone", "U1", owned=True)),
+        ("android-native", sd.AndroidDestination("Pixel", "S1", owned=True)),
+    ],
+)
+def test_device_run_passes_explicit_environment_through_every_profile(
+    tmp_path, monkeypatch, framework, destination
+):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "Demo.xcodeproj").mkdir()
+    recipe = sd.Recipe(
+        {"project": {"framework": framework, "ios": {"scheme": "Demo"}}},
+        tmp_path / sd.RECIPE_NAME,
+    )
+    monkeypatch.setattr(sd.launching, "resolve_app_dir", lambda *_args: app)
+    monkeypatch.setattr(sd.runners, "require_macos", lambda *_args: None)
+    calls = []
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda argv, **kwargs: calls.append((argv, kwargs)) or 7
+    )
+    monkeypatch.setenv("RCT_METRO_PORT", "8081")
+    env = {"RCT_METRO_PORT": "8099", "TOKEN": "from recipe", "ANDROID_SERIAL": "old"}
+
+    assert sd.device_run(tmp_path, recipe, destination, env) == 7
+
+    argv, kwargs = calls[0]
+    expected = dict(env)
+    if destination.platform == "android" and framework in {"react-native", "android-native"}:
+        expected["ANDROID_SERIAL"] = "S1"
+    assert kwargs["env"] == expected
+    assert kwargs["cwd"] == app
+    if framework == "expo":
+        assert argv[-2:] == ["--port", "8099"]
+    assert env == {"RCT_METRO_PORT": "8099", "TOKEN": "from recipe", "ANDROID_SERIAL": "old"}
+
+
+@pytest.mark.parametrize("owned", [True, False], ids=["simulator", "physical"])
+def test_ios_native_success_passes_environment_to_every_subprocess(tmp_path, monkeypatch, owned):
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "com.demo"}))
+    recipe = sd.Recipe(
+        {
+            "project": {
+                "framework": "ios-native",
+                "ios": {"scheme": "Demo", "project": "Demo.xcodeproj"},
+            }
+        },
+        tmp_path / sd.RECIPE_NAME,
+    )
+    monkeypatch.setattr(sd.runners, "require_macos", lambda *_args: None)
+    env = {"API_URL": "http://192.168.1.2:8099", "TOKEN": "from recipe"}
+    stages = []
+
+    def execute(argv, **kwargs):
+        assert kwargs["env"] == env
+        if "-showBuildSettings" in argv:
+            stages.append("settings")
+            stdout = json.dumps(
+                [
+                    {
+                        "buildSettings": {
+                            "BUILT_PRODUCTS_DIR": str(tmp_path),
+                            "WRAPPER_NAME": "Demo.app",
+                        }
+                    }
+                ]
+            )
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
+        if "build" in argv:
+            stages.append("build")
+        elif "install" in argv:
+            stages.append("install")
+            assert argv[1] == ("simctl" if owned else "devicectl")
+            assert "DEVICE" in argv
+        elif "launch" in argv:
+            stages.append("launch")
+            assert argv[1] == ("simctl" if owned else "devicectl")
+            assert "DEVICE" in argv
+            assert argv[-1] == "com.demo"
+        else:
+            pytest.fail(f"unexpected subprocess: {argv}")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sd.runners.subprocess, "run", execute)
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda argv, **kwargs: execute(argv, **kwargs).returncode
+    )
+
+    assert (
+        sd.device_run(tmp_path, recipe, sd.IOSDestination("iPhone", "DEVICE", owned=owned), env)
+        == 0
+    )
+    assert stages == ["build", "settings", "install", "launch"]
+    assert env == {"API_URL": "http://192.168.1.2:8099", "TOKEN": "from recipe"}
+
+
+def test_android_native_success_passes_environment_to_every_subprocess(tmp_path, monkeypatch):
+    recipe = sd.Recipe({"project": {"framework": "android-native"}}, tmp_path / sd.RECIPE_NAME)
+    env = {"API_URL": "http://192.168.1.2:8099", "ANDROID_SERIAL": "old"}
+    expected = {**env, "ANDROID_SERIAL": "DEVICE"}
+    stages = []
+
+    def execute(argv, **kwargs):
+        assert kwargs["env"] == expected
+        if ":app:installDebug" in argv:
+            stages.append("install")
+        elif ":app:properties" in argv:
+            stages.append("properties")
+            return subprocess.CompletedProcess(argv, 0, "applicationId: com.demo\n", "")
+        elif "resolve-activity" in argv:
+            stages.append("resolve")
+            assert argv[:3] == ["adb", "-s", "DEVICE"]
+            return subprocess.CompletedProcess(argv, 0, b"com.demo/.MainActivity\n", b"")
+        elif "start" in argv:
+            stages.append("launch")
+            assert argv[:3] == ["adb", "-s", "DEVICE"]
+            assert argv[-1] == "com.demo/.MainActivity"
+        else:
+            pytest.fail(f"unexpected subprocess: {argv}")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sd.runners.subprocess, "run", execute)
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda argv, **kwargs: execute(argv, **kwargs).returncode
+    )
+    monkeypatch.setattr(
+        sd.runners.subprocess, "check_output", lambda argv, **kwargs: execute(argv, **kwargs).stdout
+    )
+
+    assert (
+        sd.device_run(tmp_path, recipe, sd.AndroidDestination("Pixel", "DEVICE", owned=False), env)
+        == 0
+    )
+    assert stages == ["install", "properties", "resolve", "launch"]
+    assert env == {"API_URL": "http://192.168.1.2:8099", "ANDROID_SERIAL": "old"}
+
+
+def test_metro_probe_uses_the_child_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("RCT_METRO_PORT", "8081")
+    monkeypatch.setattr(sd.runners.subprocess, "call", lambda *_args, **_kwargs: 0)
+    addresses = []
+    monkeypatch.setattr(
+        sd.runners.socket,
+        "create_connection",
+        lambda address, **_kwargs: addresses.append(address) or nullcontext(),
+    )
+
+    sd.runners._rn_run(
+        tmp_path,
+        sd.Recipe({}, tmp_path / "x.toml"),
+        {"kind": "ios", "udid": "U1"},
+        env={"RCT_METRO_PORT": "8099"},
+    )
+
+    assert addresses == [("localhost", 8099)]
+
+
+@pytest.mark.parametrize("port", ["--help", "not-a-port", "0", "65536"])
+def test_expo_rejects_invalid_metro_port_before_launch(tmp_path, monkeypatch, port):
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda *_args, **_kwargs: pytest.fail("unexpected launch")
+    )
+
+    with pytest.raises(sd.DeviceError, match="RCT_METRO_PORT must be an integer"):
+        sd.runners._expo_run(
+            tmp_path,
+            sd.Recipe({}, tmp_path / sd.RECIPE_NAME),
+            sd.IOSDestination("iPhone", "U1", owned=True),
+            env={"RCT_METRO_PORT": port},
+        )
 
 
 def _app(tmp_path, profile):
@@ -708,6 +890,66 @@ def test_run_custom_command_executes_with_shell(tmp_path, monkeypatch):
     assert captured["cmd"] == "yarn rn run-ios --udid ABCD"
     assert captured["kwargs"].get("shell") is True
     assert captured["kwargs"].get("cwd") == tmp_path
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        'echo "{device_name}"',
+        "echo '{device_name}'",
+        "echo --name={device_name}",
+        "echo {device_name}/suffix",
+        r"echo \{device_name}",
+        'echo prefix" {device_name} "suffix',
+        'echo "$(printf %s {device_name})"',
+        "echo `printf %s {device_name}`",
+        "echo ${VALUE:- {device_name} }",
+        "echo $(( {device_name} ))",
+        "echo $[ {device_name} ]",
+        "(( {device_name} ))",
+        "[[ {device_name} -eq 0 ]]",
+        "echo $'escaped\\' {device_name} '",
+        "cat <<EOF\n{device_name}\nEOF",
+        "echo ok # {device_name}",
+        "echo $\\\n(( {device_name} ))",
+    ],
+)
+def test_custom_run_rejects_unsafe_placeholder_context_before_execution(
+    tmp_path, monkeypatch, template
+):
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *_args, **_kwargs: pytest.fail("unsafe command executed"),
+    )
+    recipe = _recipe(tmp_path, {"run": template})
+
+    with pytest.raises(sd.DeviceError, match=r"placeholder|standalone"):
+        sd.runners.run_custom_command(
+            tmp_path, recipe, sd.IOSDestination("Alice's iPhone", "DEVICE", owned=False)
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["My iPhone", "Alice's iPhone", "$(printf EXECUTED)", "`printf EXECUTED`", "first\nsecond"],
+)
+def test_custom_run_preserves_device_name_as_one_literal_argument(tmp_path, capfd, name):
+    recipe = _recipe(
+        tmp_path, {"run": "printf '%s\\n' {device_name} | cat && printf '%s' $RUN_CHECK"}
+    )
+
+    assert (
+        sd.runners.run_custom_command(
+            tmp_path,
+            recipe,
+            sd.IOSDestination(name, "DEVICE", owned=False),
+            env={"RUN_CHECK": "complete"},
+        )
+        == 0
+    )
+
+    assert capfd.readouterr().out == f"{name}\ncomplete"
 
 
 def test_run_custom_command_none_when_no_run(tmp_path, monkeypatch):

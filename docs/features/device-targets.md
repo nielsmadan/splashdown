@@ -64,8 +64,11 @@ reconcile leaves the new sim **Shutdown** — it never boots anything, so the OS
 "too many booted simulators" limit never applies during a fleet-wide refresh.
 
 **Run vs start vs stop vs destroy.** `cmd_run` validates that the selected profile has a launcher
-(or that `[project] run` supplies one) before it reconciles or boots anything. It then calls
-`ensure_fresh_sim`, boots (`ios_boot` / `android_boot`), and builds + launches via `device_run`.
+(or that `[project] run` supplies one), then provisions resources and refreshes configured env
+outputs when a recipe exists. Resolved values override the inherited environment in the child
+launcher, including custom commands. It then calls `ensure_fresh_sim`, boots (`ios_boot` /
+`android_boot`), and builds + launches via `device_run`. Provisioning, output writes, and device
+selection/boot share the checkout operation lock; the launcher runs after it is released.
 `cmd_start` reconciles + boots but skips the build/launch. `cmd_stop`
 shuts the registered instance down but preserves it. `cmd_destroy` deletes the registered instance
 and its registry row, gated behind a `[y/N]` prompt (`_confirm`,
@@ -125,6 +128,8 @@ simctl install`/`launch`, or `xcrun devicectl` for a physical device — `_ios_n
 `adb shell am start` — `_android_native_run`, `src/splashdown/runners.py`).
 Missing fixed launchers and non-executable SDK tools become actionable errors without a traceback;
 a launcher that starts and exits nonzero keeps its normal exit status.
+Expo forwards `RCT_METRO_PORT` from the launch environment through an explicit `--port` flag on
+both platforms.
 
 **Auto-upgrade after an Xcode/SDK bump (UC4).** Two paths:
 1. *Lazy*, on `splash run`: `ensure_fresh_sim` recreates the one sim being run if its `latest` OS
@@ -167,12 +172,19 @@ them in recipe, local, then global declaration order. Xcode/ADB hardware that ma
 target is never selected. Discovery takes one snapshot per requested platform, with iOS and Android
 running concurrently for `any`; matching applies `platform`/`id`/`name` selectors to that snapshot.
 
-`cmd_run` validates the launcher, resolves the target, and calls `claim_configured_target` while
-the checkout operation lock is held. A free connected phone is claimed before `device_run`; the
-current owner's claim is idempotent; another live owner's claim and a disconnected or ambiguous
+`cmd_run` validates the launcher, refreshes resources and outputs, resolves the target, and calls
+`claim_configured_target` while the checkout operation lock is held. A free connected phone is
+claimed before `device_run`; the current owner's claim is idempotent. Another live owner's claim
+and a disconnected or ambiguous
 target fail before framework build/install. The launch runs after the operation lock is released,
 but its success or failure never releases the claim. Catalog identity catches the same declaration
 across linked worktrees, while `(platform, hardware_id)` catches aliases that resolve to one phone.
+
+Before physical launch, advisory checks flag loopback addresses in resolved resource values.
+Physical iOS runs for React Native/Expo also inspect app plists, or Expo's static `app.json`
+fallback, for `NSLocalNetworkUsageDescription`. Unreadable, dynamic, or unrecognized configuration
+remains unverified. Warnings do not block launch or certify signing, reachability, or permission
+state. Parsing and scope are documented in [Device lifecycle](../tech/devices.md#framework-launch).
 
 `target claim VARIANT`, `target claim --available ios|android|any`, `target claims`, and
 `target release VARIANT|--all` expose allocation and inspection. Generic allocation skips
@@ -415,10 +427,8 @@ unchanged.
   variant's AGP output metadata when unset, then falls back to a Gradle properties query for
   older builds. Set it explicitly only when the build does not emit usable metadata.
 - **`expo` forwards no scheme or mode, deliberately.** `_expo_run` (`src/splashdown/runners.py`)
-  passes only `--device`. `expo run:ios --scheme` names a *URL* scheme, not an Xcode scheme, so
-  `[project.ios] scheme` has no correct mapping here — don't "fix" the asymmetry with react-native by
-  forwarding it. Use `[project] run` (the custom-run escape hatch) for an Expo app that needs extra
-  flags.
+  passes `--device` and an explicit `--port` when `RCT_METRO_PORT` is set. Use `[project] run`
+  (the custom-run escape hatch) for an Expo app that needs extra flags.
 - **Some apps need an x86_64 simulator.** A pod that excludes arm64 for the simulator
   (`EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64`, e.g. Google ML Kit) can only build on an x86_64
   sim — which only iOS ≤ 18.x provides. The default `ios = "latest"` picks the newest (arm64-only)

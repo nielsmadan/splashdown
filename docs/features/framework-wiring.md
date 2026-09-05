@@ -31,7 +31,8 @@ and rewrite an arbitrary Electron entrypoint.
 ## Behavior
 
 Checks come from the resolved app Profile plus project-level checks such as Compose and bootstrap
-hook readiness. They run in the resolved app directory, not blindly at the repository root.
+hook readiness. Profile checks run in the resolved app directory. Project checks run at the
+checkout root, including the Watchman check added for React Native and Expo.
 Project-level checks still run when framework detection is ambiguous. Duplicate checks are removed
 by id.
 
@@ -55,6 +56,7 @@ extension rules live in [Framework wiring engine](../tech/wiring.md).
 | --- | --- | --- |
 | Post-checkout hook | Exact event-aware Lefthook, Husky, or native hook readiness | Safe repair, except configured `core.hooksPath` |
 | React Native Metro | Metro config, package scripts, and `ios/.xcode.env` consume `RCT_METRO_PORT` | Safe recognized shapes; manual otherwise |
+| React Native/Expo Watchman | No existing Watchman root is an ancestor of the checkout | Report-only when Watchman is installed |
 | Vite | Shell environment reads and use of `WEB_DEV_PORT` | Env-read rewrite; port consumption report-only |
 | Astro | Top-level dev server port consumes `WEB_DEV_PORT` | Safe recognized object shapes |
 | Angular | `ng serve` receives `--port $WEB_DEV_PORT` | Safe package-script rewrite |
@@ -64,10 +66,10 @@ extension rules live in [Framework wiring engine](../tech/wiring.md).
 | Laravel | Backend environment plus Vite asset-server port | Vite port check when Vite is present |
 | ASP.NET Core | Launch profiles do not override the inherited HTTP port | Safe JSON rewrite on .NET 8+; older TFMs report-only |
 
-React Native and native iOS/Android Profiles declare checks. Expo and Flutter currently declare no
-wiring checks; doctor reports that neutral state rather than claiming their configuration was
-verified. Environment-only web/server Profiles need no file rewrites and receive an explicit
-env-only success verdict.
+React Native and native iOS/Android Profiles declare checks. Expo's doctor coverage is the
+project-level Watchman check. Flutter declares no wiring checks; absent project checks, doctor
+reports that neutral state. Environment-only web/server Profiles need no file rewrites and
+receive an explicit env-only success verdict.
 
 ## Configuration
 
@@ -87,6 +89,11 @@ env-only success verdict.
   layouts without their parsers would be riskier than giving an exact manual instruction.
 - **iOS Metro port changes need a rebuild.** The port becomes part of the iOS binary; repairing
   `.xcode.env` does not change an already-built app.
+- **Watchman checks do not change watches.** Doctor queries the existing daemon within three
+  seconds and skips absent Watchman. Invalid responses and failed queries are problems. A watch
+  at the checkout root or no ancestor watch passes this check without proving Metro readiness.
+  An ancestor finding asks the user to review shared use before removing that watch and
+  restarting Metro.
 - **A configured `core.hooksPath` is never taken over.** Doctor reports it and prints manual
   event-forwarding instructions even in fix mode.
 - **Vite's env rewrite is narrow.** It changes matched `env.X` reads to `process.env.X` but leaves

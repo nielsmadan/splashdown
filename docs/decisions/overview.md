@@ -10,3 +10,4 @@ history. Current behavior remains canonical in `docs/features/` and `docs/tech/`
 - [0004: Organize the CLI around daily verbs and noun groups](0004-organize-the-cli-around-daily-verbs-and-noun-groups.md)
 - [0005: Separate published user docs from builder docs](0005-separate-published-user-docs-from-builder-docs.md)
 - [0006: Build the user site with Zensical](0006-build-the-user-site-with-zensical.md)
+- [0007: Bound device-run diagnostics to established facts](0007-bound-device-run-diagnostics.md)

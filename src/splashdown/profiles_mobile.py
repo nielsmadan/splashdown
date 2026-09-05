@@ -25,12 +25,6 @@ def _detect_rn(cwd: Path) -> bool:
     return "react-native" in package_dependencies(cwd)
 
 
-# `[project] run` (or a `[project.run]` table) overrides the framework's built-in
-# launcher — the escape hatch for a specific package manager (yarn/pnpm), a
-# monorepo subdir, or any non-standard invocation. Mobile-only (that's the only
-# place `splash run` exists). See _resolve_custom_run / run_custom_command.
-
-
 def _has_js_or_flutter(cwd: Path) -> bool:
     return _detect_flutter(cwd) or _detect_expo(cwd) or _detect_rn(cwd)
 
@@ -113,8 +107,15 @@ class ReactNativeProfile(Profile):
             "- Launch with `splash run simulator` or `splash run emulator`.",
         ]
 
-    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
-        return _rn_run(cwd, recipe, destination)
+    def run(
+        self,
+        cwd: Path,
+        recipe: Recipe,
+        destination: LaunchDestination,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        return _rn_run(cwd, recipe, destination, env=env)
 
 
 class ExpoProfile(Profile):
@@ -139,8 +140,15 @@ class ExpoProfile(Profile):
             "- Launch with `splash run simulator` or `splash run emulator`.",
         ]
 
-    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
-        return _expo_run(cwd, recipe, destination)
+    def run(
+        self,
+        cwd: Path,
+        recipe: Recipe,
+        destination: LaunchDestination,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        return _expo_run(cwd, recipe, destination, env=env)
 
 
 class FlutterProfile(Profile):
@@ -152,8 +160,15 @@ class FlutterProfile(Profile):
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
 
-    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
-        return _flutter_run(cwd, recipe, destination)
+    def run(
+        self,
+        cwd: Path,
+        recipe: Recipe,
+        destination: LaunchDestination,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        return _flutter_run(cwd, recipe, destination, env=env)
 
 
 class IosNativeProfile(Profile):
@@ -168,8 +183,15 @@ class IosNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
-    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
-        return _ios_native_run(cwd, recipe, destination)
+    def run(
+        self,
+        cwd: Path,
+        recipe: Recipe,
+        destination: LaunchDestination,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        return _ios_native_run(cwd, recipe, destination, env=env)
 
 
 class AndroidNativeProfile(Profile):
@@ -184,5 +206,12 @@ class AndroidNativeProfile(Profile):
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
-    def run(self, cwd: Path, recipe: Recipe, destination: LaunchDestination) -> int:
-        return _android_native_run(cwd, recipe, destination)
+    def run(
+        self,
+        cwd: Path,
+        recipe: Recipe,
+        destination: LaunchDestination,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        return _android_native_run(cwd, recipe, destination, env=env)

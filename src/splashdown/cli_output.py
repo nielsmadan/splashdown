@@ -116,6 +116,12 @@ def _checkout_payload(checkout: CheckoutStatus, *, show_values: bool) -> dict[st
             "key": resource.key,
             "port_state": resource.port_state,
         }
+        if resource.port_state:
+            item["owners"] = (
+                [asdict(owner) for owner in resource.owners]
+                if resource.owners is not None
+                else None
+            )
         if show_values:
             item["value"] = resource.value
         resources.append(item)
@@ -163,6 +169,12 @@ def _render_status_block(checkout: CheckoutStatus, *, show_all: bool, show_value
         print("  (none)", file=sys.stderr)
     for resource in checkout.resources:
         suffix = f"  [{resource.port_state}]" if resource.port_state else ""
+        if resource.owners:
+            suffix += " " + ", ".join(
+                f"pid {owner.pid} ({owner.command})" for owner in resource.owners
+            )
+        elif resource.port_state == "in use":
+            suffix += " (owner unavailable)"
         label = f"{resource.key}={resource.value}" if show_values else resource.key
         print(f"  {label}{suffix}", file=sys.stderr)
     print("targets:", file=sys.stderr)

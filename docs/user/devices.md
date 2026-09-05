@@ -14,6 +14,11 @@ splash destroy [type] [variant]    # delete the device + its registry entry
 
 Both `type` and `variant` are optional. `type` is inferred when exactly one project target type is declared. An explicit, exact variant name also infers its type when that name exists under only one type in the merged project, local, and global catalog, so `splash run iphone17` can select a global physical device from a simulator-enabled project. A name shared by multiple types requires an explicit `simulator`, `emulator`, or `device`. Canonical type names and enabled project type prefixes win over same-named variants in the first slot. Name the type explicitly to select such a variant. Without an explicit variant, it defaults to `default`, then to the only declared variant if there's just one, else errors with the list of choices.
 
+With a `splashdown.toml` present, `splash run` provisions the checkout's resources and refreshes
+generated environment files before claiming or booting a device. It passes the resolved values
+directly to the framework or custom launcher, overriding stale values inherited from the shell.
+You can run it immediately after changing the recipe without reloading your shell environment.
+
 ## Platform support
 
 | Target | macOS | Linux |
@@ -64,7 +69,7 @@ Framework auto-detected for `run`:
 
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`. Optional `[project.ios] scheme`/`mode` and `[project.android] mode` forward `--scheme`/`--mode` to select the Xcode scheme / build variant (e.g. a `*Dev` scheme that copies `.env.development`).
-- `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`
+- `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`, with explicit `--port` when `RCT_METRO_PORT` is set
 - `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). `splash init` records the sole shared scheme automatically, prompts for a choice when interactive, or accepts `--ios-scheme=NAME`.
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Conventional modules such as `include(":app")` are detected automatically. After installation, splashdown reads the selected variant's application ID from AGP's build metadata. `[project.android] application_id` is only needed for non-standard builds. `module`, `variant`, and `launch_activity` are also configurable there.
 - Override via `[project] framework = "..."`
@@ -99,6 +104,20 @@ Placeholders substituted before the command runs (device values are shell-quoted
 | `{platform}` | `ios` or `android` |
 
 The command runs via a shell, so pipes, `&&`, `$ENV`, and `cd` work. In a monorepo, point it at the app: `[project.run] ios = "yarn --cwd apps/mobile react-native run-ios --udid {device_id}"`.
+
+Write placeholders as standalone, unquoted arguments, such as `--device {device_id}`.
+Splashdown adds the shell quoting needed for device names containing spaces or apostrophes.
+Quoted, escaped, and embedded forms such as `"{device_name}"` or `--device={device_id}` are
+rejected before provisioning or claiming a device.
+
+For commands using placeholders, put shell substitutions (`$(...)`, `${...}`, or backticks),
+compound expressions, special dollar quoting, comments, here-documents, and line continuations
+in a script. Pass the device values to that script as arguments:
+
+```toml
+[project]
+run = "./scripts/run-device.sh {device_id} {device_name}"
+```
 
 ## Auto-upgrade: no more manual `mksim`/`simctl delete` after Xcode updates
 
@@ -139,6 +158,41 @@ explicit recreation. Targets with an explicit `name` are unchanged.
 `splash run pixel` resolves a configured connected phone, claims it for this checkout, then builds
 and launches. Discovery uses `xcrun devicectl` for iOS with Xcode 15 or later and `adb devices` for
 Android. The native UDID or serial is passed straight to the framework launcher.
+
+Before launch, Splashdown warns when resolved resource values contain loopback addresses such as
+`localhost`, `127.0.0.1`, or `::1`. On a phone these refer to the phone itself. Use your development
+machine's reachable LAN address for host services, or verify your port forwarding. The warning
+names the affected variables without printing their values.
+
+For React Native and Expo on a physical iPhone, it also checks discoverable app `Info.plist`
+files for a nonempty `NSLocalNetworkUsageDescription`. For Expo without native plists, it checks
+`expo.ios.infoPlist` in `app.json`. Dynamic config, build-variable descriptions, unreadable files,
+and unfamiliar shapes require manual verification of the built app. These checks are advisory
+and let the launch continue. They do not verify signing, network reachability, or the phone's
+Local Network permission. Rebuild after changing the description and allow Local Network access
+on the phone.
+
+To keep an API host per checkout, use an explicit host resource and a template:
+
+```toml
+[resources.DEV_HOST]
+type = "set"
+default = "localhost"
+
+[resources.API_BASE_URL]
+type = "template"
+template = "http://{{DEV_HOST}}:3000"
+```
+
+Before a phone run, set `DEV_HOST` to your computer's reachable LAN address, for example
+`splash env set DEV_HOST=192.168.1.23`. The next `splash run` refreshes `API_BASE_URL` and the
+generated files. Update the value after a network change. Use `splash env set DEV_HOST=localhost`
+to restore localhost for an iOS simulator. Splashdown does not select a LAN interface automatically.
+
+For a first iPhone build, open the app's Xcode workspace, select the intended scheme and phone,
+and check Signing & Capabilities for the application target. Select the correct team and resolve
+Xcode's certificate or provisioning-profile errors before a long CLI build. Splashdown currently
+does not validate the selected signing identity or provisioning profile.
 
 Declare physical targets in the committed recipe, the per-checkout local file, or the global
 config. Targets from all three sources participate in claims. Undeclared phones discovered by

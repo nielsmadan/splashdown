@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -35,7 +36,8 @@ from .devices import (
     ensure_fresh_sim,
 )
 from .errors import CapabilityError, DeviceError, UsageError
-from .launching import device_run, validate_device_run
+from .launching import device_run, device_run_preflight, validate_device_run
+from .provisioning import provision, write_outputs
 from .recipe import (
     GlobalConfig,
     LocalConfig,
@@ -436,6 +438,11 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
         variant, spec, recipe = _resolve_variant_for_cli(cwd, dtype, variant_arg)
         kind = _PLATFORM_OF_DTYPE.get(dtype) or spec.get("platform")
         validate_device_run(cwd, recipe, kind)
+        resolved = {}
+        if (cwd / RECIPE_NAME).exists():
+            resolved = provision(cwd, registry=registry, recipe=recipe)
+            write_outputs(cwd, recipe, resolved)
+        env = {**os.environ, **resolved}
         if dtype == "device":
             target = resolve_physical_target(cwd, variant)
             selection = claim_configured_target(registry, cwd, target)
@@ -444,6 +451,7 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
             destination = as_launch_destination(
                 ensure_fresh_sim(registry, cwd, dtype, variant, spec)
             )
+        device_run_preflight(cwd, recipe, destination, resolved)
         if destination.owned:
             if isinstance(destination, IOSDestination):
                 ios_boot(destination.identifier, _ios_current_state(destination.identifier))
@@ -452,7 +460,7 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
                     destination,
                     identifier=android_boot(destination.name, state_dir=registry.state_dir),
                 )
-    return int(device_run(cwd, recipe, destination))
+    return int(device_run(cwd, recipe, destination, env))
 
 
 def cmd_start(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str | None) -> int:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
+import sys
 
 import pytest
 
@@ -13,6 +16,35 @@ from conftest import (
     _stub_physical,
     _write_physical_recipe,
 )
+
+
+@pytest.mark.parametrize("platform", ["ios", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "[project]\nrun = 'echo \"{device_name}\"'\n",
+        "[project.run]\nios = 'echo \"{device_name}\"'\n",
+    ],
+)
+def test_run_rejects_quoted_placeholders_before_provisioning_or_claiming(
+    tmp_path, registry, monkeypatch, platform, command
+):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        command
+        + '[targets.device.iphone]\nid = "PHONE"\n'
+        + (f'platform = "{platform}"\n' if platform else "")
+    )
+    for function in ("provision", "claim_configured_target", "device_run"):
+        monkeypatch.setattr(
+            sd.target_commands,
+            function,
+            lambda *_args, **_kwargs: pytest.fail(
+                "invalid command reached provisioning or device work"
+            ),
+        )
+
+    with pytest.raises(sd.DeviceError, match="unquoted, standalone shell argument"):
+        sd.cmd_run(tmp_path, registry, "device", "iphone")
 
 
 def test_physical_run_claims_snapshot_before_launch_and_reuses_its_claim(tmp_path, monkeypatch):
@@ -30,7 +62,7 @@ def test_physical_run_claims_snapshot_before_launch_and_reuses_its_claim(tmp_pat
     )
     captured = {}
 
-    def _fake_run(cwd, recipe, info):
+    def _fake_run(cwd, recipe, info, env):
         captured["info"] = info
         claim = sd.Registry().all_claims()[0]
         assert claim.hardware_id == info["udid"]
@@ -93,7 +125,7 @@ def test_physical_run_claims_targets_from_every_configuration_source(
     monkeypatch.setattr(
         sd.target_commands,
         "device_run",
-        lambda _cwd, _recipe, info: launched.append(info["serial"]) or 0,
+        lambda _cwd, _recipe, info, env: launched.append(info["serial"]) or 0,
     )
 
     assert sd.main(["--cwd", str(tmp_path), "run", "device", "pixel"]) == 0
@@ -605,7 +637,9 @@ def test_run_releases_operation_lock_before_launch(tmp_path, registry, monkeypat
 
     active = False
     events = []
-    recipe = sd.Recipe({}, tmp_path / sd.RECIPE_NAME)
+    recipe_path = tmp_path / sd.RECIPE_NAME
+    recipe_path.write_text('[resources.RUN_VALUE]\ntype = "set"\ndefault = "provisioned"\n')
+    recipe = sd.Recipe.load(recipe_path)
 
     @contextmanager
     def track_lock(target):
@@ -622,9 +656,12 @@ def test_run_releases_operation_lock_before_launch(tmp_path, registry, monkeypat
 
     def boot(*_args):
         assert active is True
+        assert registry.all_for(str(tmp_path.resolve())) == {"RUN_VALUE": "provisioned"}
+        assert "RUN_VALUE=provisioned" in (tmp_path / sd.ENV_FILE_NAME).read_text()
 
-    def launch(*_args):
+    def launch(_cwd, _recipe, _destination, env):
         assert active is False
+        assert env["RUN_VALUE"] == "provisioned"
         return 0
 
     monkeypatch.setattr(registry, "operation_lock", track_lock)
@@ -643,6 +680,70 @@ def test_run_releases_operation_lock_before_launch(tmp_path, registry, monkeypat
     assert sd.target_commands.cmd_run(tmp_path, registry, None, None) == 0
     target = str(tmp_path.resolve())
     assert events == [("enter", target), ("exit", target)]
+
+
+@pytest.mark.parametrize("ambient_port", [None, "8081"])
+def test_run_provisions_every_resource_into_real_custom_child(
+    tmp_path, registry, monkeypatch, ambient_port
+):
+    if ambient_port is None:
+        monkeypatch.delenv("RCT_METRO_PORT", raising=False)
+    else:
+        monkeypatch.setenv("RCT_METRO_PORT", ambient_port)
+    monkeypatch.setenv("SPLASHDOWN_TEST_KEEP", "inherited")
+    script = (
+        "import json, os, pathlib; "
+        "pathlib.Path('child.json').write_text(json.dumps({k: os.environ[k] for k in "
+        "['RCT_METRO_PORT', 'URL', 'TAG', 'SPLASHDOWN_TEST_KEEP']})); raise SystemExit(7)"
+    )
+    command = shlex.join([sys.executable, "-c", script])
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        f"[project]\nrun = {json.dumps(command)}\n"
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+        '[resources.RCT_METRO_PORT]\ntype = "port"\nrange = [18961, 18970]\n'
+        '[resources.URL]\ntype = "template"\ntemplate = "http://example.test:{{RCT_METRO_PORT}}"\n'
+        'writer = "envfile=mobile.env"\n'
+        '[resources.TAG]\ntype = "set"\ndefault = "with spaces"\nwriter = "none"\n'
+    )
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_args, **_kwargs: ({"id": "PXL1234", "name": "Pixel", "platform": "android"},),
+    )
+
+    assert sd.cmd_run(tmp_path, registry, "device", "pixel") == 7
+
+    resolved = registry.all_for(str(tmp_path.resolve()))
+    assert json.loads((tmp_path / "child.json").read_text()) == {
+        **resolved,
+        "SPLASHDOWN_TEST_KEEP": "inherited",
+    }
+    assert (tmp_path / "mobile.env").read_text().strip() == f"URL={resolved['URL']}"
+    assert (
+        f"RCT_METRO_PORT={resolved['RCT_METRO_PORT']}" in (tmp_path / sd.ENV_FILE_NAME).read_text()
+    )
+    assert os.environ.get("RCT_METRO_PORT") == ambient_port
+
+
+def test_run_rejects_symlinked_output_before_device_lifecycle(tmp_path, registry, monkeypatch):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[project]\nrun = "true"\n'
+        '[targets.simulator.default]\nmodel = "iPhone 17"\n'
+        '[resources.VALUE]\ntype = "set"\ndefault = "new value"\n'
+    )
+    other = tmp_path / "user.env"
+    other.write_text("user content\n")
+    (tmp_path / sd.ENV_FILE_NAME).symlink_to(other)
+    monkeypatch.setattr(
+        sd.target_commands,
+        "ensure_fresh_sim",
+        lambda *_args: pytest.fail("device lifecycle started after unsafe output"),
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        sd.cmd_run(tmp_path, registry, "simulator", "default")
+
+    assert other.read_text() == "user content\n"
 
 
 @pytest.mark.parametrize("action", ["start", "stop", "destroy"])
