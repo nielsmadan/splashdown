@@ -213,11 +213,14 @@ Full guides and reference live at **[splashdown.dev](https://splashdown.dev)**:
 ```sh
 just test                       # run pytest
 just build                      # sdist + wheel
-just install-local              # install local source as `splash` via uv
-just refresh-local              # reinstall after changes
-just reset-local                # uninstall the local `splash`
+just install                    # install or replace the current-source snapshot as `splash`
+just install-editable           # link `splash` to this checkout
+just uninstall                  # remove the CLI installation, preserving configuration and data
 just release                    # propose a version, confirm or override, then publish
 just release --dry-run          # inspect the proposal without checks or publication
 ```
+
+Re-running `just install` refreshes the installed code even when the version is unchanged.
+With `just install-editable`, source edits take effect without reinstalling.
 
 See [Release and distribution](docs/tech/release.md) for version overrides and the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and commit conventions.

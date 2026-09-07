@@ -29,8 +29,9 @@ just docs           # serve the docs site
 Run one test with `uv run pytest tests/test_registry.py::test_name -q`, or use `-k`. Tests are
 split by source module under `tests/`; shared fixtures and helpers live in `tests/conftest.py`.
 
-Use `just install-local`, `just refresh-local`, and `just reset-local` for the real local `splash`
-binary. `just refresh-local` forces a no-cache reinstall so uv cannot reuse an old wheel.
+Use `just install` to install or replace the current-source snapshot as the local `splash`
+command. `just install-editable` links it to the checkout so source edits take effect immediately.
+`just uninstall` removes the CLI installation and preserves checkout configuration and registry data.
 
 ## Before declaring done
 

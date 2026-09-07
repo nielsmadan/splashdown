@@ -83,18 +83,16 @@ build:
     @python3 -m build
 
 # Install the current source as the global `splash` binary via uv.
-install-local:
-    @uv tool install .
+install:
+    @uv tool install --reinstall --force .
     @echo "Installed: $(which splash)"
 
-# Reinstall current source over the existing splash binary via uv. Use to test
-# local changes before tagging a release.
-refresh-local:
-    @uv tool install --reinstall --force .
-    @echo "Refreshed: $(which splash)"
+install-editable:
+    @uv tool install --reinstall --force --editable .
+    @echo "Installed (editable): $(which splash)"
 
 # Remove the locally-installed splash binary.
-reset-local:
+uninstall:
     @uv tool uninstall splashdown
 
 clean:
