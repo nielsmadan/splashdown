@@ -28,6 +28,61 @@ def test_detect_framework_expo(tmp_path):
     assert sd.detect_framework(tmp_path, r) == "expo"
 
 
+@pytest.mark.parametrize(
+    ("name", "script"),
+    [
+        ("start", "react-native start"),
+        ("ios", "npx react-native run-ios"),
+        ("android", "react-native run-android"),
+        ("android", "cross-env ENVFILE=.env.dev react-native run-android --mode debug"),
+        ("start", "yarn react-native start --reset-cache"),
+        ("android", "pnpm exec react-native run-android"),
+    ],
+)
+def test_react_native_cli_with_expo_modules_is_detected_as_react_native(tmp_path, name, script):
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "dependencies": {"react-native": "0.85.3", "expo": "~56.0.0"},
+                "scripts": {name: script},
+            }
+        )
+    )
+    (tmp_path / "app.json").write_text(
+        json.dumps({"name": "Demo", "displayName": "Demo", "plugins": ["expo-audio"]})
+    )
+    recipe = sd.Recipe({}, tmp_path / sd.RECIPE_NAME)
+
+    assert sd.detect_framework(tmp_path, recipe) == "react-native"
+    assert sd.Scanner().scan(tmp_path).apps[0].profile == "react-native"
+
+
+@pytest.mark.parametrize(
+    "scripts",
+    [
+        {"start": "expo start", "android": "expo run:android", "ios": "expo run:ios"},
+        {"android": "react-native-config generate"},
+        {"test": "react-native start"},
+        {"start": None},
+        [],
+        None,
+    ],
+)
+def test_expo_detection_with_react_native_dependency(tmp_path, scripts):
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "dependencies": {"expo": "~56.0.0", "react-native": "0.85.3"},
+                "scripts": scripts,
+            }
+        )
+    )
+    (tmp_path / "app.json").write_text('{"expo": {"name": "Demo"}}')
+
+    assert sd.detect_framework(tmp_path, sd.Recipe({}, tmp_path / sd.RECIPE_NAME)) == "expo"
+    assert sd.Scanner().scan(tmp_path).apps[0].profile == "expo"
+
+
 def test_detect_framework_override_wins(tmp_path):
     (tmp_path / "pubspec.yaml").write_text("name: x\n")
     r = sd.Recipe({"project": {"framework": "react-native"}}, tmp_path / "splashdown.toml")

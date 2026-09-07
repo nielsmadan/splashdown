@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from .device_types import LaunchDestination
 from .inventory import AppInventory
-from .package_json import package_dependencies
+from .package_json import package_dependencies, read_package_json
 from .profile_core import Profile, _manual_port_guidance, _profile_port
 from .recipe import Recipe
 from .runners import _android_native_run, _expo_run, _flutter_run, _ios_native_run, _rn_run
 from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
+
+_RN_LAUNCH_SCRIPT_RE = re.compile(
+    r"(?:^|[\s;&|])react-native\s+(?:start|run-ios|run-android)(?=$|[\s;&|])"
+)
 
 
 def _detect_flutter(cwd: Path) -> bool:
@@ -18,7 +23,15 @@ def _detect_flutter(cwd: Path) -> bool:
 
 def _detect_expo(cwd: Path) -> bool:
     deps = package_dependencies(cwd)
-    return "expo" in deps and (cwd / "app.json").exists()
+    if "expo" not in deps or not (cwd / "app.json").exists():
+        return False
+    scripts = read_package_json(cwd).get("scripts")
+    if "react-native" in deps and isinstance(scripts, dict):
+        for name in ("start", "ios", "android"):
+            script = scripts.get(name)
+            if isinstance(script, str) and _RN_LAUNCH_SCRIPT_RE.search(script):
+                return False
+    return True
 
 
 def _detect_rn(cwd: Path) -> bool:

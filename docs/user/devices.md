@@ -74,6 +74,10 @@ Framework auto-detected for `run`:
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Conventional modules such as `include(":app")` are detected automatically. After installation, splashdown reads the selected variant's application ID from AGP's build metadata. `[project.android] application_id` is only needed for non-standard builds. `module`, `variant`, and `launch_activity` are also configurable there.
 - Override via `[project] framework = "..."`
 
+React Native apps can use Expo modules without using Expo's launcher. When the `start`, `ios`,
+or `android` package scripts invoke the React Native CLI, Splashdown selects React Native even
+with `expo` installed and an `app.json` present.
+
 `splash run` stays attached to the framework or custom launcher and leaves its standard streams connected, so interactive controls continue to work. Splashdown does not redact launcher output. Disable third-party SDK logging that prints credentials or tokens before running in shared terminals, recorded sessions, CI logs, or agent transcripts.
 
 ## Custom run command

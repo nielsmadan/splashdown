@@ -247,6 +247,44 @@ def test_global_android_variant_scopes_react_native_launch(tmp_path, registry, m
     assert kwargs["env"]["ANDROID_SERIAL"] == "192.0.2.10:42137"
 
 
+def test_react_native_with_expo_modules_launches_claimed_wireless_device(
+    tmp_path, registry, monkeypatch
+):
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[apps.main]\npath = "."\nprofile = "react-native"\nresources = []\n'
+        '[targets.device.pixel]\nplatform = "android"\nname = "Pixel_9a"\n'
+    )
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "dependencies": {"react-native": "0.85.3", "expo": "~56.0.0"},
+                "scripts": {
+                    "start": "react-native start",
+                    "android": "react-native run-android",
+                    "ios": "react-native run-ios",
+                },
+            }
+        )
+    )
+    (tmp_path / "app.json").write_text('{"name": "Demo", "displayName": "Demo"}')
+    serial = "adb-4C081JEBF05757-GcRL7G._adb-tls-connect._tcp"
+    selected = {"id": serial, "name": "Pixel_9a", "platform": "android"}
+    monkeypatch.setattr(
+        sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: (_PIXEL, selected)
+    )
+    calls = []
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda argv, **kwargs: calls.append((argv, kwargs)) or 0
+    )
+
+    assert sd.cmd_run(tmp_path, registry, None, "pixel") == 0
+
+    argv, kwargs = calls[0]
+    assert argv == ["npx", "react-native", "run-android", "--deviceId", serial]
+    assert kwargs["env"]["ANDROID_SERIAL"] == serial
+    assert registry.all_claims()[0].hardware_id == serial
+
+
 def test_ensure_physical_errors_when_none(monkeypatch):
     _stub_physical(monkeypatch)
     with pytest.raises(sd.DeviceError, match="no connected physical device"):

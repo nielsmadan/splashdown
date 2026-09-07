@@ -197,7 +197,10 @@ need their port threaded through a command line rather than an environment looku
 The `_BUILTIN_PROFILES` tuple is applied at import; **tuple order is registration order is
 detection precedence.** The mobile tail is deliberate: `flutter` (a `pubspec.yaml` wins even
 if JS tooling leaks in) before `expo` (needs both an `expo` dependency and `app.json`) before
-plain `react-native`. The two native profiles guard against false positives by first checking
+plain `react-native`. When both dependencies are present, `start`, `ios`, or `android` package
+scripts invoking `react-native start`, `run-ios`, or `run-android` select React Native. Installing
+Expo modules into a React Native CLI app therefore preserves its launcher and wiring checks.
+The two native profiles guard against false positives by first checking
 `_has_js_or_flutter()` and bailing — an Expo app has an `.xcodeproj`, but it must not match
 `ios-native`.
 
