@@ -216,7 +216,8 @@ just build                      # sdist + wheel
 just install-local              # install local source as `splash` via uv
 just refresh-local              # reinstall after changes
 just reset-local                # uninstall the local `splash`
-just tag-release-patch          # bump patch, commit, tag, push (triggers release.yml)
+just release                    # propose a version, confirm or override, then publish
+just release --dry-run          # inspect the proposal without checks or publication
 ```
 
-See `Justfile` and `.github/workflows/release.yml` for the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and commit conventions.
+See [Release and distribution](docs/tech/release.md) for version overrides and the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and commit conventions.

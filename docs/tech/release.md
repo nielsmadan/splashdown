@@ -6,15 +6,40 @@ Splashdown publishes Python artifacts through GitHub Releases and distributes th
 
 ## Release commands
 
-`just release` is the normal path. git-cliff derives the next version from commits since the last
-tag: `feat` produces a minor release, `fix` a patch release, and a breaking change a minor release
-while the project is on `0.x`. `just tag-release-patch`, `just tag-release-minor`, and
-`just tag-release-major` force a bump when the derived version is not appropriate.
+`just release` derives a proposed version with the pinned git-cliff configuration: `feat` produces
+a minor release, `fix` a patch release, and a breaking change a minor release while on `0.x`.
+It runs `just check`, then shows the version, affected files, push destination, and publication
+steps. Enter `y` to confirm, enter a different version or bump and then confirm, or press Enter to
+cancel. Release edits begin only after confirmation.
+
+```sh
+just release
+just release minor
+just release 1.4.0
+just release --dry-run
+just release patch --yes
+```
+
+`patch`, `minor`, `major`, and exact versions all use the same confirmation flow. `--dry-run`
+inspects local and remote Git state and calculates a proposal without running checks or publishing.
+`--yes` explicitly bypasses the prompt; unattended invocations otherwise fail. A release with no
+automatic bump requires an explicit version or bump.
+
+Run from a clean `main` checkout with complete history, matching local/origin release tags, and all
+origin commits incorporated. Existing local commits are included in the push and counted in the
+preview. Required tools are Python 3.9+, Git, Just, uv/uvx, and authenticated `gh` with access to the
+repository, Actions, and releases. `scripts/release.json` declares checks and preparation steps;
+`scripts/release.py` implements the shared release flow.
 
 The recipe updates `pyproject.toml`, regenerates `uv.lock` and `CHANGELOG.md`, commits those files,
-and creates the release tag. The GitHub workflow then builds the package, publishes a GitHub
-release, and updates the Homebrew formula. Do not run a release recipe unless a release was
-explicitly requested.
+and atomically pushes `main` with its annotated release tag. The GitHub workflow builds the
+package, publishes a GitHub release, and updates the Homebrew formula. The command waits for that
+tag's workflow and reports its result and release URL. Do not run a release unless explicitly
+requested.
+
+Failed preparation or push leaves local changes/commits/tags available for inspection. Failed
+publication leaves the remote tag in place and reports an error; inspect the linked workflow and
+resume or rerun the failed workflow after addressing its cause. Never replace a published tag.
 
 ## Version and lock ordering
 
@@ -44,8 +69,7 @@ For dependency or release-workflow changes, reproduce the workflow's test instal
 virtual environment with `pip install build pytest .`. The trailing project argument matters: it
 installs Splashdown and its runtime dependencies before running tests.
 
-The workflow pins `astral-sh/setup-uv` to an exact v8 release because v8 has no moving `@v8` tag.
-Keep it on an exact version.
+CI pins `astral-sh/setup-uv` to an exact release. Keep it on an exact version.
 
 ## Homebrew tap
 

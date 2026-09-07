@@ -8,8 +8,8 @@ handled on a best-effort basis, but issues and pull requests are welcome.
 You need [uv](https://docs.astral.sh/uv/) and [just](https://github.com/casey/just).
 
 ```sh
-uv sync --group dev        # install dev dependencies
-just hooks                 # install the git hooks (lefthook)
+just setup                 # install dependencies and hooks, then verify the checkout
+just doctor                # verify tools and hook installation
 just check                 # ruff + import cycles + format-check + mypy + tests
 ```
 

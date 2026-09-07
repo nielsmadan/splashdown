@@ -1,6 +1,6 @@
 # git-cliff configuration for splashdown.
 # Generates CHANGELOG.md from feat/fix commits (chore/docs/deps are skipped).
-# Run `just changelog` to regenerate; `just tag-release` does it automatically.
+# Run `just changelog` to regenerate; `just release` does it automatically.
 # Template structure follows git-cliff's "keepachangelog" preset (correct release
 # spacing + linked version headings via the footer's compare links).
 

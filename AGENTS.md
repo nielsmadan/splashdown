@@ -17,7 +17,10 @@ Tasks run through `just`; CI runs `just check`.
 just check          # ruff + format check + import cycles + mypy + pytest
 just test           # pytest -q
 just lint           # ruff check
-just fmt            # ruff format (writes)
+just format         # ruff format (writes)
+just setup          # install dependencies and hooks, then verify the checkout
+just doctor         # verify tools and hook installation
+just coverage       # pytest with coverage reports
 just typecheck      # mypy --strict over src/splashdown
 just docs-build     # strict user-docs build into ./site
 just docs           # serve the docs site
@@ -37,7 +40,7 @@ test install in a clean virtual environment with `pip install build pytest .`.
 Coverage uses the `fail_under = 80` value in `pyproject.toml` and is enforced by CI and the
 pre-push hook. `just check` intentionally stays fast and does not collect coverage.
 
-This repository's hooks are defined in `lefthook.yml` and installed with `just hooks`. It does not
+This repository's hooks are defined in `lefthook.yml` and installed with `just setup`. It does not
 dogfood Splashdown provisioning: there is no repository `splashdown.toml` or managed
 post-checkout hook.
 
