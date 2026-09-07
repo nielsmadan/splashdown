@@ -37,6 +37,10 @@ package, publishes a GitHub release, and updates the Homebrew formula. The comma
 tag's workflow and reports its result and release URL. Do not run a release unless explicitly
 requested.
 
+The shared helper verifies GitHub's draft state before reporting completion. Splashdown requires
+a published release; the `draft: true` policy used by Hooklinesinker reports a draft URL for manual
+publication instead. Keep the helper and its tests identical across all seven configured repos.
+
 Failed preparation or push leaves local changes/commits/tags available for inspection. Failed
 publication leaves the remote tag in place and reports an error; inspect the linked workflow and
 resume or rerun the failed workflow after addressing its cause. Never replace a published tag.
