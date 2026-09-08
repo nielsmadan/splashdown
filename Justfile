@@ -104,11 +104,11 @@ clean:
 # pages in docs/user/. Zensical is a dev-only dependency (the `docs` group).
 
 # Build the docs site into ./site (strict: fails on broken links/nav).
-docs-build:
+build-docs:
     @uv run --group docs zensical build -f mkdocs.yml --strict
 
 # Serve the docs locally with live reload (http://localhost:8000).
-docs:
+serve-docs:
     @uv run --group docs zensical serve -f mkdocs.yml
 
 # Needs `vhs` (brew install vhs) + `splash` on PATH; runs in a throwaway temp

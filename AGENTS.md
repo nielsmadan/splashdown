@@ -22,8 +22,8 @@ just setup          # install dependencies and hooks, then verify the checkout
 just doctor         # verify tools and hook installation
 just coverage       # pytest with coverage reports
 just typecheck      # mypy --strict over src/splashdown
-just docs-build     # strict user-docs build into ./site
-just docs           # serve the docs site
+just build-docs     # strict user-docs build into ./site
+just serve-docs     # serve the docs site
 ```
 
 Run one test with `uv run pytest tests/test_registry.py::test_name -q`, or use `-k`. Tests are
@@ -124,5 +124,5 @@ The user and builder audiences stay separate. The public site publishes only `do
 should have one canonical owner and links elsewhere. User prose in `README.md` and `docs/user/`
 avoids em dashes and semicolons; builder docs retain their existing style.
 
-After changing behavior, update the relevant docs and run `just docs-build`. Use `doc --update` to
+After changing behavior, update the relevant docs and run `just build-docs`. Use `doc --update` to
 refresh documentation and `doc --review` for a whole-repository audit.

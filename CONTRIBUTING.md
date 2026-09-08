@@ -49,7 +49,7 @@ SPLASH_SMOKE_KEEP=1 just smoke-first-use
   (or the full `just check`).
 - **Types**: the source is `mypy --strict` over `src/splashdown`. Run `just typecheck`.
 - **Docs**: user docs live in `docs/user/` and publish to [splashdown.dev](https://splashdown.dev).
-  Preview with `just docs`, build with `just docs-build`.
+  Preview with `just serve-docs`, build with `just build-docs`.
 - **Architecture**: `AGENTS.md` is the canonical guide to how the codebase fits together (modules,
   data flow, gotchas). Read it before a non-trivial change.
 
