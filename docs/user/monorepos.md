@@ -391,14 +391,22 @@ directly. Prefer patching the consumer to read `process.env` so all values stay 
 `splashdown.env` and the full suite (`status`, `env get`, templated cross-references)
 works as expected.
 
-**`splash init --rescan` after adding an app.** When you add a new app to the monorepo,
-run `splash init --rescan`. The rescanner updates `[project]` and `[apps.*]` but preserves
-the existing `[resources.*]` section, so your hand-authored resource names and comments
-survive the rescan. Every field there is validated against the schema, so an unknown key
-is an error rather than data the rescan carries forward.
-
 **`apps.*` with empty `resources = []` is intentional.** Native apps (`ios-native`,
 `android-native`) allocate no port resources, they use simulator/emulator targets, not
 ports. An `[apps.ios]` entry with `resources = []` is correct and expected. It tells
 `splash run` which framework to use for the build and launch, even though no env vars are
 managed for it.
+
+## Adding or moving an app
+
+Edit `splashdown.toml` manually or with an agent to update the app path, profile, resources,
+and resource associations. Keep the settings you already chose for other apps, then run
+`splash sync` to validate and apply the recipe.
+
+For a fresh detection result to compare, use a disposable copy of the project outside the
+working checkout, preserving its files and workspace layout but omitting Git metadata.
+In that copy, run `splash init --overwrite --no-sync --loader none`
+when a recipe already exists, or omit `--overwrite` for a new recipe. Init can also modify
+integration files in the copy. Compare the generated recipe with the original and selectively
+apply the useful changes. Running `init --overwrite` in the real project replaces the entire
+recipe, including manual edits.

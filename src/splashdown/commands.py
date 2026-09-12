@@ -6,7 +6,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import tomllib
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -452,7 +451,6 @@ def _wire_init_checkout_hook(cwd: Path, *, enabled: bool) -> None:
 @dataclass(frozen=True)
 class InitOptions:
     overwrite: bool = False
-    allow_nested: bool = False
 
 
 def _init_recipe_mode(path: Path) -> int | None:
@@ -502,11 +500,6 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
     recipe_exists = _init_recipe_exists(recipe_path)
     worktree_root = _git_worktree_root(cwd)
     nested = worktree_root is not None and worktree_root != cwd.resolve()
-    if not recipe_exists and nested and not options.allow_nested:
-        raise UsageError(
-            f"refusing to initialize {cwd.resolve()} below Git worktree root "
-            f"{worktree_root}; run `splash init` there or pass --allow-nested"
-        )
     if recipe_exists and not options.overwrite:
         raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
@@ -735,45 +728,6 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
         print("removed this checkout's bootstrap completion", file=sys.stderr)
 
     print("splashdown removed from this checkout", file=sys.stderr)
-    return 0
-
-
-def cmd_refresh_inventory(cwd: Path) -> int:
-    """Re-scan and rewrite [project] / [apps.*] in splashdown.toml; preserve
-    [resources.*] sections verbatim. Used both for picking up new apps and for
-    upgrading legacy recipes to the new shape."""
-    recipe_path = cwd / RECIPE_NAME
-    if not _init_recipe_exists(recipe_path):
-        print(f"no {RECIPE_NAME} in {cwd}; run `splash init` instead", file=sys.stderr)
-        return 1
-    existing = Recipe.load(recipe_path)
-    inv = Scanner().scan(cwd)
-
-    res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
-    for app in inv.apps:
-        if app.profile == "unknown":
-            res_by_app[app.name] = {}
-            continue
-        res_by_app[app.name] = PROFILES[app.profile].resources(app)
-    if any("electron" in app.capabilities for app in inv.apps) and any(
-        name.startswith(_ELECTRON_PROFILE_RESOURCE) for name in existing.resources
-    ):
-        _add_electron_resources(cwd, inv, res_by_app, "isolated")
-    profile_emitted, app_resource_names = _build_resource_catalog(res_by_app)
-    # Names already in the recipe stay resolvable — refresh_recipe keeps them.
-    _prune_unresolvable_templates(profile_emitted, app_resource_names, set(existing.resources))
-
-    from .tomlio import refresh_recipe  # noqa: PLC0415
-
-    rebuilt = refresh_recipe(recipe_path.read_text(), inv, profile_emitted, app_resource_names, cwd)
-    Recipe.parse(rebuilt, recipe_path)
-    _write_init_recipe(recipe_path, rebuilt)
-    n_resources = len(tomllib.loads(rebuilt).get("resources", {}))
-    print(
-        f"refreshed {RECIPE_NAME}: {len(inv.apps)} app(s), {n_resources} resource(s)",
-        file=sys.stderr,
-    )
-    sync_agent_guidance(cwd, Recipe.parse(rebuilt, recipe_path))
     return 0
 
 

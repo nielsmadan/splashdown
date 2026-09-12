@@ -24,7 +24,7 @@ framework guidance, and `loaders.py` wires shell environments.
 
 ## Purpose
 
-`splash init` and `splash init --rescan` need to answer, purely by inspecting the
+`splash init` needs to answer, purely by inspecting the
 filesystem: is this a monorepo or a single project? What package/build manager runs it?
 Which apps live inside it, and what framework is each one? Which shell-env loader (if
 any) has the user already adopted? The answers drive which default resources get written
@@ -114,8 +114,7 @@ the same resolved name so declarations and references cannot diverge. If two app
 normalize to the same suffix, a stable digest disambiguates them while keeping valid
 environment identifiers. Scanner-driven `splash init` checks for collisions before calling this
 helper: when automatic output would need mangling, it writes a structure-only recipe and asks the
-user to choose explicit monorepo resources. The mangling helper remains the shared catalog
-mechanism for already-explicit/rescan flows.
+user to choose explicit monorepo resources.
 
 `_should_defer_monorepo()` (`scanner.py`) has a second conservative trigger: an immediate sibling
 Xcode or Gradle project that no enumerated app claims. `_unclaimed_native_dirs()` treats native
@@ -210,7 +209,7 @@ A couple of profiles carry real integration logic worth noting:
   `API_DEV_PORT` (as a `{{ PORT }}` template) when the Vite config mentions `proxy` — apps that
   don't proxy don't need the API's port. The test is a raw substring over the file text, so a
   commented-out proxy still counts. Because `API_DEV_PORT` renders `{{ PORT }}`, a merged `PORT`
-  resource has to exist or init/rescan aborts and writes no recipe at all. Its
+  resource has to exist or init prunes the unresolved template before writing the recipe. Its
   wiring check rewrites `env.VAR` (the `loadEnv` idiom) to `process.env.VAR` so values
   loaded by the shell loader are visible.
 - **The native iOS profile fails open on ambiguity.** An `.xcodeproj` is not proof of an iOS
@@ -270,8 +269,8 @@ commands through `Profile.agent_guidance`, while the common renderer names every
 port resource from the recipe. In monorepos those are the post-mangling names, not the
 profile's canonical defaults.
 
-`commands.py` calls `sync_agent_guidance()` only after successful scanner init, preset
-init, or rescan, including the structure-only deferred-monorepo path. A recipe with no
+`commands.py` calls `sync_agent_guidance()` only after successful scanner or preset
+init, including the structure-only deferred-monorepo path. A recipe with no
 port-bearing apps renders no block and removes any previous complete block. Deinit calls
 `remove_agent_guidance()` independently of recipe parsing, so malformed or missing recipes
 cannot strand managed content.
@@ -333,13 +332,13 @@ never runs an approval command.
   `profiles_compose.py` — categorized framework and Compose implementations.
 - `profiles.py` — compatibility exports and the single ordered `_BUILTIN_PROFILES` catalog.
 - `agentdocs.py` — `render_agent_guidance()`, `sync_agent_guidance()`, and
-  `remove_agent_guidance()`; invoked by init/rescan/deinit orchestration in `commands.py`.
+  `remove_agent_guidance()`; invoked by init/deinit orchestration in `commands.py`.
 - `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py` populates it in
   precedence order.
 - `scaffolds.py` — `SCAFFOLDS` registry; substituted by `_cmd_init_preset` in `commands.py`.
 - `loaders.py` — `Loader`, its mise/direnv/devbox/none implementations, and the precedence-ordered
   `LOADERS` registry.
-- Consumers: scanner-driven init and rescan in `commands.py`, `_build_resource_catalog`
+- Consumers: scanner-driven init in `commands.py`, `_build_resource_catalog`
   in `scanner.py`, and `_cmd_init_preset` for `SCAFFOLDS`.
 - Registration wiring: `catalog.py` owns the dictionary and `__init__.py` imports
   `profiles` first to populate it before public consumers are re-exported. Internal modules
@@ -384,8 +383,7 @@ never runs an approval command.
 ## Why
 
 The detection side is split from the integration side on purpose. `Scanner` is pure,
-side-effect-free inspection so it can be re-run cheaply (`splash init`, `splash init --rescan`,
-status)
+side-effect-free inspection so it can be re-run cheaply (`splash init`, status)
 and unit-tested without touching disk state. The integration side uses small implementation
 modules behind shared catalogs. `profiles.py` centralizes profile assembly because precedence
 is behavior, while `LOADERS` remains a compact module-local registry. There is no priority

@@ -27,7 +27,7 @@ wiring checks (the same engine as `splash doctor --fix`), and finishes with the 
 `splashdown.env`). The promise: a checkout has working, collision-free resources in one
 command — a bad first run means abandonment.
 
-Eight options reshape that flow:
+Six options reshape that flow:
 
 - `splash init <preset>` — write a named intent scaffold from `SCAFFOLDS`,
   bypassing the scanner entirely.
@@ -36,10 +36,6 @@ Eight options reshape that flow:
 - `splash init --no-sync` — scaffold and wire only; skip the first sync (no port allocation,
   no `splashdown.env`).
 - `splash init --overwrite` — replace an existing recipe (init refuses otherwise).
-- `splash init --allow-nested` — explicitly create a Splashdown project below the Git worktree
-  root; first-time init refuses that location otherwise.
-- `splash init --rescan` — re-detect `[project]`/`[apps.*]` against the current filesystem
-  in an existing recipe **without** scaffolding or touching `[resources.*]`.
 - `splash init --electron-profile=isolated|shared` — make the scanner-driven Electron
   profile choice explicit instead of relying on the interactive prompt/default.
 - `splash init --ios-scheme=NAME` — select a native iOS Xcode scheme when discovery is
@@ -47,17 +43,15 @@ Eight options reshape that flow:
 
 ## How it works (current state)
 
-**Refusal guards.** Before scanning or writing, `cmd_init` refuses first-time initialization below
-the current Git worktree root unless `--allow-nested` is passed. The guard is creation-only: an
-existing regular nested recipe proves intent, so `--rescan` remains usable and `--overwrite` is the
-only flag required to replace it. Symlinked and other non-regular recipe entries are rejected rather
-than followed. Non-Git projects remain supported. Separately, init refuses to
-clobber an existing `splashdown.toml` unless `--overwrite` is passed. Both failures raise
-`UsageError`; the CLI renders them as exit 2, while direct callers receive the exception. Init is
-dispatched before `Registry` construction so either refusal leaves machine state untouched.
+**Location and replacement.** `cmd_init` uses the current directory or explicit `--cwd` as the
+project location, including nested Git directories and non-Git projects. It refuses to replace an
+existing `splashdown.toml` unless `--overwrite` is passed. Symlinked and other non-regular recipe
+entries are rejected rather than followed. These failures raise `UsageError`; the CLI renders
+them as exit 2, while direct callers receive the exception. Init is dispatched before `Registry`
+construction so a refusal leaves machine state untouched.
 
 **Nested hook behavior.** Git invokes its post-checkout hook from the worktree root, where a nested
-recipe is not visible. An explicitly allowed nested init therefore skips automatic hook wiring and
+recipe is not visible. Nested init therefore skips automatic hook wiring and
 prints the nested `splash --cwd PATH sync` command to run after checkout. It never installs a hook
 that would silently sync the wrong project.
 
@@ -112,9 +106,8 @@ siblings, so a cross-app template reference can dangle — Vite emits
 the repo also has a backend app. `_prune_unresolvable_templates` (`scanner.py`) runs after the
 cross-app merge and drops such templates (looping to a fixed point, since pruning one can
 strand another) and un-lists them from `[apps.*] resources`, printing one `skipped NAME:` line
-each. `--rescan` passes the existing recipe's resource names in as additionally-known, so a
-template the recipe already resolves is never pruned. The recipe is then rendered by
-`render_scanned_recipe` (lazy-imported from `tomlio`) and parsed in memory through the same
+each. The recipe is then rendered by `render_scanned_recipe` (lazy-imported from `tomlio`)
+and parsed in memory through the same
 strict `Recipe` validator used by provisioning before it is written. This catches scanner/profile
 drift, invalid app resource references, resource/writer/template/schema errors, and unknown
 fields before init mutates the recipe or proceeds to loader/hook wiring. A `splashdown.local.toml` skeleton (`LOCAL_SKELETON`)
@@ -164,7 +157,7 @@ no-numeric-port rules with `Profile.agent_guidance()` launch instructions. Exist
 `AGENTS.md` and independent `CLAUDE.md` files are updated; neither is created. A `CLAUDE.md`
 that imports `@AGENTS.md` has any previous complete block removed, then is skipped. Complete
 blocks are replaced idempotently, while malformed markers, symlinks, and non-regular files are
-left untouched with a warning. `--rescan` can replace or remove stale guidance, and `deinit`
+left untouched with a warning. `init --overwrite` can replace or remove stale guidance, and `deinit`
 removes complete blocks even when the recipe cannot be parsed.
 
 **First sync.** After `cmd_init` returns, the CLI runs the first sync via
@@ -180,14 +173,8 @@ writes it. Only after validation does it write the local skeleton, ensure gitign
 loader and hook, and run `cmd_doctor(cwd, fix=True)` when the resolved framework has wiring checks.
 Note this path is **not** sync-driven by itself — the post-init sync still comes from the CLI layer.
 
-**`--rescan`.** `cmd_refresh_inventory` (`commands.py`) is dispatched *before* `cmd_init`
-(`cli.py`) and is a different operation: it requires an existing recipe (errors with
-"run `splash init` instead" otherwise), re-scans, and rewrites only `[project]` / `[apps.*]`
-via `refresh_recipe`, preserving comments and valid existing `[resources.*]` tables. It validates
-both the source recipe and the rebuilt TOML, so an unknown key or invalid generated app/resource
-reference fails before the existing file is replaced. Use it to pick up a newly-added monorepo app.
-The CLI rejects a preset and every scaffold/scan option when `--rescan` is present, so none can be
-silently ignored by this early-return path.
+**Recipe evolution.** Users edit the existing recipe manually or with an agent when apps change.
+`init --overwrite` regenerates the whole recipe, replacing manual edits.
 
 **Teardown.** `cmd_deinit` (`commands.py`) reverses the owned parts of init without
 blindly restoring user files: it destroys registered sims/AVDs that splashdown owns, releases
@@ -205,7 +192,6 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - `_add_electron_resources` / `_resolve_init_ios_scheme`: `src/splashdown/commands.py`.
 - `_cmd_init_preset` — `init <preset>` path: `src/splashdown/commands.py`.
 - `cmd_deinit` — surgical teardown: `src/splashdown/commands.py`.
-- `cmd_refresh_inventory` — `--rescan`: `src/splashdown/commands.py`.
 - `_ensure_post_checkout_hook` / `_detect_hook_manager` / `_native_hook_path`:
   `src/splashdown/hooks.py`.
 - Hook wiring per manager — lefthook/husky/native common hook — and the shared
@@ -231,16 +217,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - **`--loader mise|direnv|devbox|none`** — override loader auto-detection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
-- **`--allow-nested`** — acknowledge that a new recipe below the Git worktree root is an
-  intentional independent project. It does not imply `--overwrite` or install an automatic
-  post-checkout hook.
 - **`--no-sync`** — scaffold + wire only; skip port allocation and `splashdown.env`. The opt-out
   for CI / scaffold-only runs: generate the committable files without touching the machine registry.
-- **`--rescan`** — re-detect `[project]`/`[apps.*]` in an existing recipe; preserves
-  valid `[resources.*]` tables and comments. Does not scaffold; the rescan path is dispatched
-  before `cmd_init` and returns early (`cli.py`). Unknown or invalid retained fields are
-  errors, not extension data. It is mutually exclusive with a preset, `--loader`, `--overwrite`,
-  `--allow-nested`, `--no-sync`, `--electron-profile`, and `--ios-scheme`.
 - **`--electron-profile=isolated|shared`** — scanner-only Electron choice. `isolated` adds a
   stable process-env profile id; `shared` explicitly declines isolation.
 - **`--ios-scheme=NAME`** — scanner-only native iOS scheme override; required for ambiguous
@@ -261,7 +239,7 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   repo that already commits `splashdown.toml`, they get no clone-local trust and no live values.
   After reviewing the recipe, `splash trust` is the lightweight onboarding verb: it grants
   automatic sync, grants bootstrap only when currently declared, and activates or verifies the
-  local hook without rescanning or rewriting the recipe. The teammate then runs `splash sync`, or
+  local hook without rewriting the recipe. The teammate then runs `splash sync`, or
   `splash bootstrap` when the recipe declares it. Tracked Lefthook/Husky changes still require the
   project's normal hook-manager install step.
 
@@ -277,10 +255,6 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - **The local skeleton is create-only.** Init and sync preserve an existing regular
   `splashdown.local.toml`. A symlink or other non-regular entry is an error, so the automatic
   post-checkout path cannot follow it or replace its target.
-
-- **`--rescan` is a separate code path that never scaffolds.** It is dispatched before
-  `cmd_init` (`cli.py`), requires an existing recipe, and rewrites only `[project]`/
-  `[apps.*]`. The parser rejects every scaffold/scan option alongside it before rescan dispatch.
 
 - **Any configured `core.hooksPath` is intentionally not touched.** If a project sets
   `core.hooksPath`, init only prints a warning and installs nothing — the user must wire
@@ -317,11 +291,10 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   resources and no wiring; the rest of the project still scaffolds
   (`_apply_init_wiring_checks` in `commands.py`).
 
-- **Generated TOML is not trusted implicitly.** Scanner output, built-in preset output, the
-  minimal-monorepo fallback, and rescan output all pass through `Recipe` before writing. A
-  validation failure leaves the destination recipe absent or unchanged and prevents subsequent
-  init mutations. Unknown recipe keys are hard errors even though comments and valid tables are
-  preserved by rescan.
+- **Generated TOML is not trusted implicitly.** Scanner output, built-in preset output, and the
+  minimal-monorepo fallback all pass through `Recipe` before writing. A validation failure leaves
+  the destination recipe absent or unchanged and prevents subsequent
+  init mutations. Unknown recipe keys are hard errors.
 
 ## Why
 

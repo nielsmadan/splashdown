@@ -17,9 +17,9 @@ When no loader config is found in the repo, splashdown checks whether one is ins
 
 When nothing is installed either, splashdown picks `none` and routes the generated values straight into a dotenv file the project already reads (`.env` if present, else `.env.local`), provided at least one app actually reads dotenv files (Next.js, Django, FastAPI, Node backends). For apps that only see values exported into the process environment (Vite, Spring Boot, mobile), a plain dotenv file can't reach them, so splashdown keeps generating `splashdown.env` and prints how to source it or which loader to install.
 
-Force any choice with `splash init --loader=mise|direnv|devbox|none`. `--loader none` is the explicit opt-out from auto-wiring, and `splash init --rescan` preserves it rather than re-detecting over the top.
+Force any choice with `splash init --loader=mise|direnv|devbox|none`. `--loader none` is the explicit opt-out from auto-wiring.
 
-**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table. Values must name a supported built-in workspace, loader, or profile; unknown names and fields are errors. Splashdown picks up a valid change on the next sync and never re-scans unless you ask. `splash init --rescan` re-runs the scanner against the current filesystem (e.g. after you add a new app to the monorepo).
+**Override at any layer.** Edit `[project] workspace`, `[project] loader`, `[apps.<name>] profile`, or any `[resources.*]` table. Values must name a supported built-in workspace, loader, or profile. Unknown names and fields are errors. Splashdown picks up a valid change on the next sync. To regenerate the whole recipe from the current filesystem, use `splash init --overwrite`, which replaces manual edits.
 
 **Multi-instance collisions** make scanner-driven init defer automatic resource generation. Two Vite apps both want `WEB_DEV_PORT`, so splashdown writes the detected app structure without resources and points you to the monorepo guide to choose explicit names and ranges.
 

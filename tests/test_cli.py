@@ -329,45 +329,28 @@ def test_cli_init_help_points_to_supported_value_flag(capsys):
     assert "--show-values" in out
 
 
-def test_cli_init_rescan_rejects_every_other_init_option(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(
-        sd.cli,
-        "cmd_refresh_inventory",
-        lambda *_args, **_kwargs: pytest.fail("rescan dispatched before validation"),
-    )
+@pytest.mark.parametrize("existing_recipe", [False, True])
+@pytest.mark.parametrize("option", ["--rescan", "--allow-nested"])
+def test_cli_init_rejects_removed_option(option, existing_recipe, tmp_path, monkeypatch, capsys):
+    recipe_path = tmp_path / sd.RECIPE_NAME
+    original = '[resources.RUN_ID]\ntype = "uuid"\n'
+    if existing_recipe:
+        recipe_path.write_text(original)
+
+    def unexpected_init(*_args, **_kwargs):
+        pytest.fail("rejected option dispatched init")
+
+    monkeypatch.setattr(sd.cli, "cmd_init", unexpected_init)
 
     with pytest.raises(SystemExit) as exc:
-        sd.main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "init",
-                "minimal",
-                "--rescan",
-                "--loader",
-                "none",
-                "--overwrite",
-                "--allow-nested",
-                "--no-sync",
-                "--electron-profile",
-                "shared",
-                "--ios-scheme",
-                "Demo",
-            ]
-        )
+        sd.main(["--cwd", str(tmp_path), "init", option])
 
     assert exc.value.code == 2
-    err = capsys.readouterr().err
-    for option in (
-        "preset",
-        "--loader",
-        "--overwrite",
-        "--allow-nested",
-        "--no-sync",
-        "--electron-profile",
-        "--ios-scheme",
-    ):
-        assert option in err
+    assert f"unrecognized arguments: {option}" in capsys.readouterr().err
+    if existing_recipe:
+        assert recipe_path.read_text() == original
+    else:
+        assert not recipe_path.exists()
 
 
 @pytest.mark.parametrize(
@@ -381,7 +364,6 @@ def test_cli_init_rescan_rejects_every_other_init_option(tmp_path, monkeypatch, 
         ["--show-values", "target"],
         ["--format", "json", "init", "minimal"],
         ["--show-values", "init", "--no-sync"],
-        ["--show-values", "init", "--rescan"],
     ],
 )
 def test_cli_rejects_output_flags_where_they_are_ignored(argv, tmp_path, monkeypatch, capsys):
@@ -394,7 +376,6 @@ def test_cli_rejects_output_flags_where_they_are_ignored(argv, tmp_path, monkeyp
         "cmd_doctor",
         "cmd_run",
         "cmd_init",
-        "cmd_refresh_inventory",
         "_env_dispatch",
         "_target_dispatch",
     ):
@@ -615,72 +596,68 @@ def test_cli_init_named_preset_is_positional(tmp_path, monkeypatch):
     assert "[resources.DATABASE_URL]" in recipe
 
 
-def test_cli_init_rejects_nested_git_directory_before_writes(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("use_cwd", [False, True])
+@pytest.mark.parametrize("preset", [None, "minimal"])
+def test_cli_init_creates_nested_project_in_selected_directory(
+    tmp_path, monkeypatch, use_cwd, preset
+):
     root = tmp_path / "repo"
     nested = root / "apps" / "web"
     nested.mkdir(parents=True)
     _git_init(root)
-    state = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    parent_recipe = root / sd.RECIPE_NAME
+    original = '[resources.PARENT_ID]\ntype = "uuid"\n'
+    parent_recipe.write_text(original)
+    if use_cwd:
+        args = ["--cwd", str(nested), "init"]
+    else:
+        monkeypatch.chdir(nested)
+        args = ["init"]
+    if preset is not None:
+        args.append(preset)
+
+    rc = sd.main([*args, "--loader", "none", "--no-sync"])
+
+    assert rc == 0
+    assert sd.Recipe.load(nested / sd.RECIPE_NAME).project["loader"] == "none"
+    assert parent_recipe.read_text() == original
+
+
+@pytest.mark.parametrize("existing_hook", [False, True])
+def test_cli_init_nested_project_preserves_root_checkout_hook(tmp_path, capsys, existing_hook):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    hook = root / ".git" / "hooks" / "post-checkout"
+    original = "#!/bin/sh\necho custom checkout hook\n"
+    if existing_hook:
+        hook.write_text(original)
 
     rc = sd.main(["--cwd", str(nested), "init", "minimal", "--no-sync"])
 
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert str(root.resolve()) in err
-    assert "--allow-nested" in err
-    assert not (nested / sd.RECIPE_NAME).exists()
-    assert not (nested / sd.LOCAL_NAME).exists()
-    assert not (nested / ".gitignore").exists()
-    assert not (state / "splashdown").exists()
-
-
-def test_cli_init_allows_explicit_nested_project(tmp_path):
-    root = tmp_path / "repo"
-    nested = root / "apps" / "web"
-    nested.mkdir(parents=True)
-    _git_init(root)
-
-    rc = sd.main(["--cwd", str(nested), "init", "minimal", "--allow-nested", "--no-sync"])
-
     assert rc == 0
-    assert "[resources.RUN_ID]" in (nested / sd.RECIPE_NAME).read_text()
-
-
-def test_cli_init_nested_project_skips_root_checkout_hook(tmp_path, capsys):
-    root = tmp_path / "repo"
-    nested = root / "apps" / "web"
-    nested.mkdir(parents=True)
-    _git_init(root)
-
-    rc = sd.main(["--cwd", str(nested), "init", "minimal", "--allow-nested", "--no-sync"])
-
-    assert rc == 0
-    assert not (root / ".git" / "hooks" / "post-checkout").exists()
+    if existing_hook:
+        assert hook.read_text() == original
+    else:
+        assert not hook.exists()
     err = capsys.readouterr().err
     assert "post-checkout hook not installed for nested project" in err
     assert f"splash --cwd {nested.resolve()} sync" in err
 
 
-def test_cli_nested_existing_project_rescans_without_override(tmp_path):
+def test_cli_nested_existing_project_requires_overwrite(tmp_path, capsys):
     root = tmp_path / "repo"
     nested = root / "apps" / "web"
     nested.mkdir(parents=True)
     _git_init(root)
-    sd.cmd_init(nested, preset="minimal", options=sd.InitOptions(allow_nested=True))
+    sd.cmd_init(nested, preset="minimal")
+    recipe_path = nested / sd.RECIPE_NAME
+    original = recipe_path.read_text()
 
-    rc = sd.main(["--cwd", str(nested), "init", "--rescan"])
-
-    assert rc == 0
-    assert "[apps.main]" in (nested / sd.RECIPE_NAME).read_text()
-
-
-def test_cli_nested_existing_project_overwrites_without_nested_override(tmp_path):
-    root = tmp_path / "repo"
-    nested = root / "apps" / "web"
-    nested.mkdir(parents=True)
-    _git_init(root)
-    sd.cmd_init(nested, preset="minimal", options=sd.InitOptions(allow_nested=True))
+    assert sd.main(["--cwd", str(nested), "init", "server", "--no-sync"]) == 2
+    assert "use --overwrite" in capsys.readouterr().err
+    assert recipe_path.read_text() == original
 
     rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
 
@@ -708,26 +685,6 @@ def test_cli_init_rejects_symlinked_nested_recipe_before_overwrite(tmp_path, mon
     assert not (state / "splashdown").exists()
 
 
-def test_cli_init_rescan_rejects_symlinked_recipe(tmp_path, monkeypatch, capsys):
-    root = tmp_path / "repo"
-    nested = root / "apps" / "web"
-    nested.mkdir(parents=True)
-    _git_init(root)
-    outside = tmp_path / "outside.toml"
-    original = '[project]\nworkspace = "single"\nloader = "none"\n'
-    outside.write_text(original)
-    (nested / sd.RECIPE_NAME).symlink_to(outside)
-    state = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-
-    rc = sd.main(["--cwd", str(nested), "init", "--rescan"])
-
-    assert rc == 2
-    assert "not a regular file" in capsys.readouterr().err
-    assert outside.read_text() == original
-    assert not (state / "splashdown").exists()
-
-
 def test_cli_init_overwrite_replaces_recipe_hardlink_without_mutating_target(tmp_path):
     root = tmp_path / "repo"
     nested = root / "apps" / "web"
@@ -743,23 +700,6 @@ def test_cli_init_overwrite_replaces_recipe_hardlink_without_mutating_target(tmp
     assert rc == 0
     assert outside.read_text() == original
     assert "[resources.PORT]" in (nested / sd.RECIPE_NAME).read_text()
-
-
-def test_cli_init_rescan_replaces_recipe_hardlink_without_mutating_target(tmp_path):
-    root = tmp_path / "repo"
-    nested = root / "apps" / "web"
-    nested.mkdir(parents=True)
-    _git_init(root)
-    outside = tmp_path / "outside.toml"
-    original = '[project]\nworkspace = "single"\nloader = "none"\n'
-    outside.write_text(original)
-    os.link(outside, nested / sd.RECIPE_NAME)
-
-    rc = sd.main(["--cwd", str(nested), "init", "--rescan"])
-
-    assert rc == 0
-    assert outside.read_text() == original
-    assert "[apps.main]" in (nested / sd.RECIPE_NAME).read_text()
 
 
 @pytest.mark.parametrize(
@@ -835,22 +775,6 @@ def test_init_gradle_module_runs_from_workspace_root(tmp_path, monkeypatch):
     )
     assert calls[0][0] == ["./gradlew", ":features:demo:installDebug"]
     assert calls[0][1]["cwd"] == tmp_path
-
-
-def test_cli_init_rescan_updates_inventory(tmp_path, monkeypatch):
-    (tmp_path / "splashdown.toml").write_text('[project]\nworkspace = "single"\nloader = "mise"\n')
-    (tmp_path / "pubspec.yaml").write_text("name: demo\n")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    called = {}
-
-    def _fake(cwd):
-        called["cwd"] = cwd
-        return 0
-
-    monkeypatch.setattr(sd.cli, "cmd_refresh_inventory", _fake)
-    rc = sd.main(["--cwd", str(tmp_path), "init", "--rescan"])
-    assert rc == 0
-    assert called["cwd"] == tmp_path
 
 
 def test_init_native_ios_explicit_scheme_skips_discovery(tmp_path, monkeypatch):

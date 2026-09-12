@@ -885,14 +885,6 @@ def test_cmd_init_loader_none_opts_out_of_the_fallback(tmp_path, monkeypatch):
     assert not (tmp_path / "mise.toml").exists()
 
 
-def test_rescan_preserves_explicit_loader_none(tmp_path, monkeypatch):
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: True)
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    sd.cmd_init(tmp_path, loader_override="none")
-    sd.cmd_refresh_inventory(tmp_path)
-    assert 'loader = "none"' in (tmp_path / "splashdown.toml").read_text()
-
-
 def test_scanner_detects_mise_loader(tmp_path):
     (tmp_path / "mise.toml").write_text("")
     inv = sd.Scanner().scan(tmp_path)

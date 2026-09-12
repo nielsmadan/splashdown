@@ -240,12 +240,6 @@ file I/O.
 - `render_scanned_recipe` builds a brand-new recipe document (header comment,
   `[project]`, `[apps.*]`, `[resources.*]`, and `[targets.*]`) from scratch. Scanner output and
   built-in preset output are passed through `Recipe.parse` before file I/O.
-- `refresh_recipe` (`tomlio.py`) is the re-scan path: it `tomlkit.parse`s the
-  existing text, mutates `[project]` in place and replaces `[apps.*]` wholesale
-  (via `_set_apps`, `tomlio.py`), but **only appends** profile resources whose
-  names aren't already present. It preserves comments and existing resource
-  fields mechanically, but the rebuilt document must pass `Recipe.parse` before
-  it replaces the file; an unknown or stale field therefore prevents the write.
 - `ensure_mise_file_directive_text` (`tomlio.py`) idempotently ensures
   `_.file = "<env file>"` under `[env]`, handling the case where `_` already
   exists as a table (it sets the key in place rather than re-declaring a dotted
@@ -270,7 +264,7 @@ file I/O.
 - `commands.py` — `_cmd_init_preset`, including loader substitution and pre-write
   validation.
 - `commands.py` — scanner-driven Electron resource overlay.
-- `tomlio.py` — `refresh_recipe`, `target_add_text`, and `target_remove_text`.
+- `tomlio.py` — `render_scanned_recipe`, `target_add_text`, and `target_remove_text`.
 
 ## Gotchas
 
@@ -281,11 +275,6 @@ file I/O.
   `os`/`subprocess`. Forbidding attribute access is what closes that escape
   hatch. When extending the template language, never reintroduce attribute access
   or `eval`/`exec`, and add new capabilities only as scope helpers.
-- **`refresh_recipe` can drop one standalone comment.** Because `[apps.*]` is
-  replaced wholesale, a standalone comment sitting in the gap between the last
-  `[apps.*]` table and the first `[resources.*]` table is lost on re-scan.
-  Comments inside tables, inline comments, and the file header all survive. This
-  is documented in `tomlio.py`'s module docstring.
 - **Local cannot override recipe.** `merged_targets` raises on a `(type,
   variant)` collision instead of letting local win. Renaming the recipe variant
   is not how you customize one per checkout — pick a distinct name in the local

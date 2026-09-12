@@ -84,7 +84,6 @@ from .commands import (
     cmd_completion,
     cmd_deinit,
     cmd_init,
-    cmd_refresh_inventory,
     cmd_status,
 )
 from .device_claims import (

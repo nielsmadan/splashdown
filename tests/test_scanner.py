@@ -141,50 +141,6 @@ export default defineConfig(({ mode }) => {
     assert outside.read_text() == original
 
 
-def test_refresh_inventory_rejects_unknown_resource_key_without_writing(tmp_path):
-    path = tmp_path / "splashdown.toml"
-    path.write_text("""\
-# top-of-file comment
-[project]
-workspace = "single"
-loader = "mise"
-
-[apps.main]
-path = "."
-profile = "unknown"
-resources = ["MY_PORT_WITH_UNDERSCORES"]
-
-[resources.MY_PORT_WITH_UNDERSCORES]
-type = "port"
-range = [9000, 9010]
-# user note inside the block
-custom_unknown_key = "keep me"
-""")
-    before = path.read_text()
-    with pytest.raises(ValueError, match="unknown field `custom_unknown_key`"):
-        sd.cmd_refresh_inventory(tmp_path)
-    assert path.read_text() == before
-
-
-def test_refresh_inventory_validates_existing_apps_before_replacing_them(tmp_path):
-    path = tmp_path / "splashdown.toml"
-    path.write_text("""\
-[project]
-workspace = "single"
-loader = "none"
-
-[apps.main]
-path = "."
-profile = "unknown"
-resources = []
-unknown = "would otherwise be erased"
-""")
-    before = path.read_text()
-    with pytest.raises(ValueError, match=r"\[apps\.main\] unknown field `unknown`"):
-        sd.cmd_refresh_inventory(tmp_path)
-    assert path.read_text() == before
-
-
 def _vite_app(root: Path, *, proxy: bool) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "package.json").write_text('{"name": "web", "devDependencies": {"vite": "^5"}}')
@@ -221,38 +177,6 @@ def test_init_keeps_vite_api_port_when_a_backend_declares_port(tmp_path):
     recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
     assert recipe.resources["API_DEV_PORT"]["template"] == "{{ PORT }}"
     assert "API_DEV_PORT" in recipe.apps["web"]["resources"]
-
-
-def test_refresh_inventory_keeps_template_resolved_by_the_existing_recipe(tmp_path):
-    """A resource the recipe already declares keeps a profile template resolvable,
-    so refresh must not prune it just because no scanned app emits PORT."""
-    _vite_app(tmp_path, proxy=True)
-    (tmp_path / sd.RECIPE_NAME).write_text("""\
-[project]
-workspace = "single"
-loader = "none"
-
-[apps.main]
-path = "."
-profile = "vite"
-resources = ["WEB_DEV_PORT", "API_DEV_PORT"]
-
-[resources.PORT]
-type = "port"
-range = [9081, 9100]
-
-[resources.WEB_DEV_PORT]
-type = "port"
-range = [5174, 5200]
-
-[resources.API_DEV_PORT]
-type = "template"
-template = "{{ PORT }}"
-""")
-    assert sd.cmd_refresh_inventory(tmp_path) == 0
-    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
-    assert "API_DEV_PORT" in recipe.resources
-    assert "API_DEV_PORT" in recipe.apps["main"]["resources"]
 
 
 def test_prune_unresolvable_templates_cascades(tmp_path):
@@ -454,37 +378,6 @@ def test_resource_catalog_rejects_mangled_name_colliding_with_canonical_name():
         sd._build_resource_catalog(res_by_app)
 
 
-def test_refresh_inventory_disambiguates_normalized_app_name_collision(tmp_path, monkeypatch):
-    recipe_path = tmp_path / "splashdown.toml"
-    original = '[resources.KEEP]\ntype = "uuid"\n'
-    recipe_path.write_text(original)
-
-    class CollisionProfile:
-        def resources(self, app):
-            return {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}}
-
-        def agent_guidance(self, app, port_names):
-            return []
-
-    inventory = sd.ProjectInventory(
-        workspace="pnpm",
-        apps=[
-            sd.AppInventory(name="admin-web", path=tmp_path / "a", profile="collision-test"),
-            sd.AppInventory(name="admin_web", path=tmp_path / "b", profile="collision-test"),
-        ],
-        loader="none",
-    )
-    monkeypatch.setitem(sd.scanner.PROFILES, "collision-test", CollisionProfile())
-    monkeypatch.setattr(sd.commands.Scanner, "scan", lambda self, cwd: inventory)
-
-    assert sd.cmd_refresh_inventory(tmp_path) == 0
-    recipe = sd.Recipe.load(recipe_path)
-    names = {name for app in recipe.apps.values() for name in app["resources"]}
-    assert len(names) == 2
-    assert all(sd.ENV_NAME_RE.fullmatch(name) for name in names)
-    assert "KEEP" in recipe.resources
-
-
 def test_resource_name_scoping_disambiguates_equal_sanitized_app_names():
     res_by_app = {
         name: {"ELECTRON_PROFILE_ID": {"type": "template", "template": name}}
@@ -610,56 +503,6 @@ def test_cmd_init_writes_post_checkout_hook(tmp_path):
     sd.cmd_init(tmp_path)
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
     assert '"$SPLASH" hook post-checkout "$1" "$2" "$3"' in hook.read_text()
-
-
-def test_refresh_inventory_updates_project_and_apps(tmp_path):
-    (tmp_path / "splashdown.toml").write_text("""\
-[project]
-workspace = "single"
-loader = "mise"
-
-[apps.api]
-path = "."
-profile = "node-backend"
-resources = ["PORT"]
-
-[resources.PORT]
-type  = "port"
-range = [9081, 9100]
-""")
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    rc = sd.cmd_refresh_inventory(tmp_path)
-    assert rc == 0
-    text = (tmp_path / "splashdown.toml").read_text()
-    assert 'profile = "vite"' in text
-    assert "[resources.PORT]" in text
-    assert "range = [9081, 9100]" in text
-
-
-def test_refresh_inventory_on_legacy_recipe_upgrades_in_place(tmp_path):
-    (tmp_path / "splashdown.toml").write_text('[resources.RUN_ID]\ntype = "uuid"\n')
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    rc = sd.cmd_refresh_inventory(tmp_path)
-    assert rc == 0
-    text = (tmp_path / "splashdown.toml").read_text()
-    assert "[project]" in text
-    assert "[apps." in text
-    assert "[resources.RUN_ID]" in text
-
-
-def test_refresh_inventory_preserves_electron_profile_associations(tmp_path):
-    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
-    for name in ("desktop", "studio"):
-        app_dir = tmp_path / "apps" / name
-        app_dir.mkdir(parents=True)
-        (app_dir / "package.json").write_text('{"dependencies":{"electron":"43"}}')
-    sd.cmd_init(tmp_path, electron_profile="isolated")
-
-    assert sd.cmd_refresh_inventory(tmp_path) == 0
-
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert recipe.apps["desktop"]["resources"] == ["ELECTRON_PROFILE_ID_DESKTOP"]
-    assert recipe.apps["studio"]["resources"] == ["ELECTRON_PROFILE_ID_STUDIO"]
 
 
 def test_node_backend_profile_detects_hono(tmp_path):

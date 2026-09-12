@@ -235,7 +235,6 @@ def _scoped_resource_names(
 def _prune_unresolvable_templates(
     resources: dict[str, dict[str, Any]],
     app_resource_names: dict[str, list[str]],
-    extra_known: set[str] | None = None,
 ) -> list[str]:
     """Drop profile-emitted template resources whose references don't resolve in
     the merged catalog, and un-list them from the apps that claimed them.
@@ -248,7 +247,7 @@ def _prune_unresolvable_templates(
     strand another that referenced it. Returns the pruned names."""
     pruned: list[str] = []
     while True:
-        known = _TEMPLATE_NAMES | set(resources) | (extra_known or set())
+        known = _TEMPLATE_NAMES | set(resources)
         dangling = {
             name
             for name, spec in resources.items()

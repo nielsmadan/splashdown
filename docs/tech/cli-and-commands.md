@@ -69,7 +69,7 @@ submodule imports inside handlers.
 4. `parse_args`, validate cross-option contracts, dispatch completion before checkout resolution,
    then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d).
 5. Dispatch the hidden hook event before constructing a Registry. Handle `init` inside the ordinary
-   error renderer but before Registry construction, so rejected, rescanned, and `--no-sync` init
+   error renderer but before Registry construction, so rejected and `--no-sync` init
    paths do not touch machine-wide registry state or output writers.
 6. A successful init that proceeds to sync constructs the shared `Registry`, consumes pending
    physical-claim notices, and provisions. Every other checkout command constructs the Registry
@@ -115,8 +115,8 @@ Root flags are `--cwd`, `--format`, `--show-values`, and `--version`.
 
 `_validate_parsed_args` runs immediately after argparse and before checkout resolution, registry
 construction, or command dispatch. It owns constraints argparse cannot express cleanly across
-parser levels: `init --rescan` exclusivity, the root output-option support matrix, and the
-redundant `target remove --global --keep-instance` pair. It also rejects
+parser levels: the root output-option support matrix and the redundant
+`target remove --global --keep-instance` pair. It also rejects
 `target remove device --keep-instance`, because physical devices have no owned instance. `--format`
 is valid for sync, status, bare env, bare target, target claims, and target claim. `--show-values`
 is valid for sync, status, normal init, and bare env. Rejected combinations use `parser.error`,
@@ -198,23 +198,17 @@ up-to-date no-op sync, and init's first sync.
 
 `cmd_init` applies the same contract to generated TOML. Scanner recipes,
 minimal-monorepo recipes, and built-in presets go through `Recipe.parse` before
-the recipe path is written. `cmd_refresh_inventory` first loads the existing
-recipe through `Recipe.load`, then validates the fully rebuilt document before
-replacing it. Invalid fields cannot be erased by the rewrite, and preserved
-stale fields abort the rescan instead of being blessed. This keeps
-generator/profile/loader drift from producing a file that the next sync cannot
-load. Every generated-recipe write uses same-directory atomic replacement, preserving an existing
+the recipe path is written. This keeps generator/profile/loader drift from producing a file
+that the next sync cannot load. Every generated-recipe write uses same-directory atomic replacement, preserving an existing
 regular file's mode while replacing its directory entry. Symlinks and non-regular entries are
 rejected; hardlinks are safely broken rather than truncating their shared inode.
 
 `cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader → hook →
-sync-only clone trust → framework wiring. For an explicitly allowed nested project, the hook step
+sync-only clone trust → framework wiring. For a nested project, the hook step
 prints a manual nested sync command instead because Git invokes checkout hooks from the worktree
 root. An intent preset short-circuits to `_cmd_init_preset`.
 Refusal and invalid-preset paths raise `UsageError`; `main()` renders them and returns exit 2. The
-first sync runs after init unless `--no-sync`; `--rescan` diverts to `cmd_refresh_inventory` and is
-exclusive with every scaffold/scan option. Init
-never grants bootstrap trust.
+first sync runs after init unless `--no-sync`. Init never grants bootstrap trust.
 
 #### `deinit` teardown
 

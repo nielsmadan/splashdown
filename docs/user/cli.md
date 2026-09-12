@@ -12,7 +12,7 @@ splash [--cwd PATH] [--format text|json] [--show-values] …  # root options pre
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
-splash init [preset] [--rescan] [--no-sync] [--loader=…] [--overwrite] [--allow-nested]
+splash init [preset] [--no-sync] [--loader=…] [--overwrite]
                     [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
 splash trust                        # authorize automatic handling for this clone
@@ -67,16 +67,16 @@ init's first sync, and bare `env`. Other combinations are usage errors instead o
 In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync and the first
 sync performed by init. With `status all`, it selects detailed checkout blocks so those values have
 a place to appear instead of silently remaining in the compact table.
-First-time init must target the Git worktree root; `--allow-nested` explicitly creates an
-independent Splashdown project below it. That location override does not replace `--overwrite`,
-which remains the separate opt-in for replacing an existing recipe. Non-Git projects and existing
-regular nested recipes keep their current behavior. Recipe symlinks are rejected rather than
-followed. Nested init skips automatic post-checkout hook wiring and prints the explicit
-`splash --cwd PATH sync` command to run after checkout.
 
-`splash init --rescan` only refreshes detected project and app inventory in an existing recipe. It
-cannot be combined with a preset, `--loader`, `--overwrite`, `--allow-nested`, `--no-sync`,
-`--electron-profile`, or `--ios-scheme`.
+Init creates a project in the current directory, or the directory selected by `--cwd`, whether
+at a Git worktree root, inside it, or outside Git. Replacing an existing recipe requires
+`--overwrite`. Recipe symlinks are rejected rather than followed. Nested init leaves the
+repository's post-checkout hook untouched and prints the explicit `splash --cwd PATH sync`
+command to run after checkout.
+
+Evolve an existing recipe by editing it manually or with an agent. `splash init --overwrite`
+regenerates the whole recipe, replacing manual edits. See
+[adding an app](monorepos.md#adding-or-moving-an-app) for a comparison workflow.
 
 Named presets are limited to choices that project scanning cannot infer:
 

@@ -80,11 +80,11 @@ splash init
 
 (Pass `--no-sync` to scaffold the files without reserving ports.)
 
-First-time init below a Git worktree root stops before writing anything. Run it from the root, use
-top-level `--cwd PATH` to target the root explicitly, or pass `--allow-nested` when the nested
-directory is intentionally an independent Splashdown project. Nested init does not install the
-worktree-root post-checkout hook because Git runs that hook from the root. It prints the explicit
-`splash --cwd PATH sync` command to run after checkout instead.
+Init creates a project in the current directory, or the directory selected by top-level
+`--cwd PATH`, including subdirectories of a Git worktree. Replacing an existing recipe requires
+`--overwrite`. Nested init leaves the worktree-root post-checkout hook untouched because Git
+runs that hook from the root. It prints the explicit `splash --cwd PATH sync` command to run
+after checkout.
 
 Splashdown validates the complete recipe before reserving anything or changing generated
 files. Unknown sections or fields, invalid resource writers, bad template references, and

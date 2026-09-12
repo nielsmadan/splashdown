@@ -40,7 +40,7 @@ assembled by `profiles.py` into `catalog.py` →
 reconciles target state through the platform adapters, `launching.py` dispatches app launchers,
 `wiring.py` defines framework checks,
 `doctor.py` orchestrates them, and `agentdocs.py` derives and
-synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init, rescan, and deinit.
+synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init and deinit.
 `hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
 `loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
 `bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.

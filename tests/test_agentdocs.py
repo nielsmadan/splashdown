@@ -344,7 +344,7 @@ def test_cli_no_sync_still_updates_guidance(tmp_path, monkeypatch):
     assert not (tmp_path / sd.ENV_FILE_NAME).exists()
 
 
-def test_scanner_init_and_rescan_replace_then_remove_guidance(tmp_path):
+def test_scanner_init_overwrite_replaces_then_removes_guidance(tmp_path):
     path = tmp_path / "AGENTS.md"
     path.write_text("# Rules\n")
     (tmp_path / "vite.config.ts").write_text("export default {}\n")
@@ -354,13 +354,13 @@ def test_scanner_init_and_rescan_replace_then_remove_guidance(tmp_path):
     (tmp_path / "vite.config.ts").unlink()
     (tmp_path / "angular.json").write_text("{}\n")
     (tmp_path / "package.json").write_text('{"scripts":{"start":"ng serve"}}\n')
-    assert sd.cmd_refresh_inventory(tmp_path) == 0
+    sd.cmd_init(tmp_path, loader_override="none", options=sd.InitOptions(overwrite=True))
     assert "Framework: `angular`" in path.read_text()
     assert "Framework: `vite`" not in path.read_text()
 
     (tmp_path / "angular.json").unlink()
     (tmp_path / "pubspec.yaml").write_text("name: app\n")
-    assert sd.cmd_refresh_inventory(tmp_path) == 0
+    sd.cmd_init(tmp_path, loader_override="none", options=sd.InitOptions(overwrite=True))
     assert "splashdown-managed agent-guidance" not in path.read_text()
     assert path.read_text().startswith("# Rules")
 

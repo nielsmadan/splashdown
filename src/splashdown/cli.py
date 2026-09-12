@@ -18,7 +18,6 @@ from .commands import (
     cmd_deinit,
     cmd_init,
     cmd_post_checkout_hook,
-    cmd_refresh_inventory,
     cmd_status,
     cmd_trust,
     cmd_untrust,
@@ -89,7 +88,7 @@ This checkout
   status   [all]              state of this checkout (or every checkout)
 
 Set up a project
-  init     [preset] [--rescan]   scaffold splashdown.toml + first sync (--no-sync skips it)
+  init     [preset]           scaffold splashdown.toml + first sync (--no-sync skips it)
   deinit                     remove checkout-local state (keeps shared hook and trust)
   trust                      authorize automatic recipe handling for this clone
   untrust                    revoke automatic recipe handling for this clone
@@ -201,16 +200,6 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser
         help="override loader auto-detection (none = write a dotenv file, wire nothing)",
     )
     p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
-    p.add_argument(
-        "--allow-nested",
-        action="store_true",
-        help="initialize below the Git worktree root",
-    )
-    p.add_argument(
-        "--rescan",
-        action="store_true",
-        help="re-detect [project]/[apps.*] in an existing splashdown.toml (don't scaffold)",
-    )
     p.add_argument(
         "--no-sync",
         action="store_true",
@@ -517,23 +506,6 @@ def _consume_claim_notices(cwd: Path, registry: Registry) -> None:
 
 
 def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if args.cmd == "init" and args.rescan:
-        incompatible = [
-            name
-            for active, name in (
-                (args.preset is not None, "preset"),
-                (args.loader is not None, "--loader"),
-                (args.overwrite, "--overwrite"),
-                (args.allow_nested, "--allow-nested"),
-                (args.no_sync, "--no-sync"),
-                (args.electron_profile is not None, "--electron-profile"),
-                (args.ios_scheme is not None, "--ios-scheme"),
-            )
-            if active
-        ]
-        if incompatible:
-            parser.error(f"init --rescan cannot be combined with: {', '.join(incompatible)}")
-
     if (
         args.cmd == "target"
         and args.target_cmd == "remove"
@@ -562,7 +534,7 @@ def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namesp
     supports_values = (
         args.cmd in {"sync", "status"}
         or (args.cmd == "env" and args.env_cmd is None)
-        or (args.cmd == "init" and not args.rescan and not args.no_sync)
+        or (args.cmd == "init" and not args.no_sync)
     )
     if args.show_values and not supports_values:
         parser.error("--show-values is only supported by sync, status, normal init, and bare env")
@@ -601,15 +573,10 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
 
     if args.cmd == "init":
         try:
-            if args.rescan:
-                return cmd_refresh_inventory(cwd)
             cmd_init(
                 cwd,
                 preset=args.preset,
-                options=InitOptions(
-                    overwrite=args.overwrite,
-                    allow_nested=args.allow_nested,
-                ),
+                options=InitOptions(overwrite=args.overwrite),
                 loader_override=args.loader,
                 electron_profile=args.electron_profile,
                 ios_scheme=args.ios_scheme,

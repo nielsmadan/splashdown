@@ -41,12 +41,11 @@ Run this once at the repo root:
 splash init
 ```
 
-If you run first-time init from a subdirectory, Splashdown names the detected Git worktree root
-and exits before creating project or registry files. Change to that root, target it with
-`splash --cwd PATH init`, or pass `--allow-nested` when the subdirectory is intentionally an
-independent project. Existing nested recipes do not need the flag for `--rescan` or `--overwrite`.
-Nested init does not install the worktree-root post-checkout hook because Git invokes that hook from
-the root. Init prints the `splash --cwd PATH sync` command to run manually after checkout.
+Init creates configuration in the current directory. Use `splash --cwd PATH init` to choose
+another directory. A subdirectory of a Git worktree can be an independent Splashdown project.
+An existing recipe requires `--overwrite` to replace it.
+Nested init leaves the worktree-root post-checkout hook untouched because Git invokes that hook
+from the root. Init prints the `splash --cwd PATH sync` command to run manually after checkout.
 
 Splashdown scans the filesystem, detects your workspace layout and framework, and does five things:
 
@@ -87,7 +86,7 @@ Pass `--no-sync` to scaffold the files without reserving ports yet.
 
 Splashdown never creates an agent-instruction file. If both exist and `CLAUDE.md` imports
 `@AGENTS.md`, only `AGENTS.md` keeps guidance; any older complete block in `CLAUDE.md` is
-removed. `init --rescan` replaces or removes the managed block as detected frameworks change,
+removed. `init --overwrite` replaces or removes the managed block as detected frameworks change,
 and `deinit` removes the block while leaving the rest of each Markdown file untouched. Symlinks,
 non-regular files, and unpaired or duplicate sentinels are treated as user-owned: Splashdown
 warns and leaves them unchanged.
