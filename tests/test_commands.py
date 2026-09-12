@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -1848,7 +1849,9 @@ def test_gc_claim_cleanup_counts_dead_claims_and_dead_or_expired_notices(
     assert "gc: removed 3 registry entries" in capsys.readouterr().err
 
 
-def test_status_claim_summary_includes_checkout_known_only_by_ownership(tmp_path, registry, capsys):
+def test_status_claim_summary_includes_checkout_known_only_by_ownership(
+    tmp_path, registry, capsys, monkeypatch
+):
     registry.attempt_claim(
         sd.PhysicalClaim(
             "recipe:/repo:device:pixel",
@@ -1860,11 +1863,11 @@ def test_status_claim_summary_includes_checkout_known_only_by_ownership(tmp_path
         )
     )
 
+    monkeypatch.setattr(Path, "home", tmp_path.resolve)
     assert sd.cmd_status(tmp_path, registry, "text", show_all=True) == 0
 
     err = capsys.readouterr().err
-    assert str(tmp_path.resolve()) in err
-    assert "1 claim" in err
+    assert err.splitlines()[1].split() == ["~", "1", "claim"]
 
 
 def test_status_all_check_verbose_counts_defunct_physical_claim(tmp_path, registry, capsys):

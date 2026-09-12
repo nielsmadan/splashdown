@@ -806,6 +806,7 @@ def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     assert sd.main(["--cwd", str(a)]) == 0
     assert sd.main(["--cwd", str(b)]) == 0
     capsys.readouterr()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     rc = sd.main(["--cwd", str(a), "status", "all"])
     assert rc == 0
     err = capsys.readouterr().err
@@ -814,8 +815,10 @@ def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
     assert "SUMMARY" in err
     assert "ISSUE" not in err  # healthy registry: column dropped
     # Both paths appear; resource counts (not names) appear.
-    assert str(a) in err
-    assert str(b) in err
+    assert [line.split() for line in err.splitlines()[1:]] == [
+        ["~/co-a", "1", "port"],
+        ["~/co-b", "1", "port"],
+    ]
     assert "1 port" in err
     # Resource names from the recipe must NOT appear in compact mode.
     assert "P_A=" not in err
@@ -859,14 +862,12 @@ def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys
         (d / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19800, 19810]\n')
         assert sd.main(["--cwd", str(d)]) == 0
     capsys.readouterr()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert sd.main(["--cwd", str(a), "status", "all"]) == 0
     err = capsys.readouterr().err
     # Strip header line; verify the path-bearing rows appear in alpha order.
     body = err.split("\n", 1)[1]
-    pos_a = body.index(str(a))
-    pos_m = body.index(str(m))
-    pos_z = body.index(str(z))
-    assert pos_a < pos_m < pos_z
+    assert [line.split()[0] for line in body.splitlines()] == ["~/alpha", "~/mike", "~/zeta"]
 
 
 def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
