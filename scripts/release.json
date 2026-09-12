@@ -13,8 +13,7 @@
     "python3",
     "just",
     "uv",
-    "uvx",
-    "gh"
+    "uvx"
   ],
   "stages": [
     {

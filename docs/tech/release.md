@@ -27,22 +27,20 @@ automatic bump requires an explicit version or bump.
 
 Run from a clean `main` checkout with complete history, matching local/origin release tags, and all
 origin commits incorporated. Existing local commits are included in the push and counted in the
-preview. Required tools are Python 3.9+, Git, Just, uv/uvx, and authenticated `gh` with access to the
-repository, Actions, and releases. `scripts/release.json` declares checks and preparation steps;
-`scripts/release.py` implements the shared release flow.
+preview. Required tools are Python 3.9+, Git, Just, and uv/uvx, with Git push access to the
+repository. `scripts/release.json` declares checks and preparation steps; `scripts/release.py`
+uses Git for remote inspection, tagging, and pushing.
 
 The recipe updates `pyproject.toml`, regenerates `uv.lock` and `CHANGELOG.md`, commits those files,
 and atomically pushes `main` with its annotated release tag. The GitHub workflow builds the
-package, publishes a GitHub release, and updates the Homebrew formula. The command waits for that
-tag's workflow and reports its result and release URL. Do not run a release unless explicitly
-requested.
-
-The shared helper verifies GitHub's draft state before reporting completion. Splashdown requires
-a published release; the `draft: true` policy used by Hooklinesinker reports a draft URL for manual
-publication instead. Keep the helper and its tests identical across all seven configured repos.
+package, publishes a GitHub release, and updates the Homebrew formula. The command finishes after
+the push and prints workflow and release links. Publication runs asynchronously; local success
+confirms the Git push, and the linked workflow reports publication success or failure. CI uses
+`gh` to create the GitHub release record and upload artifacts, which Git cannot do. Do not run a
+release unless explicitly requested.
 
 Failed preparation or push leaves local changes/commits/tags available for inspection. Failed
-publication leaves the remote tag in place and reports an error; inspect the linked workflow and
+publication leaves the remote tag in place; inspect the linked workflow and
 resume or rerun the failed workflow after addressing its cause. Never replace a published tag.
 
 ## Version and lock ordering
