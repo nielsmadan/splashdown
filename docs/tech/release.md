@@ -50,9 +50,9 @@ the pre-commit hook, whose `uv run` can notice a changed project version and reg
 a side effect. If the lock was not generated and staged first, the tag can carry a stale
 `uv.lock`.
 
-A stale lock at an already-published tag does not change the published artifacts: the release
-workflow builds with pip and does not consume `uv.lock`. Fix it with a follow-up lockfile commit;
-never replace a public tag for that reason.
+The release workflow builds Python artifacts with pip and uses `uv.lock` to generate Homebrew
+runtime resources. A stale runtime graph or project version fails resource generation. Fix a stale
+lock with a new commit and release; never replace a published tag.
 
 ## Changelog and tags
 
@@ -80,18 +80,33 @@ The canonical formula is `Formula/splashdown.rb` in
 Juggler cask; no reference formula is kept in this repository. The `HOMEBREW_TAP_TOKEN` GitHub
 secret must have write access to the tap repository.
 
-The remote formula must exist before the first release. The workflow clones the tap, rewrites the
-formula, and pushes it; it cannot create a missing formula from a local reference copy.
+`scripts/homebrew_resources.py` generates the formula from the release version, downloaded
+Splashdown source checksum, and the runtime closure in `uv.lock`. It checks the project dependency
+names, constraints, and immutable Flyrail pin against the lock. Development and documentation
+packages are excluded. Conditional or ambiguous runtime graphs fail until an explicit Homebrew
+policy is implemented.
 
-The formula has a top-level source `sha256` and separate hashes inside Python dependency resource
-blocks. The source rewrite must stay anchored to the two-space-indented top-level line:
+Registry source archives must match their locked SHA256. Flyrail uses the exact public GitHub
+commit archive and installs its `python/` subproject. The release workflow downloads that archive
+and hashes the actual response bytes, so Flyrail must be pushed before releasing Splashdown.
+A locally produced Git archive has its own checksum and is not a substitute for the public
+archive checksum.
 
-```sh
-sed -i "s|^  sha256 \"[^\"]*\"|  sha256 \"${TARBALL_SHA}\"|" Formula/splashdown.rb
-```
+Before publication, the workflow actually stages every verified resource and installs its source
+into a new environment using `--no-deps --no-binary=:all: --ignore-installed --no-compile`.
+Build isolation remains enabled, matching Homebrew's Python helper defaults. It then installs
+Splashdown without dependency resolution, runs `pip check`, and exercises CLI help. The generated
+formula explicitly stages each resource, selects Flyrail's `python/` directory, installs the main
+project, and generates shell completions. The tap update copies the complete generated formula,
+so an old dependency resource cannot survive a main-package version update.
 
-An unanchored global replacement corrupts the dependency hashes.
+For local verification, `--artifact-map` accepts a JSON object mapping public resource URLs to
+`{"path": "...", "sha256": "..."}` transport inputs. Each input is checked against its supplied
+checksum and registry inputs also retain their locked checksum check. `--verify-install` names a
+new disposable environment. Keep these maps, environments, downloaded sources, and any generated
+formula in ignored temporary storage. This mode does not publish or modify the tap.
 
 Homebrew manages the Python runtime and vendored dependency resources for users. When Homebrew
-retires the current Python major, update the formula's `python@3.X` dependency and rebuild its
-resources.
+retires the current Python major, update the generator's `python@3.X` dependency and rebuild its
+resources. Python wheel and sdist metadata retain the public Flyrail Git URL, immutable commit,
+and `#subdirectory=python`; Hatch direct references are enabled for release pip installs.

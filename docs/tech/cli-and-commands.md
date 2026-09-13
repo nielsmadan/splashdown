@@ -45,7 +45,8 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 `sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
 handler. `commands.py` owns trust/bootstrap, init, sync, deinit, and env orchestration. `status.py`
 owns status report construction and `cli_output.py` owns rendering. `target_commands.py`
-owns run/start/stop/destroy, fleet maintenance, and the nested target dispatcher; `targets.py` owns
+owns run/start/stop/destroy, fleet maintenance, and the nested target dispatcher; `ai_commands.py`
+owns explicit instruction-guidance lifecycle commands; `targets.py` owns
 local/global catalog edits. `hooks.py` owns post-checkout
 installation and coexistence with other hook managers, delegating the per-manager configuration
 editors to `hook_configs.py`. `completion.py` provides the argcomplete
@@ -69,9 +70,10 @@ submodule imports inside handlers.
 3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
 4. `parse_args`, validate cross-option contracts, dispatch completion before checkout resolution,
    then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d).
-5. Dispatch the hidden hook event before constructing a Registry. Handle `init` inside the ordinary
-   error renderer but before Registry construction, so no init path touches machine-wide registry
-   state or output writers.
+5. Dispatch `ai` before Registry construction; its status is read-only, while mutations acquire
+   the checkout operation lock. Dispatch the hidden hook event before constructing a Registry.
+   Handle `init` inside the ordinary error renderer but before Registry construction, so no init
+   path touches machine-wide registry state or output writers.
 6. Every other checkout command constructs the Registry
    and consumes notices before dispatching trust, untrust, bootstrap, or the ordinary flat command
    table. The final fall-through is `sync` (the default), so both bare `splash` and explicit
@@ -118,7 +120,7 @@ construction, or command dispatch. It owns constraints argparse cannot express c
 parser levels: the root output-option support matrix and the redundant
 `target remove --global --keep-instance` pair. It also rejects
 `target remove device --keep-instance`, because physical devices have no owned instance. `--format`
-is valid for sync, status, bare env, bare target, target claims, and target claim. `--show-values`
+is valid for sync, status, bare env, bare target, target claims, target claim, and ai commands. `--show-values`
 is valid for sync, status, normal init, and bare env. Rejected combinations use `parser.error`,
 preserving argparse's usage output and exit 2.
 

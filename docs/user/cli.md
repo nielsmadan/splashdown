@@ -18,6 +18,9 @@ splash trust                        # authorize automatic handling for this clon
 splash untrust                      # revoke clone-wide automatic handling
 splash bootstrap [--rerun]          # sync + run bootstrap once for this checkout
 splash doctor [--fix] [--framework=…]
+splash ai status                    # inspect recorded agent guidance without changing files
+splash ai update [--replace]         # render current recipe, optionally replace edited blocks
+splash ai uninstall                 # remove guidance without changing provisioning
 
 splash run     [type] [variant]     # boot target + build + launch
 splash start   [type] [variant]     # boot target (no build/launch)
@@ -62,8 +65,8 @@ single-value read. `splash sync --force` reallocates ports. `splash init` scans 
 writes the project files. It allocates nothing, so run `splash trust` and then bare `splash`
 after it.
 Root output options go before the command. `--format` applies to sync, status, init, bare `env`,
-bare `target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, and bare
-`env`. Other combinations are usage errors instead of accepted no-ops.
+bare `target`, `target claims`, `target claim`, and `ai` commands. `--show-values` applies to sync,
+status, and bare `env`. Other combinations are usage errors instead of accepted no-ops.
 In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync. With
 `status all`, it selects detailed checkout blocks so those values have a place to appear instead
 of silently remaining in the compact table.
@@ -126,12 +129,47 @@ with Xcode missing or broken. `splash run` picks the scheme instead: it uses
 finds. With no scheme or several, the run stops before touching a simulator and asks you to set
 `[project.ios] scheme`. See [The recipe](recipe.md) for where that goes.
 
+## Agent guidance
+
+Init updates a Splashdown section in existing root `AGENTS.md` and independent
+`CLAUDE.md` files. They create no instruction file. A real Claude `@AGENTS.md` or `@./AGENTS.md`
+import uses the shared guidance once that file is successfully updated. Imports shown in Markdown
+code examples do not change this selection.
+
+`splash ai status` changes no files. With a valid recipe, `current` means the installed guidance
+also matches the current generated content and `outdated` means an update is available. When the
+recipe is missing or invalid, `recorded-current` confirms receipt integrity with no latest-content
+comparison. `splash --format json ai status` exposes `content_current` for recorded integrity and
+`desired_current` for the available recipe comparison, or `null` when that comparison is unknown.
+Run `splash ai update` to render changes in the recipe or in Splashdown's guidance. Reload agent
+sessions after updates.
+
+Normal update and uninstall preserve edits inside the section and return nonzero when those edits
+or damaged metadata prevent completion. `splash ai update --replace` permits replacement of a
+complete edited section while keeping the first original content for later restoration. Malformed
+or duplicated markers need manual repair. User prose outside the section survives these operations.
+Init warns about guidance failures and keeps successful initialization changes.
+
+`splash ai uninstall` removes receipt-owned guidance even when `splashdown.toml` is missing or
+invalid. Deinit also removes guidance. An old installation without receipts is adopted only when
+its single complete block exactly matches the current generated guidance. This works on the first
+direct deinit with a valid recipe. Edited or unverifiable old blocks stay in place with a warning.
+Keep private guidance metadata intact. Missing receipts cannot authorize deleting a block.
+After an interrupted update or uninstall, retry the command. Splashdown recovers recognized
+interrupted work before checking the files again. If recovery cannot verify the file or metadata,
+the command fails and keeps its recovery evidence. `splash ai status` only reports that state.
+
 ## Remove splashdown
 
 `splash deinit` surgically removes checkout-local init state plus state created by sync and device runs. It
 destroys simulator and emulator instances owned by this checkout, releases its registry entries,
 clears splashdown-managed keys from every writer destination and deletes one left with nothing else,
-and unwires the loader and managed agent instructions. From its `.gitignore` block it removes the rules for files it deleted and keeps the rules for files it left behind, such as a `splashdown.local.toml` you edited, and it removes a `.gitignore` left with nothing in it at all. The loader configuration is restored to the bytes the project committed, blank separator lines included. The shared
+and unwires the loader and unchanged receipt-owned agent instructions. From its `.gitignore`
+block it removes the rules for files it deleted and keeps the rules for files it left behind, such
+as a `splashdown.local.toml` you edited, and it removes a `.gitignore` left with nothing in it at
+all. Private guidance metadata and its permanent ignore entries remain for safe future operations.
+The loader configuration is restored to the bytes the project committed, blank separator lines
+included. The shared
 post-checkout integration and clone-wide bootstrap trust remain because linked worktrees may still
 use them, and deinit names the hook configuration file it left that entry in. Deinit clears only this checkout's bootstrap completion.
 It then removes `splashdown.toml` and an untouched `splashdown.local.toml` skeleton.
@@ -197,6 +235,6 @@ atomically transfers a live owner's claim. `release VARIANT --force` clears it w
 
 A forced transfer or release queues a warning for the displaced checkout. Its next ordinary
 checkout-scoped command prints and consumes the warning once. Completion, help, version output,
-and the hidden post-checkout command do not consume it. `splash deinit` releases the checkout's
+`ai` commands, and the hidden post-checkout command do not consume it. `splash deinit` releases the checkout's
 claims and pending notices. `splash gc` removes claims for deleted checkouts and expired or
 dead-checkout notices.

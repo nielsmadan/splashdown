@@ -8,7 +8,11 @@ version = "0.17.0"
 description = "Per-checkout iOS sims, Android emulators, and dev ports for mobile development across git worktrees on macOS. Keeps ports, env vars, and device targets in sync across macOS and Linux."
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = ["argcomplete>=3.7.2", "tomlkit>=0.15.1"]
+dependencies = [
+    "argcomplete>=3.7.2",
+    "tomlkit>=0.15.1",
+    "flyrail @ git+https://github.com/nielsmadan/flyrail.git@272cd6a226d595ef1552699a39bfd690668ff03c#subdirectory=python",
+]
 license = "MIT"
 authors = [{ name = "Niels Madan" }]
 keywords = ["git", "worktree", "ios", "simulator", "android", "emulator", "react-native", "flutter", "mobile", "ports", "mise"]
@@ -87,6 +91,9 @@ score = false
 python_version = "3.11"
 files = ["src/splashdown"]
 strict = true
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 sources = ["src"]

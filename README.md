@@ -73,7 +73,7 @@ splash init
 #   shell loader      → mise (detected mise.toml)
 #   env output        → splashdown.env
 # wrote splashdown.toml + splashdown.local.toml + mise.toml
-# updated AGENTS.md
+# updated guidance in AGENTS.md
 # configuration written; nothing is allocated or active yet
 # next: run `splash trust` to activate automatic post-checkout handling
 #       run `splash` to allocate values and write splashdown.env
@@ -88,6 +88,25 @@ splash
 #   WEB_DEV_PORT (changed)
 #   -> splashdown.env: 2 vars (changed)
 ```
+
+Inspect or maintain the generated agent instructions separately:
+
+```sh
+splash ai status
+splash ai update
+splash ai update --replace
+splash ai uninstall
+splash --format json ai status
+```
+
+These commands use existing root `AGENTS.md` and `CLAUDE.md` files. Edits outside the generated
+block survive. Edits inside it stop normal updates and removal. `--replace` explicitly replaces a
+complete edited block and retains the first original block for restoration. Malformed markers
+need manual repair. Status checks recorded integrity and, when a valid recipe is available,
+compares it with current guidance. Uninstall works without a valid recipe for receipt-owned
+guidance. Reload agent sessions after changing instructions. See the
+[CLI reference](https://splashdown.dev/cli/#agent-guidance) for legacy adoption and conflict
+handling.
 
 Init creates a project in the current directory, or the directory selected by top-level
 `--cwd PATH`, including subdirectories of a Git worktree. Replacing an existing recipe requires

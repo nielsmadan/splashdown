@@ -22,3 +22,6 @@ eval "$(splash completion bash)"
 ```
 
 `splash completion` with no argument autodetects your shell from `$SHELL`.
+
+The `ai` group completes `status`, `update`, and `uninstall`. `splash ai update --r<Tab>` completes
+`--replace`. Guidance completion uses the command parser and does not read instruction files.

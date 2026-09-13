@@ -129,12 +129,11 @@ and commit it.
 | loader config | Yes | Gains one line that sources `splashdown.env`, and is created if absent |
 | `AGENTS.md` / `CLAUDE.md` | Yes | Existing files gain a sentinel-wrapped block telling coding agents which port variables, env destination, and launch commands to use |
 
-Splashdown never creates an agent-instruction file. If both exist and `CLAUDE.md` imports
-`@AGENTS.md`, only `AGENTS.md` keeps guidance, and any older complete block in `CLAUDE.md` is
-removed. `init --overwrite` replaces or removes the managed block as detected frameworks change,
-and `deinit` removes the block while leaving the rest of each Markdown file untouched. Symlinks,
-non-regular files, and unpaired or duplicate sentinels are treated as user-owned: Splashdown
-warns and leaves them unchanged.
+Splashdown never creates an agent-instruction file. When Claude imports `@AGENTS.md` outside
+Markdown code, its duplicate guidance is retired only after the shared file is successfully
+updated. Init and deinit preserve edited sections and warn when guidance cannot be changed safely.
+Old guidance is adopted only when its complete section exactly matches current generated content.
+See [Agent guidance](cli.md#agent-guidance) for status, explicit replacement, and removal.
 
 The block names the env destination your recipe configures, so a project pointed at `.env` or
 `config/dev.env` reads about that file rather than `splashdown.env`. It carries no allocated

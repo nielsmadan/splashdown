@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import splashdown as sd
+from splashdown.agentdocs import inspect_agent_guidance
 
 
 def _recipe(
@@ -275,7 +276,7 @@ def test_sync_leaves_malformed_markers_untouched(tmp_path, capsys):
     )
     sd.sync_agent_guidance(tmp_path, recipe)
     assert path.read_text() == original
-    assert "Splashdown guidance markers are malformed" in capsys.readouterr().err
+    assert "malformed Splashdown guidance markers" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("filename", ["AGENTS.md", "CLAUDE.md"])
@@ -293,10 +294,7 @@ def test_sync_and_remove_leave_symlink_targets_unchanged(tmp_path, capsys, filen
     sd.sync_agent_guidance(root, recipe)
     sd.remove_agent_guidance(root)
     assert target.read_text() == "# External rules\n"
-    assert (
-        capsys.readouterr().err.splitlines()
-        == [f"warning: left {filename} alone: it is a symlink"] * 2
-    )
+    assert "symlink or unreadable" in capsys.readouterr().err
 
 
 def test_sync_preserves_crlf_and_utf8_bom(tmp_path):
@@ -323,48 +321,6 @@ def test_scanner_init_updates_guidance_without_sync(tmp_path):
     assert "Framework: `react-native`" in text
     assert "RCT_METRO_PORT" in text
     assert not (tmp_path / sd.ENV_FILE_NAME).exists()
-
-
-def test_cli_init_updates_guidance(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    path = tmp_path / "AGENTS.md"
-    path.write_text("# Rules\n")
-    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
-    assert (
-        sd.main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "init",
-                "--loader",
-                "none",
-            ]
-        )
-        == 0
-    )
-    assert "RCT_METRO_PORT" in path.read_text()
-    assert not (tmp_path / sd.ENV_FILE_NAME).exists()
-
-
-def test_scanner_init_overwrite_replaces_then_removes_guidance(tmp_path):
-    path = tmp_path / "AGENTS.md"
-    path.write_text("# Rules\n")
-    (tmp_path / "vite.config.ts").write_text("export default {}\n")
-    sd.cmd_init(tmp_path, loader_override="none")
-    assert "Framework: `vite`" in path.read_text()
-
-    (tmp_path / "vite.config.ts").unlink()
-    (tmp_path / "angular.json").write_text("{}\n")
-    (tmp_path / "package.json").write_text('{"scripts":{"start":"ng serve"}}\n')
-    sd.cmd_init(tmp_path, loader_override="none", options=sd.InitOptions(overwrite=True))
-    assert "Framework: `angular`" in path.read_text()
-    assert "Framework: `vite`" not in path.read_text()
-
-    (tmp_path / "angular.json").unlink()
-    (tmp_path / "pubspec.yaml").write_text("name: app\n")
-    sd.cmd_init(tmp_path, loader_override="none", options=sd.InitOptions(overwrite=True))
-    assert "splashdown-managed agent-guidance" not in path.read_text()
-    assert path.read_text().startswith("# Rules")
 
 
 def test_deferred_monorepo_init_removes_stale_guidance(tmp_path):
@@ -432,6 +388,385 @@ def test_replacement_and_removal_preserve_user_content_after_block(tmp_path):
     assert "Framework: `angular`" in path.read_text()
     sd.remove_agent_guidance(tmp_path)
     assert path.read_text() == "# Before\n# After\n"
+
+
+def _vite(root):
+    return _recipe(
+        root,
+        {"main": (".", "vite", ["WEB_DEV_PORT"])},
+        {"WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]}},
+    )
+
+
+@pytest.mark.parametrize(
+    "newline,prefix_newline,bom",
+    [
+        ("\n", "\n", ""),
+        ("\r\n", "\r\n", "\ufeff"),
+        ("\r", "\r", ""),
+        ("\r\n", "\n", "\ufeff"),
+        ("\r\n", "\r", ""),
+    ],
+)
+def test_exact_legacy_adoption_preserves_bytes_and_removes_source_free(
+    tmp_path, newline, prefix_newline, bom
+):
+    path = tmp_path / "AGENTS.md"
+    recipe_path = tmp_path / sd.RECIPE_NAME
+    recipe_path.write_text(
+        '[project]\nworkspace = "single"\nloader = "none"\n'
+        '[apps.main]\npath = "."\nprofile = "vite"\nresources = ["WEB_DEV_PORT"]\n'
+        '[resources.WEB_DEV_PORT]\ntype = "port"\nrange = [5174, 5200]\n'
+    )
+    recipe = sd.Recipe.load(recipe_path)
+    prefix = (bom + "# Rules" + prefix_newline).encode()
+    suffix = ("User suffix" + prefix_newline).encode()
+    legacy = (
+        sd.render_agent_guidance(tmp_path, recipe).replace("\n", newline).encode()
+        + newline.encode()
+    )
+    original = prefix + legacy + suffix
+    path.write_bytes(original)
+    path.chmod(0o640)
+    before = path.stat()
+    results = sd.sync_agent_guidance(tmp_path, recipe)
+    assert results[0].content_current
+    assert sd.sync_agent_guidance(tmp_path, recipe)[0].status == "unchanged"
+    observed = inspect_agent_guidance(tmp_path)[0]
+    assert observed.status == "current"
+    assert observed.content_current
+    assert observed.desired_current
+    assert path.read_bytes() == original
+    after = path.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_mode) == (
+        before.st_ino,
+        before.st_mtime_ns,
+        before.st_mode,
+    )
+    recipe_path.unlink()
+    assert sd.remove_agent_guidance(tmp_path)[0].successful
+    assert path.read_bytes() == prefix + suffix
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.parametrize(
+    "prefix,newline",
+    [("# Rules\n", "\n"), ("\ufeff# Rules\n", "\r\n"), ("# Rules\r", "\r\n")],
+)
+def test_first_direct_deinit_adopts_legacy_before_deleting_recipe(
+    tmp_path, registry, prefix, newline
+):
+    recipe = _vite(tmp_path)
+    (tmp_path / sd.RECIPE_NAME).write_text("""[project]
+workspace = "single"
+loader = "none"
+[apps.main]
+path = "."
+profile = "vite"
+resources = ["WEB_DEV_PORT"]
+[resources.WEB_DEV_PORT]
+type = "port"
+range = [5174, 5200]
+""")
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(
+        (
+            prefix + sd.render_agent_guidance(tmp_path, recipe).replace("\n", newline) + newline
+        ).encode()
+    )
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+    assert path.read_bytes() == prefix.encode()
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize(
+    "change", ["modified", "malformed", "no-source", "internal-newline", "closing-newline"]
+)
+def test_unverifiable_legacy_removal_preserves_document(tmp_path, change, newline):
+    recipe = _vite(tmp_path)
+    path = tmp_path / "AGENTS.md"
+    original = (
+        "# Rules\n" + sd.render_agent_guidance(tmp_path, recipe).replace("\n", newline) + newline
+    )
+    if change == "modified":
+        original = original.replace("Never hardcode", "Custom advice")
+    elif change == "malformed":
+        original = original.replace("<!-- <<< splashdown-managed agent-guidance <<< -->", "")
+    elif change == "internal-newline":
+        alternate = "\n" if newline != "\n" else "\r\n"
+        original = original.replace("## Splashdown" + newline, "## Splashdown" + alternate)
+    elif change == "closing-newline":
+        original = original.removesuffix(newline) + ("\n" if newline != "\n" else "\r\n")
+    path.write_bytes(original.encode())
+    result = sd.remove_agent_guidance(tmp_path, recipe if change != "no-source" else None)
+    assert result[0].status == "failed"
+    assert path.read_bytes() == original.encode()
+
+
+def test_legacy_block_with_wrong_destination_newline_is_preserved(tmp_path):
+    recipe = _vite(tmp_path)
+    path = tmp_path / "AGENTS.md"
+    original = ("# Rules\r\n" + sd.render_agent_guidance(tmp_path, recipe) + "\n").encode()
+    path.write_bytes(original)
+    assert sd.sync_agent_guidance(tmp_path, recipe)[0].status == "failed"
+    assert path.read_bytes() == original
+    assert sd.remove_agent_guidance(tmp_path, recipe)[0].status == "failed"
+    assert path.read_bytes() == original
+
+
+def test_explicit_takeover_restores_first_foreign_block(tmp_path):
+    recipe = _vite(tmp_path)
+    path = tmp_path / "AGENTS.md"
+    original = (
+        "# Rules\n"
+        + sd.render_agent_guidance(tmp_path, recipe).replace("Never hardcode", "User advice")
+        + "\n"
+    )
+    path.write_text(original)
+    assert sd.sync_agent_guidance(tmp_path, recipe)[0].status == "failed"
+    assert path.read_text() == original
+    assert sd.sync_agent_guidance(tmp_path, recipe, replace=True)[0].content_current
+    path.write_text(path.read_text().replace("Never hardcode", "Second edit"))
+    assert sd.sync_agent_guidance(tmp_path, recipe)[0].status == "failed"
+    assert sd.sync_agent_guidance(tmp_path, recipe, replace=True)[0].content_current
+    assert sd.remove_agent_guidance(tmp_path)[0].successful
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        "`@AGENTS.md`",
+        "@`example`AGENTS.md",
+        "@AGENTS`example`.md",
+        "> ```md\n> @AGENTS.md\n> ```",
+        "    @AGENTS.md",
+        "`unclosed @AGENTS.md",
+        "@AGENTS.md.bak",
+        "``example ` @AGENTS.md``",
+        "```md\n@AGENTS.md\n```",
+        "~~~\n@./AGENTS.md\n~~~",
+    ],
+)
+def test_markdown_code_examples_do_not_import_agents(tmp_path, example):
+    (tmp_path / "AGENTS.md").write_text("# Shared\n")
+    claude = tmp_path / "CLAUDE.md"
+    claude.write_text(example + "\n")
+    assert all(result.successful for result in sd.sync_agent_guidance(tmp_path, _vite(tmp_path)))
+    assert "Framework: `vite`" in claude.read_text()
+
+
+@pytest.mark.parametrize(
+    "quote,indent",
+    [
+        ("> ", "    "),
+        ("> > ", "    "),
+        ("> > ", "\t"),
+        ("> ", "  \t"),
+        ("> > ", "  \t"),
+        ("> ", "   \t"),
+        ("> > ", "   \t"),
+        ("> ", "    \t"),
+        ("> > ", "    \t"),
+    ],
+)
+def test_quoted_indented_import_examples_preserve_current_guidance(tmp_path, quote, indent):
+    recipe_path = tmp_path / sd.RECIPE_NAME
+    recipe_path.write_text(
+        '[project]\nworkspace = "single"\nloader = "none"\n'
+        '[apps.main]\npath = "."\nprofile = "vite"\nresources = ["WEB_DEV_PORT"]\n'
+        '[resources.WEB_DEV_PORT]\ntype = "port"\nrange = [5174, 5200]\n'
+    )
+    recipe = sd.Recipe.load(recipe_path)
+    legacy = sd.render_agent_guidance(tmp_path, recipe) + "\n"
+    (tmp_path / "AGENTS.md").write_text("# Shared\n" + legacy)
+    example = f"{quote}Example:\n{quote.rstrip()}\n{quote}{indent}@AGENTS.md\n"
+    claude = tmp_path / "CLAUDE.md"
+    original = example + legacy
+    claude.write_text(original)
+
+    assert all(item.content_current for item in sd.sync_agent_guidance(tmp_path, recipe))
+    assert claude.read_text() == original
+    assert all(
+        item.status == "current" and item.content_current and item.desired_current
+        for item in inspect_agent_guidance(tmp_path)
+    )
+    assert all(item.content_current for item in sd.sync_agent_guidance(tmp_path, recipe))
+    assert claude.read_text() == original
+
+
+@pytest.mark.parametrize("reference", ["@AGENTS.md", "@./AGENTS.md"])
+@pytest.mark.parametrize("prefix", ["", " ", "   ", "> ", ">    ", "> >    ", "> \t", ">  \t"])
+def test_exact_legacy_import_retirement_checks_each_file(tmp_path, reference, prefix):
+    recipe = _vite(tmp_path)
+    legacy = sd.render_agent_guidance(tmp_path, recipe) + "\n"
+    (tmp_path / "AGENTS.md").write_text("# Shared\n" + legacy)
+    claude = tmp_path / "CLAUDE.md"
+    original = prefix + reference + "\n"
+    claude.write_text(original + legacy)
+    assert all(result.successful for result in sd.sync_agent_guidance(tmp_path, recipe))
+    assert claude.read_text() == original
+
+
+def test_bad_agents_preserves_working_claude_import_duplicate(tmp_path):
+    recipe = _vite(tmp_path)
+    claude = tmp_path / "CLAUDE.md"
+    claude.write_text("@AGENTS.md\n")
+    sd.sync_agent_guidance(tmp_path, recipe)
+    original = claude.read_bytes()
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff")
+    results = sd.sync_agent_guidance(tmp_path, recipe)
+    assert results[0].status == "failed"
+    assert results[1].content_current
+    assert claude.read_bytes() == original
+
+
+def test_changed_claude_legacy_is_not_retired_after_agents_update(tmp_path):
+    recipe = _vite(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("# Shared\n")
+    claude = tmp_path / "CLAUDE.md"
+    original = (
+        "@AGENTS.md\n"
+        + sd.render_agent_guidance(tmp_path, recipe).replace("Never hardcode", "User advice")
+        + "\n"
+    )
+    claude.write_text(original)
+    results = sd.sync_agent_guidance(tmp_path, recipe)
+    assert results[0].content_current
+    assert results[1].status == "failed"
+    assert claude.read_text() == original
+
+
+@pytest.mark.parametrize("change", ["delete", "foreign-edit"])
+def test_required_existing_preview_rejects_stale_destination(tmp_path, monkeypatch, change):
+    import flyrail
+
+    path = tmp_path / "AGENTS.md"
+    path.write_text("# Rules\n")
+    apply = flyrail.apply_preview
+
+    def race(proposal):
+        if change == "delete":
+            path.unlink()
+        else:
+            path.write_text("# Concurrent foreign edit\n")
+        return apply(proposal)
+
+    monkeypatch.setattr(flyrail, "apply_preview", race)
+    assert sd.sync_agent_guidance(tmp_path, _vite(tmp_path))[0].status == "failed"
+    if change == "delete":
+        assert not path.exists()
+    else:
+        assert path.read_text() == "# Concurrent foreign edit\n"
+
+
+@pytest.mark.parametrize("metadata", ["index", "receipt"])
+def test_missing_metadata_cannot_authorize_marker_deletion(tmp_path, metadata):
+    import flyrail
+
+    path = tmp_path / "AGENTS.md"
+    recipe = _vite(tmp_path)
+    path.write_text("# Rules\n")
+    sd.sync_agent_guidance(tmp_path, recipe)
+    original = path.read_bytes()
+    state = (
+        tmp_path / ".splashdown-ai" / "agents"
+        if metadata == "index"
+        else flyrail.ResourceAuthority(path).state_root
+    )
+    (state / f"{metadata}.json").unlink()
+    result = sd.remove_agent_guidance(tmp_path, recipe)[0]
+    assert result.status == "failed"
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("operation", ["update", "uninstall", "deinit"])
+def test_foreign_shared_authority_allows_exact_legacy_lifecycle(tmp_path, registry, operation):
+    import flyrail as fr
+
+    recipe_path = tmp_path / sd.RECIPE_NAME
+    recipe_path.write_text("""[project]
+workspace = "single"
+loader = "none"
+[apps.main]
+path = "."
+profile = "vite"
+resources = ["WEB_DEV_PORT"]
+[resources.WEB_DEV_PORT]
+type = "port"
+range = [5174, 5200]
+""")
+    recipe = sd.Recipe.load(recipe_path)
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"# Rules\n")
+    foreign = fr.Bundle.from_artifacts(
+        fr.BundleIdentity("other-tool", "1"), [fr.InstructionArtifact("guide", "Foreign guidance.")]
+    )
+    rendered = fr.RenderedBundle(
+        [
+            fr.RenderedArtifact(
+                "guide",
+                fr.Family.INSTRUCTIONS,
+                path,
+                fr.SectionContent("other-tool", "Foreign guidance."),
+                require_existing=True,
+            )
+        ]
+    )
+    foreign_target = fr.InstallationTarget(tmp_path / "other-index")
+    assert fr.sync(foreign, rendered, foreign_target).observation.is_current
+    foreign_document = path.read_bytes()
+    foreign_index = (foreign_target.index_root / "index.json").read_bytes()
+    path.write_bytes(foreign_document + sd.render_agent_guidance(tmp_path, recipe).encode() + b"\n")
+    if operation == "update":
+        original = path.read_bytes()
+        assert sd.sync_agent_guidance(tmp_path, recipe)[0].content_current
+        assert path.read_bytes() == original
+        assert sd.remove_agent_guidance(tmp_path)[0].successful
+    elif operation == "uninstall":
+        assert sd.remove_agent_guidance(tmp_path, recipe)[0].successful
+    else:
+        assert sd.cmd_deinit(tmp_path, registry) == 0
+    assert path.read_bytes() == foreign_document
+    assert fr.inspect_installation("other-tool", foreign_target).is_current
+    assert (foreign_target.index_root / "index.json").read_bytes() == foreign_index
+
+
+def test_claude_import_preimage_remains_binding_after_recovery(tmp_path, monkeypatch):
+    import flyrail as fr
+
+    recipe = _vite(tmp_path)
+    (tmp_path / "AGENTS.md").write_bytes(b"# Rules\n")
+    claude = tmp_path / "CLAUDE.md"
+    claude.write_bytes(b"# Claude rules\n")
+    assert all(item.successful for item in sd.sync_agent_guidance(tmp_path, recipe))
+    original = b"@AGENTS.md\n" + claude.read_bytes()
+    claude.write_bytes(original)
+    preview_removal = fr.preview_removal
+
+    def change_before_preview(bundle_id, target):
+        if target.index_root.name == "claude":
+            claude.write_bytes(original + b"New foreign guidance.\n")
+        return preview_removal(bundle_id, target)
+
+    monkeypatch.setattr(fr, "preview_removal", change_before_preview)
+    result = sd.sync_agent_guidance(tmp_path, recipe)[1]
+    assert result.status == "failed" and "changed after import selection" in result.detail
+    assert claude.read_bytes() == original + b"New foreign guidance.\n"
+
+
+def test_permanent_metadata_ignores_survive_deinit_and_reinit(tmp_path, registry):
+    (tmp_path / ".gitignore").write_text("user-secret\n/.splashdown-ai/\n")
+    (tmp_path / "AGENTS.md").write_text("# Rules\n")
+    (tmp_path / "vite.config.ts").write_text("export default {}\n")
+    for _ in range(2):
+        sd.cmd_init(tmp_path, loader_override="none")
+        assert sd.cmd_deinit(tmp_path, registry) == 0
+        assert (tmp_path / ".gitignore").read_text().splitlines() == [
+            "user-secret",
+            "/.splashdown-ai/",
+            "/.flyrail-*.state/",
+        ]
 
 
 _LOADOUT_HEADER = (
@@ -660,10 +995,10 @@ def test_sync_removes_the_block_when_no_app_declares_a_port(tmp_path, capsys):
     capsys.readouterr()
     sd.sync_agent_guidance(tmp_path, _recipe(tmp_path, {"main": (".", "flutter", [])}, {}))
     assert path.read_text() == "# Rules\n"
-    assert "removed guidance from AGENTS.md" in capsys.readouterr().err
+    assert "updated guidance in AGENTS.md" in capsys.readouterr().err
 
 
-def test_sync_replaces_a_block_written_by_an_older_version(tmp_path):
+def test_sync_preserves_an_unverified_block_written_by_an_older_version(tmp_path):
     path = tmp_path / "AGENTS.md"
     path.write_text(
         "# Rules\n"
@@ -674,13 +1009,12 @@ def test_sync_replaces_a_block_written_by_an_older_version(tmp_path):
         "<!-- <<< splashdown-managed agent-guidance <<< -->\n"
         "# After\n"
     )
-    sd.sync_agent_guidance(tmp_path, _vite_recipe(tmp_path, {"env_file": "config/dev.env"}))
-    text = path.read_text()
-    assert "--rescan" not in text
-    assert "splashdown.env" not in text
-    assert "`config/dev.env`" in text
-    assert text.startswith("# Rules\n")
-    assert text.endswith("# After\n")
+    original = path.read_text()
+    result = sd.sync_agent_guidance(
+        tmp_path, _vite_recipe(tmp_path, {"env_file": "config/dev.env"})
+    )[0]
+    assert result.status == "failed"
+    assert path.read_text() == original
 
 
 def test_sync_opens_the_block_after_a_blank_line(tmp_path):

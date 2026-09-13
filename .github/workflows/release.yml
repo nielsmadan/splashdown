@@ -40,6 +40,14 @@ jobs:
           echo "TARBALL_SHA=$TARBALL_SHA" >> "$GITHUB_ENV"
           echo "Source tarball SHA256: $TARBALL_SHA"
 
+      - name: Generate and verify Homebrew runtime resources
+        run: |
+          python scripts/homebrew_resources.py \
+            --source-sha "$TARBALL_SHA" \
+            --cache "$RUNNER_TEMP/homebrew-resources" \
+            --verify-install "$RUNNER_TEMP/homebrew-venv" \
+            --output "$RUNNER_TEMP/splashdown.rb"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,11 +76,7 @@ jobs:
 
           FORMULA_FILE="$RUNNER_TEMP/homebrew-tap/Formula/splashdown.rb"
 
-          # Update url (any prior tag pattern -> new tag) and the main package
-          # sha256. Anchor the sha to the 2-space-indented top-level line so
-          # resource shas (indented 4 spaces, e.g. argcomplete) are left alone.
-          sed -i "s|tags/v[^\"]*\.tar\.gz|tags/${GITHUB_REF_NAME}.tar.gz|" "$FORMULA_FILE"
-          sed -i "s|^  sha256 \"[^\"]*\"|  sha256 \"${TARBALL_SHA}\"|" "$FORMULA_FILE"
+          cp "$RUNNER_TEMP/splashdown.rb" "$FORMULA_FILE"
 
           cd "$RUNNER_TEMP/homebrew-tap"
           git config user.name "github-actions[bot]"

@@ -121,8 +121,10 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 ## Conventions
 
 - Runtime is Python 3.13; ruff and mypy target 3.11. Strict mypy applies to `src/splashdown`.
-- Runtime dependencies are deliberately limited to `argcomplete` and `tomlkit`. Do not add a
-  dependency without an explicit evaluation of its supply-chain and Homebrew resource cost.
+- Runtime dependencies are `argcomplete`, `tomlkit`, and an immutable public Git pin of Flyrail.
+  Flyrail owns instruction-section lifecycle and shares the existing TOML parser dependency.
+  `scripts/homebrew_resources.py` verifies and stages the locked runtime source graph, including
+  Flyrail’s `python/` subproject. Evaluate supply-chain and Homebrew costs before adding dependencies.
 - Ruff owns lint and formatting. After `ruff check --fix`, run `ruff format`; do not broadly
   disable rules to avoid a local fix.
 - Shelling out to PATH tools such as `xcrun`, `adb`, and `git` is intentional; `S603` and `S607`

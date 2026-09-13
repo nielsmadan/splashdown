@@ -280,27 +280,66 @@ port resource from the recipe. In monorepos those are the post-mangling names, n
 profile's canonical defaults.
 
 The common preamble names `Recipe.env_file`, the configured output destination, rather than
-assuming `splashdown.env`, and restricts itself to commands the 1.0 surface actually has:
+assuming `splashdown.env`, and restricts itself to commands the current surface actually has:
 `splash env get KEY`, `splash env` (a name listing, since bare `env` hides resolved values),
-and `splash sync`. It tells agents to prefer the
-project's own scripts when those already consume the environment, so nothing in the block
-routes an already-integrated script through a wrapper command. Allocated values are never
-embedded: the block is committed content, and the numbers belong to one checkout.
+and `splash sync`. It tells agents to prefer the project's own scripts when those already
+consume the environment, so nothing in the section routes an already-integrated script through
+a wrapper command. Allocated values are never embedded: the section is committed content, and
+the numbers belong to one checkout.
 
-`commands.py` calls `sync_agent_guidance()` only after a successful scanner init,
-including the structure-only deferred-monorepo path. A recipe with no
-port-bearing apps renders no block and removes any previous complete block. Deinit calls
-`remove_agent_guidance()` independently of recipe parsing, so malformed or missing recipes
-cannot strand managed content. Stale guidance needs no migration path: every sync rewrites
-the whole span between the sentinels from the current recipe, so an older version's text
-cannot survive one.
+`commands.py` calls `sync_agent_guidance()` after successful scanner init, including the
+structure-only deferred-monorepo path. The renderer and destination selection stay in
+`agentdocs.py`; Flyrail owns marked-section acquisition, first baselines, protected updates,
+and removal. A recipe without port-bearing apps retires receipt-owned guidance. Init warns on
+guidance errors while retaining successful initialization changes.
 
-The module mutates only existing root `AGENTS.md` and independent `CLAUDE.md` files. It
-does not create either file, skips symlinks and non-regular files, and owns only the text
-between its HTML sentinels. Complete blocks are replaced or removed idempotently;
-malformed marker pairs are warned about and left unchanged. If `CLAUDE.md` imports an
-existing `AGENTS.md`, synchronization removes any older complete local block before
-leaving Claude to consume the shared file.
+Only existing root `AGENTS.md` and independently selected `CLAUDE.md` files are eligible.
+Every rendered destination requires an existing regular file. Immutable Flyrail previews bind the
+complete file and metadata preconditions through publication, so a removed or edited file cannot
+be recreated or overwritten after selection. Symlinks, hardlinks, special files, invalid UTF-8,
+malformed boundaries, and changed owned content remain protected. Surrounding bytes, newline
+style, BOM, and current security metadata survive updates and removal.
+
+The fixed `.splashdown-ai/agents` and `.splashdown-ai/claude` indexes allow independent failures
+and source-free traversal. Physical authorities remain adjacent to each destination in
+`.flyrail-*.state/`. These private directories have permanent root `.gitignore` entries that
+survive deinit. Never delete their metadata to resolve a conflict. Missing recorded claims are
+reported and preserved until their metadata is restored.
+Core Flyrail diagnostics enforce missing committed receipt protection. Valid retained
+empty receipts can represent a completed retirement by another logical index.
+
+Mutating guidance operations first call Flyrail's source-free `recover_installation`
+for each file, then re-observe it before selecting and applying a fresh immutable
+preview. Successful recovery may leave pending logical membership for that preview
+to reconcile. Unrecognized recovery retains evidence and fails. Status stays read-only.
+
+A legacy block can be adopted only when one complete block exactly matches the current rendered
+output in its destination's legacy newline style. Adoption preserves the bytes and records no
+foreign baseline. Changed, malformed, or unverifiable legacy blocks survive with a diagnostic.
+An existing shared authority containing only valid disjoint foreign claims does not
+prevent exact legacy adoption. The public preview's previous receipt distinguishes
+that case from missing own-index evidence; missing/corrupt metadata remains protected.
+Deinit supplies its already-loaded valid recipe before deleting it, enabling first-use legacy
+adoption/removal. Receipt-owned removal works with a missing or invalid recipe.
+
+Claude's real `@AGENTS.md` and `@./AGENTS.md` imports are recognized outside Markdown code.
+Fenced, inline and indented examples, including code inside blockquotes, retain CLAUDE guidance.
+AGENTS guidance is updated and verified current before any duplicate CLAUDE retirement. Each
+legacy block is verified independently, and the CLAUDE preview binds the text used for import
+selection. A failed AGENTS update preserves working CLAUDE guidance.
+Recovery runs before reading CLAUDE import text, including when interruption left
+the file temporarily absent. AGENTS recovery and its desired update finish before
+deciding whether its guidance is usable for duplicate retirement.
+
+`ai_commands.py` handles explicit status, update, and uninstall. Status reads receipts without constructing a registry. Its `content_current` means installed
+bytes match the recorded generation. When a valid recipe is available, `desired_current` compares
+the rendered bundle with Flyrail `matches`, detecting recipe and renderer drift at the same
+bundle version. Missing or invalid recipes leave `desired_current` unknown and use
+`recorded-current` for intact receipts, preserving source-free inspection. Mutation commands use the checkout operation lock and return nonzero
+for unresolved conflicts, missing metadata, or incomplete recovery. `update --replace` explicitly
+allows replacing complete blocks while retaining the first foreign baseline. Malformed blocks
+require manual repair. JSON reports contain per-file summaries and an activation reminder, never
+full instruction documents or stored baseline payloads.
 
 **Externally generated files.** `_generated_marker()` recognizes an instruction file another
 tool owns and refuses to edit it, because such an edit is destroyed on that tool's next sync.

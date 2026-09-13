@@ -350,15 +350,18 @@ configured output destination (`Recipe.env_file`, so `init --env-file PATH` or
 allocated value, and it points agents at the project's existing scripts where those already
 consume the environment instead of wrapping them. Existing root
 `AGENTS.md` and independent `CLAUDE.md` files are updated; neither is created. A `CLAUDE.md`
-that imports `@AGENTS.md` has any previous complete block removed, then is skipped. Complete
-blocks are replaced idempotently, while malformed markers, symlinks, and non-regular files are
-left untouched with a warning. `init --overwrite` can replace or remove stale guidance, and `deinit`
-removes complete blocks even when the recipe cannot be parsed.
+that imports `@AGENTS.md` outside Markdown code uses the shared guidance after
+AGENTS is successfully updated. Flyrail records section ownership, preserves first foreign
+baselines, and protects edited blocks and unsafe files. Exact legacy guidance can be adopted,
+including on first direct deinit with a valid recipe. Receipt-owned removal remains source-free.
+Init warns on guidance failures while retaining successful initialization changes. See the
+[implementation contract](../tech/scanning-and-extension.md#agentdocspy--managed-instruction-file-guidance)
+and [explicit ai commands](../user/cli.md#agent-guidance).
 
-A recipe with no port-bearing app renders nothing and any previous block is removed, so an
-empty block is never written and stale guidance never outlives the frameworks it described.
-Every sync rewrites the whole span between the sentinels, so a block from an older version is
-replaced wholesale rather than migrated.
+A recipe with no port-bearing app renders nothing and retires previous receipt-owned guidance, so
+an empty block is never written and stale guidance never outlives the frameworks it described.
+Each successful update replaces the whole managed section with current rendered content. Edited
+or unverifiable content is preserved and reported.
 
 An instruction file another tool generates is recognized by the generator header that opens it
 and is left byte-identical by both sync and deinit, because an edit there would be destroyed on
@@ -481,9 +484,11 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   already apply to `splashdown.local.toml` and the configured env destination), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), the project-owned hook target
   (`lefthook.yml` / `.husky/post-checkout` / `.pre-commit-config.yaml` / `prek.toml` /
-  `.simple-git-hooks.json` or the `package.json` block), and managed blocks in existing root `AGENTS.md` /
-  independent `CLAUDE.md` files. Git's common `hooks/post-checkout` belongs to `splash trust`,
-  and `splashdown.env` to the first sync.
+  `.simple-git-hooks.json` or the `package.json` block), and managed sections in existing root
+  `AGENTS.md` / independent `CLAUDE.md` files. Guidance also creates private
+  `.splashdown-ai/agents`, `.splashdown-ai/claude`, and adjacent `.flyrail-*.state/` metadata
+  with permanent root `.gitignore` entries. Git's common `hooks/post-checkout` belongs to
+  `splash trust`, and the configured environment output belongs to the first sync.
 
 ## Gotchas
 

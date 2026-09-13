@@ -174,6 +174,14 @@ wheels = [
 ]
 
 [[package]]
+name = "flyrail"
+version = "0.1.0"
+source = { git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=272cd6a226d595ef1552699a39bfd690668ff03c#272cd6a226d595ef1552699a39bfd690668ff03c" }
+dependencies = [
+    { name = "tomlkit" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -552,6 +560,7 @@ version = "0.17.0"
 source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
+    { name = "flyrail" },
     { name = "tomlkit" },
 ]
 
@@ -571,6 +580,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "argcomplete", specifier = ">=3.7.2" },
+    { name = "flyrail", git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=272cd6a226d595ef1552699a39bfd690668ff03c" },
     { name = "tomlkit", specifier = ">=0.15.1" },
 ]
 

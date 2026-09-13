@@ -249,7 +249,7 @@ def _write_minimal_monorepo_recipe(
         report.changed.append(GITIGNORE_NAME)
     _commit_loader_plan(plan, report)
     _wire_init_checkout_hook(cwd, report, enabled=wire_checkout_hook)
-    report.changed.extend(sync_agent_guidance(cwd, Recipe.load(recipe_path)))
+    _sync_init_guidance(cwd, Recipe.load(recipe_path), report)
     _print_init_next_steps(cwd, worktree_root, report.env_file)
 
 
@@ -366,6 +366,11 @@ def _commit_loader_plan(plan: WirePlan, report: InitReport) -> None:
     for line in (plan.note, plan.hint):
         if line:
             print(line, file=sys.stderr)
+
+
+def _sync_init_guidance(cwd: Path, recipe: Recipe, report: InitReport) -> None:
+    results = sync_agent_guidance(cwd, recipe)
+    report.changed.extend(result.file for result in results if result.status == "applied")
 
 
 def _emit_init_report(report: InitReport, output_format: str) -> None:
@@ -531,7 +536,7 @@ def cmd_init(
 
             if any(app.profile != "unknown" for app in inv.apps):
                 _apply_init_wiring_checks(inv, cwd, env_file, report)
-            report.changed.extend(sync_agent_guidance(cwd, Recipe.load(recipe_path)))
+            _sync_init_guidance(cwd, Recipe.load(recipe_path), report)
         _print_init_next_steps(cwd, worktree_root, env_file)
         return report
 
@@ -644,7 +649,7 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
     if loader is not None:
         loader.unwire(cwd, recipe.env_file if recipe is not None else ENV_FILE_NAME)
 
-    remove_agent_guidance(cwd)
+    remove_agent_guidance(cwd, recipe)
     _report_preserved_hook_entry(cwd)
 
     # Only remove splashdown.local.toml when it's still the untouched skeleton.

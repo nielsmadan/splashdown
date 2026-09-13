@@ -105,7 +105,10 @@ def test_cli_help_shows_tiers(capsys):
     }
     normalized = " ".join(out.split())
     assert sd.KNOWN_CMDS - {"hook"} <= visible_commands
-    assert "output format for sync, status, init, env/target lists, or target claims" in normalized
+    assert (
+        "output format for sync, status, init, env/target lists, target claims, or ai guidance"
+        in normalized
+    )
     assert "include resolved values for sync, status, or bare env" in normalized
     assert "provision" not in out
 

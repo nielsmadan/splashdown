@@ -96,6 +96,7 @@ Set up a project
 
 More
   target   …                 declare & manage device targets   (splash target --help)
+  ai       …                 inspect & maintain agent guidance (splash ai --help)
   env      …                 inspect resolved values           (splash env --help)
   gc                         drop dead-checkout entries (ports, vars, sims)
   completion [shell]         print shell completion setup
@@ -124,6 +125,7 @@ KNOWN_CMDS = {
     "destroy",
     "target",
     "completion",
+    "ai",
 }
 
 
@@ -146,7 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         "--format",
         choices=["text", "json"],
         default=None,
-        help="output format for sync, status, init, env/target lists, or target claims",
+        help="output format for sync, status, init, env/target lists, target claims, or ai guidance",
     )
     parser.add_argument(
         "--show-values",
@@ -193,6 +195,22 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         help="checkout-relative destination for generated values (default: splashdown.env)",
     )
     p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
+
+    ai = sub.add_parser(
+        "ai",
+        help=argparse.SUPPRESS,
+        description="Manage guidance in existing AGENTS.md and CLAUDE.md files.",
+        epilog=_FORMAT_OUTPUT_HELP,
+    )
+    aisub = ai.add_subparsers(dest="ai_cmd", required=True, metavar="ACTION")
+    aisub.add_parser("status", help="inspect recorded guidance without changing files")
+    update = aisub.add_parser("update", help="update guidance from splashdown.toml")
+    update.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace edited complete blocks, preserving the first baseline",
+    )
+    aisub.add_parser("uninstall", help="remove owned guidance, including without a valid recipe")
 
     sub.add_parser("deinit", help=argparse.SUPPRESS)
     sub.add_parser("trust", help=argparse.SUPPRESS)
@@ -501,14 +519,14 @@ def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namesp
         parser.error("target remove device cannot be combined with --keep-instance")
 
     supports_format = (
-        args.cmd in {"sync", "status", "init"}
+        args.cmd in {"sync", "status", "init", "ai"}
         or (args.cmd == "env" and args.env_cmd is None)
         or (args.cmd == "target" and args.target_cmd in {None, "claim", "claims"})
     )
     if args.format is not None and not supports_format:
         parser.error(
             "--format is only supported by sync, status, init, bare env, target lists, "
-            "and target claims"
+            "target claims, and ai"
         )
 
     supports_values = args.cmd in {"sync", "status"} or (args.cmd == "env" and args.env_cmd is None)
@@ -542,6 +560,12 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 �
         return cmd_completion(args.shell)
 
     cwd = _resolve_cwd(args)
+    if args.cmd == "ai":
+        from .ai_commands import cmd_ai  # noqa: PLC0415
+
+        return cmd_ai(
+            cwd, args.ai_cmd, _resolve_format(args), replace=getattr(args, "replace", False)
+        )
     if args.cmd == "hook":
         if args.hook_cmd != "post-checkout":
             parser.error("hook requires an event")
