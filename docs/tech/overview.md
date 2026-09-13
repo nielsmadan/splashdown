@@ -69,8 +69,10 @@ output; trust/bootstrap and the hidden hook keep their early, command-specific b
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
   so the read path never loads it. `__version__` and other costly lookups are lazy in `__init__.py`.
   Keep the read path light. Runtime dependencies are `argcomplete`, `tomlkit`, and an immutable
-  public Git pin of Flyrail. Flyrail owns agent-guidance lifecycle and shares the existing TOML
-  parser dependency, while its read path also avoids importing that parser.
+  public Git pin of Flyrail. Flyrail owns agent-guidance lifecycle and loads only in
+  `agentdocs.py` lifecycle helpers, so CLI import, help, completion, post-checkout handling, and
+  pure guidance rendering leave it unloaded. It shares the existing TOML parser dependency, while
+  its read path also avoids importing that parser.
 - **Lexical YAML seams.** `yamltext.py` holds `_strip_hash_comment_lines`, `_strip_hash_comments`,
   `_yaml_flow_value`, and `_yaml_key_regions`. It depends only on `constants.py`, so `wiring.py`,
   the `profiles_*` checks, and `hook_configs.py` all read value slots the same flow-aware,

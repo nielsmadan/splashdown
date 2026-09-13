@@ -176,7 +176,7 @@ wheels = [
 [[package]]
 name = "flyrail"
 version = "0.1.0"
-source = { git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=272cd6a226d595ef1552699a39bfd690668ff03c#272cd6a226d595ef1552699a39bfd690668ff03c" }
+source = { git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=eab75625f00947e75200993f5b32f5426e09208f#eab75625f00947e75200993f5b32f5426e09208f" }
 dependencies = [
     { name = "tomlkit" },
 ]
@@ -580,7 +580,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "argcomplete", specifier = ">=3.7.2" },
-    { name = "flyrail", git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=272cd6a226d595ef1552699a39bfd690668ff03c" },
+    { name = "flyrail", git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=eab75625f00947e75200993f5b32f5426e09208f" },
     { name = "tomlkit", specifier = ">=0.15.1" },
 ]
 

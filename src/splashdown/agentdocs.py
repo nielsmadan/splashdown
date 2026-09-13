@@ -5,13 +5,15 @@ import sys
 from dataclasses import dataclass
 from dataclasses import replace as replace_result
 from pathlib import Path
-
-import flyrail as fr
+from typing import TYPE_CHECKING
 
 from .catalog import PROFILES
 from .inventory import AppInventory
 from .recipe import Recipe
 from .safe_files import atomic_write_text, read_optional_editable_text
+
+if TYPE_CHECKING:
+    import flyrail as fr
 
 _GUIDANCE_START = "<!-- >>> splashdown-managed agent-guidance >>> -->"
 _GUIDANCE_END = "<!-- <<< splashdown-managed agent-guidance <<< -->"
@@ -104,10 +106,14 @@ _METADATA_IGNORES = ("/.splashdown-ai/", "/.flyrail-*.state/")
 
 
 def _target(cwd: Path, name: str) -> fr.InstallationTarget:
+    import flyrail as fr  # noqa: PLC0415
+
     return fr.InstallationTarget(cwd / _STATE_DIRECTORY / name.removesuffix(".md").lower())
 
 
 def _rendered(path: Path, block: str) -> tuple[fr.Bundle, fr.RenderedBundle]:
+    import flyrail as fr  # noqa: PLC0415
+
     body = block[len(_GUIDANCE_START) + 1 : -len(_GUIDANCE_END)]
     bundle = fr.Bundle.from_artifacts(
         fr.BundleIdentity(_BUNDLE_ID, "guidance-1"),
@@ -278,6 +284,8 @@ def _observation_result(
 def _apply(
     name: str, proposal: fr.LifecyclePreview, expected_text: str | None = None
 ) -> GuidanceResult:
+    import flyrail as fr  # noqa: PLC0415
+
     for resource in proposal.resources:
         if expected_text is not None and resource.before.data != expected_text.encode("utf-8"):
             return GuidanceResult(
@@ -295,6 +303,8 @@ def _mutation_result(name: str, result: fr.InstallationResult) -> GuidanceResult
 
 
 def _recover_file(cwd: Path, name: str) -> GuidanceResult | None:
+    import flyrail as fr  # noqa: PLC0415
+
     try:
         result = _mutation_result(name, fr.recover_installation(_BUNDLE_ID, _target(cwd, name)))
         return None if result.successful else result
@@ -303,6 +313,8 @@ def _recover_file(cwd: Path, name: str) -> GuidanceResult | None:
 
 
 def _update_file(cwd: Path, name: str, block: str, replace: bool) -> GuidanceResult:
+    import flyrail as fr  # noqa: PLC0415
+
     path = cwd / name
     target = _target(cwd, name)
     bundle, rendered = _rendered(path, block)
@@ -338,6 +350,8 @@ def _update_file(cwd: Path, name: str, block: str, replace: bool) -> GuidanceRes
 def _remove_file(
     cwd: Path, name: str, block: str, expected_text: str | None = None
 ) -> GuidanceResult:
+    import flyrail as fr  # noqa: PLC0415
+
     target = _target(cwd, name)
     observation = fr.inspect_installation(_BUNDLE_ID, target)
     if (
@@ -369,6 +383,8 @@ def _file_operation(
     replace: bool = False,
     expected_text: str | None = None,
 ) -> GuidanceResult:
+    import flyrail as fr  # noqa: PLC0415
+
     try:
         observation = fr.inspect_installation(_BUNDLE_ID, _target(cwd, name))
         text = read_optional_editable_text(cwd / name, root=cwd)
@@ -485,6 +501,8 @@ def _compare_desired(
 
 
 def inspect_agent_guidance(cwd: Path) -> tuple[GuidanceResult, ...]:
+    import flyrail as fr  # noqa: PLC0415
+
     block = _status_source(cwd)
     results: list[GuidanceResult] = []
     for name in _AGENT_FILES:

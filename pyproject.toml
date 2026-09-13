@@ -11,7 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "argcomplete>=3.7.2",
     "tomlkit>=0.15.1",
-    "flyrail @ git+https://github.com/nielsmadan/flyrail.git@272cd6a226d595ef1552699a39bfd690668ff03c#subdirectory=python",
+    "flyrail @ git+https://github.com/nielsmadan/flyrail.git@eab75625f00947e75200993f5b32f5426e09208f#subdirectory=python",
 ]
 license = "MIT"
 authors = [{ name = "Niels Madan" }]

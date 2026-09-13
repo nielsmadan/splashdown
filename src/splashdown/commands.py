@@ -616,7 +616,6 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
     """Remove local state; preserve clone trust, shared hooks, and framework patches."""
     abspath = str(cwd.resolve())
 
-    # Read the loader before deleting the recipe; parse failures must not block teardown.
     try:
         recipe = _load_recipe_or_empty(cwd)
         loader_name = recipe.project.get("loader")
