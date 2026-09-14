@@ -1,6 +1,7 @@
 # 0001: Separate shared, local, and generated state
 
-- Status: Accepted
+- Status: Accepted; the generated-output clause is superseded by
+  [0008](0008-make-the-env-destination-configurable-and-key-scoped.md)
 - Decision date: 2026-05-20
 - Recorded: 2026-08-24
 

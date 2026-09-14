@@ -82,7 +82,7 @@ Run on a device
   destroy  [type] [variant]   delete this checkout's target instance
 
 This checkout
-  sync     [--force] [--setup NAME]   pick free ports, resolve vars, write splashdown.env
+  sync     [--force] [--setup NAME]   pick free ports, resolve vars, write the env file
                                       (also what bare `splash` and the git hook run)
   status   [all]              state of this checkout (or every checkout)
 
@@ -185,7 +185,12 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser
         "--loader",
         default=None,
         choices=("mise", "direnv", "devbox", "none"),
-        help="override loader auto-detection (none = write a dotenv file, wire nothing)",
+        help="override loader auto-detection (none = configure the destination, wire nothing)",
+    )
+    p.add_argument(
+        "--env-file",
+        metavar="PATH",
+        help="checkout-relative destination for generated values (default: splashdown.env)",
     )
     p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
     p.add_argument(
@@ -555,7 +560,7 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
         try:
             cmd_init(
                 cwd,
-                options=InitOptions(overwrite=args.overwrite),
+                options=InitOptions(overwrite=args.overwrite, env_file=args.env_file),
                 loader_override=args.loader,
                 electron_profile=args.electron_profile,
                 ios_scheme=args.ios_scheme,

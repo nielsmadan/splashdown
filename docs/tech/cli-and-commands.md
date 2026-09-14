@@ -227,9 +227,11 @@ steps; it does not block the rest of teardown.
 
 The handler destroys every registered simulator/emulator for the checkout (hardware rows are
 not owned), releases all remaining registry rows including physical claims and addressed notices,
-removes the wholly-owned `splashdown.env`,
-and asks `clear_writer_destinations` to remove only splashdown keys from user-owned
-`envfile=`/`envrc` outputs. It then calls the loader's `unwire`, reverts splashdown's gitignore
+and asks `clear_writer_destinations` to remove splashdown's keys — the recipe's resources plus
+the registry keys read before the release, minus any resource whose writer is `none` or `stdout` —
+from every destination including the default one, deleting a file left with nothing else. A
+destination whose scan reports an unterminated quoted value is left untouched with a warning
+rather than edited on a best-effort basis. It then calls the loader's `unwire`, reverts splashdown's gitignore
 entries and agent-guidance block,
 and removes `splashdown.local.toml` only when it still equals `LOCAL_SKELETON`. A modified
 local file is preserved with a note; `splashdown.toml` is deleted last. Framework files
@@ -312,17 +314,19 @@ Compact text `status all` returns from the table-row path before automation gath
 its no-extra-Git-probe contract. JSON, `status all --verbose`, and `status all` with
 `--show-values` use detailed records and include automation state.
 
-#### The no-loader delivery fallback
+#### The env output destination
 
-When the scanner detects no shell-env loader (`inv.loader == "none"`), `splashdown.env`
-would be written but nothing would source it. `_apply_no_loader_fallback` handles this
-during `init`: `_resolve_no_loader_delivery` decides whether to route values into an
-existing `.env`/`.env.local` when at least one Profile reads dotenv. It adds an
-`envfile=<name>` writer only to resources that do not already declare one, so a capability
-overlay such as Electron can retain process-env delivery independently of the primary
-Profile. If no dotenv target fits, it prints `_NO_LOADER_INSTRUCTIONS`, telling the user
-to install a loader or source the file manually. It also warns when the chosen target is
-not gitignored.
+`init --env-file PATH` selects the file that receives generated values, validated by
+`validate_env_file_option` (`recipe.py`) before init writes anything and recorded as
+`[project] env_file`. `Recipe.env_file` is the single reader, defaulting to `ENV_FILE_NAME`.
+`resolve_writer` (`provisioning.py`) maps the `splashdown-env` writer onto that destination, so
+one path never carries two ownership models. The selected loader is wired to the same file
+through `Loader.plan(cwd, env_file)`.
+
+Delivery is never inferred from what is on disk: an existing `.env` does not select itself.
+`_print_env_destination` (`commands.py`) reports the destination, the keys init will manage
+there, the declared keys the file already assigns (names only), a warning when the destination
+is not gitignored, and, for `loader == "none"`, how to source the file or which loader to add.
 
 #### `_confirm` and typed usage failures
 
@@ -427,7 +431,7 @@ device does not hide simulator variants in a simulator-only project.
 - `build_status_report` and typed report records — `status.py`
 - `ApplicationError` / `UsageError` / `MissingRecipeError` / `SetupError` — `errors.py`
 - `cmd_status` — status compatibility wrapper — `commands.py`
-- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery` — no-loader delivery — `commands.py`
+- `_print_env_destination` / `_persisted_env_file` / `_default_destination_keys` — env output destination — `commands.py`
 - `_confirm` — shared target `[y/N]` gate — `target_commands.py`
 - `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `target_commands.py` / `commands.py`
 - `claim_configured_target` / `claim_available_target` — physical pre-run and generic allocation

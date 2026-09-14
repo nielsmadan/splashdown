@@ -10,7 +10,7 @@ Splashdown pins per-checkout system resources (dev ports, env vars, and mobile s
 ## Prerequisites
 
 - Git.
-- Recommended: a shell env loader (mise, direnv, or devbox). Splashdown writes a `splashdown.env` file and wires your loader to source it automatically when you `cd` into the project. mise is the smoothest option. A loader is not strictly required. Without one you can source the file yourself (`set -a; . ./splashdown.env; set +a`), or route values straight into an app `.env` file (see [Writing straight to a .env file](#writing-straight-to-a-env-file)).
+- Recommended: a shell env loader (mise, direnv, or devbox). Splashdown writes a `splashdown.env` file and wires your loader to source it automatically when you `cd` into the project. mise is the smoothest option. A loader is not strictly required. Without one you can source the file yourself (`set -a; . ./splashdown.env; set +a`), or send the values straight into an app `.env` file (see [Writing straight to a .env file](#writing-straight-to-a-env-file)).
 
 ## Install
 
@@ -104,7 +104,7 @@ Bare `splash` is a sync. It allocates this checkout's resources and writes `spla
 | --- | --- | --- |
 | `splashdown.toml` | Yes | The recipe: resources, apps, and (for mobile) device targets |
 | `splashdown.local.toml` | No | Per-checkout additions (gitignored) |
-| `splashdown.env` | No | Generated `KEY=VALUE` file, owned by splashdown (gitignored) |
+| `splashdown.env` | No | Generated `KEY=VALUE` file: splashdown rewrites the keys your recipe declares and leaves anything else in it alone (gitignored) |
 | loader config | Yes | Gains one line that sources `splashdown.env`, and is created if absent |
 | `AGENTS.md` / `CLAUDE.md` | Yes | Existing files gain a sentinel-wrapped block telling coding agents which port variables and launch commands to use |
 
@@ -169,16 +169,37 @@ Splashdown validates the entire recipe before it allocates anything or updates g
 
 ## Writing straight to a .env file
 
-If you would rather not use an env loader, or an app reads its own `.env` directly, point a resource at that file with a per-resource `writer`. The value lands in the named file instead of `splashdown.env`:
+If an app already reads its own `.env`, choose that file as the destination when you initialize:
 
-```toml
-[resources.PORT]
-type   = "port"
-range  = [9081, 9100]
-writer = "envfile=.env"    # writes `PORT=9081` into ./.env
+```sh
+splash init --loader none --env-file .env
 ```
 
-Splashdown owns the lines it writes and updates them in place on each run. Use a non-empty path relative to the checkout root, for example `writer = "envfile=apps/web/.env"` in a monorepo; missing parent directories are created automatically. Absolute paths and paths containing `..` are rejected. Values routed this way are not in `splashdown.env`, so a loader will not see them. Prefer the loader path when both an app and your shell need the value.
+That records `env_file = ".env"` under `[project]` and every resource without its own `writer`
+lands there, so the app keeps its ordinary launch command. Pick a loader as well and the loader is
+wired to read that same file, which is the option to take when your shell needs the values too.
+
+Splashdown manages only the keys your recipe declares. Other lines, comments, and blank lines stay
+where they are, and an existing value for a declared key is replaced on the next sync. A key the
+file assigns twice, or assigns in a shape splashdown does not rewrite such as `PORT: 3000`, is
+reported as an error instead of being joined by a second definition.
+
+The path is relative to the checkout root, for example `--env-file apps/web/.env` in a monorepo.
+Missing parent directories are created. Absolute paths and paths containing `..` are rejected
+before init writes anything.
+
+To send one resource somewhere other than the default, give it a `writer` of its own:
+
+```toml
+[resources.LEGACY_PORT]
+type   = "port"
+range  = [9999, 10100]
+writer = "envfile=path/to/legacy/.env"    # writes `LEGACY_PORT=9999` there
+```
+
+That resource is written only to its own destination and is not copied into the default file, so a
+loader will not see it. Prefer the default destination when both an app and your shell need the
+value.
 
 ## Keeping wiring healthy
 

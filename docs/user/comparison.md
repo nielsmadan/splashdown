@@ -41,7 +41,7 @@ Several categories sit next to splashdown rather than against it. Splashdown oft
 Taking the survey honestly, splashdown's distinct ground is the combination, not any single trick:
 
 - **It fires on the git checkout itself.** A managed `post-checkout` hook provisions the checkout on every branch switch or `git worktree add`, with no wrapper command, `cd` hook, or GUI click. The other tools are invoked explicitly or on `cd`.
-- **It delivers through your existing env loader.** Values land in `splashdown.env` and mise / direnv / devbox source them, so every process in the checkout sees them. You can also route a value straight into an app `.env`.
+- **It delivers through your existing env loader.** Values land in `splashdown.env` and mise / direnv / devbox source them, so every process in the checkout sees them. `splash init --env-file PATH` sends them to a file your app already reads instead, and points the loader at that same file.
 - **It isolates mobile devices per checkout, on both platforms.** Per-checkout iOS simulators and Android emulators, auto-recreated when a newer OS lands, plus physical-device selection. VibeChard also isolates simulators per worktree, but it is Apple-only and build/test-focused. splashdown is the only tool that covers both platforms and ties devices to the same coordinated ports and env.
 
 And the honest flip side, where an alternative may fit better: splashdown does not run a database per workspace, does not offer stable proxy hostnames (see Galactic), is not itself a worktree manager (pair it with one, or with plain `git worktree`), and does not isolate Xcode build caches the way VibeChard does.

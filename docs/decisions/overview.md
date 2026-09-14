@@ -11,3 +11,4 @@ history. Current behavior remains canonical in `docs/features/` and `docs/tech/`
 - [0005: Separate published user docs from builder docs](0005-separate-published-user-docs-from-builder-docs.md)
 - [0006: Build the user site with Zensical](0006-build-the-user-site-with-zensical.md)
 - [0007: Bound device-run diagnostics to established facts](0007-bound-device-run-diagnostics.md)
+- [0008: Make the env destination configurable and key-scoped](0008-make-the-env-destination-configurable-and-key-scoped.md)

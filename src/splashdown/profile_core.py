@@ -20,7 +20,8 @@ class Profile:
     # True only when an empty check list means the framework reads its port directly from the environment.
     env_only: bool = False
 
-    # Whether envfile delivery is expected to reach the app when no shell loader is available.
+    # Informational framework metadata: whether the framework reads a dotenv file itself.
+    # Nothing in the runtime branches on it; env delivery follows the configured destination.
     reads_dotenv: bool = False
 
     def detect(self, app_path: Path) -> bool:

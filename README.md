@@ -71,6 +71,7 @@ splash init
 #   apps/api          → node-backend
 #   apps/web-admin    → vite
 #   shell loader      → mise (detected mise.toml)
+#   env output        → splashdown.env
 # wrote splashdown.toml + splashdown.local.toml + mise.toml
 # updated AGENTS.md
 # configuration written; nothing is allocated or active yet
@@ -97,6 +98,11 @@ after checkout.
 Splashdown validates the complete recipe before reserving anything or changing generated
 files. Unknown sections or fields, invalid resource writers, bad template references, and
 incompatible target fields are hard errors with the exact config path to fix.
+
+Pick a different destination with `splash init --env-file PATH`, for example `.env` when an app
+already reads that file. The choice is recorded as `env_file` under `[project]`, the selected
+loader is wired to read it, and splashdown manages only the keys the recipe declares, leaving the
+rest of the file intact.
 
 The recipe is on disk, the loader is wired, the hook fires on every checkout. Add a worktree and the second checkout allocates free ports automatically, no manual editing or syncing needed:
 

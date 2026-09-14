@@ -32,7 +32,7 @@ template = "http://localhost:{{ PORT }}"
     assert len(resolved["RUN_ID"]) == 36
 
     recipe = sd.Recipe.load(checkout / "splashdown.toml")
-    sd.write_outputs(checkout, recipe, resolved)
+    sd.write_outputs(checkout, recipe, resolved, known_keys=set())
     text = (checkout / "splashdown.env").read_text()
     assert f"PORT={resolved['PORT']}" in text
     assert "URL=" in text
@@ -303,7 +303,7 @@ def test_template_rerenders_when_expression_changes(registry, checkout):
 
 def test_splashdown_env_writer_basic(tmp_path):
     target = tmp_path / "splashdown.env"
-    sd.write_splashdown_env(target, {"PORT": "8082", "RUN_ID": "abc-def"})
+    sd.write_envfile(target, {"PORT": "8082", "RUN_ID": "abc-def"}, root=tmp_path)
     text = target.read_text()
     assert "PORT=8082" in text
     assert "RUN_ID=abc-def" in text
@@ -311,7 +311,7 @@ def test_splashdown_env_writer_basic(tmp_path):
 
 def test_splashdown_env_writer_quotes_specials(tmp_path):
     target = tmp_path / "splashdown.env"
-    sd.write_splashdown_env(target, {"URL": "http://localhost:8082", "MSG": "has spaces"})
+    sd.write_envfile(target, {"URL": "http://localhost:8082", "MSG": "has spaces"}, root=tmp_path)
     text = target.read_text()
     assert "MSG='has spaces'" in text
     # A plain URL has no spaces; ':' and '/' are allowed unquoted.
@@ -319,23 +319,36 @@ def test_splashdown_env_writer_quotes_specials(tmp_path):
 
 
 def test_splashdown_env_writer_neutralizes_shell_injection(tmp_path):
-    # The file is `source`d by devbox / the no-loader fallback. A value with a
-    # command substitution must be SINGLE-quoted so bash won't execute it.
+    # devbox `source`s the file as shell code. A value with a command
+    # substitution must be SINGLE-quoted so bash won't execute it.
     target = tmp_path / "splashdown.env"
-    sd.write_splashdown_env(target, {"X": "$(touch /tmp/pwned)", "Y": "`id`"})
+    sd.write_envfile(target, {"X": "$(touch /tmp/pwned)", "Y": "`id`"}, root=tmp_path)
     text = target.read_text()
     assert "X='$(touch /tmp/pwned)'" in text
     assert "Y='`id`'" in text
     assert '"$(' not in text
 
 
-def test_splashdown_env_writer_overwrites_wholesale(tmp_path):
+def test_default_destination_replaces_its_own_keys_and_keeps_the_rest(tmp_path):
     target = tmp_path / "splashdown.env"
-    target.write_text("STALE=1\nOLD=2\n")
-    sd.write_splashdown_env(target, {"PORT": "8082"})
-    text = target.read_text()
-    assert "STALE" not in text
-    assert text.strip() == "PORT=8082"
+    target.write_text("PORT=1\nOTHER=2\n")
+    sd.write_envfile(target, {"PORT": "8082"}, root=tmp_path)
+    assert target.read_text() == "PORT=8082\nOTHER=2\n"
+
+
+def test_new_destination_is_created_owner_only(tmp_path):
+    target = tmp_path / "splashdown.env"
+    sd.write_envfile(target, {"PORT": "8082"}, root=tmp_path)
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_existing_destination_keeps_the_mode_its_owner_chose(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("TEAM=shared\n")
+    target.chmod(0o644)
+    sd.write_envfile(target, {"PORT": "8082"}, root=tmp_path)
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert "TEAM=shared" in target.read_text()
 
 
 @pytest.mark.parametrize(
@@ -353,7 +366,7 @@ def test_fixed_output_writer_rejects_symlink_without_touching_target(checkout, w
     )
 
     with pytest.raises(ValueError, match="destination is a symlink"):
-        sd.write_outputs(checkout, recipe, {"VALUE": "changed"})
+        sd.write_outputs(checkout, recipe, {"VALUE": "changed"}, known_keys=set())
 
     assert outside.read_text() == "ORIGINAL=keep\n"
     assert outside.stat().st_mode & 0o777 == 0o644
@@ -371,7 +384,7 @@ def test_fixed_output_writer_rejects_non_regular_destination(checkout, writer, f
     )
 
     with pytest.raises(ValueError, match="destination is not a regular file"):
-        sd.write_outputs(checkout, recipe, {"VALUE": "changed"})
+        sd.write_outputs(checkout, recipe, {"VALUE": "changed"}, known_keys=set())
 
 
 def test_envfile_writer_rejects_in_checkout_symlink(checkout):
@@ -384,7 +397,7 @@ def test_envfile_writer_rejects_in_checkout_symlink(checkout):
     )
 
     with pytest.raises(ValueError, match="destination is a symlink"):
-        sd.write_outputs(checkout, recipe, {"VALUE": "changed"})
+        sd.write_outputs(checkout, recipe, {"VALUE": "changed"}, known_keys=set())
 
     assert real.read_text() == "ORIGINAL=keep\n"
 
@@ -396,12 +409,11 @@ def test_splashdown_env_writer_replaces_hardlink_without_touching_other_name(tmp
     target = tmp_path / "splashdown.env"
     target.hardlink_to(outside)
 
-    sd.write_splashdown_env(target, {"VALUE": "changed"})
+    sd.write_envfile(target, {"VALUE": "changed"}, root=tmp_path)
 
     assert outside.read_text() == "ORIGINAL=keep\n"
     assert outside.stat().st_mode & 0o777 == 0o644
-    assert target.read_text() == "VALUE=changed\n"
-    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text() == "ORIGINAL=keep\nVALUE=changed\n"
 
 
 def test_envfile_writer(registry, checkout):
@@ -416,7 +428,7 @@ writer   = "envfile=.env.local"
     )
     resolved = sd.provision(checkout, registry=registry)
     recipe = sd.Recipe.load(checkout / "splashdown.toml")
-    sd.write_outputs(checkout, recipe, resolved)
+    sd.write_outputs(checkout, recipe, resolved, known_keys=set())
     text = (checkout / ".env.local").read_text()
     assert "MY_VAR=hello" in text
 
@@ -432,7 +444,9 @@ writer   = "envfile=apps/web/.env"
 """,
     )
     resolved = sd.provision(checkout, registry=registry)
-    sd.write_outputs(checkout, sd.Recipe.load(checkout / "splashdown.toml"), resolved)
+    sd.write_outputs(
+        checkout, sd.Recipe.load(checkout / "splashdown.toml"), resolved, known_keys=set()
+    )
     assert (checkout / "apps" / "web" / ".env").read_text() == "MY_VAR=hello\n"
 
 
@@ -510,27 +524,27 @@ writer   = "envfile={abs_target}"
 
 def test_writer_reports_changed_then_unchanged(tmp_path):
     target = tmp_path / "splashdown.env"
-    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is True
+    assert sd.write_envfile(target, {"PORT": "8082"}, root=tmp_path) is True
     mtime = target.stat().st_mtime_ns
-    assert sd.write_splashdown_env(target, {"PORT": "8082"}) is False
+    assert sd.write_envfile(target, {"PORT": "8082"}, root=tmp_path) is False
     assert target.stat().st_mtime_ns == mtime
-    assert sd.write_splashdown_env(target, {"PORT": "9000"}) is True
+    assert sd.write_envfile(target, {"PORT": "9000"}, root=tmp_path) is True
 
 
 def test_envfile_writer_reports_changed(tmp_path):
     target = tmp_path / ".env.local"
     target.write_text("UNMANAGED=keep\n")
     target.chmod(0o640)
-    assert sd.write_envfile(target, {"MY_VAR": "hello"}) is True
-    assert sd.write_envfile(target, {"MY_VAR": "hello"}) is False
+    assert sd.write_envfile(target, {"MY_VAR": "hello"}, root=tmp_path) is True
+    assert sd.write_envfile(target, {"MY_VAR": "hello"}, root=tmp_path) is False
     assert target.stat().st_mode & 0o777 == 0o640
 
 
 def test_envfile_writer_quotes_unsafe_values(tmp_path):
     # A value with a space must be quoted so the dotenv line stays parseable;
-    # a safe value stays bare (consistent with write_splashdown_env).
+    # a safe value stays bare.
     target = tmp_path / ".env.local"
-    sd.write_envfile(target, {"MSG": "hello world", "PORT": "8082"})
+    sd.write_envfile(target, {"MSG": "hello world", "PORT": "8082"}, root=tmp_path)
     text = target.read_text()
     assert "MSG='hello world'" in text
     assert "PORT=8082" in text
@@ -738,11 +752,11 @@ def test_cli_unknown_setup_returns_nonzero(tmp_path, monkeypatch, capsys):
 def test_write_envrc_preserves_unmanaged_and_replaces_managed(tmp_path):
     target = tmp_path / ".envrc.local"
     target.write_text("export OLD='x'\n# keep me\n")
-    sd.write_envrc(target, {"NEW": "hello"})
+    sd.write_envrc(target, {"NEW": "hello"}, root=tmp_path)
     text = target.read_text()
     assert "export OLD='x'" in text and "# keep me" in text
     assert "export NEW='hello'" in text
-    sd.write_envrc(target, {"NEW": "again"})
+    sd.write_envrc(target, {"NEW": "again"}, root=tmp_path)
     text2 = target.read_text()
     assert text2.count("export NEW=") == 1
     assert "export NEW='again'" in text2
@@ -751,7 +765,7 @@ def test_write_envrc_preserves_unmanaged_and_replaces_managed(tmp_path):
 def test_write_envfile_preserves_unmanaged(tmp_path):
     target = tmp_path / ".env.local"
     target.write_text("UNMANAGED=x\n")
-    sd.write_envfile(target, {"MY": "hello"})
+    sd.write_envfile(target, {"MY": "hello"}, root=tmp_path)
     text = target.read_text()
     assert "UNMANAGED=x" in text and "MY=hello" in text
 
@@ -762,7 +776,7 @@ def test_stdout_writer_returns_structured_values(registry, checkout, capsys):
     )
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
     resolved = sd.provision(checkout, registry=registry)
-    results = sd.write_outputs(checkout, recipe, resolved)
+    results = sd.write_outputs(checkout, recipe, resolved, known_keys=set())
     assert capsys.readouterr().out == ""
     assert results == [sd.WriterResult("stdout", "stdout: 1 vars", True, {"MSG": "hi"})]
 
@@ -782,7 +796,7 @@ def test_none_writer_creates_no_file(registry, checkout):
     _write_recipe(checkout, '[resources.X]\ntype = "template"\ntemplate = "v"\nwriter = "none"\n')
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
     resolved = sd.provision(checkout, registry=registry)
-    msgs = sd.write_outputs(checkout, recipe, resolved)
+    msgs = sd.write_outputs(checkout, recipe, resolved, known_keys=set())
     assert any("registry-only" in result.message for result in msgs)
     assert not (checkout / sd.ENV_FILE_NAME).exists()
 
@@ -823,5 +837,446 @@ def test_every_whitelisted_writer_dispatches(registry, checkout):
     _write_recipe(checkout, body)
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
     resolved = sd.provision(checkout, registry=registry)
-    msgs = sd.write_outputs(checkout, recipe, resolved)
+    msgs = sd.write_outputs(checkout, recipe, resolved, known_keys=set())
     assert len(msgs) == len(writers)
+
+
+def test_configured_destination_receives_values_through_sync(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _write_recipe(
+        tmp_path,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18960, 18970]
+""",
+    )
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+
+    assert not (tmp_path / "splashdown.env").exists()
+    assert "PORT=" in (tmp_path / ".env").read_text()
+
+
+def test_shared_destination_keeps_unrelated_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / ".env").write_text(
+        "# local overrides\nDATABASE_URL=postgres://local/db\n\nFEATURE_X=on\n"
+    )
+    _write_recipe(
+        tmp_path,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18971, 18980]
+""",
+    )
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+
+    text = (tmp_path / ".env").read_text()
+    assert "# local overrides" in text
+    assert "DATABASE_URL=postgres://local/db" in text
+    assert "FEATURE_X=on" in text
+    assert "PORT=" in text
+
+
+def test_declared_key_replaces_an_existing_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / ".env").write_text("PORT=3000\nDATABASE_URL=postgres://local/db\n")
+    _write_recipe(
+        tmp_path,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18981, 18990]
+""",
+    )
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+
+    text = (tmp_path / ".env").read_text()
+    assert text.count("PORT=") == 1
+    assert "PORT=3000" not in text
+    assert "DATABASE_URL=postgres://local/db" in text
+
+
+def test_explicit_writer_wins_and_is_not_duplicated_into_the_default(registry, checkout):
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18991, 18999]
+
+[resources.DB_NAME]
+type     = "template"
+template = "app_db"
+writer   = "envfile=apps/api/.env"
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+
+    assert "DB_NAME=app_db" in (checkout / "apps" / "api" / ".env").read_text()
+    default_text = (checkout / ".env").read_text()
+    assert "PORT=" in default_text
+    assert "DB_NAME" not in default_text
+
+
+def test_default_destination_drops_a_key_that_moved_to_an_explicit_writer(registry, checkout):
+    (checkout / ".env").write_text("DB_NAME=stale\n")
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = ".env"
+
+[resources.DB_NAME]
+type     = "template"
+template = "app_db"
+writer   = "envfile=apps/api/.env"
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+
+    assert not (checkout / ".env").exists() or "DB_NAME" not in (checkout / ".env").read_text()
+    assert "DB_NAME=app_db" in (checkout / "apps" / "api" / ".env").read_text()
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["PORT=3000\nPORT=3001\n", "PORT: 3000\n", "PORT+=3000\n", 'PORT="3000\n'],
+)
+def test_ambiguous_matching_key_is_rejected_without_writing(registry, checkout, content):
+    (checkout / ".env").write_text(content)
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18901, 18910]
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    with pytest.raises(ValueError, match="PORT"):
+        sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+
+    assert (checkout / ".env").read_text() == content
+
+
+def test_multi_line_quoted_value_for_a_declared_key_is_replaced_whole(registry, checkout):
+    (checkout / ".env").write_text('GREETING="hello\nworld"\nKEEP=1\n')
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = ".env"
+
+[resources.GREETING]
+type     = "template"
+template = "hi"
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+
+    sd.write_outputs(checkout, recipe, sd.provision(checkout, registry=registry), known_keys=set())
+
+    assert (checkout / ".env").read_text() == "GREETING=hi\nKEEP=1\n"
+
+
+def test_export_assignment_for_a_declared_key_is_replaced(registry, checkout):
+    (checkout / ".env").write_text("export PORT=3000\nKEEP=1\n")
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18911, 18920]
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+
+    sd.write_outputs(checkout, recipe, sd.provision(checkout, registry=registry), known_keys=set())
+
+    text = (checkout / ".env").read_text()
+    assert "export PORT=" not in text
+    assert text.count("PORT=") == 1
+    assert "KEEP=1" in text
+
+
+def test_existing_managed_keys_reports_collisions_only(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("PORT=3000\nDATABASE_URL=postgres://secret\n")
+    assert sd.existing_managed_keys(target, {"PORT", "RUN_ID"}, root=tmp_path) == ["PORT"]
+
+
+def test_existing_managed_keys_ignores_a_missing_destination(tmp_path):
+    assert (
+        sd.existing_managed_keys(tmp_path / "apps" / "web" / ".env", {"PORT"}, root=tmp_path) == []
+    )
+
+
+def test_unterminated_quote_on_an_unmanaged_key_is_rejected(registry, checkout):
+    original = 'NOTE="oops\nPORT=3000\n'
+    (checkout / ".env").write_text(original)
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18921, 18930]
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    with pytest.raises(ValueError, match="NOTE"):
+        sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+
+    assert (checkout / ".env").read_text() == original
+
+
+def test_normalized_env_file_and_an_explicit_writer_share_one_group(registry, checkout):
+    _write_recipe(
+        checkout,
+        """
+[project]
+env_file = "./.env"
+
+[resources.DB_NAME]
+type     = "template"
+template = "app_db"
+writer   = "envfile=.env"
+
+[resources.PORT]
+type  = "port"
+range = [18931, 18940]
+""",
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+    sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+
+    text = (checkout / ".env").read_text()
+    assert "DB_NAME=app_db" in text
+    assert "PORT=" in text
+
+
+def test_a_resource_removed_from_the_recipe_loses_its_line(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _write_recipe(
+        tmp_path,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18941, 18950]
+
+[resources.ALT_PORT]
+type  = "port"
+range = [18951, 18959]
+
+[resources.DB_NAME]
+type     = "template"
+template = "app_db"
+""",
+    )
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    first = (tmp_path / ".env").read_text()
+    assert "ALT_PORT=" in first and "DB_NAME=app_db" in first
+
+    _write_recipe(
+        tmp_path,
+        """
+[project]
+env_file = ".env"
+
+[resources.PORT]
+type  = "port"
+range = [18941, 18950]
+""",
+    )
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+
+    text = (tmp_path / ".env").read_text()
+    assert "PORT=" in text
+    assert "ALT_PORT" not in text
+    assert "DB_NAME" not in text
+
+
+def test_destination_keeps_its_crlf_line_endings(tmp_path):
+    target = tmp_path / ".env"
+    target.write_bytes(b"PORT=1\r\nOTHER=2\r\n")
+    sd.write_envfile(target, {"PORT": "9001"}, root=tmp_path)
+    assert target.read_bytes() == b"PORT=9001\r\nOTHER=2\r\n"
+
+
+def test_destination_keeps_a_trailing_blank_line(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("OTHER=2\n\n")
+    sd.write_envfile(target, {"PORT": "9001"}, root=tmp_path)
+    assert target.read_text() == "OTHER=2\n\nPORT=9001\n"
+
+
+def test_a_form_feed_inside_a_value_is_not_a_line_break(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("OTHER=a\x0cb\nPORT=1\n")
+    sd.write_envfile(target, {"PORT": "9001"}, root=tmp_path)
+    assert target.read_text() == "OTHER=a\x0cb\nPORT=9001\n"
+
+
+def test_a_destination_left_with_nothing_is_removed(tmp_path):
+    target = tmp_path / "splashdown.env"
+    target.write_text("PORT=1\n")
+
+    assert sd.write_envfile(target, {}, drop={"PORT"}, root=tmp_path) is True
+    assert not target.exists()
+
+
+def test_sync_keeps_a_hand_written_value_for_a_none_writer_resource(registry, checkout):
+    _write_recipe(
+        checkout,
+        '[resources.MSG]\ntype = "template"\ntemplate = "generated"\nwriter = "none"\n',
+    )
+    target = checkout / sd.ENV_FILE_NAME
+    target.write_text("MSG=hello\n")
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    sd.write_outputs(checkout, recipe, resolved, known_keys={"MSG"})
+
+    assert target.read_text() == "MSG=hello\n"
+
+
+def test_sync_keeps_a_hand_written_value_for_a_stdout_writer_resource(registry, checkout):
+    _write_recipe(
+        checkout,
+        '[resources.MSG]\ntype = "template"\ntemplate = "generated"\nwriter = "stdout"\n',
+    )
+    target = checkout / sd.ENV_FILE_NAME
+    target.write_text("MSG=hello\n")
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    sd.write_outputs(checkout, recipe, resolved, known_keys={"MSG"})
+
+    assert target.read_text() == "MSG=hello\n"
+
+
+def test_sync_accepts_a_duplicate_hand_written_key_for_a_none_writer_resource(registry, checkout):
+    _write_recipe(
+        checkout,
+        '[resources.MSG]\ntype = "template"\ntemplate = "generated"\nwriter = "none"\n',
+    )
+    target = checkout / sd.ENV_FILE_NAME
+    target.write_text("MSG=hello\nMSG=again\n")
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    sd.write_outputs(checkout, recipe, resolved, known_keys={"MSG"})
+
+    assert target.read_text() == "MSG=hello\nMSG=again\n"
+
+
+def test_deinit_keeps_a_hand_written_value_for_a_none_writer_resource(checkout):
+    _write_recipe(
+        checkout,
+        '[resources.MSG]\ntype = "template"\ntemplate = "generated"\nwriter = "none"\n',
+    )
+    target = checkout / sd.ENV_FILE_NAME
+    target.write_text("MSG=hello\n")
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+
+    changed = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"MSG"})
+
+    assert changed == []
+    assert target.read_text() == "MSG=hello\n"
+
+
+def test_deinit_keeps_a_hand_written_value_for_a_stdout_writer_resource(checkout):
+    _write_recipe(
+        checkout,
+        '[resources.MSG]\ntype = "template"\ntemplate = "generated"\nwriter = "stdout"\n',
+    )
+    target = checkout / sd.ENV_FILE_NAME
+    target.write_text("MSG=hello\n")
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+
+    changed = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"MSG"})
+
+    assert changed == []
+    assert target.read_text() == "MSG=hello\n"
+
+
+def test_a_writer_path_writes_to_its_canonical_destination(registry, checkout):
+    _write_recipe(
+        checkout,
+        '[resources.MSG]\ntype = "template"\ntemplate = "hi"\nwriter = "envfile=a/../b.env"\n',
+    )
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+    resolved = sd.provision(checkout, registry=registry)
+
+    results = sd.write_outputs(checkout, recipe, resolved, known_keys=set())
+
+    assert (checkout / "b.env").read_text() == "MSG=hi\n"
+    assert [result.writer for result in results] == ["envfile=b.env"]
+
+
+def test_write_envfile_confines_its_destination_to_the_given_root(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.env"
+    with pytest.raises(ValueError, match="outside"):
+        sd.write_envfile(outside, {"PORT": "8082"}, root=tmp_path)
+    assert not outside.exists()
+
+
+def test_write_envrc_confines_its_destination_to_the_given_root(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.envrc"
+    with pytest.raises(ValueError, match="outside"):
+        sd.write_envrc(outside, {"PORT": "8082"}, root=tmp_path)
+    assert not outside.exists()
+
+
+def test_deinit_leaves_a_destination_with_an_unterminated_quote_alone(checkout):
+    _write_recipe(checkout, '[resources.PORT]\ntype = "port"\nrange = [18990, 18995]\n')
+    target = checkout / sd.ENV_FILE_NAME
+    original = 'PORT=1\nNOTE="line one\nline two\n'
+    target.write_text(original)
+    recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
+
+    changed = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"PORT"})
+
+    assert changed == [(sd.ENV_FILE_NAME, "unparsed")]
+    assert target.read_text() == original

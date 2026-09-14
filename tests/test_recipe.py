@@ -339,11 +339,43 @@ def test_recipe_rejects_invalid_worktree_claim_device_policy(tmp_path, text, pat
         ("[project.run]\n", "project.run"),
         ('[project.ios]\nscheme = ""\n', "project.ios.scheme"),
         ('[project.android]\nunknown = "x"\n', "project.android"),
+        ('[project]\nenv_file = ""\n', "project.env_file"),
+        ('[project]\nenv_file = "../escape.env"\n', "project.env_file"),
+        ('[project]\nenv_file = "/tmp/escape.env"\n', "project.env_file"),
+        ('[project]\nenv_file = "C:\\\\escape.env"\n', "project.env_file"),
+        ('[project]\nenv_file = "."\n', "project.env_file"),
+        ("[project]\nenv_file = 7\n", "project.env_file"),
     ],
 )
 def test_recipe_rejects_invalid_project_schema(tmp_path, text, path):
     with pytest.raises(ValueError, match=rf"splashdown\.toml: \[{re.escape(path)}\]"):
         sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+def test_recipe_env_file_defaults_to_splashdown_env(tmp_path):
+    assert sd.Recipe.parse("", tmp_path / "splashdown.toml").env_file == "splashdown.env"
+
+
+def test_recipe_env_file_follows_the_project_setting(tmp_path):
+    recipe = sd.Recipe.parse(
+        '[project]\nenv_file = "apps/web/.env"\n', tmp_path / "splashdown.toml"
+    )
+    assert recipe.env_file == "apps/web/.env"
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        ("./.env", ".env"),
+        ("apps/./web/.env", "apps/web/.env"),
+        (".env ", ".env"),
+        (" apps/web/.env", "apps/web/.env"),
+    ],
+)
+def test_recipe_env_file_is_normalized(tmp_path, declared, expected):
+    recipe = sd.Recipe.parse(f'[project]\nenv_file = "{declared}"\n', tmp_path / "splashdown.toml")
+    assert recipe.env_file == expected
+    assert recipe.project["env_file"] == expected
 
 
 @pytest.mark.parametrize(
@@ -428,6 +460,28 @@ def test_recipe_accepts_valid_writers(tmp_path, writer):
     ],
 )
 def test_recipe_rejects_invalid_writers(tmp_path, writer):
+    text = f'[resources.VALUE]\ntype = "uuid"\nwriter = "{writer}"\n'
+    with pytest.raises(ValueError, match=r"\[resources\.VALUE\.writer\]"):
+        sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+
+
+@pytest.mark.parametrize(
+    ("declared", "canonical"),
+    [
+        ("envfile=a/../b.env", "envfile=b.env"),
+        ("envfile=./.env", "envfile=.env"),
+        ("envfile=my.env ", "envfile=my.env"),
+        ("envfile=apps/./web/.env", "envfile=apps/web/.env"),
+    ],
+)
+def test_recipe_canonicalizes_writer_paths_like_env_file(tmp_path, declared, canonical):
+    text = f'[resources.VALUE]\ntype = "uuid"\nwriter = "{declared}"\n'
+    recipe = sd.Recipe.parse(text, tmp_path / "splashdown.toml")
+    assert recipe.resources["VALUE"]["writer"] == canonical
+
+
+@pytest.mark.parametrize("writer", ["envfile=a/../../x.env", "envfile=/abs.env"])
+def test_recipe_rejects_a_writer_path_that_escapes_after_normalization(tmp_path, writer):
     text = f'[resources.VALUE]\ntype = "uuid"\nwriter = "{writer}"\n'
     with pytest.raises(ValueError, match=r"\[resources\.VALUE\.writer\]"):
         sd.Recipe.parse(text, tmp_path / "splashdown.toml")

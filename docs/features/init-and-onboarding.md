@@ -94,18 +94,20 @@ deferral trigger.
 `ELECTRON_PROFILE_ID` through `_add_electron_resources` (`commands.py`). Interactive
 init asks whether to isolate the profile; non-interactive/EOF defaults to shared. The
 `--electron-profile=isolated|shared` flag makes the choice deterministic. Isolation retains
-the app's primary Profile and adds a `writer = "splashdown-env"` template resource whose value
-the Electron main process uses to derive a per-checkout `userData` directory.
+the app's primary Profile and adds a template resource, with no explicit writer, whose value
+the Electron main process uses to derive a per-checkout `userData` directory. It follows the
+configured default destination like every other generated resource.
 
-**No-loader fallback.** When the loader is `"none"`, `_apply_no_loader_fallback`
-(`commands.py`) decides delivery via `_resolve_no_loader_delivery` (`commands.py`):
-if a dotenv file the project already reads exists (`.env` → `.env.local` precedence) **and**
-at least one app actually reads dotenv files (`Profile.reads_dotenv`), it uses `setdefault`
-to add `writer = "envfile=<file>"` only to generated resources without an explicit writer.
-That preserves Electron's `writer = "splashdown-env"` process-env delivery. Otherwise it
-keeps generating `splashdown.env` and prints instructions. It warns when the chosen dotenv
-file is not gitignored, and notes any apps that read only the process environment
-(Vite/Spring/mobile/Electron) and therefore won't pick up a dotenv file.
+**Output destination.** `--env-file PATH` selects the file that receives generated values.
+`validate_env_file_option` (`recipe.py`) checks it before anything is written, sharing
+`_checkout_relative_path` with the `envfile=` writer validator, so a non-relative, escaping,
+empty, or Windows-absolute path fails in the same way at either entry point. The default is
+`ENV_FILE_NAME`. A non-default choice is recorded as `[project] env_file` through
+`_resolve_init_project_metadata`, and `Recipe.env_file` is the single reader. Init prints the
+destination, the keys that will land there (`_default_destination_keys`), the declared keys the
+file already assigns (`existing_managed_keys`, values never disclosed), and a warning when the
+destination is not gitignored. `existing_managed_keys` raises on an ambiguous assignment before
+init writes anything. There is no file-presence-based routing: finding a `.env` never selects it.
 
 **Native iOS scheme.** `_resolve_init_ios_scheme` (`commands.py`) discovers shared
 Xcode schemes for a scanner-detected `ios-native` app. One shared scheme is recorded
@@ -127,7 +129,7 @@ fields before init mutates the recipe or proceeds to loader/hook wiring. A `spla
 is written if absent after the recipe passes validation. `_ensure_gitignore` (`hooks.py`) adds
 `splashdown.env` and `splashdown.local.toml` to `.gitignore`.
 
-**Loader wiring.** `Loader.plan(cwd)` (`loaders.py`) parses and validates the edit and returns a
+**Loader wiring.** `Loader.plan(cwd, env_file)` (`loaders.py`) parses and validates the edit and returns a
 `WirePlan` without writing; `cmd_init` builds it before the recipe is written, so a malformed
 config or an unextendable directive raises `LoaderConflictError` before any file changes.
 `_commit_loader_plan` (`commands.py`) applies it afterwards through `safe_files`'
@@ -259,7 +261,9 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   / `_detect_hook_manager` / `_native_hook_path` / `_nested_project`: `src/splashdown/hooks.py`.
 - Hook wiring per manager — lefthook/husky/native common hook — and the shared
   `POST_CHECKOUT_HOOK` body: `src/splashdown/hooks.py`.
-- `_apply_no_loader_fallback` / `_resolve_no_loader_delivery`: `src/splashdown/commands.py`.
+- `_print_env_destination` / `_persisted_env_file` / `_default_destination_keys`:
+  `src/splashdown/commands.py`; `validate_env_file_option` / `Recipe.env_file`:
+  `src/splashdown/recipe.py`.
 - `_ensure_gitignore` / `mise_config_path`: `src/splashdown/hooks.py`.
 - `Scanner.scan`: `src/splashdown/scanner.py`; `ProjectInventory` / `AppInventory`:
   `src/splashdown/inventory.py`.
@@ -346,11 +350,10 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   `splashdown.env` with nothing sourcing it until the user passes `--loader`, which init says
   plainly in its no-loader instructions.
 
-- **No-loader + process-only apps = silent no-op risk.** Reachable whenever no loader is
-  configured (or `--loader none` was passed) and the only apps read env from the process
-  (Vite, Spring Boot, mobile) rather than a dotenv file: sync keeps writing
-  `splashdown.env` and init prints how to source it, but nothing sources it automatically
-  (`_resolve_no_loader_delivery` and `_NO_LOADER_INSTRUCTIONS` in `commands.py`).
+- **No loader = silent no-op risk.** Reachable whenever no loader is configured (or
+  `--loader none` was passed): sync keeps writing the configured destination and init prints
+  how to source it, but nothing sources it automatically (`_print_env_destination` in
+  `commands.py`). `--env-file` pointing at a file the app itself reads is the other way out.
 
 - **`profile = "unknown"` apps are skipped, not failed.** An unrecognized framework gets no
   resources and no wiring; the rest of the project still scaffolds

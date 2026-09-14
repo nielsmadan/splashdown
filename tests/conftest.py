@@ -101,13 +101,6 @@ def _make_ios(tmp_path: Path, xcode_env_content: str) -> None:
     (tmp_path / "ios" / ".xcode.env").write_text(xcode_env_content)
 
 
-def _inv_none(tmp_path, *profiles):
-    apps = [
-        sd.AppInventory(name=f"app{i}", path=tmp_path, profile=p) for i, p in enumerate(profiles)
-    ]
-    return sd.ProjectInventory(workspace="single", apps=apps, loader="none")
-
-
 def _capture_profile_calls(monkeypatch):
     calls: list = []
     monkeypatch.setattr(sd.runners.subprocess, "call", lambda args, **k: calls.append(args) or 0)

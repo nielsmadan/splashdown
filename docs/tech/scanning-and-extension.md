@@ -155,9 +155,9 @@ defines seven extension points and flags; subclasses override the ones that appl
   provisioning or booting a target.
 - `reads_dotenv` class flag — declares whether the framework picks up
   a plain `.env`/`.env.local` on its own (Next.js, Django, FastAPI, Flask, Rails, Laravel,
-  Node backends → True; Vite, Spring Boot, ASP.NET Core, mobile → False). Consumed when no
-  shell loader is present, to decide
-  whether a dotenv-file fallback can actually reach the app.
+  Node backends → True; Vite, Spring Boot, ASP.NET Core, mobile → False). Declarative
+  metadata with no current consumer: init no longer infers a destination from what the
+  filesystem holds, so the user picks one with `--env-file` instead.
 
 Implementations are grouped by responsibility:
 
@@ -283,9 +283,11 @@ leaving Claude to consume the shared file.
 ### loaders.py — idempotent shell-env wiring
 
 A `Loader` (`loaders.py`) reports its configuration files and idempotently wires the tool to
-source `splashdown.env` on `cd`. `config_paths(cwd)` lists the config files that exist (and
-backs `detect(cwd)`); `plan(cwd)` parses and validates the edit and returns a `WirePlan` without
-writing; `wire(cwd)` is `plan` plus `apply_wire_plan`. Every `wire` is **idempotent** —
+source the configured env destination on `cd`. Every entry point takes that destination as its
+`env_file` argument, defaulting to `ENV_FILE_NAME`, so a project routing values elsewhere is wired
+to the file it actually uses. `config_paths(cwd)` lists the config files that exist (and
+backs `detect(cwd)`); `plan(cwd, env_file)` parses and validates the edit and returns a `WirePlan`
+without writing; `wire(cwd, env_file)` is `plan` plus `apply_wire_plan`. Every `wire` is **idempotent** —
 re-running it produces no diff — and splashdown's own region is marked so it can be found and
 removed later. `owns_config(cwd)` reports whether the loader's configuration holds splashdown's
 integration and nothing else; `approve(cwd)` runs the loader's trust command; and
@@ -317,15 +319,15 @@ quoting, tabs and a leading `./` are normalized by `normalized_env_reference`
   because a one-entry remainder cannot be told apart from a list the user wrote.
   A directive from a build before the marker existed is unmarked, so splashdown treats it as
   the user's and `unwire` leaves it; `plan()` carries a `hint` saying so whenever it reuses an
-  unmarked directive naming `splashdown.env`.
+  unmarked directive naming the configured destination.
 - **DirenvLoader** (`loaders.py`) detects `.envrc`/`.envrc.local`; `plan()` appends (or
   regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py`) a
-  block containing `dotenv_if_exists splashdown.env`. A `dotenv`/`dotenv_if_exists` line at
+  block containing `dotenv_if_exists <destination>`. A `dotenv`/`dotenv_if_exists` line at
   column 0 outside that block is reused unchanged; an indented one is inside a function or
   conditional and does not count. Its trailing comment is stripped by `_SHELL_COMMENT_RE`
   (`loaders.py`), the same rule devbox uses, so a `#` must start a word: `splashdown.env#foo`
   is a filename, not the file plus a comment. It uses `dotenv_if_exists` rather
-  than `dotenv` so a fresh checkout doesn't hard-error before `splashdown.env` exists
+  than `dotenv` so a fresh checkout doesn't hard-error before the destination exists
   (`loaders.py`). `approve()` runs
   `direnv allow` (mise's runs `mise trust`) so the config actually loads. Editing a
   *pre-existing* `.envrc` invalidates direnv's trust hash but is not auto-approved — the plan
@@ -333,7 +335,7 @@ quoting, tabs and a leading `./` are normalized by `normalized_env_reference`
   reminder because init leaves approval to `splash trust`, which prints its own line.
 - **DevboxLoader** (`loaders.py`) detects `devbox.json`; `plan()` parses the JSON, finds
   or appends a `shell.init_hook` entry carrying the `# splashdown-managed` marker
-  (`loaders.py`), and the hook does `set -a; source splashdown.env; set +a`. An unmarked hook
+  (`loaders.py`), and the hook does `set -a; source <destination>; set +a`. An unmarked hook
   whose statements include a standalone `set -a` (or `set -o allexport`) followed by a
   standalone `source`/`.` of the file is reused unchanged. A `set +a` (or `set +o allexport`)
   turns allexport back off, so only a `source` reached while it is still on counts.
@@ -346,8 +348,8 @@ quoting, tabs and a leading `./` are normalized by `normalized_env_reference`
   a string-valued `init_hook` into a list first (`loaders.py`), and preserves entries it does
   not own.
 - **NoneLoader** (`loaders.py`) wires nothing. `detect()` is always `False`; it is only ever
-  *selected*, never matched. Its plan is `nothing` — `cmd_init` decides whether to route values
-  into a dotenv file or just print instructions.
+  *selected*, never matched. Its plan is `nothing`, so `--loader none` configures the destination
+  and touches no loader file. `cmd_init` prints how to source it instead.
 
 Two recognition bounds are deliberate false negatives, chosen because a missed reuse only
 adds a duplicate directive while a wrong one leaves the checkout silently unwired:
@@ -362,7 +364,7 @@ adds a duplicate directive while a wrong one leaves the checkout silently unwire
 One known bound runs the other way and is a **false positive**, so it costs the expensive side
 of that trade. Recognition is textual and no shell parsing is attempted, so a statement at
 column 0 inside a block whose body is not indented is still read as top level, for both direnv
-and devbox. A `source splashdown.env` that only runs under an `if` is therefore reported as
+and devbox. A `source` of the destination that only runs under an `if` is therefore reported as
 reuse: init writes nothing and the checkout stays unwired until the user indents the body or
 wires the loader by hand.
 `test_devbox_loader_wire_reuses_a_statement_in_an_unindented_block_body` pins it so the hole
@@ -454,10 +456,9 @@ The split between the *declarative* `PROFILES`/`LOADERS` registries and the
 *imperative* `WiringCheck` lists returned from `wiring_checks()` mirrors the two phases:
 detection answers "what is this," while wiring imperatively patches consumer configs and
 must report/repair state — so the latter lives behind the doctor flow rather than in the
-declarative tables. The dotenv-vs-loader fallback (`reads_dotenv`) exists because not every
-framework reads a `.env` file; when no shell loader is adopted, splashdown needs to know
-whether dropping a dotenv file would even reach the app or whether it must print manual
-instructions instead.
+declarative tables. `reads_dotenv` survives as framework metadata, but no longer decides
+delivery: inferring a destination from an existing `.env` made a user-visible routing decision
+out of a filesystem accident, so `--env-file` replaced it.
 
 ## Related
 

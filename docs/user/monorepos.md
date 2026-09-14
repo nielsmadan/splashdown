@@ -53,8 +53,8 @@ When several Electron apps do not otherwise trigger the structure-only collision
 profile resource names are made app-specific, such as `ELECTRON_PROFILE_ID_DESKTOP`, and each
 value also includes the app name. Each `[apps.*]` entry lists its matching resource. If their
 primary Profiles also claim colliding resources, init writes the detected app structure without
-resources and asks you to configure the monorepo explicitly. The identifier always stays in
-`splashdown.env`, even when a renderer resource is routed to an app-specific dotenv file.
+resources and asks you to configure the monorepo explicitly. The identifier takes the project's
+default destination, even when a renderer resource is routed to an app-specific dotenv file.
 
 Init prints the matching main-process integration for each app:
 
@@ -384,12 +384,13 @@ automatically. See [framework-wiring.md](framework-wiring.md) for details.
 
 **`writer = "envfile=..."` breaks the mise / direnv contract.** Per-resource
 `writer = "envfile=apps/web/.env"` routes a value directly into an app-level `.env` file
-instead of `splashdown.env`. This is the right escape hatch when a build tool can only read
-dotenv files (legacy Gradle setup, vendor tooling), but it means mise/direnv/devbox never
-see that value in the parent shell. Any process that needs it must read the `.env` file
-directly. Prefer patching the consumer to read `process.env` so all values stay in
-`splashdown.env` and the full suite (`status`, `env get`, templated cross-references)
-works as expected.
+instead of the default destination, and the value is not also written there. This is the right
+escape hatch when a build tool can only read dotenv files (legacy Gradle setup, vendor tooling),
+but it means mise/direnv/devbox never see that value in the parent shell, because the loader
+follows the default destination only. Any process that needs it must read the `.env` file
+directly. Prefer patching the consumer to read `process.env` so all values stay in the default
+destination and the full suite (`status`, `env get`, templated cross-references) works as
+expected.
 
 **`apps.*` with empty `resources = []` is intentional.** Native apps (`ios-native`,
 `android-native`) allocate no port resources, they use simulator/emulator targets, not

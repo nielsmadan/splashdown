@@ -12,6 +12,7 @@ The committed file. Its top-level sections are `[project]`, `[apps.*]`, `[resour
 [project]
 workspace = "pnpm"             # single | pnpm | yarn | npm | cargo | gradle
 loader    = "mise"             # mise | direnv | devbox | none
+env_file  = ".env"             # default destination (omit for splashdown.env)
 
 [apps.api]
 path      = "apps/api"
@@ -53,6 +54,44 @@ Each resource type has a small, strict shape:
 | `uuid`, `cwd`, `cwd-slug` | No type-specific fields |
 
 Every resource also accepts the optional `writer` field. Fields belonging to another resource type are errors.
+
+## Writers
+
+`[project] env_file` names the file that receives every resource without its own `writer`. Omit it
+and the destination is `splashdown.env`, a file splashdown generates next to the recipe. `splash
+init --env-file PATH` writes the setting for you, and the selected loader is wired to read whatever
+that path names. The path is relative to the checkout and must stay inside it. It is stored in one
+canonical spelling, so `./.env` and `.env` name the same destination rather than two.
+
+Splashdown manages only the keys the recipe declares, in whatever destination they land in. That
+holds for `splashdown.env` exactly as it does for a shared `.env`, because a filename on its own
+does not make the file splashdown's. Unrelated lines, comments, blank lines, and the file's line
+endings survive every sync. An existing value for a declared key is replaced where that key already
+sits, so a key you grouped under a comment header stays there. A key assigned twice in the
+destination, or assigned in a shape splashdown does not rewrite such as `PORT: 3000`, is an error
+rather than a second competing definition, and so is a quoted value that is never closed, because
+nothing below it can be read reliably.
+
+Drop a resource from the recipe and its line goes on the next sync. Splashdown remembers what it
+wrote for this checkout, so the value cannot linger after the port it named is handed to another
+checkout.
+
+Splashdown creates a destination with owner-only permissions. A file that already exists keeps the
+mode you gave it.
+
+A resource's own `writer` overrides the default for that resource only, and the resource is not
+also copied into the default file:
+
+| Writer | Destination |
+| --- | --- |
+| omitted, or `"splashdown-env"` | the `[project] env_file` destination |
+| `"envfile=RELATIVE/PATH"` | that file, key-scoped the same way |
+| `"envrc"` | `.envrc.local`, as `export KEY=...` lines |
+| `"stdout"` | printed by sync instead of written |
+| `"none"` | the registry only |
+
+Consumers of an exceptional destination keep their own integration. The loader follows the default
+file, not the per-resource overrides.
 
 Any server that reads `PORT` from its environment needs nothing more than the `[resources.PORT]` block in the example above, with a range wide enough for the checkouts you run at once.
 
@@ -192,8 +231,11 @@ Electron keeps its user data in one platform-specific directory per app, so two 
 [resources.ELECTRON_PROFILE_ID]
 type     = "template"
 template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
-writer   = "splashdown-env"
 ```
+
+The resource takes the project's default destination, so it lands wherever `[project] env_file`
+points. Electron reads the identifier from its process environment, so that destination has to be
+one your loader or launch command actually loads.
 
 The value is a plain function of the checkout path, so it survives reallocation and is the same on every sync. Splashdown only supplies the identifier. The main process has to apply it, before `requestSingleInstanceLock()` and before any window is created:
 

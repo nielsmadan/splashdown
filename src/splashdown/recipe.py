@@ -14,12 +14,14 @@ from typing import Any, ClassVar, NoReturn, Self
 
 from .catalog import PROFILES
 from .constants import (
+    ENV_FILE_NAME,
     ENV_NAME_RE,
     GLOBAL_CONFIG_NAME,
     LOCAL_NAME,
     RECIPE_NAME,
     TARGET_TYPES,
     TARGET_VARIANT_RE,
+    normalized_env_reference,
 )
 from .errors import DeviceError
 
@@ -210,7 +212,16 @@ def template_refs(tpl: str) -> set[str]:
 _WORKSPACES = ("single", "pnpm", "yarn", "npm", "cargo", "gradle")
 _RECIPE_SECTIONS = {"project", "apps", "resources", "targets", "setup", "bootstrap"}
 _CONFIG_SECTIONS = {"settings", "targets"}
-_PROJECT_FIELDS = {"workspace", "loader", "framework", "run", "ios", "android", "worktree"}
+_PROJECT_FIELDS = {
+    "workspace",
+    "loader",
+    "framework",
+    "env_file",
+    "run",
+    "ios",
+    "android",
+    "worktree",
+}
 _PROJECT_IOS_FIELDS = {"scheme", "mode", "configuration", "workspace", "project"}
 _PROJECT_ANDROID_FIELDS = {
     "mode",
@@ -355,7 +366,23 @@ def _known_loaders() -> set[str]:
     return set(LOADERS)
 
 
-def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
+def _validated_env_file(project: dict[str, Any], *, source: str, base_dir: Path) -> str | None:
+    """The canonical spelling of `project.env_file`, or None when it is absent."""
+    if "env_file" not in project:
+        return None
+    candidate = _non_empty_string(project["env_file"], source=source, path="project.env_file")
+    normalized = normalized_env_reference(candidate)
+    if not _checkout_relative_path(normalized, base_dir):
+        _schema_error(
+            source,
+            "project.env_file",
+            problem=f"invalid env file path `{candidate}`",
+            expected="a non-empty relative path that stays inside the checkout",
+        )
+    return normalized
+
+
+def _validate_project(data: dict[str, Any], *, source: str, base_dir: Path) -> dict[str, Any]:
     raw = data.get("project", {})
     project = _table(raw, source=source, path="project")
     _allowed_keys(project, _PROJECT_FIELDS, source=source, path="project")
@@ -368,6 +395,7 @@ def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
         )
     if "loader" in project:
         _enum(project["loader"], _known_loaders(), source=source, path="project.loader")
+    env_file = _validated_env_file(project, source=source, base_dir=base_dir)
     if "framework" in project:
         _enum(
             project["framework"],
@@ -419,7 +447,36 @@ def _validate_project(data: dict[str, Any], *, source: str) -> dict[str, Any]:
         _allowed_keys(nested, allowed, source=source, path=f"project.{key}")
         for field, value in nested.items():
             _non_empty_string(value, source=source, path=f"project.{key}.{field}")
-    return dict(project)
+    validated = dict(project)
+    if env_file is not None:
+        validated["env_file"] = env_file
+    return validated
+
+
+def _checkout_relative_path(path_arg: str, base_dir: Path) -> bool:
+    """Whether an output destination stays inside the checkout it was declared in."""
+    candidate = Path(path_arg)
+    return not (
+        not path_arg
+        or candidate.is_absolute()
+        or PureWindowsPath(path_arg).is_absolute()
+        or candidate == Path(".")
+        or ".." in candidate.parts
+        or not (base_dir / candidate).resolve().is_relative_to(base_dir.resolve())
+    )
+
+
+def validate_env_file_option(value: str, base_dir: Path) -> str:
+    """Validate an `init --env-file` destination against the constraints an
+    `envfile=` writer already carries, before init writes anything. Returns the
+    canonical spelling that gets persisted, wired, and grouped."""
+    normalized = normalized_env_reference(value)
+    if not _checkout_relative_path(normalized, base_dir):
+        raise ValueError(
+            f"invalid --env-file path `{value}`; "
+            "expected a non-empty relative path that stays inside the checkout"
+        )
+    return normalized
 
 
 def _validate_writer(value: Any, *, source: str, path: str, base_dir: Path) -> str:
@@ -433,23 +490,16 @@ def _validate_writer(value: Any, *, source: str, path: str, base_dir: Path) -> s
             problem=f"unknown writer `{writer}`",
             expected="splashdown-env, envrc, stdout, none, or envfile=RELATIVE_PATH",
         )
-    path_arg = writer.removeprefix("envfile=")
-    candidate = Path(path_arg)
-    if (
-        not path_arg
-        or candidate.is_absolute()
-        or PureWindowsPath(path_arg).is_absolute()
-        or candidate == Path(".")
-        or ".." in candidate.parts
-        or not (base_dir / candidate).resolve().is_relative_to(base_dir.resolve())
-    ):
+    candidate = writer.removeprefix("envfile=")
+    normalized = normalized_env_reference(candidate)
+    if not _checkout_relative_path(normalized, base_dir):
         _schema_error(
             source,
             path,
-            problem=f"invalid envfile path `{path_arg}`",
+            problem=f"invalid envfile path `{candidate}`",
             expected="a non-empty relative path that stays inside the checkout",
         )
-    return writer
+    return f"envfile={normalized}"
 
 
 def _validate_template_node(
@@ -586,13 +636,16 @@ def _validate_resources(
             )
         resource_type = _enum(spec["type"], _RESOURCE_TYPES, source=source, path=f"{path}.type")
         _allowed_keys(spec, _RESOURCE_FIELDS[resource_type], source=source, path=path)
-        if "writer" in spec:
+        writer = (
             _validate_writer(
                 spec["writer"],
                 source=source,
                 path=f"{path}.writer",
                 base_dir=base_dir,
             )
+            if "writer" in spec
+            else None
+        )
         if resource_type == "port":
             if "range" not in spec:
                 _schema_error(
@@ -644,6 +697,8 @@ def _validate_resources(
                 expected="a string",
             )
         resources[name] = dict(spec)
+        if writer is not None:
+            resources[name]["writer"] = writer
     for name, spec in resources.items():
         if spec["type"] == "template":
             _validate_template(
@@ -842,12 +897,17 @@ class Recipe:
         self.resources = _validate_resources(data, source=source, base_dir=path.parent)
         self.setup = _validate_setup(data, source=source)
         self.bootstrap = _validate_bootstrap(data, source=source)
-        self.project = _validate_project(data, source=source)
+        self.project = _validate_project(data, source=source, base_dir=path.parent)
         self.apps = _validate_apps(data, self.resources, source=source)
         self.targets: dict[str, dict[str, dict[str, Any]]] = _parse_targets_section(
             data,
             source=source,
         )
+
+    @property
+    def env_file(self) -> str:
+        """The default env output destination, relative to the checkout."""
+        return str(self.project.get("env_file") or ENV_FILE_NAME)
 
     @classmethod
     def load(cls, path: Path) -> Recipe:

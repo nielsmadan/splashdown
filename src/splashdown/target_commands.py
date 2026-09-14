@@ -440,8 +440,9 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
         validate_device_run(cwd, recipe, kind)
         resolved = {}
         if (cwd / RECIPE_NAME).exists():
+            known_keys = set(registry.all_for(abspath))
             resolved = provision(cwd, registry=registry, recipe=recipe)
-            write_outputs(cwd, recipe, resolved)
+            write_outputs(cwd, recipe, resolved, known_keys=known_keys)
         env = {**os.environ, **resolved}
         if dtype == "device":
             target = resolve_physical_target(cwd, variant)

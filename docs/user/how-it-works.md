@@ -15,7 +15,7 @@ Four generated/config files end up in the project, and existing agent instructio
 |------|-----------|---------|
 | `splashdown.toml` | Yes | Recipe: project/apps/resources, team-shared targets, and optional trusted bootstrap commands |
 | `splashdown.local.toml` | **No** (gitignored) | Per-checkout *additional* `[targets.*]` variants on top of the recipe's |
-| `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file. Splashdown owns it (overwritten wholesale on every run, don't hand-edit) |
+| `splashdown.env` | **No** (gitignored) | Generated `KEY=VALUE` env file, the default destination. Splashdown rewrites the keys the recipe declares and leaves everything else, so point `[project] env_file` at a shared `.env` when you prefer |
 | `mise.toml` (or `.envrc` / `devbox.json`) | Yes | Your shell-env loader's config, gains a line that sources `splashdown.env` |
 | existing `AGENTS.md` / independent `CLAUDE.md` | Yes | A managed block names each detected app's actual port variables and stable launch commands. No instruction file is created when neither exists |
 

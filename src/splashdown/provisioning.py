@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import stat
 import subprocess
 import uuid as uuid_mod
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-from .constants import ENV_FILE_NAME, RECIPE_NAME
+from .constants import RECIPE_NAME, newline_for, normalized_env_reference
 from .errors import SetupError
 from .recipe import (
     CommandSpec,
@@ -22,6 +21,7 @@ from .recipe import (
     topo_sort,
 )
 from .registry import Registry
+from .safe_files import atomic_write_text, read_optional_editable_text
 
 _PORT_RANGE_LEN = 2
 
@@ -100,38 +100,80 @@ def provision(
     return resolved
 
 
-def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[WriterResult]:
+DEFAULT_WRITER = "splashdown-env"
+_CREATE_MODE = 0o600
+_NON_FILE_WRITERS = ("stdout", "none")
+
+
+def resolve_writer(writer: str, env_file: str) -> str:
+    """The destination a declared writer names, in one canonical spelling so two
+    ways of naming the same file land in one group. `splashdown-env` follows the
+    recipe's configured default so one filename never gets two ownership models."""
+    if writer == DEFAULT_WRITER:
+        return f"envfile={env_file}"
+    if writer.startswith("envfile="):
+        return f"envfile={normalized_env_reference(writer.removeprefix('envfile='))}"
+    return writer
+
+
+def _undelivered_keys(recipe: Recipe) -> set[str]:
+    """Declared resources whose writer produces no file, so no destination ever
+    held a line splashdown wrote for them and none may be removed on their behalf."""
+    return {
+        name
+        for name, spec in recipe.resources.items()
+        if resolve_writer(spec.get("writer", DEFAULT_WRITER), recipe.env_file) in _NON_FILE_WRITERS
+    }
+
+
+def _confined_target(cwd: Path, relpath: str) -> Path:
+    target = cwd / relpath
+    # Recipes run automatically after checkout; confine env writes to the checkout.
+    # The parent, not the file: a symlinked destination is the writer's to refuse.
+    if not target.parent.resolve().is_relative_to(cwd.resolve()):
+        raise ValueError(
+            f"writer `envfile={relpath}` resolves outside the checkout; "
+            "envfile paths must stay within the project directory"
+        )
+    return target
+
+
+def write_outputs(
+    cwd: Path,
+    recipe: Recipe,
+    resolved: dict[str, str],
+    *,
+    known_keys: set[str],
+) -> list[WriterResult]:
+    """Write every writer group. `known_keys` names the keys splashdown has
+    already written for this checkout (the registry rows), so the default
+    destination also loses a key the recipe no longer declares."""
+    default_writer = resolve_writer(DEFAULT_WRITER, recipe.env_file)
+    undelivered = _undelivered_keys(recipe)
     groups: dict[str, dict[str, str]] = {}
     for name, value in resolved.items():
-        writer = recipe.resources[name].get("writer", "splashdown-env")
+        writer = resolve_writer(
+            recipe.resources[name].get("writer", DEFAULT_WRITER), recipe.env_file
+        )
         groups.setdefault(writer, {})[name] = value
 
-    # Clear stale splashdown.env when the recipe no longer targets that writer.
-    if "splashdown-env" not in groups and (cwd / ENV_FILE_NAME).exists():
-        groups["splashdown-env"] = {}
+    if default_writer not in groups and (cwd / recipe.env_file).exists():
+        groups[default_writer] = {}
 
     results: list[WriterResult] = []
     for writer, items in groups.items():
-        if writer == "splashdown-env":
-            target = cwd / ENV_FILE_NAME
-            changed = write_splashdown_env(target, items)
-            results.append(
-                WriterResult("splashdown-env", f"{ENV_FILE_NAME}: {len(items)} vars", changed)
-            )
-        elif writer.startswith("envfile="):
+        if writer.startswith("envfile="):
             path_arg = writer.removeprefix("envfile=")
-            target = cwd / path_arg
-            # Recipes run automatically after checkout; confine envfile writes to the checkout.
-            if not target.resolve().is_relative_to(cwd.resolve()):
-                raise ValueError(
-                    f"writer `envfile={path_arg}` resolves outside the checkout; "
-                    "envfile paths must stay within the project directory"
-                )
-            changed = write_envfile(target, items)
+            target = _confined_target(cwd, path_arg)
+            drop = (
+                (set(resolved) | known_keys) - undelivered - set(items)
+                if writer == default_writer
+                else set()
+            )
+            changed = write_envfile(target, items, drop=drop, root=cwd)
             results.append(WriterResult(writer, f"{path_arg}: {len(items)} vars", changed))
         elif writer == "envrc":
-            target = cwd / ".envrc.local"
-            changed = write_envrc(target, items)
+            changed = write_envrc(cwd / ".envrc.local", items, root=cwd)
             results.append(WriterResult("envrc", f".envrc.local: {len(items)} vars", changed))
         elif writer == "stdout":
             results.append(WriterResult("stdout", f"stdout: {len(items)} vars", True, dict(items)))
@@ -142,133 +184,282 @@ def write_outputs(cwd: Path, recipe: Recipe, resolved: dict[str, str]) -> list[W
     return results
 
 
-def _read_output_file(path: Path) -> tuple[str, int] | None:
-    try:
-        entry = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise ValueError(f"could not inspect output file `{path}`: {error}") from error
-    if stat.S_ISLNK(entry.st_mode):
-        raise ValueError(f"refusing to write `{path}`: destination is a symlink")
-    if not stat.S_ISREG(entry.st_mode):
-        raise ValueError(f"refusing to write `{path}`: destination is not a regular file")
-
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags)
-        with os.fdopen(fd, encoding="utf-8") as file:
-            opened = os.fstat(file.fileno())
-            if not stat.S_ISREG(opened.st_mode):
-                raise ValueError(f"refusing to write `{path}`: destination is not a regular file")
-            text = file.read()
-    except OSError as error:
-        raise ValueError(f"could not safely access output file `{path}`: {error}") from error
-    return text, stat.S_IMODE(opened.st_mode)
+_ASSIGNMENT_RE = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$")
+_EXPORT_ASSIGNMENT_RE = re.compile(r"^[ \t]*export[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$")
+# `KEY: value` and `KEY += value` name a key in a shape splashdown does not rewrite,
+# so appending its own `KEY=` would leave two competing definitions behind.
+_NEAR_ASSIGNMENT_RE = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?::|\+=)")
+_UNTERMINATED_QUOTE = "an unterminated quoted value"
 
 
-def _create_output_temp(path: Path) -> tuple[int, Path]:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    for _ in range(10):
-        temp_path = path.with_name(f".{path.name}.{uuid_mod.uuid4().hex}.tmp")
-        try:
-            return os.open(temp_path, flags, 0o666), temp_path
-        except FileExistsError:
+@dataclass(frozen=True)
+class _Assignment:
+    key: str
+    start: int
+    end: int
+
+
+def _closes_quote(text: str, quote: str) -> bool:
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if quote == '"' and character == "\\":
+            index += 2
             continue
-        except OSError as error:
-            raise ValueError(f"could not create output file beside `{path}`: {error}") from error
-    raise ValueError(f"could not create a unique output file beside `{path}`")
+        if character == quote:
+            return True
+        index += 1
+    return False
 
 
-def _write_if_changed(path: Path, text: str, *, mode: int | None = None) -> bool:
-    """Safely replace a regular output file when its contents or required mode differ."""
-    current = _read_output_file(path)
-    if current is not None and current[0] == text and (mode is None or current[1] == mode):
+def _opening_quote(value: str) -> str | None:
+    text = value.lstrip(" \t")
+    quote = text[:1]
+    if quote not in ("'", '"'):
+        return None
+    return None if _closes_quote(text[1:], quote) else quote
+
+
+def _scan_assignments(
+    lines: list[str], *, export: bool
+) -> tuple[list[_Assignment], list[tuple[int, str, str]]]:
+    """Logical assignments in an env destination, plus `(line, key, problem)` for
+    each shape that names a key without being safely rewritable."""
+    pattern = _EXPORT_ASSIGNMENT_RE if export else _ASSIGNMENT_RE
+    assignments: list[_Assignment] = []
+    problems: list[tuple[int, str, str]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        match = pattern.match(line)
+        if match is None:
+            near = _NEAR_ASSIGNMENT_RE.match(line)
+            if near is not None:
+                problems.append((index, near.group(1), "an unrecognized assignment syntax"))
+            index += 1
+            continue
+        end = index
+        quote = _opening_quote(match.group(2))
+        if quote is not None:
+            end = next(
+                (
+                    candidate
+                    for candidate in range(index + 1, len(lines))
+                    if _closes_quote(lines[candidate], quote)
+                ),
+                -1,
+            )
+            if end < 0:
+                problems.append((index, match.group(1), _UNTERMINATED_QUOTE))
+                end = index
+        assignments.append(_Assignment(match.group(1), index, end))
+        index = end + 1
+    return assignments, problems
+
+
+def _reject_ambiguous(
+    path: Path,
+    managed: set[str],
+    assignments: list[_Assignment],
+    problems: list[tuple[int, str, str]],
+) -> None:
+    for line, key, problem in problems:
+        if problem == _UNTERMINATED_QUOTE:
+            # Whoever opened it, every line below is of unknown shape, so splashdown
+            # can no longer tell an assignment it manages from ordinary text.
+            raise ValueError(
+                f"line {line + 1} of `{path}` opens a quoted value for `{key}` that is "
+                "never closed, so splashdown cannot tell where the assignments below it "
+                "begin; close the quote and re-run"
+            )
+        if key in managed:
+            raise ValueError(
+                f"line {line + 1} of `{path}` uses {problem} for `{key}`, which splashdown "
+                f"manages; rewrite that line as `{key}=VALUE`, or route the resource "
+                'elsewhere with `writer = "envfile=PATH"`'
+            )
+    seen: set[str] = set()
+    for assignment in assignments:
+        if assignment.key not in managed:
+            continue
+        if assignment.key in seen:
+            raise ValueError(
+                f"`{path}` assigns `{assignment.key}` more than once (line "
+                f"{assignment.start + 1}), and splashdown manages that key; leave a single "
+                "assignment so its value is unambiguous"
+            )
+        seen.add(assignment.key)
+
+
+def existing_managed_keys(path: Path, keys: set[str], *, root: Path | None) -> list[str]:
+    """Declared keys a destination already assigns. Raises when one of them is
+    assigned in a shape splashdown cannot rewrite."""
+    if not path.parent.is_dir():
+        return []
+    current = read_optional_editable_text(path, root=root)
+    if current is None:
+        return []
+    newline = newline_for(current)
+    assignments, problems = _scan_assignments(_split_lines(current, newline), export=False)
+    _reject_ambiguous(path, keys, assignments, problems)
+    return sorted({item.key for item in assignments if item.key in keys})
+
+
+def _replaced_lines(assignments: list[_Assignment], managed: set[str]) -> set[int]:
+    return {
+        index
+        for assignment in assignments
+        if assignment.key in managed
+        for index in range(assignment.start, assignment.end + 1)
+    }
+
+
+def _split_lines(text: str, newline: str) -> list[str]:
+    """Split on the destination's own line ending only. `str.splitlines` also
+    breaks on form feed and friends, which rewrites values that contain one."""
+    lines = text.split(newline)
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _merged_lines(
+    lines: list[str],
+    assignments: list[_Assignment],
+    managed: set[str],
+    rendered: dict[str, str],
+) -> list[str]:
+    """`lines` with each managed assignment replaced where it already stands, and
+    the remaining rendered keys appended."""
+    replacements: dict[int, str] = {}
+    removed = _replaced_lines(assignments, managed)
+    placed: set[str] = set()
+    for assignment in assignments:
+        line = rendered.get(assignment.key)
+        if assignment.key not in managed or line is None or assignment.key in placed:
+            continue
+        replacements[assignment.start] = line
+        placed.add(assignment.key)
+    merged = [
+        replacements.get(index, line)
+        for index, line in enumerate(lines)
+        if index in replacements or index not in removed
+    ]
+    merged.extend(line for key, line in rendered.items() if key not in placed)
+    return merged
+
+
+def _rewrite(
+    path: Path,
+    *,
+    managed: set[str],
+    rendered: dict[str, str],
+    export: bool,
+    root: Path | None,
+) -> bool:
+    current = read_optional_editable_text(path, root=root)
+    newline = newline_for(current or "")
+    lines = _split_lines(current, newline) if current is not None else []
+    assignments, problems = _scan_assignments(lines, export=export)
+    _reject_ambiguous(path, managed, assignments, problems)
+    new = _merged_lines(lines, assignments, managed, rendered)
+    if current is not None and not any(line.strip() for line in new):
+        path.unlink()
+        return True
+    text = newline.join(new) + (newline if new else "")
+    if current == text:
         return False
-
-    output_mode = mode if mode is not None else (current[1] if current is not None else None)
-    fd, temp_path = _create_output_temp(path)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
-            if output_mode is not None:
-                os.fchmod(file.fileno(), output_mode)
-            file.write(text)
-        os.replace(temp_path, path)
-    except OSError as error:
-        raise ValueError(f"could not safely write output file `{path}`: {error}") from error
-    finally:
-        temp_path.unlink(missing_ok=True)
+    # An existing destination keeps the mode its owner chose; only a file
+    # splashdown creates is made owner-only.
+    atomic_write_text(
+        path,
+        text,
+        root=root,
+        create=True,
+        mode=_CREATE_MODE if current is None else None,
+    )
     return True
 
 
-def write_splashdown_env(path: Path, items: dict[str, str]) -> bool:
-    """Write the generated env file wholesale. Splashdown owns this file."""
-    lines = [f"{k}={_env_quote(v)}" for k, v in items.items()]
-    return _write_if_changed(path, "\n".join(lines) + ("\n" if lines else ""), mode=0o600)
-
-
-def write_envfile(path: Path, items: dict[str, str]) -> bool:
+def write_envfile(
+    path: Path,
+    items: dict[str, str],
+    *,
+    drop: set[str] | None = None,
+    root: Path | None,
+) -> bool:
+    """Write `items` into a dotenv destination, replacing splashdown's own keys and
+    leaving every other line in place. `drop` names keys to remove without rewriting."""
     try:
-        current = _read_output_file(path)
-        existing = current[0].splitlines() if current is not None else []
-        managed = set(items.keys())
-        kept = []
-        for line in existing:
-            m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-            if m and m.group(1) in managed:
-                continue
-            kept.append(line)
-        while kept and not kept[-1].strip():
-            kept.pop()
-        new = kept + [f"{k}={_env_quote(v)}" for k, v in items.items()]
         path.parent.mkdir(parents=True, exist_ok=True)
-        return _write_if_changed(path, "\n".join(new) + "\n")
+        return _rewrite(
+            path,
+            managed=set(items) | (drop or set()),
+            rendered={k: f"{k}={_env_quote(v)}" for k, v in items.items()},
+            export=False,
+            root=root,
+        )
     except (OSError, ValueError) as error:
         raise ValueError(f"could not write envfile `{path}`: {error}") from error
 
 
-def write_envrc(path: Path, items: dict[str, str]) -> bool:
-    current = _read_output_file(path)
-    existing = current[0].splitlines() if current is not None else []
-    managed = set(items.keys())
-    kept = []
-    for line in existing:
-        m = re.match(r"\s*export\s+([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-        if m and m.group(1) in managed:
-            continue
-        kept.append(line)
-    while kept and not kept[-1].strip():
-        kept.pop()
-
-    def _shell_single_quote(v: str) -> str:
-        return "'" + v.replace("'", "'\\''") + "'"
-
-    new = kept + [f"export {k}={_shell_single_quote(v)}" for k, v in items.items()]
-    return _write_if_changed(path, "\n".join(new) + "\n")
+def _shell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'"
 
 
-def _strip_managed_keys(text: str, keys: set[str], *, export: bool) -> str | None:
-    """Drop `KEY=` (or `export KEY=`) lines for `keys` from `text`, the inverse of
-    `write_envfile`/`write_envrc`. Returns the remaining text, or `None` when only
-    blank lines remain (the caller then deletes the now-empty file)."""
-    prefix = r"\s*export\s+" if export else r"\s*"
-    pat = re.compile(prefix + r"([A-Za-z_][A-Za-z0-9_]*)\s*=")
-    kept = [ln for ln in text.splitlines() if not ((m := pat.match(ln)) and m.group(1) in keys)]
-    while kept and not kept[-1].strip():
-        kept.pop()
-    if not any(ln.strip() for ln in kept):
+def write_envrc(path: Path, items: dict[str, str], *, root: Path | None) -> bool:
+    return _rewrite(
+        path,
+        managed=set(items),
+        rendered={k: f"export {k}={_shell_single_quote(v)}" for k, v in items.items()},
+        export=True,
+        root=root,
+    )
+
+
+def _strip_destination(
+    path: Path, keys: set[str], *, export: bool, root: Path | None
+) -> str | None:
+    current = read_optional_editable_text(path, root=root)
+    if current is None:
         return None
-    return "\n".join(kept) + "\n"
+    newline = newline_for(current)
+    lines = _split_lines(current, newline)
+    assignments, problems = _scan_assignments(lines, export=export)
+    if any(problem == _UNTERMINATED_QUOTE for _line, _key, problem in problems):
+        # Below an unclosed quote the scanner matches inside the quoted region, so an
+        # edit here could delete part of a value rather than an assignment.
+        return "unparsed"
+    replaced = _replaced_lines(assignments, keys)
+    if not replaced:
+        return None
+    kept = [line for index, line in enumerate(lines) if index not in replaced]
+    if not any(line.strip() for line in kept):
+        path.unlink()
+        return "removed"
+    atomic_write_text(path, newline.join(kept) + newline, root=root)
+    return "cleaned"
 
 
-def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]]:
-    """Remove splashdown's injected keys from every per-resource `envfile=`/`envrc`
-    writer destination (splashdown co-owns specific keys in these user files; it
-    does not own them wholesale like `splashdown.env`). Deletes a destination that
-    ends up empty. Returns `[(relpath, "cleaned" | "removed")]` for what changed."""
-    groups: dict[str, set[str]] = {}
+def clear_writer_destinations(
+    cwd: Path, recipe: Recipe, *, known_keys: set[str]
+) -> list[tuple[str, str]]:
+    """Remove splashdown's keys from every writer destination, the default one
+    included: splashdown co-owns specific keys in these files rather than owning
+    any of them wholesale. `known_keys` names what the registry still holds for
+    this checkout, so a key the recipe stopped declaring goes from the default
+    destination too; a resource whose writer delivers no file is never removed on
+    that basis. Deletes a destination left with nothing else. Returns
+    `[(relpath, "cleaned" | "removed" | "unparsed")]` for what changed."""
+    default_writer = resolve_writer(DEFAULT_WRITER, recipe.env_file)
+    default_keys = (set(recipe.resources) | known_keys) - _undelivered_keys(recipe)
+    groups: dict[str, set[str]] = {default_writer: default_keys}
     for name, spec in recipe.resources.items():
-        writer = spec.get("writer", "splashdown-env")
+        writer = resolve_writer(spec.get("writer", DEFAULT_WRITER), recipe.env_file)
         if writer.startswith("envfile=") or writer == "envrc":
             groups.setdefault(writer, set()).add(name)
 
@@ -283,17 +474,11 @@ def clear_writer_destinations(cwd: Path, recipe: Recipe) -> list[tuple[str, str]
         if not target.resolve().is_relative_to(cwd.resolve()):
             continue
         try:
-            current = _read_output_file(target)
-        except ValueError:
+            action = _strip_destination(target, keys, export=export, root=cwd)
+        except (OSError, ValueError):
             continue
-        if current is None:
-            continue
-        remaining = _strip_managed_keys(current[0], keys, export=export)
-        if remaining is None:
-            target.unlink()
-            changed.append((relpath, "removed"))
-        elif _write_if_changed(target, remaining):
-            changed.append((relpath, "cleaned"))
+        if action is not None:
+            changed.append((relpath, action))
     return changed
 
 

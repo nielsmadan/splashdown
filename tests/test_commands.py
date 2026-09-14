@@ -13,7 +13,6 @@ import splashdown as sd
 from conftest import (
     _IPHONE,
     _git_init,
-    _inv_none,
     _stub_physical,
     _write_physical_recipe,
 )
@@ -1348,100 +1347,229 @@ def test_local_skeleton_documents_additions(tmp_path):
     assert "splash target add" in text
 
 
-def test_no_loader_delivery_prefers_env_for_dotenv_app(tmp_path):
-    (tmp_path / ".env").write_text("")
-    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert writer == "envfile=.env"
-    assert ".env" in msg
+def test_init_defaults_to_splashdown_env(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    report = sd.cmd_init(tmp_path)
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert report.env_file == "splashdown.env"
+    assert recipe.env_file == "splashdown.env"
+    assert "env_file" not in recipe.project
 
 
-def test_no_loader_delivery_falls_back_to_env_local(tmp_path):
-    (tmp_path / ".env.local").write_text("")
-    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert writer == "envfile=.env.local"
+def test_init_leaves_an_existing_dotenv_file_unselected(tmp_path):
+    (tmp_path / ".env").write_text("EXISTING=1\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
 
-
-def test_no_loader_delivery_prefers_env_over_env_local(tmp_path):
-    (tmp_path / ".env").write_text("")
-    (tmp_path / ".env.local").write_text("")
-    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert writer == "envfile=.env"
-
-
-def test_no_loader_delivery_no_apps_routes_to_file(tmp_path):
-    (tmp_path / ".env").write_text("")
-    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path))
-    assert writer == "envfile=.env"
-
-
-def test_no_loader_delivery_unknown_profile_routes_to_file(tmp_path):
-    # `unknown` apps get the benefit of the doubt (treated as dotenv-capable).
-    (tmp_path / ".env").write_text("")
-    writer, _msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "unknown"))
-    assert writer == "envfile=.env"
-
-
-def test_no_loader_delivery_no_dotenv_file_returns_none(tmp_path):
-    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert writer is None
-    assert "splashdown.env" in msg
-
-
-def test_no_loader_delivery_process_env_only_app_returns_none(tmp_path):
-    # A dotenv file exists, but the only app (vite) reads from process.env — a
-    # plain .env would reach nothing, so fall to instructions.
-    (tmp_path / ".env").write_text("")
-    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "vite"))
-    assert writer is None
-    assert "splash init --loader" in msg
-
-
-def test_no_loader_delivery_mixed_routes_to_file_with_caveat(tmp_path):
-    (tmp_path / ".env").write_text("")
-    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs", "vite"))
-    assert writer == "envfile=.env"
-    assert "app1" in msg
-    assert "read env from the process" in msg
-
-
-def test_no_loader_next_electron_keeps_profile_id_in_process_environment(tmp_path, capsys):
-    (tmp_path / ".env").write_text("")
-    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16","electron":"43"}}')
-
-    sd.cmd_init(tmp_path, electron_profile="isolated")
+    sd.cmd_init(tmp_path)
 
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert recipe.resources["PORT"]["writer"] == "envfile=.env"
-    assert recipe.resources["ELECTRON_PROFILE_ID"]["writer"] == "splashdown-env"
-    assert "main read env from the process" in capsys.readouterr().err
+    assert recipe.env_file == "splashdown.env"
+    assert all("writer" not in spec for spec in recipe.resources.values())
 
 
-def test_no_loader_delivery_warns_when_target_tracked(tmp_path):
+def test_init_env_file_persists_the_destination(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.project["env_file"] == ".env"
+    assert recipe.env_file == ".env"
+    assert report.env_file == ".env"
+
+
+def test_init_env_file_accepts_a_nested_destination(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="apps/web/.env"))
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").env_file == "apps/web/.env"
+
+
+@pytest.mark.parametrize("given", ["./.env", ".env ", "./././.env"])
+def test_init_env_file_persists_one_canonical_spelling(tmp_path, given):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=given))
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["env_file"] == ".env"
+    assert report.env_file == ".env"
+
+
+def test_init_env_file_with_a_dot_prefix_wires_mise_once(tmp_path):
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "22"\n')
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="./.env"))
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="./.env", overwrite=True))
+
+    assert (tmp_path / "mise.toml").read_text().count(".env") == 1
+
+
+def test_init_env_file_with_a_dot_prefix_reuses_a_user_direnv_directive(tmp_path):
+    (tmp_path / ".envrc").write_text("dotenv_if_exists .env\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="./.env"))
+
+    assert (tmp_path / ".envrc").read_text() == "dotenv_if_exists .env\n"
+
+
+def test_deinit_unwires_a_dot_prefixed_env_file_from_mise(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "22"\n')
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="./.env"))
+
+    sd.main(["--cwd", str(tmp_path), "deinit"])
+
+    assert ".env" not in (tmp_path / "mise.toml").read_text()
+
+
+@pytest.mark.parametrize("bad", ["../escape.env", "/tmp/escape.env", "", "C:\\escape.env"])
+def test_init_env_file_rejects_escaping_paths_before_writing(tmp_path, bad):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    with pytest.raises(ValueError, match="--env-file"):
+        sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=bad))
+
+    assert not (tmp_path / "splashdown.toml").exists()
+    assert not (tmp_path.parent / "escape.env").exists()
+
+
+def test_init_reports_destination_and_managed_keys_without_values(tmp_path, capsys):
+    (tmp_path / ".env").write_text("PORT=3000\nDATABASE_URL=postgres://secret\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    err = capsys.readouterr().err
+    assert "env output\t→ .env" in err
+    assert "PORT" in report.managed_keys
+    assert ".env already sets PORT" in err
+    assert "3000" not in err
+    assert "postgres://secret" not in err
+
+
+def test_init_reports_the_destination_in_json(tmp_path, capsys):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"), output_format="json")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["output"]["env_file"] == ".env"
+    assert "PORT" in payload["output"]["managed"]
+
+
+def test_init_rejects_an_ambiguous_duplicate_key_in_the_destination(tmp_path):
+    (tmp_path / ".env").write_text("PORT=3000\nPORT=3001\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    with pytest.raises(ValueError, match="assigns `PORT` more than once"):
+        sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    assert not (tmp_path / "splashdown.toml").exists()
+
+
+def test_init_warns_when_the_destination_is_tracked(tmp_path, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".env").write_text("")
-    writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert writer == "envfile=.env"
-    assert "not gitignored" in msg
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    assert "not gitignored" in capsys.readouterr().err
 
 
-def test_no_loader_delivery_no_warning_when_target_ignored(tmp_path):
+def test_init_does_not_warn_when_the_destination_is_ignored(tmp_path, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".gitignore").write_text(".env\n")
     (tmp_path / ".env").write_text("")
-    _writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert "not gitignored" not in msg
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    assert "not gitignored" not in capsys.readouterr().err
 
 
-def test_no_loader_delivery_no_warning_outside_git_repo(tmp_path):
+def test_init_does_not_warn_outside_a_git_repo(tmp_path, capsys):
     # No repo → `git check-ignore` exits 128; we must not nag spuriously.
-    (tmp_path / ".env").write_text("")
-    _writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "nextjs"))
-    assert "not gitignored" not in msg
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    assert "not gitignored" not in capsys.readouterr().err
+
+
+def test_init_loader_none_configures_the_destination_and_wires_nothing(tmp_path, capsys):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"), loader_override="none")
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").env_file == ".env"
+    assert not (tmp_path / "mise.toml").exists()
+    assert not (tmp_path / ".envrc").exists()
+    assert not (tmp_path / "devbox.json").exists()
+    assert "no shell loader — .env is generated" in capsys.readouterr().err
+
+
+def test_init_wires_mise_to_the_chosen_destination(tmp_path):
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "22"\n')
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    text = (tmp_path / "mise.toml").read_text()
+    assert '".env"' in text
+    assert "splashdown.env" not in text
+
+
+def test_init_wires_direnv_to_the_chosen_destination(tmp_path):
+    (tmp_path / ".envrc").write_text("use node\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    text = (tmp_path / ".envrc").read_text()
+    assert "dotenv_if_exists .env" in text
+    assert "use node" in text
+    assert "splashdown.env" not in text
+
+
+def test_init_wires_devbox_to_the_chosen_destination(tmp_path):
+    (tmp_path / "devbox.json").write_text('{"packages":[]}')
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    text = (tmp_path / "devbox.json").read_text()
+    assert "source .env" in text
+    assert "splashdown.env" not in text
+
+
+def test_init_reuses_a_user_directive_that_already_names_the_destination(tmp_path, capsys):
+    (tmp_path / ".envrc").write_text("dotenv_if_exists .env\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    assert (tmp_path / ".envrc").read_text() == "dotenv_if_exists .env\n"
+    assert "reusing the .envrc directive for .env" in capsys.readouterr().err
+
+
+def test_init_electron_profile_uses_the_default_destination(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16","electron":"43"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"), electron_profile="isolated")
+
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert "writer" not in recipe.resources["ELECTRON_PROFILE_ID"]
+    assert recipe.env_file == ".env"
 
 
 def test_none_loader_wire_is_noop(tmp_path):
     assert sd.LOADERS["none"].detect(tmp_path) is False
-    sd.LOADERS["none"].wire(tmp_path)
+    sd.LOADERS["none"].wire(tmp_path, sd.ENV_FILE_NAME)
     assert not (tmp_path / "mise.toml").exists()
     assert not (tmp_path / ".envrc").exists()
 
@@ -1657,15 +1785,15 @@ def test_loader_registry_exists_with_mise():
 
 
 def test_mise_loader_wire_creates_mise_toml(tmp_path):
-    sd.LOADERS["mise"].wire(tmp_path)
+    sd.LOADERS["mise"].wire(tmp_path, sd.ENV_FILE_NAME)
     assert (tmp_path / "mise.toml").exists()
     assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
 
 
 def test_mise_loader_wire_is_idempotent(tmp_path):
-    sd.LOADERS["mise"].wire(tmp_path)
+    sd.LOADERS["mise"].wire(tmp_path, sd.ENV_FILE_NAME)
     first = (tmp_path / "mise.toml").read_text()
-    sd.LOADERS["mise"].wire(tmp_path)
+    sd.LOADERS["mise"].wire(tmp_path, sd.ENV_FILE_NAME)
     assert (tmp_path / "mise.toml").read_text() == first
 
 
@@ -1732,10 +1860,53 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
 
 def test_deinit_deletes_generated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
     sd.cmd_init(tmp_path)
-    (tmp_path / "splashdown.env").write_text("FOO=1\n")
+    sd.main(["--cwd", str(tmp_path)])
+    assert (tmp_path / "splashdown.env").exists()
     sd.main(["--cwd", str(tmp_path), "deinit"])
     assert not (tmp_path / "splashdown.env").exists()
+
+
+def test_deinit_removes_a_destination_holding_undeclared_splashdown_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nloader = "none"\n\n'
+        '[resources.PORT]\ntype = "port"\nrange = [18801, 18810]\n\n'
+        '[resources.DB_NAME]\ntype = "template"\ntemplate = "app_db"\n'
+    )
+    sd.main(["--cwd", str(tmp_path)])
+    assert "DB_NAME=app_db" in (tmp_path / "splashdown.env").read_text()
+
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nloader = "none"\n\n[resources.PORT]\ntype = "port"\nrange = [18801, 18810]\n'
+    )
+    sd.main(["--cwd", str(tmp_path), "deinit"])
+
+    assert not (tmp_path / "splashdown.env").exists()
+
+
+def test_init_does_not_warn_about_a_default_destination_it_gitignores(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path)
+
+    err = capsys.readouterr().err
+    assert "not gitignored" not in err
+    assert "updated .gitignore (+splashdown.env" in err
+
+
+def test_deinit_keeps_unrelated_content_in_a_shared_destination(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    (tmp_path / ".env").write_text("DATABASE_URL=postgres://local\n")
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+    sd.main(["--cwd", str(tmp_path)])
+
+    sd.main(["--cwd", str(tmp_path), "deinit"])
+
+    assert (tmp_path / ".env").read_text() == "DATABASE_URL=postgres://local\n"
 
 
 def test_deinit_clears_registry_rows(tmp_path, registry):
@@ -1975,7 +2146,9 @@ def test_deinit_destroys_emulator_by_name(tmp_path, registry, monkeypatch):
 def test_deinit_continues_when_device_destroy_fails(tmp_path, registry, monkeypatch):
     co = tmp_path / "co"
     co.mkdir()
-    (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
+    (co / "splashdown.toml").write_text(
+        '[project]\nloader = "none"\n[resources.X]\ntype = "template"\ntemplate = "1"\n'
+    )
     (co / "splashdown.env").write_text("X=1\n")
     registry.set_device(str(co), "simulator", "default", "ABCD-UDID", "iPhone 17", "18.0")
 
@@ -2042,6 +2215,21 @@ def test_deinit_removes_envfile_when_only_splashdown_keys(tmp_path, registry):
     envf.write_text("WEB_DEV_PORT=5174\n")
     sd.cmd_deinit(co, registry)
     assert not envf.exists()
+
+
+def test_deinit_reports_leaving_an_unparseable_destination_alone(tmp_path, registry, capsys):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text(_ENVFILE_RECIPE)
+    envf = co / "apps" / "web" / ".env"
+    envf.parent.mkdir(parents=True)
+    original = 'WEB_DEV_PORT=5174\nNOTE="line one\nline two\n'
+    envf.write_text(original)
+
+    sd.cmd_deinit(co, registry)
+
+    assert envf.read_text() == original
+    assert "left apps/web/.env alone" in capsys.readouterr().err
 
 
 def test_deinit_strips_splashdown_keys_from_envrc_writer(tmp_path, registry):
@@ -2241,3 +2429,43 @@ def test_deinit_keeps_a_user_authored_integration_init_reused(tmp_path, registry
     assert report.loader_status == "reused"
     assert sd.cmd_deinit(co, registry) == 0
     assert (co / name).read_text() == existing
+
+
+def test_init_reports_a_wiring_check_that_reads_the_default_destination(tmp_path, capsys):
+    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
+    (tmp_path / "ios").mkdir()
+    (tmp_path / "ios" / ".xcode.env").write_text("export NODE_BINARY=$(command -v node)\n")
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    err = capsys.readouterr().err
+    assert (
+        "note: rn-xcode-env wires a fixed splashdown.env path, which this checkout does not "
+        "write; repoint that configuration at .env yourself" in err
+    )
+
+
+def test_the_default_destination_wiring_note_survives_a_reworded_description():
+    ids = {
+        check.id
+        for name, profile in sd.PROFILES.items()
+        for check in profile.wiring_checks(
+            sd.AppInventory(name="app", path=Path("."), profile=name)
+        )
+    }
+    assert ids >= sd.commands._DEFAULT_DESTINATION_WIRING_CHECKS
+
+
+def test_the_default_destination_note_is_keyed_on_the_check_id(capsys):
+    check = sd.WiringCheck(
+        id="rn-xcode-env",
+        description="reworded with no destination filename in it",
+        applies=lambda _path: True,
+        detect=lambda _path: ("ok", ""),
+        autofix=None,
+        manual_instructions=None,
+    )
+
+    sd.commands._warn_wiring_reads_default_destination(check, ".env")
+
+    assert "note: rn-xcode-env wires a fixed splashdown.env path" in capsys.readouterr().err

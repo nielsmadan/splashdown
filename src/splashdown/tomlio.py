@@ -8,7 +8,7 @@ import tomlkit
 from tomlkit import array, comment, document, key, nl, table
 from tomlkit.items import Table
 
-from .constants import ENV_FILE_NAME, normalized_env_reference
+from .constants import normalized_env_reference
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -56,7 +56,7 @@ def render_scanned_recipe(
     app_resource_names: dict[str, list[str]],
     cwd: Path,
     merged_targets: dict[str, dict[str, dict[str, str]]] | None = None,
-    project_metadata: Mapping[str, Mapping[str, str]] | None = None,
+    project_metadata: Mapping[str, str | Mapping[str, str]] | None = None,
 ) -> str:
     """Render a fresh recipe (header comment, [project], [apps.*], [resources.*],
     [targets.*])."""
@@ -68,6 +68,9 @@ def render_scanned_recipe(
     proj["workspace"] = inv.workspace
     proj["loader"] = inv.loader
     for name, fields in (project_metadata or {}).items():
+        if isinstance(fields, str):
+            proj[name] = fields
+            continue
         nested = table()
         for field, value in fields.items():
             nested[field] = value
@@ -165,7 +168,7 @@ def _is_marked(value: Any) -> bool:
     return MISE_MANAGED_MARKER in _comment_text(value).split()
 
 
-def ensure_mise_file_directive_text(existing_text: str | None) -> str | None:
+def ensure_mise_file_directive_text(existing_text: str | None, env_file: str) -> str | None:
     """Return mise config text whose `[env]` `_.file` slot loads the env file.
     `None` input scaffolds a new file; `None` output means an existing directive
     already names the file, so the caller must not rewrite it. Raises ValueError
@@ -173,25 +176,25 @@ def ensure_mise_file_directive_text(existing_text: str | None) -> str | None:
     if existing_text is None:
         doc = document()
         env = table()
-        env[key(["_", "file"])] = _marked(ENV_FILE_NAME)
+        env[key(["_", "file"])] = _marked(env_file)
         doc["env"] = env
         return tomlkit.dumps(doc)
     doc = tomlkit.parse(existing_text)
     env_tbl, underscore, current = _mise_env_file_slot(doc)
     entries = _mise_env_file_entries(current) if current is not None else None
     if entries is not None and any(
-        normalized_env_reference(entry) == ENV_FILE_NAME for entry in entries
+        normalized_env_reference(entry) == env_file for entry in entries
     ):
         return None
     if env_tbl is None:
         env_tbl = table()
         doc["env"] = env_tbl
     if current is None:
-        value = _marked(ENV_FILE_NAME)
+        value = _marked(env_file)
     elif isinstance(current, str):
-        value = _widened(current, [str(current), ENV_FILE_NAME])
+        value = _widened(current, [str(current), env_file])
     else:
-        current.append(ENV_FILE_NAME)
+        current.append(env_file)
         value = _mark(current)
     if isinstance(underscore, dict):
         # `_` already exists as a table (dotted `_.x` keys or the `[env._]` subtable
@@ -216,7 +219,7 @@ def mise_file_directive_is_managed(existing_text: str | None) -> bool:
     return current is not None and _is_marked(current)
 
 
-def remove_mise_file_directive_text(existing_text: str | None) -> str | None:
+def remove_mise_file_directive_text(existing_text: str | None, env_file: str) -> str | None:
     """Inverse of ensure_mise_file_directive_text: drop the env file from a
     marked `_.file` slot. The marker says splashdown put an entry in the slot,
     not that it owns the slot, so removal is entry-scoped: other entries stay,
@@ -233,7 +236,7 @@ def remove_mise_file_directive_text(existing_text: str | None) -> str | None:
     if current is None or not _is_marked(current):
         return None
     entries = _mise_env_file_entries(current) or []
-    ours = [entry for entry in entries if normalized_env_reference(entry) == ENV_FILE_NAME]
+    ours = [entry for entry in entries if normalized_env_reference(entry) == env_file]
     if not ours:
         return None
     if len(ours) < len(entries):

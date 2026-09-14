@@ -9,10 +9,10 @@ description: Reference for every splash command, option, target action, and envi
 splash                              # sync this checkout explicitly
 splash --version
 splash [--cwd PATH] [--format text|json] [--show-values] …  # root options precede the command
-splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
+splash sync [--force] [--setup N]   # pick free ports, resolve vars, write the env file
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
-splash init [--loader=…] [--overwrite]
+splash init [--loader=…] [--env-file=PATH] [--overwrite]
             [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
 splash trust                        # authorize automatic handling for this clone
@@ -75,7 +75,27 @@ at a Git worktree root, inside it, or outside Git. Replacing an existing recipe 
 repository's post-checkout hook untouched and prints the explicit `splash --cwd PATH sync`
 command to run after checkout.
 
-`--loader` selects how the environment is loaded. Without it, init wires the sole loader whose
+`--env-file` selects the file that receives the generated values. Without it the destination is
+`splashdown.env`, a file splashdown generates next to the recipe. The path is relative to the
+checkout and must stay inside it, so an absolute path or one that escapes is rejected before init
+writes anything. Init records the choice as `env_file` in the recipe's `[project]` table and
+reports the destination, the keys it will manage there, and any of those keys the file already
+sets. Values are never printed. Nothing is written to the destination by init itself, so run
+`splash` afterwards.
+
+Splashdown manages only its declared keys in that file, so pointing `--env-file` at a dotenv file
+your project already reads keeps the rest of the file intact. An existing value for a declared key
+is replaced on the next sync, with no extra flag or confirmation. A key assigned twice, or
+assigned in a shape splashdown cannot rewrite such as `PORT: 3000`, is reported as an error rather
+than joined by a second competing definition.
+
+A resource with its own `writer` keeps that destination and is not also copied into the default
+file. See [The recipe](recipe.md#writers) for the writer values.
+
+`--loader` selects how the environment is loaded. It works with `--env-file`: the selected loader
+is wired to read the chosen destination, so `splash init --loader mise --env-file .env` records
+direct dotenv delivery and points mise at `.env`. With `--loader none` only the destination is
+configured and no loader file is touched. Without it, init wires the sole loader whose
 configuration exists in the directory and says which file decided that. With several configured
 it stops before changing anything and asks you to choose. With none configured it selects
 `none`. An installed tool is not by itself a reason to adopt it. Init reuses loading directives
@@ -109,7 +129,7 @@ pass `--ios-scheme=NAME` when the choice is ambiguous.
 
 `splash deinit` surgically removes checkout-local init state plus state created by sync and device runs. It
 destroys simulator and emulator instances owned by this checkout, releases its registry entries,
-removes `splashdown.env`, clears splashdown-managed keys from `envfile=` and `envrc` destinations,
+clears splashdown-managed keys from every writer destination and deletes one left with nothing else,
 and unwires the loader, `.gitignore` entries, and managed agent instructions. The shared
 post-checkout integration and clone-wide bootstrap trust remain because linked worktrees may still
 use them. Deinit clears only this checkout's bootstrap completion.

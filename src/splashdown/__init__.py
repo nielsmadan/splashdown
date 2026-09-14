@@ -80,7 +80,7 @@ from .commands import (
     InitOptions,
     InitReport,
     _env_dispatch,
-    _resolve_no_loader_delivery,
+    _print_env_destination,
     cmd_completion,
     cmd_deinit,
     cmd_init,
@@ -184,12 +184,12 @@ from .profiles import (
 )
 from .provisioning import (
     WriterResult,
+    existing_managed_keys,
     provision,
     run_setup,
     write_envfile,
     write_envrc,
     write_outputs,
-    write_splashdown_env,
 )
 from .recipe import (
     GLOBAL_SKELETON,

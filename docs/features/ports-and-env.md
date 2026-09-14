@@ -7,7 +7,7 @@
 
 ## Overview
 
-When a worktree or checkout syncs, splashdown allocates free dev ports machine-wide, mints UUIDs, expands templates, and writes the concrete values to `splashdown.env` (or per-resource `writer` destinations). Every process in the checkout then sees the right `PORT`, `DATABASE_URL`, etc. with no hand-editing — this is what bare `splash` and the trusted post-checkout event handler run (UC1). The audience is the parallel-agent / worktree-heavy developer who needs each checkout to be a hermetic sandbox that "just works" on `cd`/checkout.
+When a worktree or checkout syncs, splashdown allocates free dev ports machine-wide, mints UUIDs, expands templates, and writes the concrete values to the recipe's `[project] env_file` destination, `splashdown.env` by default (or per-resource `writer` destinations). Every process in the checkout then sees the right `PORT`, `DATABASE_URL`, etc. with no hand-editing — this is what bare `splash` and the trusted post-checkout event handler run (UC1). The audience is the parallel-agent / worktree-heavy developer who needs each checkout to be a hermetic sandbox that "just works" on `cd`/checkout.
 
 ## Table of contents
 
@@ -43,20 +43,21 @@ The template engine renders `{{ expr }}` placeholders through a **restricted AST
 `write_outputs()` groups resolved values by each resource's `writer` field (default
 `splashdown-env`) and returns typed `WriterResult` records for the CLI renderer:
 
-- **`splashdown-env`** — `splashdown.env`, written wholesale; splashdown owns the file (`write_splashdown_env`, `src/splashdown/provisioning.py`).
-- **`envfile=PATH`** — any dotenv-format file; preserves non-managed lines, replacing only the keys splashdown manages (`write_envfile`, `src/splashdown/provisioning.py`).
+- **`splashdown-env`** — the `[project] env_file` destination, `splashdown.env` unless `init --env-file PATH` chose otherwise. `resolve_writer` rewrites it to the equivalent `envfile=` form so one path has one ownership model (`src/splashdown/provisioning.py`).
+- **`envfile=PATH`** — any dotenv-format file; preserves non-managed lines, their order, their line endings, and trailing blank lines, replacing the keys splashdown manages where they already stand (`write_envfile`, `src/splashdown/provisioning.py`). Ruling R006 applies this to the default destination too: a filename alone does not grant wholesale ownership. A key assigned twice, assigned in a shape the writer does not rewrite, or carrying a quoted value that is never closed, is an error rather than a second competing definition. `write_outputs` takes the checkout's registry keys as `known_keys`, so the default destination also loses a key the recipe stopped declaring. A resource whose writer is `none` or `stdout` is never removed on that basis: splashdown delivers no file for it, so a line under that name is the user's own. A writer path is canonicalized during recipe validation, so `envfile=a/../b.env` and `envfile=b.env` are one destination.
 - **`envrc`** — appends `export` lines to `.envrc.local` (`write_envrc`, `src/splashdown/provisioning.py`).
 - **`stdout`** — returns the values as an explicit disclosure record. Text sync prints
   `KEY=value`; JSON sync places them in one `stdout` object, so raw lines can never corrupt the
   JSON document.
 - **`none`** — registry-only; allocates and persists but writes no file.
 
-All file writes go through the same safe replacement path: existing symlinks and non-regular
-files are rejected, regular files are replaced atomically, and a no-op sync touches nothing and
-reports "up to date." Dotenv values are single-quoted when not bare-safe (`_env_quote`,
-`src/splashdown/recipe.py`) — single quotes because the env file is `source`d by a shell in
-the devbox init-hook and the no-loader fallback, where double quotes would let
-`$(...)`/backticks execute.
+All file writes go through `safe_files`: existing symlinks, non-regular files, and symlinked
+parent components are rejected, regular files are replaced atomically, and a no-op sync touches
+nothing and reports "up to date." A destination splashdown creates is mode `0600`; one that
+already exists keeps the mode its owner chose. Dotenv values are single-quoted when not bare-safe
+(`_env_quote`, `src/splashdown/recipe.py`) — single quotes because the destination is `source`d by
+a shell in the devbox init-hook and in the `set -a; source` line init prints when no loader is
+configured, where double quotes would let `$(...)`/backticks execute.
 
 Every `[setup.NAME]` is validated while the recipe loads, whether or not that setup was requested. The table accepts only `run`, containing either a non-empty string or a non-empty array of non-empty strings. This schema validation happens before provisioning. `splash sync --setup NAME` still executes the selected setup after provisioning and writer output; an unknown name or failing command exits nonzero, execution stops at the first failure, and registry/file changes plus earlier successful commands are not rolled back.
 
@@ -86,7 +87,7 @@ text, including an up-to-date sync, or to replace the JSON field with
 | `cwd` / `cwd-slug` | none | checkout dir name (raw / slugified) |
 | `set` | optional string `default` | externally supplied value; without a default, use `splash env set` |
 
-Optional on any resource: `writer` ∈ `splashdown-env` (default), `envfile=RELATIVE_PATH`, `envrc`, `stdout`, `none` (README "The `writer` field"). An `envfile=` path must be non-empty, relative, and remain inside the checkout; bare `envfile`, absolute paths, escaping `..`, and lookalike prefixes are rejected before allocation. Most resources leave `writer` unset — the framework Profile routes them to `splashdown.env` implicitly; reach for `writer` only when no Profile covers the consumer.
+Optional on any resource: `writer` ∈ `splashdown-env` (default), `envfile=RELATIVE_PATH`, `envrc`, `stdout`, `none` (README "The `writer` field"). An `envfile=` path and `[project] env_file` must be non-empty, relative, and remain inside the checkout; bare `envfile`, absolute paths, escaping `..`, and lookalike prefixes are rejected before allocation. Most resources leave `writer` unset and take the default destination; an explicit `writer` takes precedence and the resource is not also copied into the default file. Reach for `writer` only when no Profile covers the consumer.
 
 Template scope values: `cwd`, `cwd_abs`, `branch`, `repo`, `parent`. Helpers: `basename`, `dirname`, `slug`, `lower`, `upper`, `truncate`, `uuid`, `hash`, `port_hash`. Plus any prior resolved resource by name (e.g. `template = "{{ PORT }}"`).
 
@@ -106,11 +107,12 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 - **Output paths and checkout entries are untrusted.** Clone trust covers future refs, so a later
   checkout can change writer paths and filesystem entries. `envfile=` paths must remain inside the
   checkout. Every writer also rejects
-  a symlink or non-regular destination, including the fixed `splashdown.env` and `.envrc.local`
-  names, so a checked-out link cannot redirect sync to another file.
+  a symlink, non-regular destination, or symlinked parent component, including the configured
+  default destination and the fixed `.envrc.local` name, so a checked-out link cannot redirect
+  sync to another file.
 - **Templates forbid attribute access by design.** `{{ x.foo }}` won't work; the evaluator only allows scope names, calls, indexing/slicing, and arithmetic (`src/splashdown/recipe.py`).
 - **TSV has no escaping.** Resolved values containing a tab, newline, or CR are rejected at write time to prevent row forgery in the registry (`_tsv_field`, `src/splashdown/registry.py`).
-- **No-op syncs do not rewrite files.** `_write_if_changed` means a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through lefthook/husky on `git pull --rebase` (`src/splashdown/provisioning.py`). An explicit `--show-values` still prints the resolved values before that summary.
+- **No-op syncs do not rewrite files.** `_rewrite` compares the new text first, so a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through lefthook/husky on `git pull --rebase` (`src/splashdown/provisioning.py`). An explicit `--show-values` still prints the resolved values before that summary.
 - **Changing to JSON does not opt into secret disclosure.** Sync JSON contains `resolved_keys`,
   and bare env JSON is a sorted key array. Use `--show-values`, `env get`, or `writer = "stdout"`
   only when the destination is safe for the value.
@@ -118,11 +120,11 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
 - **`splash env get NAME` is not a preview of a newly declared resource.** It reads this checkout's
   registry rows, and a resource lands there only when `provision()` runs. A newly declared resource
   therefore exits 1 until a sync.
-- **Adding a resource silently takes over a hand-set key in the target file.** `write_envfile` drops every existing line whose key is now managed and re-emits it at the bottom of the file (`src/splashdown/provisioning.py`). So declaring `[resources.DB_NAME]` with `writer = "envfile=apps/api/.env"` replaces a manual `DB_NAME=...` line on the first sync. Unmanaged keys in that file are preserved untouched — but check for a pre-existing hand-tuned line before adding a resource for its key.
+- **Adding a resource silently takes over a hand-set key in the target file.** `write_envfile` replaces the value of every existing assignment whose key is now managed, in place (`src/splashdown/provisioning.py`). So declaring `[resources.DB_NAME]` with `writer = "envfile=apps/api/.env"` replaces a manual `DB_NAME=...` line on the first sync. Unmanaged keys in that file are preserved untouched — but check for a pre-existing hand-tuned line before adding a resource for its key.
 - **A recipe has no per-checkout conditional.** Every `[resources.*]` entry applies to *every* managed checkout, including the primary one; there is no "leave this unset in the main checkout, compute it only in worktrees". Design for a value that is uniform-by-construction (a deterministic function of the checkout) rather than one that special-cases a blessed directory.
 
 ## Why
 
 - **Restricted AST evaluator instead of `eval()`** — an empty-`__builtins__` `eval` is not a real sandbox (object-graph walks like `().__class__.__base__.__subclasses__()` reach `os`/`subprocess`), and trusted hook execution can parse recipes from future refs (`src/splashdown/recipe.py`).
-- **Single-quote dotenv quoting** — the env file is `source`d by a shell in two paths (devbox init-hook, no-loader fallback); double-quoted `$(...)`/backticks would execute, so single quotes neutralize them while mise/direnv still read them literally (`src/splashdown/recipe.py`).
+- **Single-quote dotenv quoting** — the destination is `source`d by a shell in two paths (devbox init-hook, and the `set -a; source` line init prints when no loader is configured); double-quoted `$(...)`/backticks would execute, so single quotes neutralize them while mise/direnv still read them literally (`src/splashdown/recipe.py`).
 - **Keep an existing bound port pin** — reallocating a port currently bound by this checkout's own dev server would move it out from under the running process; deliberate reallocation goes through `--force` (`src/splashdown/registry.py`).

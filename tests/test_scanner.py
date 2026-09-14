@@ -412,14 +412,15 @@ def test_cmd_init_emits_mise_loader_wiring(tmp_path):
     assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
 
 
-def test_cmd_init_no_loader_routes_dotenv_app_to_env_file(tmp_path):
+def test_cmd_init_env_file_records_the_destination(tmp_path):
     (tmp_path / "next.config.js").write_text("module.exports = {}")
     (tmp_path / "package.json").write_text('{"dependencies": {"next": "15"}}')
     (tmp_path / ".env").write_text("")
-    sd.cmd_init(tmp_path)
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
     recipe_text = (tmp_path / "splashdown.toml").read_text()
     assert 'loader = "none"' in recipe_text
-    assert 'writer = "envfile=.env"' in recipe_text
+    assert 'env_file = ".env"' in recipe_text
+    assert "writer =" not in recipe_text
 
 
 def test_cmd_init_no_loader_no_dotenv_file_omits_writer_and_prints_instructions(tmp_path, capsys):

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .constants import ENV_FILE_NAME, normalized_env_reference
+from .constants import normalized_env_reference
 from .errors import LoaderConflictError
 from .hooks import mise_config_path
 from .safe_files import atomic_write_text, read_optional_editable_text
@@ -56,8 +56,8 @@ def _quoted_argument(raw: str) -> str:
     return raw
 
 
-def _names_env_file(raw: str) -> bool:
-    return normalized_env_reference(_quoted_argument(raw)) == ENV_FILE_NAME
+def _names_env_file(raw: str, env_file: str) -> bool:
+    return normalized_env_reference(_quoted_argument(raw)) == env_file
 
 
 def _read_config(path: Path, cwd: Path, loader: str) -> str | None:
@@ -81,28 +81,28 @@ class Loader:
         """Every configuration file of this loader that exists at `cwd`."""
         return []
 
-    def plan(self, cwd: Path) -> WirePlan:
-        """Parse and validate the edit that would make this loader load the env
-        file, without writing. Raises LoaderConflictError when the existing
+    def plan(self, cwd: Path, env_file: str) -> WirePlan:
+        """Parse and validate the edit that would make this loader load
+        `env_file`, without writing. Raises LoaderConflictError when the existing
         configuration cannot be extended without discarding settings."""
         raise NotImplementedError
 
-    def wire(self, cwd: Path) -> WirePlan:
-        """Idempotently configure the loader to source splashdown.env."""
-        return apply_wire_plan(self.plan(cwd))
+    def wire(self, cwd: Path, env_file: str) -> WirePlan:
+        """Idempotently configure the loader to source the env destination."""
+        return apply_wire_plan(self.plan(cwd, env_file))
 
-    def owns_config(self, cwd: Path) -> bool:
+    def owns_config(self, cwd: Path, env_file: str) -> bool:
         """True when the loader's configuration holds splashdown's integration
         and nothing else, so approving it cannot authorize user-authored code."""
         return False
 
-    def approve(self, cwd: Path, *, announce: bool = False) -> bool:
-        """Run the loader's trust/allow step so it will actually load
-        splashdown.env. No-op by default (only mise/direnv gate on trust).
+    def approve(self, cwd: Path, *, env_file: str, announce: bool = False) -> bool:
+        """Run the loader's trust/allow step so it will actually load the env
+        destination. No-op by default (only mise/direnv gate on trust).
         Never raises. `announce` prints a one-line result."""
         return False
 
-    def unwire(self, cwd: Path) -> None:
+    def unwire(self, cwd: Path, env_file: str) -> None:
         """Inverse of wire: remove splashdown's loading directive. Surgical —
         leave unrelated content, and delete a file only when nothing but our
         content remains. No-op by default so unknown loaders are harmless."""
@@ -125,7 +125,7 @@ class MiseLoader(Loader):
     def config_paths(self, cwd: Path) -> list[Path]:
         return [cwd / name for name in ("mise.toml", ".mise.toml") if (cwd / name).exists()]
 
-    def plan(self, cwd: Path) -> WirePlan:
+    def plan(self, cwd: Path, env_file: str) -> WirePlan:
         from .tomlio import (  # noqa: PLC0415
             ensure_mise_file_directive_text,
             mise_file_directive_is_managed,
@@ -134,22 +134,22 @@ class MiseLoader(Loader):
         path = mise_config_path(cwd)
         existing = _read_config(path, cwd, self.name)
         try:
-            new_text = ensure_mise_file_directive_text(existing)
+            new_text = ensure_mise_file_directive_text(existing, env_file)
         except ValueError as error:
             raise LoaderConflictError(
                 f"cannot wire mise: in {path.name}, {error}. "
-                f"Point `_.file` at {ENV_FILE_NAME} yourself, or re-run with `--loader none`."
+                f"Point `_.file` at {env_file} yourself, or re-run with `--loader none`."
             ) from error
         if new_text is None:
             if mise_file_directive_is_managed(existing):
-                return WirePlan(self.name, CONFIGURED, f"{path.name} already loads {ENV_FILE_NAME}")
+                return WirePlan(self.name, CONFIGURED, f"{path.name} already loads {env_file}")
             return WirePlan(
                 self.name,
                 REUSED,
-                f"reusing the {path.name} directive for {ENV_FILE_NAME}",
+                f"reusing the {path.name} directive for {env_file}",
                 hint=(
                     f"that directive is unmarked, so `splash deinit` will leave it. "
-                    f"If splashdown wrote it, remove the {ENV_FILE_NAME} entry from "
+                    f"If splashdown wrote it, remove the {env_file} entry from "
                     f"`_.file` in {path.name} (the whole line when it names nothing "
                     f"else) and re-run `splash init` to have it marked."
                 ),
@@ -158,13 +158,13 @@ class MiseLoader(Loader):
         return WirePlan(
             self.name,
             verb,
-            f'{verb} {path.name} (+_.file = "{ENV_FILE_NAME}")',
+            f'{verb} {path.name} (+_.file = "{env_file}")',
             path=path,
             text=new_text,
             root=cwd,
         )
 
-    def owns_config(self, cwd: Path) -> bool:
+    def owns_config(self, cwd: Path, env_file: str) -> bool:
         from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
 
         path = mise_config_path(cwd)
@@ -175,29 +175,29 @@ class MiseLoader(Loader):
         if existing is None:
             return False
         try:
-            remainder = remove_mise_file_directive_text(existing)
+            remainder = remove_mise_file_directive_text(existing, env_file)
         except ValueError:
             return False
         return remainder is not None and not remainder.strip()
 
-    def approve(self, cwd: Path, *, announce: bool = False) -> bool:
+    def approve(self, cwd: Path, *, env_file: str, announce: bool = False) -> bool:
         path = mise_config_path(cwd)
         if not path.exists():
             return False
         ok = _run_ok(["mise", "trust", str(path)], cwd)
         if announce:
-            msg = f"trusted {path.name}" if ok else f"run `mise trust` to load {ENV_FILE_NAME}"
+            msg = f"trusted {path.name}" if ok else f"run `mise trust` to load {env_file}"
             print(msg, file=sys.stderr)
         return ok
 
-    def unwire(self, cwd: Path) -> None:
+    def unwire(self, cwd: Path, env_file: str) -> None:
         from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
 
         path = mise_config_path(cwd)
         existing = read_optional_editable_text(path, root=cwd)
         if existing is None:
             return
-        new_text = remove_mise_file_directive_text(existing)
+        new_text = remove_mise_file_directive_text(existing, env_file)
         if new_text is None:
             return
         if new_text.strip():
@@ -210,12 +210,14 @@ class MiseLoader(Loader):
 
 _DIRENV_BEGIN = "# >>> splashdown-managed dotenv >>>"
 _DIRENV_END = "# <<< splashdown-managed dotenv <<<"
-# `dotenv_if_exists` (not `dotenv`) so a fresh checkout doesn't hard-error before
-# splashdown.env has been generated.
-_DIRENV_BLOCK = f"""{_DIRENV_BEGIN}
-dotenv_if_exists {ENV_FILE_NAME}
-{_DIRENV_END}
-"""
+
+
+def _direnv_block(env_file: str) -> str:
+    # `dotenv_if_exists` (not `dotenv`) so a fresh checkout doesn't hard-error
+    # before the destination has been generated.
+    return f"{_DIRENV_BEGIN}\ndotenv_if_exists {env_file}\n{_DIRENV_END}\n"
+
+
 _DIRENV_BLOCK_RE = re.compile(
     re.escape(_DIRENV_BEGIN) + r".*?" + re.escape(_DIRENV_END) + r"\n?",
     re.DOTALL,
@@ -229,11 +231,11 @@ _DIRENV_DOTENV_RE = re.compile(
 )
 
 
-def _direnv_user_directive(text: str) -> bool:
-    """Whether `.envrc` already loads the env file outside splashdown's block."""
+def _direnv_user_directive(text: str, env_file: str) -> bool:
+    """Whether `.envrc` already loads the destination outside splashdown's block."""
     for line in _DIRENV_BLOCK_RE.sub("", text).split("\n"):
         match = _DIRENV_DOTENV_RE.match(_SHELL_COMMENT_RE.sub("", line))
-        if match is not None and _names_env_file(match["arg"]):
+        if match is not None and _names_env_file(match["arg"], env_file):
             return True
     return False
 
@@ -250,33 +252,34 @@ class DirenvLoader(Loader):
     def config_paths(self, cwd: Path) -> list[Path]:
         return [cwd / name for name in (".envrc", ".envrc.local") if (cwd / name).exists()]
 
-    def plan(self, cwd: Path) -> WirePlan:
+    def plan(self, cwd: Path, env_file: str) -> WirePlan:
         path = cwd / ".envrc"
         existing = _read_config(path, cwd, self.name)
-        if existing is not None and _direnv_user_directive(existing):
-            return WirePlan(self.name, REUSED, f"reusing the .envrc directive for {ENV_FILE_NAME}")
+        if existing is not None and _direnv_user_directive(existing, env_file):
+            return WirePlan(self.name, REUSED, f"reusing the .envrc directive for {env_file}")
+        block = _direnv_block(env_file)
         base = existing or ""
         if _DIRENV_BLOCK_RE.search(base):
-            new_text = _DIRENV_BLOCK_RE.sub(_DIRENV_BLOCK, base, count=1)
+            new_text = _DIRENV_BLOCK_RE.sub(block, base, count=1)
         else:
             head = base.rstrip()
-            new_text = (head + "\n\n" if head else "") + _DIRENV_BLOCK
+            new_text = (head + "\n\n" if head else "") + block
         if new_text == existing:
-            return WirePlan(self.name, CONFIGURED, f".envrc already loads {ENV_FILE_NAME}")
+            return WirePlan(self.name, CONFIGURED, f".envrc already loads {env_file}")
         verb = UPDATED if existing is not None else CREATED
         return WirePlan(
             self.name,
             verb,
-            f"{verb} .envrc (+dotenv_if_exists {ENV_FILE_NAME})",
+            f"{verb} .envrc (+dotenv_if_exists {env_file})",
             path=path,
             text=new_text,
             root=cwd,
             # Editing an existing .envrc invalidates its trust hash, and auto-allowing
             # user commands would be unsafe.
-            hint="" if existing is None else f"run `direnv allow` to load {ENV_FILE_NAME}",
+            hint="" if existing is None else f"run `direnv allow` to load {env_file}",
         )
 
-    def owns_config(self, cwd: Path) -> bool:
+    def owns_config(self, cwd: Path, env_file: str) -> bool:
         path = cwd / ".envrc"
         try:
             text = read_optional_editable_text(path, root=cwd)
@@ -288,16 +291,16 @@ class DirenvLoader(Loader):
             return False
         return not _DIRENV_BLOCK_RE.sub("", text).strip()
 
-    def approve(self, cwd: Path, *, announce: bool = False) -> bool:
+    def approve(self, cwd: Path, *, env_file: str, announce: bool = False) -> bool:
         if not (cwd / ".envrc").exists():
             return False
         ok = _run_ok(["direnv", "allow", str(cwd)], cwd)
         if announce:
-            msg = "allowed .envrc" if ok else f"run `direnv allow` to load {ENV_FILE_NAME}"
+            msg = "allowed .envrc" if ok else f"run `direnv allow` to load {env_file}"
             print(msg, file=sys.stderr)
         return ok
 
-    def unwire(self, cwd: Path) -> None:
+    def unwire(self, cwd: Path, env_file: str) -> None:
         path = cwd / ".envrc"
         existing = read_optional_editable_text(path, root=cwd)
         if existing is None:
@@ -314,7 +317,12 @@ class DirenvLoader(Loader):
 # Marker baked into the init_hook string so we can find-and-replace idempotently
 # without parsing JSON ASTs.
 _DEVBOX_HOOK_MARKER = "# splashdown-managed"
-_DEVBOX_HOOK_CMD = f"{_DEVBOX_HOOK_MARKER}\nset -a; source {ENV_FILE_NAME}; set +a"
+
+
+def _devbox_hook_cmd(env_file: str) -> str:
+    return f"{_DEVBOX_HOOK_MARKER}\nset -a; source {env_file}; set +a"
+
+
 _DEVBOX_ALLEXPORT_RE = re.compile(r"^set[ \t]+(?P<sign>[-+])(?:a|o[ \t]+allexport)$")
 _DEVBOX_SOURCE_RE = re.compile(r"^(?:source|\.)[ \t]+(?P<arg>'[^']*'|\"[^\"]*\"|[^\s#'\"]+)$")
 
@@ -333,8 +341,8 @@ def _devbox_statements(hook: str) -> list[str]:
     return statements
 
 
-def _devbox_hook_loads_env_file(hook: str) -> bool:
-    """Whether one init hook sources the env file as a top-level statement of
+def _devbox_hook_loads_env_file(hook: str, env_file: str) -> bool:
+    """Whether one init hook sources the destination as a top-level statement of
     its own while allexport is on. `set -a` turns allexport on and `set +a`
     turns it back off, so only the last one before the `source` counts. A
     chained (`&&`) statement, a comment, and anything indented under a
@@ -346,7 +354,7 @@ def _devbox_hook_loads_env_file(hook: str) -> bool:
             exported = allexport["sign"] == "-"
             continue
         match = _DEVBOX_SOURCE_RE.match(statement)
-        if exported and match is not None and _names_env_file(match["arg"]):
+        if exported and match is not None and _names_env_file(match["arg"], env_file):
             return True
     return False
 
@@ -381,7 +389,7 @@ class DevboxLoader(Loader):
         path = cwd / "devbox.json"
         return [path] if path.exists() else []
 
-    def plan(self, cwd: Path) -> WirePlan:
+    def plan(self, cwd: Path, env_file: str) -> WirePlan:
         path = cwd / "devbox.json"
         existing = _read_config(path, cwd, self.name)
         try:
@@ -395,23 +403,23 @@ class DevboxLoader(Loader):
         reusable = any(
             isinstance(hook, str)
             and not _is_managed_hook(hook)
-            and _devbox_hook_loads_env_file(hook)
+            and _devbox_hook_loads_env_file(hook, env_file)
             for hook in hooks
         )
         kept = [hook for hook in hooks if not _is_managed_hook(hook)]
-        new_hooks = kept if reusable else [*kept, _DEVBOX_HOOK_CMD]
+        new_hooks = kept if reusable else [*kept, _devbox_hook_cmd(env_file)]
         if new_hooks == hooks:
             if reusable:
                 return WirePlan(
-                    self.name, REUSED, f"reusing the devbox.json init hook for {ENV_FILE_NAME}"
+                    self.name, REUSED, f"reusing the devbox.json init hook for {env_file}"
                 )
-            return WirePlan(self.name, CONFIGURED, f"devbox.json already loads {ENV_FILE_NAME}")
+            return WirePlan(self.name, CONFIGURED, f"devbox.json already loads {env_file}")
         data.setdefault("shell", {})["init_hook"] = new_hooks
         verb = UPDATED if existing is not None else CREATED
         note = (
-            f"updated devbox.json (-duplicate init_hook for {ENV_FILE_NAME})"
+            f"updated devbox.json (-duplicate init_hook for {env_file})"
             if reusable
-            else f"{verb} devbox.json (+init_hook sourcing {ENV_FILE_NAME})"
+            else f"{verb} devbox.json (+init_hook sourcing {env_file})"
         )
         return WirePlan(
             self.name,
@@ -422,7 +430,7 @@ class DevboxLoader(Loader):
             root=cwd,
         )
 
-    def unwire(self, cwd: Path) -> None:
+    def unwire(self, cwd: Path, env_file: str) -> None:
         path = cwd / "devbox.json"
         existing = read_optional_editable_text(path, root=cwd)
         if existing is None:
@@ -460,7 +468,7 @@ class NoneLoader(Loader):
     def detect(self, cwd: Path) -> bool:
         return False
 
-    def plan(self, cwd: Path) -> WirePlan:
+    def plan(self, cwd: Path, env_file: str) -> WirePlan:
         return WirePlan(self.name, NOTHING, "")
 
 

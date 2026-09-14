@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def state_directory() -> Path:
@@ -29,6 +29,16 @@ ENV_FILE_NAME = "splashdown.env"
 
 
 def normalized_env_reference(value: str) -> str:
-    """A loader directive's file reference with a leading `./` removed, so
-    `./splashdown.env` and `splashdown.env` compare equal."""
-    return value[2:] if value.startswith("./") else value
+    """One canonical spelling for an env destination, so a persisted `env_file`,
+    an `envfile=` writer, and a loader directive that name the same file compare
+    equal: `./.env`, `a/./.env` and `.env ` collapse to `.env` and `a/.env`."""
+    return PurePosixPath(os.path.normpath(value.strip())).as_posix()
+
+
+def newline_for(text: str) -> str:
+    """The line ending a text file already uses, so a rewrite keeps it."""
+    if "\r\n" in text:
+        return "\r\n"
+    if "\r" in text and "\n" not in text:
+        return "\r"
+    return "\n"

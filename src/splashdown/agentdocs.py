@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from .catalog import PROFILES
+from .constants import newline_for
 from .inventory import AppInventory
 from .recipe import Recipe
 
@@ -115,7 +116,7 @@ def _replace_managed_block(path: Path, text: str, block: str) -> str | None:
     if not starts and not ends:
         if not block:
             return text
-        newline = _newline_for(text)
+        newline = newline_for(text)
         rendered = block.replace("\n", newline)
         separator = "" if not text or text.endswith(newline) else newline
         return f"{text}{separator}{rendered}{newline}"
@@ -125,7 +126,7 @@ def _replace_managed_block(path: Path, text: str, block: str) -> str | None:
             file=sys.stderr,
         )
         return None
-    newline = _newline_for(text)
+    newline = newline_for(text)
     before = text[: starts[0]]
     after = text[ends[0] :]
     if not block and after.startswith(newline):
@@ -201,11 +202,3 @@ def _markdown_code(value: str) -> str:
     fence = "`" * max(1, longest + 1)
     padding = " " if escaped.startswith("`") or escaped.endswith("`") else ""
     return f"{fence}{padding}{escaped}{padding}{fence}"
-
-
-def _newline_for(text: str) -> str:
-    if "\r\n" in text:
-        return "\r\n"
-    if "\r" in text and "\n" not in text:
-        return "\r"
-    return "\n"

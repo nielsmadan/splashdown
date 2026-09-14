@@ -45,15 +45,23 @@ Validation is strict and centralized:
 - A recipe permits only `project`, `apps`, `resources`, `targets`, `bootstrap`, and `setup`
   at the top level. Project fields and nested iOS/Android command settings are
   whitelisted and checked against the built-in workspace, loader, and profile
-  registries.
+  registries. `[project] env_file` names the default output destination and is
+  checked by the same `normalized_env_reference` + `_checkout_relative_path` pair
+  the `envfile=` writer uses. `Recipe.env_file` is the single reader and falls back
+  to `ENV_FILE_NAME`. `validate_env_file_option` is the pre-write entry point for
+  `init --env-file`, so both paths refuse the same shapes.
 - Every app requires `path`, `profile`, and a unique `resources` string array;
   resource references must name declarations in `[resources]`. This is metadata
   validation only — provisioning still operates on the top-level resource
   catalog.
 - Resource validation is discriminated by `type`. Required fields, exact TOML
   types, port bounds, type-specific field leakage, and writer syntax are all
-  rejected during load. `envfile=PATH` must be a non-empty relative path that
-  resolves inside the checkout; absolute, `..`, and escaping-symlink paths fail.
+  rejected during load. `envfile=PATH` is canonicalized first and the canonical
+  form is what `_validate_resources` persists into `Recipe.resources`, so the path
+  that is checked is the path the writer later opens. It must be a non-empty
+  relative path that resolves inside the checkout; absolute, `..`, and
+  escaping-symlink paths fail, and normalization never runs after the escape check
+  (`a/../../x.env` and `/abs.env` are rejected, `a/../b.env` becomes `b.env`).
 - Every setup table permits only `run`, as either a non-empty string or a
   non-empty array of non-empty strings. Validation normalizes both forms to a frozen
   `CommandSpec` with an immutable command tuple.
@@ -207,12 +215,13 @@ so the wrapper and module-qualified tasks resolve together.
 
 ### _env_quote
 
-`_env_quote` (`recipe.py`) is the dotenv serializer used by the
-`splashdown.env` writers in `provisioning.py`. Bare-safe values
+`_env_quote` (`recipe.py`) is the dotenv serializer used by the env-file writers
+in `provisioning.py`. Bare-safe values
 (matching `_ENV_SAFE_RE`) pass through; anything else is **single-quoted** with
-`'` escaped as `'\''`. Single quotes are intentional: the env file is `source`d
-by a shell in two paths (devbox `init_hook`, the no-loader `set -a; source`
-fallback), and double quotes would let `$(...)`/backticks execute. Single quotes
+`'` escaped as `'\''`. Single quotes are intentional: the destination is `source`d
+by a shell in two paths (devbox `init_hook`, and the `set -a; source` line init
+prints when no loader is configured), and double quotes would let
+`$(...)`/backticks execute. Single quotes
 neutralize them and are read literally by mise/direnv too.
 
 ### tomlio: comment-preserving writes

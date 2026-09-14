@@ -81,17 +81,20 @@ commands should not block normal sync indefinitely.
 
 Entry: `write_outputs()` at `provisioning.py`.
 
-1. Group `resolved` by each resource's `writer` field, defaulting to `splashdown-env` (`provisioning.py`).
-2. **Truncate guard**: if no resource targets `splashdown-env` anymore but the file still exists on disk, inject an empty group for it so the stale file gets emptied rather than left lying with values that contradict the recipe (`provisioning.py`).
+1. Group `resolved` by each resource's `writer` field, defaulting to `splashdown-env`, with
+   `resolve_writer()` mapping `splashdown-env` onto `envfile=<recipe.env_file>` first. One
+   destination therefore has one ownership model regardless of which spelling reached it
+   (`provisioning.py`).
+2. **Stale guard**: if no resource targets the default destination anymore but the file still exists on disk, inject an empty group for it. The default group also passes `drop=` for every resolved key routed to another *file* destination, so a key that moved to an explicit writer stops being defined in two places. A resource whose writer is `none` or `stdout` delivers no file at all, so it is excluded from `drop`: splashdown never wrote a line for it anywhere, and removing its name would delete whatever the user put in the destination under that key (`provisioning.py`).
 3. For each `(writer, items)` group, dispatch (`provisioning.py`):
-   - `splashdown-env` → `write_splashdown_env(cwd/splashdown.env, items)`. Splashdown owns this file wholesale and rewrites it entirely.
    - `envfile=<path>` → `write_envfile`, creating missing parent directories. The schema already requires a
      non-empty relative path with no `..` component. A defensive **containment
      guard** (`provisioning.py`) also requires the resolved target to be
      `is_relative_to(cwd)`. The recipe is committed and auto-run by the
      post-checkout hook, so an `envfile=` value is untrusted input — without
      these checks an absolute path or `../` escape is an arbitrary-file-write
-     primitive for any cloned repo.
+     primitive for any cloned repo. The guard resolves the *parent*, leaving a symlinked
+     destination to the writer's own no-symlink refusal.
    - `envrc` → `write_envrc(cwd/.envrc.local, items)` (note: fixed filename, no `=<path>` form).
    - `stdout` → return the values on the result record; no output occurs in provisioning.
    - `none` → registry-only; nothing written, `changed=False`.
@@ -100,22 +103,33 @@ Entry: `write_outputs()` at `provisioning.py`.
    them for change-aware reporting and emits stdout-writer values as `KEY=value` in text or one
    `stdout` object in JSON.
 
-Every filesystem writer rejects an existing symlink or non-regular destination. Regular files
-are updated through a same-directory temporary file and `os.replace`, so the final operation
-replaces the checkout entry rather than following it. Existing permissions are preserved for
-co-owned `envfile=`/`envrc` files; the generated `splashdown.env` is always mode `0600`.
+Every filesystem writer goes through `safe_files`, which rejects an existing symlink or
+non-regular destination and, with `root=cwd`, walks the parent chain for symlinked or
+non-directory components. Regular files are updated through a same-directory temporary file and
+`os.replace`, so the final operation replaces the checkout entry rather than following it.
+
+**Mode.** A destination splashdown creates is made `0600`. A destination that already exists keeps
+the mode its owner chose, and no write re-chmods it. Under ruling R006 the default destination is
+an ordinary co-owned file, so silently tightening a shared `.env` a group or container user reads
+would break the project without saying so.
 
 ### Writers and change detection
 
-`_write_if_changed()` (`provisioning.py`) is the common gate: it opens existing files with
-`O_NOFOLLOW`, verifies the opened descriptor is still a regular file, and writes only when the
-contents or required mode differ. Changes are committed by atomic replacement. This makes
-re-running `sync` a no-op when nothing changed while preventing checkout-controlled links from
-redirecting a write or permission change.
+`_rewrite()` (`provisioning.py`) is the common gate: it reads through `safe_files`, replaces the
+lines of the managed keys, and writes only when the resulting text differs. Changes are committed
+by atomic replacement. This makes re-running `sync` a no-op when nothing changed while preventing
+checkout-controlled links from redirecting a write.
 
-- `write_splashdown_env` (`provisioning.py`): builds `K=_env_quote(V)` lines and replaces the whole file. Empty `items` → empty file.
-- `write_envfile` (`provisioning.py`): *surgical merge* into a foreign file. Reads existing lines, drops any line whose `KEY=` is one splashdown manages (regex `^\s*([A-Za-z_]\w*)\s*=`), trims trailing blanks, then appends the managed `K=_env_quote(V)` lines (same quoting as `splashdown.env`). Non-managed lines are preserved, and missing parent directories are created before the file is written.
-- `write_envrc` (`provisioning.py`): same merge strategy but matches `export KEY=` and emits `export K=<single-quoted V>`. Uses shell single-quote escaping (`'\''`) rather than `_env_quote`, since `.envrc` is sourced by a shell (direnv).
+`_scan_assignments()` parses a destination into logical assignments before anything is replaced.
+It recognizes `KEY=`, `export KEY=`, surrounding whitespace, and single- or double-quoted values
+that span lines, and it collects *problems*: a managed key assigned in a shape it does not rewrite
+(`KEY:`, `KEY+=`) or one whose quoted value never closes. `_reject_ambiguous()` raises on any
+problem naming a managed key, and on a managed key assigned more than once, rather than appending
+a second competing definition (INIT-10).
+
+- `write_envfile` (`provisioning.py`): *surgical merge* into a co-owned file. Each managed key's `K=_env_quote(V)` line replaces the assignment where it already stands, and only a key the file does not assign yet is appended. Non-managed lines, their order, line endings and trailing blanks are preserved, and missing parent directories are created before the file is written. `drop=` removes a key without re-adding it. `root=` is required: it is the confinement root for the parent-chain and symlink checks in `safe_files`.
+- `write_envrc` (`provisioning.py`): same merge strategy and the same required `root=`, but matches `export KEY=` and emits `export K=<single-quoted V>`. Uses shell single-quote escaping (`'\''`) rather than `_env_quote`, since `.envrc` is sourced by a shell (direnv).
+- `existing_managed_keys` (`provisioning.py`): the read-only half, used by init to report collisions without disclosing values.
 
 ### Recipe commands
 
@@ -148,8 +162,8 @@ Bootstrap authorization, locking, completion, and retry output are owned by `com
 - CLI operation boundary: `commands.py` (`_cmd_provision_inner`)
 - `write_outputs()` / `WriterResult`: `provisioning.py`
 - sync renderer and redaction policy: `cli_output.py` (`render_sync`)
-- `_read_output_file()` / `_write_if_changed()`: safe destination validation and replacement
-- `write_splashdown_env` / `write_envfile` / `write_envrc`: filesystem writer implementations
+- `_scan_assignments()` / `_reject_ambiguous()` / `_rewrite()`: destination parsing and replacement
+- `write_envfile` / `write_envrc` / `existing_managed_keys` / `resolve_writer`: writer implementations
 - `_run_commands()` / `run_setup()` / `run_bootstrap()`: command execution after validation
 
 ## Gotchas
@@ -164,11 +178,15 @@ Bootstrap authorization, locking, completion, and retry output are owned by `com
   before the first registry access. Do not move schema checks into the resolve
   loop or writer dispatch; doing so would reintroduce partial allocation.
 - **Every output destination is untrusted.** The recipe and checkout entries are materialized
-  before the post-checkout hook runs. `envfile=` therefore has both its containment guard and
-  the shared destination check, while fixed `splashdown.env` and `.envrc.local` receive the
-  same no-symlink/non-regular-file protection. Do not replace these checks with `exists()` plus
+  before the post-checkout hook runs. `envfile=` therefore has both its containment guard and the
+  shared `safe_files` destination check, and `.envrc.local` receives the same no-symlink,
+  non-regular-file, parent-chain protection. Do not replace these checks with `exists()` plus
   `write_text()`: both operations follow symlinks.
-- **`envfile`/`envrc` merge by KEY, not by ownership marker.** They strip any line matching a *currently managed* key and re-append it. A managed var that you later remove from the recipe will stop being stripped and any hand-added stale line for it survives — splashdown only owns keys it's actively writing in those foreign files (unlike `splashdown.env`, which it owns wholesale).
+- **Writers merge by KEY, not by ownership marker, and that now includes the default destination.** A managed key is replaced where it already stands, and only a key the destination does not assign yet is appended. Ruling R006 makes this uniform: a filename alone does not grant wholesale ownership, so `splashdown.env` is co-owned exactly like a custom path.
+- **The registry says what to remove, because the recipe cannot.** A resource deleted from the recipe is absent from `resolved`, so nothing derived from the recipe would ever strip its line. `write_outputs` and `clear_writer_destinations` therefore take `known_keys` — `registry.all_for(checkout)` — and the default destination drops every key splashdown wrote there but no longer declares, minus the keys whose declared writer is `none` or `stdout`. `known_keys` only ever reaches the *default* group: a resource routed to `envfile=apps/api/.env` and then deleted from the recipe keeps its line in that foreign file forever, because nothing records which file a vanished resource targeted. Two paths prune a registry row before the next sync and leave a stale line behind: `splash gc` (`reconcile_with_recipes`), and `splash env release [KEY]`, which calls `remove_kv`/`remove_port` or `registry.release` without touching any destination and can be aimed at another live checkout with `--checkout`. `cmd_deinit` reads the keys *before* `registry.release`, which deletes the rows.
+- **Destination bytes outside splashdown's keys are preserved as written.** `_rewrite` splits on the file's own line ending (`newline_for` in `constants.py`, shared with `agentdocs.py`) rather than `str.splitlines`, which also breaks on form feed and would rewrite a value containing one, and it keeps trailing blank lines. A destination left with no non-blank content is unlinked, so the writer and `_strip_destination` agree instead of one leaving a zero-byte file.
+- **Teardown skips a destination it cannot parse.** `_strip_destination` refuses to edit a file whose scan reports an unterminated quote, returning `"unparsed"` so `cmd_deinit` says it left the file alone. Below an unclosed quote the scanner resumes matching *inside* the quoted region, so a best-effort removal there could delete part of a user's multi-line value. Teardown still must not raise, so this is a skip and a message, not an error.
+- **An unterminated quoted value is fatal whoever opened it.** Below such a line splashdown cannot tell an assignment from prose, so `_reject_ambiguous` raises even when the key is not managed; extending the value to EOF would hide every managed assignment underneath and append a second competing definition on every sync.
 - **`reprovision` does not reset `set` values.** It re-rolls ports and uuids only; a user-set value persists across `splash sync --force`, while templates already track current inputs.
 - **An app's `resources = [...]` list is cosmetic for allocation.** `provision()` iterates the recipe's `[resources.*]` tables via `topo_sort(recipe)` / `recipe.resources` (`provisioning.py`) — it never reads any `[apps.<name>]` `resources` list. Setting `resources = []` on an app does **not** stop its ports being allocated: as long as a `[resources.*]` table declares the resource, it is provisioned. Keep the per-app list aligned for format consistency, but it is not load-bearing here.
 

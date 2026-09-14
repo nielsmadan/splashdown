@@ -47,9 +47,12 @@ from .hooks import (
 from .inventory import ProjectInventory
 from .loaders import LOADERS, NOTHING, Loader, WirePlan, apply_wire_plan
 from .provisioning import (
+    DEFAULT_WRITER,
     WriterResult,
     clear_writer_destinations,
+    existing_managed_keys,
     provision,
+    resolve_writer,
     run_bootstrap,
     run_setup,
     write_outputs,
@@ -58,6 +61,7 @@ from .recipe import (
     LOCAL_SKELETON,
     Recipe,
     _slug,
+    validate_env_file_option,
 )
 from .registry import Registry
 from .scanner import (
@@ -80,6 +84,7 @@ from .target_commands import cmd_target_prune as cmd_target_prune  # noqa: PLC04
 from .target_commands import cmd_target_refresh as cmd_target_refresh  # noqa: PLC0414
 from .target_commands import cmd_targets_list as cmd_targets_list  # noqa: PLC0414
 from .targets import _load_recipe_or_empty
+from .wiring import WiringCheck
 
 
 def _create_local_skeleton(cwd: Path) -> bool:
@@ -177,13 +182,6 @@ def cmd_completion(shell: str | None) -> int:
     return 0
 
 
-_NO_LOADER_INSTRUCTIONS = (
-    "no shell loader detected — splashdown.env will be generated but nothing sources it.\n"
-    "  re-run `splash init --loader mise|direnv|devbox` to add one, or source it "
-    "yourself (e.g. `set -a; . ./splashdown.env; set +a`)"
-)
-
-
 def _path_git_ignored(cwd: Path, name: str) -> bool:
     """True if `name` is gitignored in `cwd`. Best-effort: any git error counts
     as ignored so we never nag spuriously (e.g. outside a repo)."""
@@ -200,65 +198,38 @@ def _path_git_ignored(cwd: Path, name: str) -> bool:
     return r.returncode != 1
 
 
-def _resolve_no_loader_delivery(cwd: Path, inv: ProjectInventory) -> tuple[str | None, str]:
-    """Decide how to deliver values when no shell-env loader is detected.
-
-    Returns `(writer, message)`. `writer` is an `envfile=<name>` string to apply
-    to the generated resources — chosen by `.env` → `.env.local` precedence and
-    only when at least one app actually reads a dotenv file. Otherwise it is
-    None, meaning: keep generating `splashdown.env` and tell the user how to make
-    it reach their processes. `message` is always printed.
-    """
-
-    def reads_dotenv(profile: str) -> bool:
-        if profile == "unknown":
-            # Unknown apps may read dotenv files, so prefer delivery over a false negative.
-            return True
-        prof = PROFILES.get(profile)
-        return bool(prof and prof.reads_dotenv)
-
-    target = None
-    if (cwd / ".env").exists():
-        target = ".env"
-    elif (cwd / ".env.local").exists():
-        target = ".env.local"
-
-    proc_only = [
-        app for app in inv.apps if not reads_dotenv(app.profile) or "electron" in app.capabilities
-    ]
-    file_capable = any(reads_dotenv(app.profile) for app in inv.apps) or not inv.apps
-
-    if target and file_capable:
-        msg = f"no shell loader detected — routing values into {target}"
-        if proc_only:
-            names = ", ".join(a.name for a in proc_only)
-            msg += (
-                f"\n  note: {names} read env from the process, not {target}; "
-                "add a loader with `splash init --loader …` so those pick up values"
-            )
-        if not _path_git_ignored(cwd, target):
-            msg += (
-                f"\n  warning: {target} is not gitignored — per-checkout values "
-                "will show up as local changes"
-            )
-        return f"envfile={target}", msg
-
-    return None, _NO_LOADER_INSTRUCTIONS
+def _persisted_env_file(env_file: str) -> str | None:
+    """The recipe records a destination only when it is not the default."""
+    return None if env_file == ENV_FILE_NAME else env_file
 
 
-def _apply_no_loader_fallback(
-    cwd: Path, inv: ProjectInventory, merged_resources: dict[str, dict[str, Any]]
-) -> str | None:
-    """When no loader is detected, route generated resources into a dotenv file
-    (where one fits) and return the message to print. Returns None when a loader
-    is present — nothing to do."""
-    if inv.loader != "none":
-        return None
-    writer, msg = _resolve_no_loader_delivery(cwd, inv)
-    if writer:
-        for spec in merged_resources.values():
-            spec.setdefault("writer", writer)
-    return msg
+def _print_env_destination(cwd: Path, env_file: str, keys: list[str], loader: str) -> None:
+    """Report the destination, the keys init will manage there, and any key the
+    file already assigns. Values are never read back out."""
+    print(f"  env output\t→ {env_file}", file=sys.stderr)
+    if keys:
+        print(f"  manages\t→ {', '.join(keys)}", file=sys.stderr)
+    present = existing_managed_keys(cwd / env_file, set(keys), root=cwd)
+    if present:
+        print(
+            f"  {env_file} already sets {', '.join(present)}; "
+            "`splash sync` will replace those values",
+            file=sys.stderr,
+        )
+    # `_ensure_gitignore` adds a rule for the default destination moments later.
+    if _persisted_env_file(env_file) is not None and not _path_git_ignored(cwd, env_file):
+        print(
+            f"  warning: {env_file} is not gitignored — per-checkout values "
+            "will show up as local changes",
+            file=sys.stderr,
+        )
+    if loader == "none":
+        print(
+            f"  no shell loader — {env_file} is generated but nothing sources it.\n"
+            "  re-run `splash init --loader mise|direnv|devbox` to add one, or source it "
+            f"yourself (e.g. `set -a; . ./{env_file}; set +a`)",
+            file=sys.stderr,
+        )
 
 
 def _write_minimal_monorepo_recipe(
@@ -274,7 +245,11 @@ def _write_minimal_monorepo_recipe(
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
     recipe_path = cwd / RECIPE_NAME
-    rendered = render_scanned_recipe(inv, {}, {}, cwd)
+    _print_env_destination(cwd, report.env_file, [], inv.loader)
+    persisted = _persisted_env_file(report.env_file)
+    rendered = render_scanned_recipe(
+        inv, {}, {}, cwd, project_metadata={"env_file": persisted} if persisted else None
+    )
     Recipe.parse(rendered, recipe_path)
     _write_init_recipe(recipe_path, rendered)
     report.changed.append(RECIPE_NAME)
@@ -291,7 +266,7 @@ def _write_minimal_monorepo_recipe(
     _commit_loader_plan(plan, report)
     _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
-    _print_init_next_steps(cwd, worktree_root)
+    _print_init_next_steps(cwd, worktree_root, report.env_file)
 
 
 _ELECTRON_PROFILE_RESOURCE = "ELECTRON_PROFILE_ID"
@@ -335,7 +310,6 @@ def _add_electron_resources(
         res_by_app[app.name][_ELECTRON_PROFILE_RESOURCE] = {
             "type": "template",
             "template": template,
-            "writer": "splashdown-env",
         }
     return True
 
@@ -416,9 +390,11 @@ def _resolve_init_android_module(inv: ProjectInventory) -> str | None:
 
 
 def _resolve_init_project_metadata(
-    inv: ProjectInventory, ios_scheme: str | None
-) -> dict[str, dict[str, str]] | None:
-    metadata: dict[str, dict[str, str]] = {}
+    inv: ProjectInventory, ios_scheme: str | None, env_file: str
+) -> dict[str, str | dict[str, str]] | None:
+    metadata: dict[str, str | dict[str, str]] = {}
+    if persisted := _persisted_env_file(env_file):
+        metadata["env_file"] = persisted
     if resolved_ios_scheme := _resolve_init_ios_scheme(inv, ios_scheme):
         metadata["ios"] = {"scheme": resolved_ios_scheme}
     if resolved_android_module := _resolve_init_android_module(inv):
@@ -433,7 +409,20 @@ def _wire_init_checkout_hook(cwd: Path, *, enabled: bool) -> None:
     _print_nested_checkout_hook_note(cwd)
 
 
-def _print_init_next_steps(cwd: Path, worktree_root: Path | None) -> None:
+def _default_destination_keys(
+    merged_resources: dict[str, dict[str, Any]], env_file: str
+) -> list[str]:
+    """Declared keys the default destination receives: everything without an
+    explicit writer, plus anything whose writer already names that same file."""
+    default = resolve_writer(DEFAULT_WRITER, env_file)
+    return [
+        name
+        for name, spec in merged_resources.items()
+        if resolve_writer(spec.get("writer", DEFAULT_WRITER), env_file) == default
+    ]
+
+
+def _print_init_next_steps(cwd: Path, worktree_root: Path | None, env_file: str) -> None:
     print("configuration written; nothing is allocated or active yet", file=sys.stderr)
     steps = []
     if worktree_root is not None:
@@ -443,7 +432,7 @@ def _print_init_next_steps(cwd: Path, worktree_root: Path | None) -> None:
             else "activate automatic post-checkout handling"
         )
         steps.append(f"run `splash trust` to {detail}")
-    steps.append(f"run `splash` to allocate values and write {ENV_FILE_NAME}")
+    steps.append(f"run `splash` to allocate values and write {env_file}")
     for index, step in enumerate(steps):
         print(f"{'next:' if index == 0 else '     '} {step}", file=sys.stderr)
 
@@ -451,6 +440,7 @@ def _print_init_next_steps(cwd: Path, worktree_root: Path | None) -> None:
 @dataclass(frozen=True)
 class InitOptions:
     overwrite: bool = False
+    env_file: str | None = None
 
 
 @dataclass
@@ -459,6 +449,8 @@ class InitReport:
 
     selection: LoaderSelection
     loader_status: str
+    env_file: str = ENV_FILE_NAME
+    managed_keys: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
     failure: str | None = None
 
@@ -473,6 +465,7 @@ class InitReport:
                 "configs": list(self.selection.configs),
                 "wiring": self.loader_status,
             },
+            "output": {"env_file": self.env_file, "managed": list(self.managed_keys)},
             "changed": list(self.changed),
         }
         if self.failure is not None:
@@ -587,10 +580,17 @@ def cmd_init(
         if recipe_exists and not options.overwrite:
             raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
+        env_file = (
+            validate_env_file_option(options.env_file, cwd)
+            if options.env_file is not None
+            else ENV_FILE_NAME
+        )
+        report.env_file = env_file
+
         selection = select_loader(cwd, loader_override)
         inv = Scanner().scan(cwd, loader=selection.name)
         report.selection = selection
-        wire_plan = LOADERS[selection.name].plan(cwd)
+        wire_plan = LOADERS[selection.name].plan(cwd, env_file)
         report.loader_status = wire_plan.status
 
         _print_init_scan(cwd, inv, selection)
@@ -620,8 +620,9 @@ def cmd_init(
                 f"  skipped {name}: template references a resource no app declares", file=sys.stderr
             )
 
-        no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
-        project_metadata = _resolve_init_project_metadata(inv, ios_scheme)
+        project_metadata = _resolve_init_project_metadata(inv, ios_scheme, env_file)
+        report.managed_keys = _default_destination_keys(merged_resources, env_file)
+        _print_env_destination(cwd, env_file, report.managed_keys, inv.loader)
 
         from .tomlio import render_scanned_recipe  # noqa: PLC0415
 
@@ -645,8 +646,6 @@ def cmd_init(
 
             _ensure_gitignore(cwd)
             _commit_loader_plan(wire_plan, report)
-            if no_loader_msg:
-                print(f"  {no_loader_msg}", file=sys.stderr)
             _wire_init_checkout_hook(cwd, enabled=not nested)
             if electron_isolated:
                 resource_names = [
@@ -659,13 +658,13 @@ def cmd_init(
                 _print_electron_integration(resource_names)
 
             if any(app.profile != "unknown" for app in inv.apps):
-                _apply_init_wiring_checks(inv)
+                _apply_init_wiring_checks(inv, env_file)
             sync_agent_guidance(cwd, Recipe.load(recipe_path))
-        _print_init_next_steps(cwd, worktree_root)
+        _print_init_next_steps(cwd, worktree_root, env_file)
         return report
 
 
-def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
+def _apply_init_wiring_checks(inv: ProjectInventory, env_file: str) -> None:
     """Apply the project-configuration wiring checks for every known-profile app
     found during init. Activation checks belong to `splash trust` and `splash doctor`."""
     for app in inv.apps:
@@ -681,6 +680,23 @@ def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
                     check.autofix(app.path)
                 except Exception as e:  # noqa: BLE001
                     print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
+            _warn_wiring_reads_default_destination(check, env_file)
+
+
+# Checks whose fix writes a hardcoded `splashdown.env` path; `wiring.py` owns the checks.
+_DEFAULT_DESTINATION_WIRING_CHECKS = frozenset({"rn-xcode-env"})
+
+
+def _warn_wiring_reads_default_destination(check: WiringCheck, env_file: str) -> None:
+    """A framework patch that names `splashdown.env` reads a file this checkout
+    does not write once the destination is configured elsewhere."""
+    if env_file == ENV_FILE_NAME or check.id not in _DEFAULT_DESTINATION_WIRING_CHECKS:
+        return
+    print(
+        f"  note: {check.id} wires a fixed {ENV_FILE_NAME} path, which this checkout does not "
+        f"write; repoint that configuration at {env_file} yourself",
+        file=sys.stderr,
+    )
 
 
 def cmd_deinit(cwd: Path, registry: Registry) -> int:
@@ -717,26 +733,33 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
         except DeviceError as e:
             print(f"warning: could not destroy {row.dtype}.{row.variant}: {e}", file=sys.stderr)
 
+    # The registry rows name every key splashdown wrote here, including ones the
+    # recipe stopped declaring; read them before release drops them.
+    written_keys = set(registry.all_for(abspath))
     removed = registry.release(abspath)
     if removed:
         print(f"released {removed} registry entr{'y' if removed == 1 else 'ies'}", file=sys.stderr)
 
-    # splashdown owns splashdown.env wholesale, so it goes unconditionally.
-    env_path = cwd / ENV_FILE_NAME
-    if env_path.exists():
-        env_path.unlink()
-        print(f"removed {ENV_FILE_NAME}", file=sys.stderr)
-
-    # Per-resource `envfile=`/`envrc` writer destinations (e.g. per-app .env files
-    # in a monorepo) are user-owned, unlike splashdown.env — remove only our keys
-    # and delete the file only if nothing else remains.
+    # Every writer destination, the default one included, holds splashdown's own
+    # keys inside a file it does not own wholesale: remove those keys and delete
+    # the file only when nothing else remains.
     if recipe is not None:
-        for relpath, action in clear_writer_destinations(cwd, recipe):
-            print(f"{action} {relpath}", file=sys.stderr)
+        for relpath, action in clear_writer_destinations(cwd, recipe, known_keys=written_keys):
+            if action == "unparsed":
+                print(
+                    f"warning: left {relpath} alone; it opens a quoted value that is never "
+                    "closed, so splashdown cannot tell which lines are its own",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"{action} {relpath}", file=sys.stderr)
+    elif (cwd / ENV_FILE_NAME).exists():
+        (cwd / ENV_FILE_NAME).unlink()
+        print(f"removed {ENV_FILE_NAME}", file=sys.stderr)
 
     loader = LOADERS.get(loader_name) if loader_name else None
     if loader is not None:
-        loader.unwire(cwd)
+        loader.unwire(cwd, recipe.env_file if recipe is not None else ENV_FILE_NAME)
 
     _revert_gitignore(cwd)
     remove_agent_guidance(cwd)
@@ -809,7 +832,7 @@ def _provision_locked(
             recipe=recipe,
         )
         _create_local_skeleton(cwd)
-        writers = write_outputs(cwd, recipe, resolved)
+        writers = write_outputs(cwd, recipe, resolved, known_keys=set(before))
     setup_messages = run_setup(
         cwd,
         recipe,
@@ -884,7 +907,7 @@ def _splashdown_owned_loader(cwd: Path, recipe: Recipe) -> Loader | None:
     """Return the loader whose configuration holds nothing but splashdown's
     integration. Configuration carrying anything else is the user's to approve."""
     loader = LOADERS.get(str(recipe.project.get("loader") or "none"))
-    if loader is None or not loader.owns_config(cwd):
+    if loader is None or not loader.owns_config(cwd, recipe.env_file):
         return None
     return loader
 
@@ -953,7 +976,7 @@ def cmd_trust(cwd: Path) -> int:
         return 1
     print("trusted this clone for automatic splashdown handling", file=sys.stderr)
     if owned_loader is not None:
-        owned_loader.approve(cwd, announce=True)
+        owned_loader.approve(cwd, announce=True, env_file=recipe.env_file)
     if not automatic:
         print("automatic post-checkout handling is not active for this checkout", file=sys.stderr)
     if recipe.bootstrap is not None:

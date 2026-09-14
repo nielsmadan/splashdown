@@ -850,7 +850,6 @@ def test_init_electron_yes_adds_profile_without_replacing_vite(tmp_path, monkeyp
     assert recipe.resources["ELECTRON_PROFILE_ID"]["template"] == (
         "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
     )
-    assert recipe.resources["ELECTRON_PROFILE_ID"]["writer"] == "splashdown-env"
     assert "WEB_DEV_PORT" in recipe.resources
     err = capsys.readouterr().err
     assert "Set up an independent Electron profile for this checkout?" in err

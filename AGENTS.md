@@ -85,6 +85,14 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
   YAML value regions instead of line-only regular expressions.
 - `.NET` `launchSettings.json` may contain a UTF-8 BOM and CRLF. Read and write it through
   `_read_launch_settings` so both survive.
+- Env destinations are co-owned, so everything outside splashdown's keys survives verbatim.
+  `_rewrite` splits on the file's own line ending, replaces a managed key where it already
+  stands, and keeps trailing blank lines; never reach for `str.splitlines`, which also breaks on
+  form feed. An unterminated quoted value is an error whoever opened it.
+- The recipe cannot say which keys to remove: a deleted resource is absent from `resolved`. The
+  checkout's registry rows are that record, passed to `write_outputs` and
+  `clear_writer_destinations` as `known_keys`, and `cmd_deinit` reads them before
+  `registry.release`.
 - Physical iOS discovery uses `pairingState == "paired"`; a wireless device normally has a
   disconnected tunnel until launch.
 - User-facing URLs printed by the CLI are test contracts. Update their assertions with any URL or
@@ -100,8 +108,9 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 - Shelling out to PATH tools such as `xcrun`, `adb`, and `git` is intentional; `S603` and `S607`
   are globally ignored.
 - New behavior gets tests in the matching `tests/test_<module>.py`.
-- Splashdown owns `splashdown.env` wholesale. `splashdown.toml` is committed;
-  `splashdown.local.toml` and generated env output are gitignored.
+- Splashdown manages its declared keys inside every writer destination and never owns one
+  wholesale, including `splashdown.env`. `[project] env_file` selects the default destination.
+  `splashdown.toml` is committed; `splashdown.local.toml` and generated env output are gitignored.
 - This is a pre-release, single-user project. Make requested format and CLI changes directly;
   do not add compatibility readers or migration branches unless explicitly asked.
 - Be monorepo-honest, not monorepo-smart. When scanning cannot produce a correct multi-app
