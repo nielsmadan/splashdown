@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -910,65 +911,83 @@ def test_scanner_pnpm_monorepo_enumerates_apps(tmp_path):
 
 
 def test_scanner_loader_defaults_to_none(tmp_path):
-    # The autouse _no_loader_on_path fixture makes this independent of what the
-    # dev/CI machine happens to have installed.
     inv = sd.Scanner().scan(tmp_path)
     assert inv.loader == "none"
 
 
-def test_scanner_loader_falls_back_to_installed_binary(tmp_path, monkeypatch):
-    # Fresh clone: no repo config, but mise is on PATH. Writing splashdown.env
-    # with nothing to source it is a silent no-op, so wire the installed loader.
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
-    inv = sd.Scanner().scan(tmp_path)
-    assert inv.loader == "mise"
+def test_select_loader_reports_no_configuration(tmp_path):
+    selection = sd.select_loader(tmp_path)
+    assert (selection.name, selection.selected_by) == ("none", "unconfigured")
+    assert selection.reason == "no loader configuration found"
 
 
-def test_scanner_loader_installed_fallback_respects_priority(tmp_path, monkeypatch):
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: True)
-    inv = sd.Scanner().scan(tmp_path)
-    assert inv.loader == "mise"
-
-
-def test_scanner_loader_repo_config_beats_installed_binary(tmp_path, monkeypatch):
-    (tmp_path / ".envrc").write_text("")
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
-    inv = sd.Scanner().scan(tmp_path)
-    assert inv.loader == "direnv"
-
-
-@pytest.mark.parametrize("installed", ["direnv", "devbox"])
-def test_scanner_loader_fallback_covers_every_loader(tmp_path, monkeypatch, installed):
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == installed)
-    assert sd.Scanner().scan(tmp_path).loader == installed
-
-
-def test_scanner_loader_fallback_never_probes_none(tmp_path, monkeypatch):
-    probed: list[str] = []
-
-    def _record(name: str) -> bool:
-        probed.append(name)
-        return False
-
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", _record)
+def test_select_loader_never_probes_path_for_an_unconfigured_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: pytest.fail(f"probed PATH for {name}"))
+    assert sd.select_loader(tmp_path).name == "none"
     assert sd.Scanner().scan(tmp_path).loader == "none"
-    assert "none" not in probed
 
 
-def test_cmd_init_wires_installed_loader_without_repo_config(tmp_path, monkeypatch):
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda name: name == "mise")
+def test_select_loader_reports_the_detected_configuration(tmp_path):
+    (tmp_path / ".envrc").write_text("")
+    selection = sd.select_loader(tmp_path)
+    assert (selection.name, selection.selected_by) == ("direnv", "detected")
+    assert selection.reason == "detected .envrc"
+
+
+def test_select_loader_counts_both_mise_files_as_one_candidate(tmp_path):
+    (tmp_path / "mise.toml").write_text("")
+    (tmp_path / ".mise.toml").write_text("")
+    selection = sd.select_loader(tmp_path)
+    assert selection.name == "mise"
+    assert selection.configs == ("mise.toml", ".mise.toml")
+
+
+def test_select_loader_override_wins_over_a_detected_loader(tmp_path):
+    (tmp_path / ".envrc").write_text("")
+    selection = sd.select_loader(tmp_path, "mise")
+    assert (selection.name, selection.selected_by) == ("mise", "override")
+    assert selection.reason == "--loader mise"
+
+
+def test_select_loader_override_none_opts_out_of_a_detected_loader(tmp_path):
+    (tmp_path / "mise.toml").write_text("")
+    assert sd.select_loader(tmp_path, "none").name == "none"
+
+
+def test_select_loader_rejects_several_configured_loaders(tmp_path):
+    (tmp_path / "mise.toml").write_text("")
+    (tmp_path / ".envrc").write_text("")
+    with pytest.raises(sd.UsageError) as error:
+        sd.select_loader(tmp_path)
+    assert "direnv, mise" in str(error.value)
+    assert "--loader" in str(error.value)
+
+
+def test_cmd_init_fails_before_writing_when_several_loaders_are_configured(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text("")
+    (tmp_path / ".envrc").write_text("")
+    before = sorted(p.name for p in tmp_path.iterdir())
+    with pytest.raises(sd.UsageError):
+        sd.cmd_init(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert (tmp_path / "mise.toml").read_text() == ""
+    assert (tmp_path / ".envrc").read_text() == ""
+
+
+def test_cmd_init_leaves_an_uninstalled_project_on_the_none_loader(tmp_path):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path)
-    assert 'loader = "mise"' in (tmp_path / "splashdown.toml").read_text()
-    assert "splashdown.env" in (tmp_path / "mise.toml").read_text()
-
-
-def test_cmd_init_loader_none_opts_out_of_the_fallback(tmp_path, monkeypatch):
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: True)
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    sd.cmd_init(tmp_path, loader_override="none")
     assert 'loader = "none"' in (tmp_path / "splashdown.toml").read_text()
     assert not (tmp_path / "mise.toml").exists()
+
+
+def test_cmd_init_loader_none_opts_out_of_a_configured_loader(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text("")
+    sd.cmd_init(tmp_path, loader_override="none")
+    assert 'loader = "none"' in (tmp_path / "splashdown.toml").read_text()
+    assert (tmp_path / "mise.toml").read_text() == ""
 
 
 def test_scanner_detects_mise_loader(tmp_path):
@@ -989,11 +1008,10 @@ def test_scanner_detects_devbox_loader(tmp_path):
     assert inv.loader == "devbox"
 
 
-def test_scanner_loader_precedence_mise_over_direnv(tmp_path):
+def test_scanner_scan_uses_an_explicit_loader_without_reselecting(tmp_path):
     (tmp_path / "mise.toml").write_text("")
     (tmp_path / ".envrc").write_text("")
-    inv = sd.Scanner().scan(tmp_path)
-    assert inv.loader == "mise"
+    assert sd.Scanner().scan(tmp_path, loader="direnv").loader == "direnv"
 
 
 def test_revert_gitignore_removes_only_our_lines(tmp_path):

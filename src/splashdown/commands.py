@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -31,7 +33,7 @@ from .cli_output import render_env_list, render_status, render_sync
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME
 from .device_claims import claim_available_target
 from .devices import DeviceError, device_destroy_row
-from .errors import MissingRecipeError, UsageError
+from .errors import ApplicationError, MissingRecipeError, UsageError
 from .hooks import (
     _activate_post_checkout_hook,
     _configure_post_checkout_hook,
@@ -43,7 +45,7 @@ from .hooks import (
     _revert_gitignore,
 )
 from .inventory import ProjectInventory
-from .loaders import LOADERS, Loader
+from .loaders import LOADERS, NOTHING, Loader, WirePlan, apply_wire_plan
 from .provisioning import (
     WriterResult,
     clear_writer_destinations,
@@ -59,11 +61,13 @@ from .recipe import (
 )
 from .registry import Registry
 from .scanner import (
+    LoaderSelection,
     Scanner,
     _build_resource_catalog,
     _merge_app_targets,
     _prune_unresolvable_templates,
     _should_defer_monorepo,
+    select_loader,
 )
 from .status import build_status_report
 from .target_commands import cmd_destroy as cmd_destroy  # noqa: PLC0414
@@ -175,7 +179,7 @@ def cmd_completion(shell: str | None) -> int:
 
 _NO_LOADER_INSTRUCTIONS = (
     "no shell loader detected — splashdown.env will be generated but nothing sources it.\n"
-    "  install mise/direnv/devbox and re-run `splash init`, or source it "
+    "  re-run `splash init --loader mise|direnv|devbox` to add one, or source it "
     "yourself (e.g. `set -a; . ./splashdown.env; set +a`)"
 )
 
@@ -230,7 +234,7 @@ def _resolve_no_loader_delivery(cwd: Path, inv: ProjectInventory) -> tuple[str |
             names = ", ".join(a.name for a in proc_only)
             msg += (
                 f"\n  note: {names} read env from the process, not {target}; "
-                "install mise/direnv/devbox so those pick up values"
+                "add a loader with `splash init --loader …` so those pick up values"
             )
         if not _path_git_ignored(cwd, target):
             msg += (
@@ -258,7 +262,13 @@ def _apply_no_loader_fallback(
 
 
 def _write_minimal_monorepo_recipe(
-    cwd: Path, inv: ProjectInventory, worktree_root: Path | None, *, wire_checkout_hook: bool
+    cwd: Path,
+    inv: ProjectInventory,
+    worktree_root: Path | None,
+    plan: WirePlan,
+    report: InitReport,
+    *,
+    wire_checkout_hook: bool,
 ) -> None:
     """Write a structure-only recipe for an ambiguous monorepo and configure its integrations."""
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
@@ -267,6 +277,7 @@ def _write_minimal_monorepo_recipe(
     rendered = render_scanned_recipe(inv, {}, {}, cwd)
     Recipe.parse(rendered, recipe_path)
     _write_init_recipe(recipe_path, rendered)
+    report.changed.append(RECIPE_NAME)
     print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
     print(
         f"monorepo detected ({len(inv.apps)} apps) — resources not auto-configured; "
@@ -274,9 +285,10 @@ def _write_minimal_monorepo_recipe(
         file=sys.stderr,
     )
     if _create_local_skeleton(cwd):
+        report.changed.append(LOCAL_NAME)
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
     _ensure_gitignore(cwd)
-    LOADERS[inv.loader].wire(cwd)
+    _commit_loader_plan(plan, report)
     _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
     _print_init_next_steps(cwd, worktree_root)
@@ -441,6 +453,74 @@ class InitOptions:
     overwrite: bool = False
 
 
+@dataclass
+class InitReport:
+    """What init configured: the loader it chose, why, and the files it wrote."""
+
+    selection: LoaderSelection
+    loader_status: str
+    changed: list[str] = field(default_factory=list)
+    failure: str | None = None
+
+    def as_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "command": "init",
+            "ok": self.failure is None,
+            "loader": {
+                "name": self.selection.name,
+                "selected_by": self.selection.selected_by,
+                "reason": self.selection.reason,
+                "configs": list(self.selection.configs),
+                "wiring": self.loader_status,
+            },
+            "changed": list(self.changed),
+        }
+        if self.failure is not None:
+            payload["error"] = self.failure
+        return payload
+
+
+def _commit_loader_plan(plan: WirePlan, report: InitReport) -> None:
+    apply_wire_plan(plan)
+    if plan.writes and plan.path is not None:
+        report.changed.append(plan.path.name)
+    for line in (plan.note, plan.hint):
+        if line:
+            print(line, file=sys.stderr)
+
+
+def _emit_init_report(report: InitReport, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(report.as_json(), indent=2))
+    elif report.changed:
+        print(f"changed: {', '.join(report.changed)}", file=sys.stderr)
+
+
+@contextlib.contextmanager
+def _init_effects(report: InitReport, output_format: str) -> Iterator[None]:
+    """Report what init completed, whether or not a later effect fails."""
+    try:
+        yield
+    except (ApplicationError, ValueError, OSError) as error:
+        report.failure = str(error)
+        _emit_init_report(report, output_format)
+        raise
+    _emit_init_report(report, output_format)
+
+
+@contextlib.contextmanager
+def _init_failure(report: InitReport, output_format: str) -> Iterator[None]:
+    """Give a failure raised before the effects phase the same report shape a
+    later one gets, so a consumer never faces two failure envelopes."""
+    try:
+        yield
+    except (ApplicationError, ValueError, OSError) as error:
+        if report.failure is None:
+            report.failure = str(error)
+            _emit_init_report(report, output_format)
+        raise
+
+
 def _init_recipe_mode(path: Path) -> int | None:
     try:
         entry = path.lstat()
@@ -472,27 +552,7 @@ def _write_init_recipe(path: Path, text: str) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def cmd_init(
-    cwd: Path,
-    options: InitOptions | None = None,
-    loader_override: str | None = None,
-    electron_profile: str | None = None,
-    ios_scheme: str | None = None,
-) -> None:
-    """Scaffold splashdown.toml from a project scan."""
-
-    options = options or InitOptions()
-    recipe_path = cwd / RECIPE_NAME
-    recipe_exists = _init_recipe_exists(recipe_path)
-    worktree_root = _git_worktree_root(cwd)
-    nested = _nested_worktree(cwd, worktree_root)
-    if recipe_exists and not options.overwrite:
-        raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
-
-    inv = Scanner().scan(cwd)
-    if loader_override:
-        inv = ProjectInventory(workspace=inv.workspace, apps=inv.apps, loader=loader_override)
-
+def _print_init_scan(cwd: Path, inv: ProjectInventory, selection: LoaderSelection) -> None:
     print("scanning project…", file=sys.stderr)
     print(
         f"  detected: {inv.workspace} ({'/'.join(a.name for a in inv.apps) or 'no apps'})",
@@ -501,67 +561,108 @@ def cmd_init(
     for app in inv.apps:
         rel = app.path.relative_to(cwd) if app.path != cwd else Path(".")
         print(f"  {rel}\t→ {app.profile}", file=sys.stderr)
-    print(f"  shell loader\t→ {inv.loader}", file=sys.stderr)
-    res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
-    for app in inv.apps:
-        if app.profile == "unknown":
-            res_by_app[app.name] = {}
-            continue
-        res_by_app[app.name] = PROFILES[app.profile].resources(app)
-    if _should_defer_monorepo(cwd, res_by_app, inv.apps):
-        _write_minimal_monorepo_recipe(cwd, inv, worktree_root, wire_checkout_hook=not nested)
-        return
-    electron_isolated = _add_electron_resources(cwd, inv, res_by_app, electron_profile)
-    merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
-    # Compose is project-level infrastructure, so its resources are merged in after
-    # the per-app pass rather than claimed by any one app.
-    from .profiles import compose_project_resources  # noqa: PLC0415
+    print(f"  shell loader\t→ {inv.loader} ({selection.reason})", file=sys.stderr)
 
-    for name, spec in compose_project_resources(cwd).items():
-        merged_resources.setdefault(name, spec)
-    merged_targets = _merge_app_targets(inv.apps)
-    for name in _prune_unresolvable_templates(merged_resources, app_resource_names):
-        print(f"  skipped {name}: template references a resource no app declares", file=sys.stderr)
 
-    no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
-    project_metadata = _resolve_init_project_metadata(inv, ios_scheme)
+def cmd_init(
+    cwd: Path,
+    options: InitOptions | None = None,
+    loader_override: str | None = None,
+    electron_profile: str | None = None,
+    ios_scheme: str | None = None,
+    output_format: str = "text",
+) -> InitReport:
+    """Scaffold splashdown.toml from a project scan."""
 
-    from .tomlio import render_scanned_recipe  # noqa: PLC0415
-
-    rendered = render_scanned_recipe(
-        inv,
-        merged_resources,
-        app_resource_names,
-        cwd,
-        merged_targets,
-        project_metadata,
+    options = options or InitOptions()
+    report = InitReport(
+        selection=LoaderSelection("none", "unconfigured", ()),
+        loader_status=NOTHING,
     )
-    Recipe.parse(rendered, recipe_path)
-    _write_init_recipe(recipe_path, rendered)
-    print(f"wrote {RECIPE_NAME}", file=sys.stderr)
+    with _init_failure(report, output_format):
+        recipe_path = cwd / RECIPE_NAME
+        recipe_exists = _init_recipe_exists(recipe_path)
+        worktree_root = _git_worktree_root(cwd)
+        nested = _nested_worktree(cwd, worktree_root)
+        if recipe_exists and not options.overwrite:
+            raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
-    if _create_local_skeleton(cwd):
-        print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
+        selection = select_loader(cwd, loader_override)
+        inv = Scanner().scan(cwd, loader=selection.name)
+        report.selection = selection
+        wire_plan = LOADERS[selection.name].plan(cwd)
+        report.loader_status = wire_plan.status
 
-    _ensure_gitignore(cwd)
-    LOADERS[inv.loader].wire(cwd)
-    if no_loader_msg:
-        print(f"  {no_loader_msg}", file=sys.stderr)
-    _wire_init_checkout_hook(cwd, enabled=not nested)
-    if electron_isolated:
-        resource_names = [
-            name
-            for app in inv.apps
-            if "electron" in app.capabilities
-            for name in app_resource_names[app.name]
-            if name.startswith(_ELECTRON_PROFILE_RESOURCE)
-        ]
-        _print_electron_integration(resource_names)
+        _print_init_scan(cwd, inv, selection)
+        res_by_app: dict[str, dict[str, dict[str, Any]]] = {}
+        for app in inv.apps:
+            if app.profile == "unknown":
+                res_by_app[app.name] = {}
+                continue
+            res_by_app[app.name] = PROFILES[app.profile].resources(app)
+        if _should_defer_monorepo(cwd, res_by_app, inv.apps):
+            with _init_effects(report, output_format):
+                _write_minimal_monorepo_recipe(
+                    cwd, inv, worktree_root, wire_plan, report, wire_checkout_hook=not nested
+                )
+            return report
+        electron_isolated = _add_electron_resources(cwd, inv, res_by_app, electron_profile)
+        merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
+        # Compose is project-level infrastructure, so its resources are merged in after
+        # the per-app pass rather than claimed by any one app.
+        from .profiles import compose_project_resources  # noqa: PLC0415
 
-    if any(app.profile != "unknown" for app in inv.apps):
-        _apply_init_wiring_checks(inv)
-    sync_agent_guidance(cwd, Recipe.load(recipe_path))
-    _print_init_next_steps(cwd, worktree_root)
+        for name, spec in compose_project_resources(cwd).items():
+            merged_resources.setdefault(name, spec)
+        merged_targets = _merge_app_targets(inv.apps)
+        for name in _prune_unresolvable_templates(merged_resources, app_resource_names):
+            print(
+                f"  skipped {name}: template references a resource no app declares", file=sys.stderr
+            )
+
+        no_loader_msg = _apply_no_loader_fallback(cwd, inv, merged_resources)
+        project_metadata = _resolve_init_project_metadata(inv, ios_scheme)
+
+        from .tomlio import render_scanned_recipe  # noqa: PLC0415
+
+        rendered = render_scanned_recipe(
+            inv,
+            merged_resources,
+            app_resource_names,
+            cwd,
+            merged_targets,
+            project_metadata,
+        )
+        Recipe.parse(rendered, recipe_path)
+        _write_init_recipe(recipe_path, rendered)
+        report.changed.append(RECIPE_NAME)
+        print(f"wrote {RECIPE_NAME}", file=sys.stderr)
+
+        with _init_effects(report, output_format):
+            if _create_local_skeleton(cwd):
+                report.changed.append(LOCAL_NAME)
+                print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
+
+            _ensure_gitignore(cwd)
+            _commit_loader_plan(wire_plan, report)
+            if no_loader_msg:
+                print(f"  {no_loader_msg}", file=sys.stderr)
+            _wire_init_checkout_hook(cwd, enabled=not nested)
+            if electron_isolated:
+                resource_names = [
+                    name
+                    for app in inv.apps
+                    if "electron" in app.capabilities
+                    for name in app_resource_names[app.name]
+                    if name.startswith(_ELECTRON_PROFILE_RESOURCE)
+                ]
+                _print_electron_integration(resource_names)
+
+            if any(app.profile != "unknown" for app in inv.apps):
+                _apply_init_wiring_checks(inv)
+            sync_agent_guidance(cwd, Recipe.load(recipe_path))
+        _print_init_next_steps(cwd, worktree_root)
+        return report
 
 
 def _apply_init_wiring_checks(inv: ProjectInventory) -> None:

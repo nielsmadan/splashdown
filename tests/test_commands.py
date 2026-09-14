@@ -1393,7 +1393,7 @@ def test_no_loader_delivery_process_env_only_app_returns_none(tmp_path):
     (tmp_path / ".env").write_text("")
     writer, msg = sd._resolve_no_loader_delivery(tmp_path, _inv_none(tmp_path, "vite"))
     assert writer is None
-    assert "install mise/direnv/devbox" in msg
+    assert "splash init --loader" in msg
 
 
 def test_no_loader_delivery_mixed_routes_to_file_with_caveat(tmp_path):
@@ -2076,3 +2076,168 @@ def test_deinit_loader_none_is_noop(tmp_path, registry):
     (co / "splashdown.toml").write_text('[project]\nloader = "none"\n')
     sd.cmd_deinit(co, registry)
     assert not (co / "splashdown.toml").exists()
+
+
+def test_cmd_init_reports_the_loader_and_how_it_was_selected(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / ".envrc").write_text("use nix\n")
+    report = sd.cmd_init(tmp_path)
+    assert report.selection.name == "direnv"
+    assert report.selection.selected_by == "detected"
+    assert "shell loader\t→ direnv (detected .envrc)" in capsys.readouterr().err
+
+
+def test_cmd_init_reports_the_files_it_changed(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    report = sd.cmd_init(tmp_path, loader_override="mise")
+    assert report.changed == ["splashdown.toml", "splashdown.local.toml", "mise.toml"]
+    assert "changed: splashdown.toml, splashdown.local.toml, mise.toml" in capsys.readouterr().err
+
+
+def test_cmd_init_reuses_an_existing_loader_directive_without_writing(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / ".envrc").write_text("use nix\ndotenv_if_exists splashdown.env\n")
+    before = (tmp_path / ".envrc").read_bytes()
+    report = sd.cmd_init(tmp_path)
+    assert report.loader_status == "reused"
+    assert ".envrc" not in report.changed
+    assert (tmp_path / ".envrc").read_bytes() == before
+    assert "reusing the .envrc directive for splashdown.env" in capsys.readouterr().err
+
+
+def test_cmd_init_json_reports_the_selection_and_the_changed_files(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
+    sd.cmd_init(tmp_path, output_format="json")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["loader"] == {
+        "name": "mise",
+        "selected_by": "detected",
+        "reason": "detected mise.toml",
+        "configs": ["mise.toml"],
+        "wiring": "updated",
+    }
+    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml", "mise.toml"]
+
+
+def test_cmd_init_json_reports_a_reused_integration_as_unchanged(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text('[env]\n_.file = "splashdown.env"\n')
+    sd.cmd_init(tmp_path, output_format="json")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["loader"]["wiring"] == "reused"
+    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml"]
+
+
+def test_cmd_init_says_an_unmarked_mise_directive_stays_the_users(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text('[env]\n_.file = "splashdown.env"\n')
+    assert sd.cmd_init(tmp_path).loader_status == "reused"
+    assert (
+        "that directive is unmarked, so `splash deinit` will leave it. "
+        "If splashdown wrote it, remove the splashdown.env entry from `_.file` in "
+        "mise.toml (the whole line when it names nothing else) and re-run "
+        "`splash init` to have it marked."
+    ) in capsys.readouterr().err
+
+
+def test_cmd_init_says_nothing_about_marking_a_directive_naming_another_file(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text('[env]\n_.file = "other.env"\n')
+    report = sd.cmd_init(tmp_path)
+    assert report.loader_status == "updated"
+    assert "mise.toml" in report.changed
+    assert "unmarked" not in capsys.readouterr().err
+
+
+def test_cmd_deinit_leaves_an_unmarked_mise_directive_in_place(tmp_path, registry):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    original = '[env]\n_.file = "splashdown.env"\n'
+    (tmp_path / "mise.toml").write_text(original)
+    sd.cmd_init(tmp_path)
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+    assert (tmp_path / "mise.toml").read_text() == original
+
+
+def test_cmd_init_reports_completed_effects_when_a_later_write_fails(tmp_path, capsys, monkeypatch):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+
+    def boom(_cwd, _recipe):
+        raise ValueError("guidance write failed")
+
+    monkeypatch.setattr(sd.commands, "sync_agent_guidance", boom)
+    with pytest.raises(ValueError):
+        sd.cmd_init(tmp_path, loader_override="mise", output_format="json")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"] == "guidance write failed"
+    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml", "mise.toml"]
+
+
+def test_cmd_init_reports_completed_effects_when_an_effect_raises_oserror(
+    tmp_path, capsys, monkeypatch
+):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+
+    def boom(_cwd):
+        raise PermissionError(13, "Permission denied", ".gitignore")
+
+    monkeypatch.setattr(sd.commands, "_ensure_gitignore", boom)
+    with pytest.raises(PermissionError):
+        sd.cmd_init(tmp_path, loader_override="mise", output_format="json")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "Permission denied" in payload["error"]
+    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml"]
+
+
+def test_cmd_init_stops_on_a_loader_conflict_before_writing_the_recipe(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text("[env]\n_.file = 3\n")
+    with pytest.raises(sd.LoaderConflictError):
+        sd.cmd_init(tmp_path)
+    assert not (tmp_path / "splashdown.toml").exists()
+    assert (tmp_path / "mise.toml").read_text() == "[env]\n_.file = 3\n"
+
+
+def test_cmd_init_overwrite_does_not_bypass_a_loader_conflict(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path, loader_override="none")
+    recipe = (tmp_path / "splashdown.toml").read_bytes()
+    (tmp_path / "mise.toml").write_text("[env]\n_.file = 3\n")
+    with pytest.raises(sd.LoaderConflictError):
+        sd.cmd_init(tmp_path, options=sd.InitOptions(overwrite=True))
+    assert (tmp_path / "splashdown.toml").read_bytes() == recipe
+    assert (tmp_path / "mise.toml").read_text() == "[env]\n_.file = 3\n"
+
+
+def test_cmd_init_loader_none_performs_no_loader_edits(tmp_path):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / ".envrc").write_text("use nix\n")
+    sd.cmd_init(tmp_path, loader_override="none")
+    assert (tmp_path / ".envrc").read_text() == "use nix\n"
+    assert not (tmp_path / "mise.toml").exists()
+    assert not (tmp_path / "devbox.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("name", "existing"),
+    [
+        ("mise.toml", '[env]\n_.file = "splashdown.env"\n'),
+        (".envrc", "use nix\ndotenv_if_exists splashdown.env\n"),
+        (
+            "devbox.json",
+            '{\n  "shell": {\n    "init_hook": ["set -a; source splashdown.env; set +a"]\n  }\n}',
+        ),
+    ],
+)
+def test_deinit_keeps_a_user_authored_integration_init_reused(tmp_path, registry, name, existing):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "vite.config.ts").write_text("export default {}")
+    (co / name).write_text(existing)
+    report = sd.cmd_init(co)
+    assert report.loader_status == "reused"
+    assert sd.cmd_deinit(co, registry) == 0
+    assert (co / name).read_text() == existing

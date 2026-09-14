@@ -26,3 +26,9 @@ RECIPE_NAME = "splashdown.toml"
 LOCAL_NAME = "splashdown.local.toml"
 GLOBAL_CONFIG_NAME = "config.toml"
 ENV_FILE_NAME = "splashdown.env"
+
+
+def normalized_env_reference(value: str) -> str:
+    """A loader directive's file reference with a leading `./` removed, so
+    `./splashdown.env` and `splashdown.env` compare equal."""
+    return value[2:] if value.startswith("./") else value

@@ -97,9 +97,14 @@ without replacing the primary Profile. An Electron/Vite app remains `profile="vi
 also carries `capabilities=("electron",)`. Electron-only workspace members are retained;
 other unmatched workspace members are still treated as shared libraries and omitted.
 
-**5. Loader detection** — `_detect_loader()` (`scanner.py`) asks each `Loader` in
-`LOADERS` order whether it `detect()`s, returning the first hit or `"none"`. Same
-first-match-wins pattern as profiles.
+**5. Loader selection** — `select_loader()` (`scanner.py`) asks each `Loader` for its
+`config_paths(cwd)`, so a loader with several config files is one candidate. It returns a
+`LoaderSelection` carrying the name, how it was decided (`override` / `detected` /
+`unconfigured`) and the config filenames. An explicit `--loader` wins; otherwise the sole
+configured loader is selected, several raise `UsageError` before init writes anything, and none
+selects `"none"`. `Scanner.scan(cwd, loader=…)` records an already-made choice instead of
+repeating it. Unlike profiles this is not first-match-wins: ambiguity is an error, not a
+precedence question, and PATH is never consulted.
 
 **Cross-app resource-name collisions.** Profiles emit *canonical* resource names
 (e.g. a Vite app wants `WEB_DEV_PORT`, a Next.js app wants `PORT`). When two apps of
@@ -277,41 +282,96 @@ leaving Claude to consume the shared file.
 
 ### loaders.py — idempotent shell-env wiring
 
-A `Loader` (`loaders.py`) detects or selects a shell-env tool and idempotently
-wires it to source `splashdown.env` on `cd`. Two methods: `detect(cwd)` and `wire(cwd)`.
-Every `wire` is **idempotent** — re-running it produces no diff — and uses
-sentinel-wrapped blocks so the managed region is visually obvious and machine-findable.
-`owns_config(cwd)` reports whether the loader's configuration holds splashdown's
+A `Loader` (`loaders.py`) reports its configuration files and idempotently wires the tool to
+source `splashdown.env` on `cd`. `config_paths(cwd)` lists the config files that exist (and
+backs `detect(cwd)`); `plan(cwd)` parses and validates the edit and returns a `WirePlan` without
+writing; `wire(cwd)` is `plan` plus `apply_wire_plan`. Every `wire` is **idempotent** —
+re-running it produces no diff — and splashdown's own region is marked so it can be found and
+removed later. `owns_config(cwd)` reports whether the loader's configuration holds splashdown's
 integration and nothing else; `approve(cwd)` runs the loader's trust command; and
 `approval_detail` states what that approval means for that loader, which `splash trust`
 prints as a warning.
 
-- **MiseLoader** detects `mise.toml`/`.mise.toml`; `wire()` delegates to
-  `_ensure_mise_file_directive()` in `hooks.py`, which
-  adds a `_.file` directive into mise's `[env]` so mise itself loads `splashdown.env`.
-- **DirenvLoader** (`loaders.py`) detects `.envrc`/`.envrc.local`; `wire()` appends (or
+A `WirePlan` carries `status` (`created`, `updated`, `configured`, `reused`, `nothing`), the
+path, the text to write (`None` for the no-write outcomes), a `note` for the report, and a
+`hint` for a manual follow-up. Because the plan is built before init writes the recipe, a
+malformed config or a directive splashdown cannot extend raises `LoaderConflictError`
+(`errors.py`) before any file changes. `apply_wire_plan` writes through `safe_files`'
+`atomic_write_text` with `root=cwd`, so every loader write carries the same symlink and
+parent-chain guards as the hook writes.
+
+Recognition of existing wiring is bounded to forms these files can be read for — simple
+quoting, tabs and a leading `./` are normalized by `normalized_env_reference`
+(`constants.py`) — and project code is never executed:
+
+- **MiseLoader** detects `mise.toml`/`.mise.toml`; `plan()` uses
+  `ensure_mise_file_directive_text()` (`tomlio.py`) to put a `_.file` directive into mise's
+  `[env]`. An existing `_.file` naming the file, string or list, dotted or `[env._]` subtable,
+  is reused unchanged. One naming another file is widened to a list so that source survives; a
+  slot that is neither a string nor a list of strings raises. Widening keeps whatever trailing
+  comment the slot already carried and appends the marker to it. Splashdown's own entry carries
+  a `splashdown-managed` trailing comment, and `remove_mise_file_directive_text()` removes only
+  a marked one, so a user-authored directive survives `unwire`. Removal is entry-scoped rather
+  than slot-scoped: the marker says splashdown put an entry in the slot, not that it owns the
+  slot. A slot splashdown widened from a string deliberately stays a list after `unwire`,
+  because a one-entry remainder cannot be told apart from a list the user wrote.
+  A directive from a build before the marker existed is unmarked, so splashdown treats it as
+  the user's and `unwire` leaves it; `plan()` carries a `hint` saying so whenever it reuses an
+  unmarked directive naming `splashdown.env`.
+- **DirenvLoader** (`loaders.py`) detects `.envrc`/`.envrc.local`; `plan()` appends (or
   regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py`) a
-  block containing `dotenv_if_exists splashdown.env`. It uses `dotenv_if_exists` rather
+  block containing `dotenv_if_exists splashdown.env`. A `dotenv`/`dotenv_if_exists` line at
+  column 0 outside that block is reused unchanged; an indented one is inside a function or
+  conditional and does not count. Its trailing comment is stripped by `_SHELL_COMMENT_RE`
+  (`loaders.py`), the same rule devbox uses, so a `#` must start a word: `splashdown.env#foo`
+  is a filename, not the file plus a comment. It uses `dotenv_if_exists` rather
   than `dotenv` so a fresh checkout doesn't hard-error before `splashdown.env` exists
   (`loaders.py`). `approve()` runs
   `direnv allow` (mise's runs `mise trust`) so the config actually loads. Editing a
-  *pre-existing* `.envrc` invalidates direnv's trust hash but is not auto-approved — `wire()`
-  prints the `direnv allow` reminder instead. A freshly-created file skips the reminder
-  because init leaves approval to `splash trust`, which prints its own line.
-- **DevboxLoader** (`loaders.py`) detects `devbox.json`; `wire()` parses the JSON, finds
+  *pre-existing* `.envrc` invalidates direnv's trust hash but is not auto-approved — the plan
+  carries the `direnv allow` reminder as its `hint` instead. A freshly-created file skips the
+  reminder because init leaves approval to `splash trust`, which prints its own line.
+- **DevboxLoader** (`loaders.py`) detects `devbox.json`; `plan()` parses the JSON, finds
   or appends a `shell.init_hook` entry carrying the `# splashdown-managed` marker
-  (`loaders.py`), and the hook does `set -a; source splashdown.env; set +a`. It
-  find-and-replaces by marker rather than parsing the hook string, normalizing a
-  string-valued `init_hook` into a list first (`loaders.py`).
-- **NoneLoader** (`loaders.py`) is the fallback. `detect()` is always `False`; it's
-  only ever *selected* as the fallback, never matched. `wire()` is a no-op — `cmd_init`
-  decides whether to route values into a dotenv file or just print instructions.
+  (`loaders.py`), and the hook does `set -a; source splashdown.env; set +a`. An unmarked hook
+  whose statements include a standalone `set -a` (or `set -o allexport`) followed by a
+  standalone `source`/`.` of the file is reused unchanged. A `set +a` (or `set +o allexport`)
+  turns allexport back off, so only a `source` reached while it is still on counts.
+  `_devbox_statements` (`loaders.py`) splits the hook on `\n` alone, because none of the other
+  characters `str.splitlines` breaks on end a command in sh. It strips each line's comment
+  before splitting on `;`, so a `;` inside a comment cannot produce a statement, and it drops
+  indented lines the way direnv drops indented `dotenv` lines: both statements must sit at
+  column 0. A chained (`&&`) statement never matches either. It
+  find-and-replaces by marker rather than parsing the hook string, normalizing
+  a string-valued `init_hook` into a list first (`loaders.py`), and preserves entries it does
+  not own.
+- **NoneLoader** (`loaders.py`) wires nothing. `detect()` is always `False`; it is only ever
+  *selected*, never matched. Its plan is `nothing` — `cmd_init` decides whether to route values
+  into a dotenv file or just print instructions.
 
-`LOADERS` registers them in precedence order:
-`mise → direnv → devbox → none`. As with profiles, **dict insertion order is the order
-`_detect_loader` probes**. A configured loader wins; when none is configured, the first
-installed binary in that order is selected so a fresh repo can be wired. `none` is used
-only when no loader is installed or the user explicitly requests it.
+Two recognition bounds are deliberate false negatives, chosen because a missed reuse only
+adds a duplicate directive while a wrong one leaves the checkout silently unwired:
+
+- `.envrc.local` and `.mise.local.toml` count toward *detection* where `config_paths` lists
+  them, but are never read for reuse. Only `.envrc` and the `mise.toml`/`.mise.toml` that
+  `mise_config_path` picks are parsed.
+- A devbox `set -a` in one `init_hook` entry and the matching `source` in another is not
+  recognized. `_devbox_hook_loads_env_file` runs per entry and does not carry the export across
+  entries.
+
+One known bound runs the other way and is a **false positive**, so it costs the expensive side
+of that trade. Recognition is textual and no shell parsing is attempted, so a statement at
+column 0 inside a block whose body is not indented is still read as top level, for both direnv
+and devbox. A `source splashdown.env` that only runs under an `if` is therefore reported as
+reuse: init writes nothing and the checkout stays unwired until the user indents the body or
+wires the loader by hand.
+`test_devbox_loader_wire_reuses_a_statement_in_an_unindented_block_body` pins it so the hole
+stays visible.
+
+`LOADERS` registers them in `mise → direnv → devbox → none` order, which fixes the order
+candidates are reported in. It is not a precedence order for selection: several configured
+loaders are an error the user resolves with `--loader`, and `none` is used only when nothing is
+configured or the user explicitly requests it.
 
 Init never calls `approve()`. `splash trust` does, and only when `owns_config()` is true —
 the configuration carries splashdown's integration and nothing else — so a pre-existing or
@@ -323,7 +383,7 @@ never run an approval command.
 - `scanner.py` — `Scanner.scan()`, the one public detection entry.
 - `scanner.py` — `_detect_workspace`, `_enumerate_apps`, and `_expand_workspace_globs`.
 - `scanner.py` — collision mangling and per-app references (`_build_resource_catalog`).
-- `scanner.py` — `_match_profile` and `_detect_loader`.
+- `scanner.py` — `_match_profile`, `select_loader`, and `LoaderSelection`.
 - `profile_core.py` — `Profile` and its extension points/flags, including
   `agent_guidance(app, port_names)` and shared guidance helpers.
 - `profiles_web.py`, `profiles_server.py`, `profiles_mobile.py`, and
@@ -333,8 +393,8 @@ never run an approval command.
   `remove_agent_guidance()`; invoked by init/deinit orchestration in `commands.py`.
 - `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py` populates it in
   precedence order.
-- `loaders.py` — `Loader`, its mise/direnv/devbox/none implementations, and the precedence-ordered
-  `LOADERS` registry.
+- `loaders.py` — `Loader`, `WirePlan`, `apply_wire_plan`, its mise/direnv/devbox/none
+  implementations, and the ordered `LOADERS` registry.
 - Consumers: scanner-driven init in `commands.py` and `_build_resource_catalog`
   in `scanner.py`.
 - Registration wiring: `catalog.py` owns the dictionary and `__init__.py` imports
@@ -366,10 +426,10 @@ never run an approval command.
 - **JS workspace detection is truthiness-based**, not lockfile-authoritative: a
   `package.json` with a non-empty `workspaces` value and *no* lockfile defaults to `npm`
   (`scanner.py`).
-- **Configured loader beats installed loader.** Every `Loader.detect()` probes for a
-  config file (`mise.toml`/`.mise.toml`, `.envrc`, `devbox.json`) before scanner detection
-  falls back to installed binaries on `PATH`. A repository's chosen loader therefore wins
-  even when another loader appears earlier in PATH fallback order.
+- **Selection reads config files, never `PATH`.** `select_loader` looks only for
+  `mise.toml`/`.mise.toml`, `.envrc`/`.envrc.local` and `devbox.json`. An installed binary
+  with no project config selects `none`, because adopting an integration the project has not
+  chosen is a project decision rather than an inference from the developer's machine.
 - **mise wiring must not scaffold a second config file.** `MiseLoader.detect` matches
   either `mise.toml` or `.mise.toml` (`loaders.py`), so every read and write goes
   through the single `mise_config_path` helper (`hooks.py`), which prefers an existing

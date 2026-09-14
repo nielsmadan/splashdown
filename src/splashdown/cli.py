@@ -146,7 +146,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser
         "--format",
         choices=["text", "json"],
         default=None,
-        help="output format for sync, status, env/target lists, or target claims",
+        help="output format for sync, status, init, env/target lists, or target claims",
     )
     parser.add_argument(
         "--show-values",
@@ -505,13 +505,14 @@ def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namesp
         parser.error("target remove device cannot be combined with --keep-instance")
 
     supports_format = (
-        args.cmd in {"sync", "status"}
+        args.cmd in {"sync", "status", "init"}
         or (args.cmd == "env" and args.env_cmd is None)
         or (args.cmd == "target" and args.target_cmd in {None, "claim", "claims"})
     )
     if args.format is not None and not supports_format:
         parser.error(
-            "--format is only supported by sync, status, bare env, target lists, and target claims"
+            "--format is only supported by sync, status, init, bare env, target lists, "
+            "and target claims"
         )
 
     supports_values = args.cmd in {"sync", "status"} or (args.cmd == "env" and args.env_cmd is None)
@@ -558,11 +559,12 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
                 loader_override=args.loader,
                 electron_profile=args.electron_profile,
                 ios_scheme=args.ios_scheme,
+                output_format=args.format or "text",
             )
             return 0
         except ApplicationError as error:
             return render_application_error(error)
-        except (DeviceError, ValueError) as error:
+        except (DeviceError, OSError, ValueError) as error:
             return render_untyped_error(error)
 
     registry = Registry()

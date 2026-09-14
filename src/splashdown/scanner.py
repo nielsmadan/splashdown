@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .catalog import PROFILES
+from .errors import UsageError
 from .inventory import AppInventory, ProjectInventory
 from .loaders import LOADERS
 from .package_json import package_dependencies, read_package_json
@@ -114,30 +116,53 @@ def _expand_workspace_globs(cwd: Path, globs: list[str]) -> list[tuple[str, Path
     return out
 
 
-def _loader_on_path(name: str) -> bool:
-    """Whether a loader's binary is installed. `shutil` is imported lazily — it
-    drags in the compression modules and this is only ever reached from `init`,
-    never from the git-hook provisioning path."""
-    import shutil  # noqa: PLC0415
+@dataclass(frozen=True)
+class LoaderSelection:
+    """Which loader init will wire, and what decided it."""
 
-    return shutil.which(name) is not None
+    name: str
+    selected_by: str
+    configs: tuple[str, ...]
+
+    @property
+    def reason(self) -> str:
+        if self.selected_by == "override":
+            return f"--loader {self.name}"
+        if self.selected_by == "detected":
+            return f"detected {', '.join(self.configs)}"
+        return "no loader configuration found"
 
 
-def _detect_loader(cwd: Path) -> str:
-    """Detect which shell-env loader to wire, asking each loader in priority order
-    (mise → direnv → devbox). A loader configured in the repo always wins; failing
-    that, the first one installed on PATH is used, since a fresh clone has no
-    config file yet and writing splashdown.env with nothing to source it is a
-    silent no-op. Returns "none" only when nothing is installed — `cmd_init` then
-    delivers values into a dotenv file or prints instructions. `--loader none`
-    remains the explicit opt-out."""
+def _configured_loaders(cwd: Path) -> dict[str, tuple[str, ...]]:
+    """Each loader with configuration at `cwd`, mapped to its config filenames.
+    Several files belonging to one loader are one candidate."""
+    found = {}
     for name, loader in LOADERS.items():
-        if loader.detect(cwd):
-            return name
-    for name, loader in LOADERS.items():
-        if name != "none" and _loader_on_path(loader.name):
-            return name
-    return "none"
+        paths = loader.config_paths(cwd)
+        if paths:
+            found[name] = tuple(path.name for path in paths)
+    return found
+
+
+def select_loader(cwd: Path, override: str | None = None) -> LoaderSelection:
+    """Choose the shell-env loader init wires. An explicit `--loader` wins,
+    including `none`. Otherwise the sole loader configured at `cwd` is selected;
+    several configured loaders are an error the user resolves with `--loader`,
+    and no configuration selects `none`. A loader installed on PATH is never
+    adopted on its own: init writes configuration, it does not pick integrations."""
+    configured = _configured_loaders(cwd)
+    if override:
+        paths = configured.get(override, ())
+        return LoaderSelection(override, "override", paths)
+    if len(configured) > 1:
+        names = ", ".join(sorted(configured))
+        raise UsageError(
+            f"several loaders are configured here ({names}); "
+            "choose one with `--loader mise|direnv|devbox|none`"
+        )
+    for name, paths in configured.items():
+        return LoaderSelection(name, "detected", paths)
+    return LoaderSelection("none", "unconfigured", ())
 
 
 def _detect_capabilities(app_path: Path) -> tuple[str, ...]:
@@ -151,9 +176,9 @@ class Scanner:
     Profile detection is delegated to the PROFILES registry; if the registry is
     empty (or no profile matches), apps get `profile="unknown"`."""
 
-    def scan(self, cwd: Path) -> ProjectInventory:
+    def scan(self, cwd: Path, *, loader: str | None = None) -> ProjectInventory:
         workspace = _detect_workspace(cwd)
-        loader = _detect_loader(cwd)
+        loader = loader or select_loader(cwd).name
         apps: list[AppInventory] = []
         for name, path in _enumerate_apps(cwd, workspace):
             profile_name = self._match_profile(path)

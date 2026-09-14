@@ -8,7 +8,7 @@ import tomlkit
 from tomlkit import array, comment, document, key, nl, table
 from tomlkit.items import Table
 
-from .constants import ENV_FILE_NAME
+from .constants import ENV_FILE_NAME, normalized_env_reference
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -100,54 +100,152 @@ def _add_target(doc: Any, dtype: str, variant: str, fields: Mapping[str, str | N
     bucket[variant] = leaf
 
 
+MISE_MANAGED_MARKER = "splashdown-managed"
+
+
+def _mise_env_file_entries(value: Any) -> list[str] | None:
+    """The `_.file` slot as a list of plain strings, or `None` when it holds a
+    shape splashdown cannot edit without discarding it."""
+    if isinstance(value, str):
+        return [str(value)]
+    if isinstance(value, list) and all(isinstance(entry, str) for entry in value):
+        return [str(entry) for entry in value]
+    return None
+
+
+def _mise_env_file_slot(doc: Any) -> tuple[Any, Any, Any]:
+    """`([env] table, `_` table, `file` value)`, each `None` when absent."""
+    env_tbl = doc.get("env")
+    if env_tbl is not None and not isinstance(env_tbl, dict):
+        raise ValueError("`env` is not a table")
+    underscore = env_tbl.get("_") if env_tbl is not None else None
+    if underscore is not None and not isinstance(underscore, dict):
+        raise ValueError("`env._` is not a table")
+    current = underscore.get("file") if isinstance(underscore, dict) else None
+    if current is not None and _mise_env_file_entries(current) is None:
+        raise ValueError("`env._.file` is neither a string nor a list of strings")
+    return env_tbl, underscore, current
+
+
+def _comment_text(value: Any) -> str:
+    trivia = getattr(value, "trivia", None)
+    return str(getattr(trivia, "comment", "") or "").lstrip("#").strip()
+
+
+def _mark(value: Any) -> Any:
+    text = _comment_text(value)
+    if MISE_MANAGED_MARKER not in text.split():
+        value.comment(f"{text} {MISE_MANAGED_MARKER}".strip())
+    return value
+
+
+def _marked(value: Any) -> Any:
+    return _mark(tomlkit.item(value))
+
+
+def _widened(current: Any, entries: list[str]) -> Any:
+    value = tomlkit.item(entries)
+    if text := _comment_text(current):
+        value.comment(text)
+    return _mark(value)
+
+
+def _clear_marker(value: Any) -> None:
+    remaining = " ".join(
+        word for word in _comment_text(value).split() if word != MISE_MANAGED_MARKER
+    )
+    if remaining:
+        value.comment(remaining)
+    else:
+        value.trivia.comment = ""
+        value.trivia.comment_ws = ""
+
+
+def _is_marked(value: Any) -> bool:
+    return MISE_MANAGED_MARKER in _comment_text(value).split()
+
+
 def ensure_mise_file_directive_text(existing_text: str | None) -> str | None:
-    """Return mise config text with `_.file = "<env file>"` ensured under [env].
-    `None` input scaffolds a new file; `None` output means it was already present
-    (caller should not rewrite)."""
+    """Return mise config text whose `[env]` `_.file` slot loads the env file.
+    `None` input scaffolds a new file; `None` output means an existing directive
+    already names the file, so the caller must not rewrite it. Raises ValueError
+    for a slot splashdown cannot extend."""
     if existing_text is None:
         doc = document()
         env = table()
-        env[key(["_", "file"])] = ENV_FILE_NAME
+        env[key(["_", "file"])] = _marked(ENV_FILE_NAME)
         doc["env"] = env
         return tomlkit.dumps(doc)
     doc = tomlkit.parse(existing_text)
-    env_tbl = cast(Table, doc["env"]) if "env" in doc else None
-    underscore: Any = env_tbl["_"] if env_tbl is not None and "_" in env_tbl else None
-    if isinstance(underscore, dict) and underscore.get("file") == ENV_FILE_NAME:
+    env_tbl, underscore, current = _mise_env_file_slot(doc)
+    entries = _mise_env_file_entries(current) if current is not None else None
+    if entries is not None and any(
+        normalized_env_reference(entry) == ENV_FILE_NAME for entry in entries
+    ):
         return None
     if env_tbl is None:
         env_tbl = table()
         doc["env"] = env_tbl
+    if current is None:
+        value = _marked(ENV_FILE_NAME)
+    elif isinstance(current, str):
+        value = _widened(current, [str(current), ENV_FILE_NAME])
+    else:
+        current.append(ENV_FILE_NAME)
+        value = _mark(current)
     if isinstance(underscore, dict):
         # `_` already exists as a table (dotted `_.x` keys or the `[env._]` subtable
         # form, e.g. a user's `_.path`). Set `file` in place — re-adding it as a new
         # dotted key would raise KeyAlreadyPresent or double-declare `[env._]`.
-        underscore["file"] = ENV_FILE_NAME
+        underscore["file"] = value
     else:
-        env_tbl[key(["_", "file"])] = ENV_FILE_NAME
+        env_tbl[key(["_", "file"])] = value
     return tomlkit.dumps(doc)
 
 
+def mise_file_directive_is_managed(existing_text: str | None) -> bool:
+    """Whether the `_.file` slot carries splashdown's marker comment, which is
+    what makes the directive splashdown's to remove."""
+    if existing_text is None:
+        return False
+    try:
+        doc = tomlkit.parse(existing_text)
+        _, _, current = _mise_env_file_slot(doc)
+    except ValueError:
+        return False
+    return current is not None and _is_marked(current)
+
+
 def remove_mise_file_directive_text(existing_text: str | None) -> str | None:
-    """Inverse of ensure_mise_file_directive_text: drop `_.file = "<env file>"`
-    from [env]. Empties the `_` and `[env]` tables that nothing else occupies.
-    Returns the new text to write; an empty string when removal leaves the
-    document empty (caller should delete the file); or `None` when there is
-    nothing of ours to remove (caller should not rewrite)."""
+    """Inverse of ensure_mise_file_directive_text: drop the env file from a
+    marked `_.file` slot. The marker says splashdown put an entry in the slot,
+    not that it owns the slot, so removal is entry-scoped: other entries stay,
+    their trivia keeps whatever the user wrote, and the `_` and `[env]` tables
+    are pruned only when nothing else occupies them. A slot splashdown widened
+    from a string stays a list, because a one-entry remainder cannot be told
+    apart from a list the user wrote. Returns the new text to write; an empty
+    string when removal leaves the document empty (caller should delete the
+    file); or `None` when there is nothing of ours to remove."""
     if existing_text is None:
         return None
     doc = tomlkit.parse(existing_text)
-    env_tbl = cast(Table, doc["env"]) if "env" in doc else None
-    if env_tbl is None:
+    env_tbl, underscore, current = _mise_env_file_slot(doc)
+    if current is None or not _is_marked(current):
         return None
-    underscore: Any = env_tbl.get("_")
-    if not (isinstance(underscore, dict) and underscore.get("file") == ENV_FILE_NAME):
+    entries = _mise_env_file_entries(current) or []
+    ours = [entry for entry in entries if normalized_env_reference(entry) == ENV_FILE_NAME]
+    if not ours:
         return None
-    del underscore["file"]
-    if not underscore:
-        del env_tbl["_"]
-    if not env_tbl:
-        del doc["env"]
+    if len(ours) < len(entries):
+        for entry in ours:
+            cast(Any, current).remove(entry)
+        _clear_marker(current)
+    else:
+        del cast(Any, underscore)["file"]
+        if not underscore:
+            del cast(Table, env_tbl)["_"]
+        if not env_tbl:
+            del doc["env"]
     return tomlkit.dumps(doc)
 
 

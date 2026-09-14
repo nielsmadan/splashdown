@@ -218,18 +218,26 @@ neutralize them and are read literally by mise/direnv too.
 ### tomlio: comment-preserving writes
 
 `tomlio.py` is the *only* module that imports `tomlkit`, and its callers
-(`commands.py`, `targets.py`, and `hooks.py`) lazy-import it inside functions so the read hot path
-never loads it.
+(`commands.py`, `targets.py`, and `loaders.py`) lazy-import it inside functions so the read hot
+path never loads it.
 Every function is a pure `str -> str` (or `str | None`) transform; callers own
 file I/O.
 
 - `render_scanned_recipe` builds a brand-new recipe document (header comment,
   `[project]`, `[apps.*]`, `[resources.*]`, and `[targets.*]`) from scratch. Scanner output is
   passed through `Recipe.parse` before file I/O.
-- `ensure_mise_file_directive_text` (`tomlio.py`) idempotently ensures
-  `_.file = "<env file>"` under `[env]`, handling the case where `_` already
-  exists as a table (it sets the key in place rather than re-declaring a dotted
-  key, which `tomlkit` would reject).
+- `ensure_mise_file_directive_text` (`tomlio.py`) idempotently ensures the env file appears in
+  `_.file` under `[env]`, handling the case where `_` already exists as a table (it sets the key
+  in place rather than re-declaring a dotted key, which `tomlkit` would reject). It returns
+  `None` when the slot already names the file, in either the string or the list form, so the
+  caller writes nothing. A slot naming another file is widened to a list instead of replaced,
+  and a slot that is neither a string nor a list of strings raises `ValueError`. Widening keeps
+  the slot's existing trailing comment and appends the marker to it, and removal puts the
+  original comment back. The entry it writes carries a `splashdown-managed` trailing comment,
+  which is what `mise_file_directive_is_managed` and `remove_mise_file_directive_text` key
+  removal on, so a directive the user wrote is never torn down. The marker is entry-scoped: it
+  says splashdown put an entry in the slot, not that it owns the slot, so removal takes out only
+  that entry and a slot widened from a string stays a list.
 - `target_add_text` / `target_remove_text` back `splash target add/remove`: add
   creates the nested `[targets.<type>.<variant>]` table; remove deletes it and
   prunes now-empty parent tables, returning `None` when the variant was already

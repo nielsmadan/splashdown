@@ -62,8 +62,8 @@ Routine status, env-list, and sync JSON output hides resolved values. Add the ro
 single-value read. `splash sync --force` reallocates ports. `splash init` scans the project and
 writes the project files. It allocates nothing, so run `splash trust` and then bare `splash`
 after it.
-Root output options go before the command. `--format` applies to sync, status, bare `env`, bare
-`target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, and bare
+Root output options go before the command. `--format` applies to sync, status, init, bare `env`,
+bare `target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, and bare
 `env`. Other combinations are usage errors instead of accepted no-ops.
 In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync. With
 `status all`, it selects detailed checkout blocks so those values have a place to appear instead
@@ -74,6 +74,14 @@ at a Git worktree root, inside it, or outside Git. Replacing an existing recipe 
 `--overwrite`. Recipe symlinks are rejected rather than followed. Nested init leaves the
 repository's post-checkout hook untouched and prints the explicit `splash --cwd PATH sync`
 command to run after checkout.
+
+`--loader` selects how the environment is loaded. Without it, init wires the sole loader whose
+configuration exists in the directory and says which file decided that. With several configured
+it stops before changing anything and asks you to choose. With none configured it selects
+`none`. An installed tool is not by itself a reason to adopt it. Init reuses loading directives
+the project already has rather than adding a second one, and adds only its own directive where
+one is missing. `splash --format json init` reports the same selection, why it was made, and
+every file init changed.
 
 Evolve an existing recipe by editing it manually or with an agent. `splash init --overwrite`
 regenerates the whole recipe, replacing manual edits. See

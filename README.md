@@ -70,7 +70,7 @@ splash init
 #   detected: pnpm (apps/api/apps/web-admin)
 #   apps/api          → node-backend
 #   apps/web-admin    → vite
-#   shell loader      → mise
+#   shell loader      → mise (detected mise.toml)
 # wrote splashdown.toml + splashdown.local.toml + mise.toml
 # updated AGENTS.md
 # configuration written; nothing is allocated or active yet

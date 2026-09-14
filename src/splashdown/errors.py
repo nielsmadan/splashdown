@@ -24,6 +24,11 @@ class SetupError(ApplicationError):
     pass
 
 
+class LoaderConflictError(ApplicationError):
+    """A loader's configuration cannot be edited without discarding settings
+    splashdown does not own."""
+
+
 class DeviceError(RuntimeError):
     pass
 

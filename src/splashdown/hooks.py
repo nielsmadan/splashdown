@@ -92,41 +92,6 @@ def mise_config_path(cwd: Path) -> Path:
     return cwd / "mise.toml"
 
 
-def _ensure_mise_file_directive(cwd: Path) -> None:
-    """Ensure mise's config has `_.file = "splashdown.env"` under [env]."""
-    from .tomlio import ensure_mise_file_directive_text  # noqa: PLC0415
-
-    directive = f'_.file = "{ENV_FILE_NAME}"'
-    path = mise_config_path(cwd)
-    text = path.read_text() if path.exists() else None
-    new_text = ensure_mise_file_directive_text(text)
-    if new_text is None:
-        return  # directive already present
-    path.write_text(new_text)
-    verb = "updated" if text is not None else "created"
-    print(f"{verb} {path.name} (+{directive})", file=sys.stderr)
-
-
-def _remove_mise_file_directive(cwd: Path) -> None:
-    """Inverse of _ensure_mise_file_directive: drop `_.file = "splashdown.env"`.
-    If that empties the `[env]` table it's dropped too; if the whole file is left
-    empty it's deleted. Other keys/tables are preserved."""
-    from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
-
-    path = mise_config_path(cwd)
-    if not path.exists():
-        return
-    new_text = remove_mise_file_directive_text(path.read_text())
-    if new_text is None:
-        return  # nothing of ours to remove
-    if new_text.strip():
-        path.write_text(new_text)
-        print(f"updated {path.name} (-splashdown env directive)", file=sys.stderr)
-    else:
-        path.unlink()
-        print(f"removed {path.name}", file=sys.stderr)
-
-
 def _revert_gitignore(cwd: Path) -> None:
     """Inverse of _ensure_gitignore: drop splashdown's exact lines if present.
     Matches the exact lines _ensure_gitignore writes (no strip), so a user's

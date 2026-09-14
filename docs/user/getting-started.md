@@ -63,12 +63,13 @@ Sample output for a small backend:
 scanning project…
   detected: single (main)
   .            → node-backend
-  shell loader → mise
+  shell loader → mise (detected mise.toml)
 wrote splashdown.toml
 wrote splashdown.local.toml (skeleton)
 updated .gitignore (+splashdown.env, splashdown.local.toml)
-created mise.toml (+_.file = "splashdown.env")
+updated mise.toml (+_.file = "splashdown.env")
 note: the local post-checkout hook is installed by `splash trust`
+changed: splashdown.toml, splashdown.local.toml, mise.toml
 configuration written; nothing is allocated or active yet
 next: run `splash trust` to activate automatic post-checkout handling
       run `splash` to allocate values and write splashdown.env

@@ -4,10 +4,38 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from .constants import ENV_FILE_NAME
-from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive, mise_config_path
+from .constants import ENV_FILE_NAME, normalized_env_reference
+from .errors import LoaderConflictError
+from .hooks import mise_config_path
+from .safe_files import atomic_write_text, read_optional_editable_text
+
+CREATED = "created"
+UPDATED = "updated"
+CONFIGURED = "configured"
+REUSED = "reused"
+NOTHING = "nothing"
+
+
+@dataclass(frozen=True)
+class WirePlan:
+    """A validated, not-yet-committed loader edit. `text` is `None` for the
+    no-write outcomes, so a plan can be reported before anything is written."""
+
+    loader: str
+    status: str
+    note: str
+    path: Path | None = None
+    text: str | None = None
+    root: Path | None = None
+    hint: str = ""
+
+    @property
+    def writes(self) -> bool:
+        return self.text is not None
 
 
 def _run_ok(argv: list[str], cwd: Path) -> bool:
@@ -21,8 +49,26 @@ def _run_ok(argv: list[str], cwd: Path) -> bool:
     return r.returncode == 0
 
 
+def _quoted_argument(raw: str) -> str:
+    quote = raw[:1]
+    if quote in ("'", '"') and raw.endswith(quote) and raw != quote:
+        return raw[1:-1]
+    return raw
+
+
+def _names_env_file(raw: str) -> bool:
+    return normalized_env_reference(_quoted_argument(raw)) == ENV_FILE_NAME
+
+
+def _read_config(path: Path, cwd: Path, loader: str) -> str | None:
+    try:
+        return read_optional_editable_text(path, root=cwd)
+    except ValueError as error:
+        raise LoaderConflictError(f"cannot wire {loader}: {error}") from error
+
+
 class Loader:
-    """Abstract base. Subclasses set `name` and override `detect` and `wire`."""
+    """Abstract base. Subclasses set `name` and override `detect` and `plan`."""
 
     name: str = ""
     # Completes "trust also approves the <name> configuration splashdown wired, so …".
@@ -31,9 +77,19 @@ class Loader:
     def detect(self, cwd: Path) -> bool:
         raise NotImplementedError
 
-    def wire(self, cwd: Path) -> None:
-        """Idempotently configure the loader to source splashdown.env."""
+    def config_paths(self, cwd: Path) -> list[Path]:
+        """Every configuration file of this loader that exists at `cwd`."""
+        return []
+
+    def plan(self, cwd: Path) -> WirePlan:
+        """Parse and validate the edit that would make this loader load the env
+        file, without writing. Raises LoaderConflictError when the existing
+        configuration cannot be extended without discarding settings."""
         raise NotImplementedError
+
+    def wire(self, cwd: Path) -> WirePlan:
+        """Idempotently configure the loader to source splashdown.env."""
+        return apply_wire_plan(self.plan(cwd))
 
     def owns_config(self, cwd: Path) -> bool:
         """True when the loader's configuration holds splashdown's integration
@@ -52,25 +108,75 @@ class Loader:
         content remains. No-op by default so unknown loaders are harmless."""
 
 
+def apply_wire_plan(plan: WirePlan) -> WirePlan:
+    if plan.text is None or plan.path is None:
+        return plan
+    atomic_write_text(plan.path, plan.text, root=plan.root, create=True)
+    return plan
+
+
 class MiseLoader(Loader):
     name = "mise"
     approval_detail = "mise trusts that path permanently and loads whatever the file holds later"
 
     def detect(self, cwd: Path) -> bool:
-        return (cwd / "mise.toml").exists() or (cwd / ".mise.toml").exists()
+        return bool(self.config_paths(cwd))
 
-    def wire(self, cwd: Path) -> None:
-        _ensure_mise_file_directive(cwd)
+    def config_paths(self, cwd: Path) -> list[Path]:
+        return [cwd / name for name in ("mise.toml", ".mise.toml") if (cwd / name).exists()]
+
+    def plan(self, cwd: Path) -> WirePlan:
+        from .tomlio import (  # noqa: PLC0415
+            ensure_mise_file_directive_text,
+            mise_file_directive_is_managed,
+        )
+
+        path = mise_config_path(cwd)
+        existing = _read_config(path, cwd, self.name)
+        try:
+            new_text = ensure_mise_file_directive_text(existing)
+        except ValueError as error:
+            raise LoaderConflictError(
+                f"cannot wire mise: in {path.name}, {error}. "
+                f"Point `_.file` at {ENV_FILE_NAME} yourself, or re-run with `--loader none`."
+            ) from error
+        if new_text is None:
+            if mise_file_directive_is_managed(existing):
+                return WirePlan(self.name, CONFIGURED, f"{path.name} already loads {ENV_FILE_NAME}")
+            return WirePlan(
+                self.name,
+                REUSED,
+                f"reusing the {path.name} directive for {ENV_FILE_NAME}",
+                hint=(
+                    f"that directive is unmarked, so `splash deinit` will leave it. "
+                    f"If splashdown wrote it, remove the {ENV_FILE_NAME} entry from "
+                    f"`_.file` in {path.name} (the whole line when it names nothing "
+                    f"else) and re-run `splash init` to have it marked."
+                ),
+            )
+        verb = UPDATED if existing is not None else CREATED
+        return WirePlan(
+            self.name,
+            verb,
+            f'{verb} {path.name} (+_.file = "{ENV_FILE_NAME}")',
+            path=path,
+            text=new_text,
+            root=cwd,
+        )
 
     def owns_config(self, cwd: Path) -> bool:
         from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
 
         path = mise_config_path(cwd)
-        if not path.exists():
+        try:
+            existing = read_optional_editable_text(path, root=cwd)
+        except (OSError, ValueError):
+            return False
+        if existing is None:
             return False
         try:
-            remainder = remove_mise_file_directive_text(path.read_text())
-        except (OSError, ValueError):
+            remainder = remove_mise_file_directive_text(existing)
+        except ValueError:
             return False
         return remainder is not None and not remainder.strip()
 
@@ -85,7 +191,21 @@ class MiseLoader(Loader):
         return ok
 
     def unwire(self, cwd: Path) -> None:
-        _remove_mise_file_directive(cwd)
+        from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
+
+        path = mise_config_path(cwd)
+        existing = read_optional_editable_text(path, root=cwd)
+        if existing is None:
+            return
+        new_text = remove_mise_file_directive_text(existing)
+        if new_text is None:
+            return
+        if new_text.strip():
+            atomic_write_text(path, new_text, root=cwd)
+            print(f"updated {path.name} (-splashdown env directive)", file=sys.stderr)
+        else:
+            path.unlink()
+            print(f"removed {path.name}", file=sys.stderr)
 
 
 _DIRENV_BEGIN = "# >>> splashdown-managed dotenv >>>"
@@ -93,13 +213,29 @@ _DIRENV_END = "# <<< splashdown-managed dotenv <<<"
 # `dotenv_if_exists` (not `dotenv`) so a fresh checkout doesn't hard-error before
 # splashdown.env has been generated.
 _DIRENV_BLOCK = f"""{_DIRENV_BEGIN}
-dotenv_if_exists splashdown.env
+dotenv_if_exists {ENV_FILE_NAME}
 {_DIRENV_END}
 """
 _DIRENV_BLOCK_RE = re.compile(
     re.escape(_DIRENV_BEGIN) + r".*?" + re.escape(_DIRENV_END) + r"\n?",
     re.DOTALL,
 )
+# A `#` only starts a comment at the start of a word, so `file.env#x` names a file.
+_SHELL_COMMENT_RE = re.compile(r"(?:^|(?<=[ \t]))#.*$")
+# Column 0 only: an indented directive sits inside a function or conditional,
+# which is not proof that the file is loaded.
+_DIRENV_DOTENV_RE = re.compile(
+    r"^(?:dotenv|dotenv_if_exists)[ \t]+(?P<arg>'[^']*'|\"[^\"]*\"|[^\s#'\"]+)[ \t]*$"
+)
+
+
+def _direnv_user_directive(text: str) -> bool:
+    """Whether `.envrc` already loads the env file outside splashdown's block."""
+    for line in _DIRENV_BLOCK_RE.sub("", text).split("\n"):
+        match = _DIRENV_DOTENV_RE.match(_SHELL_COMMENT_RE.sub("", line))
+        if match is not None and _names_env_file(match["arg"]):
+            return True
+    return False
 
 
 class DirenvLoader(Loader):
@@ -109,33 +245,44 @@ class DirenvLoader(Loader):
     )
 
     def detect(self, cwd: Path) -> bool:
-        return (cwd / ".envrc").exists() or (cwd / ".envrc.local").exists()
+        return bool(self.config_paths(cwd))
 
-    def wire(self, cwd: Path) -> None:
+    def config_paths(self, cwd: Path) -> list[Path]:
+        return [cwd / name for name in (".envrc", ".envrc.local") if (cwd / name).exists()]
+
+    def plan(self, cwd: Path) -> WirePlan:
         path = cwd / ".envrc"
-        created = not path.exists()
-        existing = path.read_text() if path.exists() else ""
-        if _DIRENV_BLOCK_RE.search(existing):
-            new_text = _DIRENV_BLOCK_RE.sub(_DIRENV_BLOCK, existing, count=1)
+        existing = _read_config(path, cwd, self.name)
+        if existing is not None and _direnv_user_directive(existing):
+            return WirePlan(self.name, REUSED, f"reusing the .envrc directive for {ENV_FILE_NAME}")
+        base = existing or ""
+        if _DIRENV_BLOCK_RE.search(base):
+            new_text = _DIRENV_BLOCK_RE.sub(_DIRENV_BLOCK, base, count=1)
         else:
-            text = existing.rstrip()
-            if text:
-                text += "\n\n"
-            new_text = text + _DIRENV_BLOCK
+            head = base.rstrip()
+            new_text = (head + "\n\n" if head else "") + _DIRENV_BLOCK
         if new_text == existing:
-            return
-        path.write_text(new_text)
-        # Editing an existing .envrc invalidates its trust hash, but auto-allowing user commands would be unsafe.
-        if not created:
-            print("wired .envrc — run `direnv allow` to load splashdown.env", file=sys.stderr)
+            return WirePlan(self.name, CONFIGURED, f".envrc already loads {ENV_FILE_NAME}")
+        verb = UPDATED if existing is not None else CREATED
+        return WirePlan(
+            self.name,
+            verb,
+            f"{verb} .envrc (+dotenv_if_exists {ENV_FILE_NAME})",
+            path=path,
+            text=new_text,
+            root=cwd,
+            # Editing an existing .envrc invalidates its trust hash, and auto-allowing
+            # user commands would be unsafe.
+            hint="" if existing is None else f"run `direnv allow` to load {ENV_FILE_NAME}",
+        )
 
     def owns_config(self, cwd: Path) -> bool:
         path = cwd / ".envrc"
-        if not path.exists():
-            return False
         try:
-            text = path.read_text()
-        except OSError:
+            text = read_optional_editable_text(path, root=cwd)
+        except (OSError, ValueError):
+            return False
+        if text is None:
             return False
         if not _DIRENV_BLOCK_RE.search(text):
             return False
@@ -152,14 +299,14 @@ class DirenvLoader(Loader):
 
     def unwire(self, cwd: Path) -> None:
         path = cwd / ".envrc"
-        if not path.exists():
+        existing = read_optional_editable_text(path, root=cwd)
+        if existing is None:
             return
-        text = path.read_text()
-        new = _DIRENV_BLOCK_RE.sub("", text)
-        if new == text:
+        new = _DIRENV_BLOCK_RE.sub("", existing)
+        if new == existing:
             return
         if new.strip():
-            path.write_text(new)
+            atomic_write_text(path, new, root=cwd)
         else:
             path.unlink()
 
@@ -167,36 +314,120 @@ class DirenvLoader(Loader):
 # Marker baked into the init_hook string so we can find-and-replace idempotently
 # without parsing JSON ASTs.
 _DEVBOX_HOOK_MARKER = "# splashdown-managed"
-_DEVBOX_HOOK_CMD = f"{_DEVBOX_HOOK_MARKER}\nset -a; source splashdown.env; set +a"
+_DEVBOX_HOOK_CMD = f"{_DEVBOX_HOOK_MARKER}\nset -a; source {ENV_FILE_NAME}; set +a"
+_DEVBOX_ALLEXPORT_RE = re.compile(r"^set[ \t]+(?P<sign>[-+])(?:a|o[ \t]+allexport)$")
+_DEVBOX_SOURCE_RE = re.compile(r"^(?:source|\.)[ \t]+(?P<arg>'[^']*'|\"[^\"]*\"|[^\s#'\"]+)$")
+
+
+def _devbox_statements(hook: str) -> list[str]:
+    """The hook's top-level statements. Only a newline ends a command in sh, so
+    the split is on `\n` alone. Comments go first, so a `;` inside one cannot
+    split it into code; an indented line is dropped because it sits inside a
+    function body or a conditional."""
+    statements: list[str] = []
+    for line in hook.split("\n"):
+        if line[:1] in (" ", "\t"):
+            continue
+        for segment in _SHELL_COMMENT_RE.sub("", line).split(";"):
+            statements.append(segment.strip(" \t"))
+    return statements
+
+
+def _devbox_hook_loads_env_file(hook: str) -> bool:
+    """Whether one init hook sources the env file as a top-level statement of
+    its own while allexport is on. `set -a` turns allexport on and `set +a`
+    turns it back off, so only the last one before the `source` counts. A
+    chained (`&&`) statement, a comment, and anything indented under a
+    conditional or function are not proof that the file is loaded."""
+    exported = False
+    for statement in _devbox_statements(hook):
+        allexport = _DEVBOX_ALLEXPORT_RE.match(statement)
+        if allexport is not None:
+            exported = allexport["sign"] == "-"
+            continue
+        match = _DEVBOX_SOURCE_RE.match(statement)
+        if exported and match is not None and _names_env_file(match["arg"]):
+            return True
+    return False
+
+
+def _devbox_hooks(data: Any) -> list[Any]:
+    if not isinstance(data, dict):
+        raise LoaderConflictError("cannot wire devbox: devbox.json is not a JSON object")
+    shell = data.get("shell", {})
+    if not isinstance(shell, dict):
+        raise LoaderConflictError("cannot wire devbox: `shell` in devbox.json is not an object")
+    hooks = shell.get("init_hook", [])
+    if isinstance(hooks, str):
+        return [hooks]
+    if not isinstance(hooks, list):
+        raise LoaderConflictError(
+            "cannot wire devbox: `shell.init_hook` in devbox.json is neither a string nor a list"
+        )
+    return list(hooks)
+
+
+def _is_managed_hook(hook: Any) -> bool:
+    return isinstance(hook, str) and _DEVBOX_HOOK_MARKER in hook
 
 
 class DevboxLoader(Loader):
     name = "devbox"
 
     def detect(self, cwd: Path) -> bool:
-        return (cwd / "devbox.json").exists()
+        return bool(self.config_paths(cwd))
 
-    def wire(self, cwd: Path) -> None:
+    def config_paths(self, cwd: Path) -> list[Path]:
         path = cwd / "devbox.json"
-        if not path.exists():
-            path.write_text("{}")
-        data = json.loads(path.read_text())
-        shell = data.setdefault("shell", {})
-        hooks = shell.setdefault("init_hook", [])
-        if isinstance(hooks, str):
-            hooks = [hooks]
-        new_hooks = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
-        new_hooks.append(_DEVBOX_HOOK_CMD)
+        return [path] if path.exists() else []
+
+    def plan(self, cwd: Path) -> WirePlan:
+        path = cwd / "devbox.json"
+        existing = _read_config(path, cwd, self.name)
+        try:
+            data: Any = json.loads(existing) if existing is not None else {}
+        except json.JSONDecodeError as error:
+            raise LoaderConflictError(
+                f"cannot wire devbox: devbox.json is not valid JSON ({error}). "
+                "Fix the file, or re-run with `--loader none`."
+            ) from error
+        hooks = _devbox_hooks(data)
+        reusable = any(
+            isinstance(hook, str)
+            and not _is_managed_hook(hook)
+            and _devbox_hook_loads_env_file(hook)
+            for hook in hooks
+        )
+        kept = [hook for hook in hooks if not _is_managed_hook(hook)]
+        new_hooks = kept if reusable else [*kept, _DEVBOX_HOOK_CMD]
         if new_hooks == hooks:
-            return
-        shell["init_hook"] = new_hooks
-        path.write_text(json.dumps(data, indent=2) + "\n")
+            if reusable:
+                return WirePlan(
+                    self.name, REUSED, f"reusing the devbox.json init hook for {ENV_FILE_NAME}"
+                )
+            return WirePlan(self.name, CONFIGURED, f"devbox.json already loads {ENV_FILE_NAME}")
+        data.setdefault("shell", {})["init_hook"] = new_hooks
+        verb = UPDATED if existing is not None else CREATED
+        note = (
+            f"updated devbox.json (-duplicate init_hook for {ENV_FILE_NAME})"
+            if reusable
+            else f"{verb} devbox.json (+init_hook sourcing {ENV_FILE_NAME})"
+        )
+        return WirePlan(
+            self.name,
+            REUSED if reusable else verb,
+            note,
+            path=path,
+            text=json.dumps(data, indent=2) + "\n",
+            root=cwd,
+        )
 
     def unwire(self, cwd: Path) -> None:
         path = cwd / "devbox.json"
-        if not path.exists():
+        existing = read_optional_editable_text(path, root=cwd)
+        if existing is None:
             return
-        data = json.loads(path.read_text())
+        data = json.loads(existing)
         shell = data.get("shell")
         if not isinstance(shell, dict):
             return
@@ -205,7 +436,7 @@ class DevboxLoader(Loader):
             hooks = [hooks]
         if not isinstance(hooks, list):
             return
-        new_hooks = [h for h in hooks if not (isinstance(h, str) and _DEVBOX_HOOK_MARKER in h)]
+        new_hooks = [hook for hook in hooks if not _is_managed_hook(hook)]
         if new_hooks == hooks:
             return
         if new_hooks:
@@ -215,23 +446,22 @@ class DevboxLoader(Loader):
             if not shell:
                 del data["shell"]
         if data:
-            path.write_text(json.dumps(data, indent=2) + "\n")
+            atomic_write_text(path, json.dumps(data, indent=2) + "\n", root=cwd)
         else:
             path.unlink()
 
 
 class NoneLoader(Loader):
-    """Fallback when no shell-env loader is present. Wires nothing — `cmd_init`
-    decides whether to route values into a dotenv file or print instructions.
-    `detect` is always False; this loader is only ever selected as the fallback."""
+    """Explicit opt-out: wires nothing. `detect` is always False, so `none` is
+    only ever reached through `--loader none` or an unconfigured checkout."""
 
     name = "none"
 
     def detect(self, cwd: Path) -> bool:
         return False
 
-    def wire(self, cwd: Path) -> None:
-        pass
+    def plan(self, cwd: Path) -> WirePlan:
+        return WirePlan(self.name, NOTHING, "")
 
 
 LOADERS: dict[str, Loader] = {

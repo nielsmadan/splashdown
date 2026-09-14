@@ -78,6 +78,7 @@ from .cli_output import (
 )
 from .commands import (
     InitOptions,
+    InitReport,
     _env_dispatch,
     _resolve_no_loader_delivery,
     cmd_completion,
@@ -151,6 +152,7 @@ from .doctor import cmd_doctor
 from .errors import (
     ApplicationError,
     CapabilityError,
+    LoaderConflictError,
     MissingRecipeError,
     SetupError,
     UsageError,
@@ -161,7 +163,6 @@ from .hooks import (
     _detect_hook_manager,
     _ensure_post_checkout_hook,
     _native_hook_path,
-    _remove_mise_file_directive,
     _revert_gitignore,
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
@@ -175,7 +176,7 @@ from .launching import (
     resolve_app_dir,
     validate_device_run,
 )
-from .loaders import LOADERS, Loader
+from .loaders import LOADERS, Loader, WirePlan
 from .profiles import (
     Profile,
     compose_project_resources,
@@ -210,12 +211,13 @@ from .recipe import (
 )
 from .registry import DeviceRow, Registry, _port_in_use
 from .scanner import (
+    LoaderSelection,
     Scanner,
     _build_resource_catalog,
-    _detect_loader,
     _detect_workspace,
     _enumerate_apps,
     _expand_workspace_globs,
+    select_loader,
 )
 from .status import ClaimListRow, TargetInventoryRow
 from .target_commands import (

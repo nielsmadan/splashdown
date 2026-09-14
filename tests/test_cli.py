@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 import tomllib
@@ -104,7 +105,7 @@ def test_cli_help_shows_tiers(capsys):
     }
     normalized = " ".join(out.split())
     assert sd.KNOWN_CMDS - {"hook"} <= visible_commands
-    assert "output format for sync, status, env/target lists, or target claims" in normalized
+    assert "output format for sync, status, init, env/target lists, or target claims" in normalized
     assert "include resolved values for sync, status, or bare env" in normalized
     assert "provision" not in out
 
@@ -1038,7 +1039,6 @@ def test_init_mise_directive_idempotent(tmp_path):
     "existing",
     [
         '[env]\n_.path = "./bin"\n',  # coexisting mise PATH directive
-        '[env]\n_.file = "other.env"\n',  # different file value (dotted form)
         '[env._]\npath = ["./bin"]\n',  # subtable form
     ],
 )
@@ -1052,6 +1052,17 @@ def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, exist
     text = (tmp_path / "mise.toml").read_text()
     data = tomllib.loads(text)
     assert data["env"]["_"]["file"] == "splashdown.env"
+
+
+def test_mise_directive_keeps_an_existing_env_file_alongside_ours(tmp_path):
+    (tmp_path / "mise.toml").write_text('[env]\n_.file = "other.env"\n')
+    sd.cmd_init(
+        tmp_path,
+        options=sd.InitOptions(overwrite=True),
+        loader_override="mise",
+    )
+    data = tomllib.loads((tmp_path / "mise.toml").read_text())
+    assert data["env"]["_"]["file"] == ["other.env", "splashdown.env"]
 
 
 def _record_approvals(monkeypatch):
@@ -1215,3 +1226,44 @@ def test_trust_installs_native_post_checkout_hook(tmp_path):
 
 def test_deinit_in_known_cmds():
     assert "deinit" in sd.KNOWN_CMDS
+
+
+def test_init_accepts_the_json_output_format(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "init", "--loader=mise"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "init"
+    assert payload["loader"]["name"] == "mise"
+    assert "mise.toml" in payload["changed"]
+
+
+def test_init_reports_an_oserror_as_an_error_exit(tmp_path, capsys, monkeypatch):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+
+    def boom(_cwd):
+        raise PermissionError(13, "Permission denied", ".gitignore")
+
+    monkeypatch.setattr(sd.commands, "_ensure_gitignore", boom)
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 1
+    assert "Permission denied" in capsys.readouterr().err
+
+
+def test_init_json_reports_a_plan_time_failure_in_the_same_envelope(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text("[env]\n_.file = 3\n")
+    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "init"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "init"
+    assert payload["ok"] is False
+    assert payload["loader"]["name"] == "mise"
+    assert "cannot wire mise" in payload["error"]
+    assert payload["changed"] == []
+
+
+def test_init_rejects_several_configured_loaders_before_writing(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / "mise.toml").write_text("")
+    (tmp_path / ".envrc").write_text("")
+    assert sd.main(["--cwd", str(tmp_path), "init"]) == 2
+    assert "several loaders are configured here (direnv, mise)" in capsys.readouterr().err
+    assert not (tmp_path / "splashdown.toml").exists()

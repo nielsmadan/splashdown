@@ -58,12 +58,26 @@ that would silently sync the wrong project.
 detects the workspace manager (pnpm/yarn/npm/cargo/gradle/`single`) via `_detect_workspace`
 (`scanner.py`); enumerates apps via `_enumerate_apps` (`scanner.py`); matches each app
 to a Profile by name through the `PROFILES` registry, defaulting to `"unknown"` when nothing
-matches (`scanner.py`); and detects the shell loader by asking each `Loader` in priority
-order mise → direnv → devbox, falling back to the first one installed on PATH and returning
-`"none"` only when none is configured or installed (`_detect_loader`,
-`scanner.py`). A `--loader` override replaces the detected loader on the inventory
-(`commands.py`). The result is a `ProjectInventory` of `AppInventory` entries defined in
-`inventory.py`.
+matches (`scanner.py`). The loader is chosen before the scan by `select_loader`
+(`scanner.py`), and `Scanner.scan(cwd, loader=…)` records the choice rather than repeating it.
+The result is a `ProjectInventory` of `AppInventory` entries defined in `inventory.py`.
+
+**Loader selection.** `select_loader` (`scanner.py`) asks each `Loader.config_paths(cwd)` which
+of its configuration files exist, so mise's `mise.toml` and `.mise.toml` count as one candidate.
+An explicit `--loader` wins, including `none`. Otherwise the sole configured loader is selected;
+several configured loaders raise `UsageError` naming them, before init writes anything; no
+configuration selects `none`. There is no PATH probe: a binary's presence is not a reason to
+adopt a project integration. The returned `LoaderSelection` carries `name`, `selected_by`
+(`override` / `detected` / `unconfigured`) and the config filenames, which `_print_init_scan`
+and the JSON report both render.
+
+**Failure reporting.** `cmd_init` wraps its whole body in `_init_failure` (`commands.py`) and
+its write phase in `_init_effects`, so every failure reaches a `--format json` consumer as one
+`{"ok": false, "error": …}` envelope carrying whatever had already been selected and changed.
+A plan-time `LoaderConflictError` and a late `OSError` are the same shape; `_init_failure`
+skips the emission when `_init_effects` already made it. The CLI's init branch catches
+`OSError` alongside `ApplicationError`, `DeviceError` and `ValueError`, so a permission failure
+exits with an `error:` line rather than a traceback.
 
 **Resource collection + collision deferral.** For each non-`unknown` app, `cmd_init` asks the
 matched `Profile.resources(app)` for the resources it wants. If several apps claim the same
@@ -111,13 +125,51 @@ strict `Recipe` validator used by provisioning before it is written. This catche
 drift, invalid app resource references, resource/writer/template/schema errors, and unknown
 fields before init mutates the recipe or proceeds to loader/hook wiring. A `splashdown.local.toml` skeleton (`LOCAL_SKELETON`)
 is written if absent after the recipe passes validation. `_ensure_gitignore` (`hooks.py`) adds
-`splashdown.env` and `splashdown.local.toml` to `.gitignore`. The selected loader is wired by
-`LOADERS[inv.loader].wire(cwd)` (`commands.py`) — every loader's `wire` is idempotent
-(`loaders.py`): mise sets `_.file = "splashdown.env"` under `[env]` (editing an existing
-`.mise.toml`/`mise.toml` rather than scaffolding a second), direnv appends a sentinel-wrapped
-`dotenv_if_exists splashdown.env` block to `.envrc`, devbox adds a marker-tagged `init_hook`,
-and `none` wires nothing. Init never runs `mise trust` or `direnv allow`; approval is an
-activation effect owned by `cmd_trust` — see the trust-approval note below.
+`splashdown.env` and `splashdown.local.toml` to `.gitignore`.
+
+**Loader wiring.** `Loader.plan(cwd)` (`loaders.py`) parses and validates the edit and returns a
+`WirePlan` without writing; `cmd_init` builds it before the recipe is written, so a malformed
+config or an unextendable directive raises `LoaderConflictError` before any file changes.
+`_commit_loader_plan` (`commands.py`) applies it afterwards through `safe_files`'
+`atomic_write_text`, which refuses symlinked destinations and paths outside the checkout.
+`--overwrite` governs the recipe only and does not relax this.
+
+A plan's status is one of `created`, `updated`, `configured` (splashdown's own directive is
+already there), `reused` (the project's own directive is), or `nothing` (`--loader none`). The
+two reuse outcomes write nothing at all. Recognition is deliberately bounded to forms these
+files can be read for, with simple quoting, tabs and a leading `./` normalized by
+`normalized_env_reference` (`constants.py`):
+
+- mise: `_.file` naming the file, in the plain or the list form and in the dotted or `[env._]`
+  subtable spelling. A slot holding another file is extended to a list rather than replaced;
+  a slot that is neither a string nor a list of strings is a conflict.
+- direnv: a `dotenv` or `dotenv_if_exists` line at column 0 outside splashdown's sentinel block.
+  An indented one sits inside a function or conditional and does not count, and a `#` glued to
+  the filename is part of the name rather than a trailing comment.
+- devbox: an `init_hook` whose statements include a standalone `set -a` (or `set -o allexport`)
+  followed by a standalone `source`/`.` of the file, both at column 0, with no `set +a` in
+  between. Comments are stripped per line before the line is split on `;`, so a `;` inside a
+  comment cannot produce a statement, and an indented line sits inside a function or conditional
+  and does not count. A chained (`&&`) statement does not match either.
+
+Two further bounds are deliberate false negatives: `.envrc.local` and `.mise.local.toml` count
+toward detection but are never read for reuse, and a devbox `set -a` in one `init_hook` entry
+with the `source` in another is not recognized. Each costs a duplicate directive, which is the
+cheap side of the trade.
+
+One known bound is a **false positive**, and it costs the expensive side. Recognition is textual
+and no shell parsing is attempted, so a statement at column 0 inside a block whose body is not
+indented reads as top level for direnv and devbox alike. A `source splashdown.env` that only
+runs under an `if` is reported as reuse, init writes nothing, and the checkout stays unwired
+until the user indents the body or wires the loader by hand.
+
+Splashdown removes only what it marked: the mise directive carries a `splashdown-managed`
+comment, the direnv block its sentinels, the devbox hook its marker. A directive init merely
+reused therefore survives `splash deinit`. The mise marker is entry-scoped, so a slot widened
+to a list loses only splashdown's entry and stays a list. A mise directive written before the
+marker existed is indistinguishable from a hand-written one, so splashdown leaves it alone and
+the plan's `hint` tells the user to delete the line and re-run init if splashdown wrote it. Init never runs `mise trust` or `direnv allow`;
+approval is an activation effect owned by `cmd_trust` — see the trust-approval note below.
 
 **Git hook configuration.** `_configure_post_checkout_hook` (`hooks.py`) writes the
 project-owned configuration that forwards Git's event arguments to Splashdown on later checkout
@@ -208,13 +260,17 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - Hook wiring per manager — lefthook/husky/native common hook — and the shared
   `POST_CHECKOUT_HOOK` body: `src/splashdown/hooks.py`.
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery`: `src/splashdown/commands.py`.
-- `_ensure_gitignore` / `_ensure_mise_file_directive`: `src/splashdown/hooks.py`.
+- `_ensure_gitignore` / `mise_config_path`: `src/splashdown/hooks.py`.
 - `Scanner.scan`: `src/splashdown/scanner.py`; `ProjectInventory` / `AppInventory`:
   `src/splashdown/inventory.py`.
-- `_detect_workspace` / `_enumerate_apps` / `_detect_loader`: `src/splashdown/scanner.py`.
+- `_detect_workspace` / `_enumerate_apps` / `select_loader` / `LoaderSelection`:
+  `src/splashdown/scanner.py`.
 - `_build_resource_catalog` (collision mangling and app references):
   `src/splashdown/scanner.py`.
-- `LOADERS` registry and idempotent loader implementations: `src/splashdown/loaders.py`.
+- `LOADERS` registry, `WirePlan`, and idempotent loader implementations:
+  `src/splashdown/loaders.py`.
+- `InitReport` / `_commit_loader_plan` / `_emit_init_report` / `_init_effects` /
+  `_init_failure`: `src/splashdown/commands.py`.
 - `init` argparse parser and dispatch: `src/splashdown/cli.py`.
 
 ## Configuration
@@ -223,7 +279,7 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   scanner-driven generation is the only recipe path. Recipes that a scan cannot infer, such as a
   generic `PORT`, a per-checkout Postgres database name, or Electron user-data isolation, are
   documented examples in `docs/user/recipe.md`.
-- **`--loader mise|direnv|devbox|none`** — override loader auto-detection
+- **`--loader mise|direnv|devbox|none`** — override loader selection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
 - **`--electron-profile=isolated|shared`** — scanner-only Electron choice. `isolated` adds a
@@ -283,16 +339,15 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   `approve()` never fails the run — a missing `mise`/`direnv` binary, non-zero exit, or timeout
   is swallowed (`loaders.py`, `_run_ok`).
 
-- **Loader detection falls back to PATH.** `_detect_loader` (`scanner.py`) first asks each
-  `Loader.detect()` whether the repo carries its config (`mise.toml`, `.envrc`, `devbox.json`),
-  and a repo-level config always wins. Failing that it checks whether the binary is installed
-  (`_loader_on_path` → `shutil.which`) in mise → direnv → devbox order and wires the first hit,
-  because a fresh clone has no config file yet and writing `splashdown.env` with nothing to
-  source it is a silent no-op. `--loader none` is the explicit opt-out. `Loader.wire()` already
-  handles the create-from-nothing case, so no separate scaffolding path is needed.
+- **Loader selection never consults PATH.** A fresh clone with mise installed but no
+  `mise.toml` gets `loader = "none"`, not mise. Adopting an integration the project has not
+  chosen is a project decision, not an inference from the developer's machine, so the PATH
+  fallback that used to make that choice is gone. The cost is that such a clone writes
+  `splashdown.env` with nothing sourcing it until the user passes `--loader`, which init says
+  plainly in its no-loader instructions.
 
-- **No-loader + process-only apps = silent no-op risk.** Only reachable now when *no* loader is
-  installed at all (or `--loader none` was passed) and the only apps read env from the process
+- **No-loader + process-only apps = silent no-op risk.** Reachable whenever no loader is
+  configured (or `--loader none` was passed) and the only apps read env from the process
   (Vite, Spring Boot, mobile) rather than a dotenv file: sync keeps writing
   `splashdown.env` and init prints how to source it, but nothing sources it automatically
   (`_resolve_no_loader_delivery` and `_NO_LOADER_INSTRUCTIONS` in `commands.py`).

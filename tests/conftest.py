@@ -37,15 +37,6 @@ def _stub_loader_approval(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_loader_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Loader detection falls back to whatever is installed on PATH, so a dev box
-    with mise would otherwise scan differently from a bare CI runner. Default every
-    test to "nothing installed"; the tests that exercise the fallback re-monkeypatch
-    `sd.scanner._loader_on_path` themselves."""
-    monkeypatch.setattr(sd.scanner, "_loader_on_path", lambda _name: False)
-
-
-@pytest.fixture(autouse=True)
 def _no_watchman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from splashdown import runtime_checks
 
