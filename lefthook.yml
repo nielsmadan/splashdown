@@ -10,12 +10,14 @@ pre-commit:
 
 pre-push:
   commands:
-    pylint:
-      run: uv run pylint src/splashdown
-    mypy:
-      run: uv run mypy
-    tests:
-      run: uv run pytest -q --cov  # --cov enforces fail_under (see [tool.coverage.report])
+    check:
+      run: just check
+      priority: 1
+    coverage:
+      # just check runs the tests; this re-runs them under --cov, which enforces
+      # fail_under (see [tool.coverage.report]).
+      run: uv run pytest -q --cov
+      priority: 2
     docs:
       # Only when docs actually changed; strict fails the push on broken links/nav.
       glob:
@@ -23,3 +25,5 @@ pre-push:
         - "mkdocs.yml"
         - "README.md"
       run: uv run --group docs zensical build -f mkdocs.yml --strict
+      priority: 3
+
