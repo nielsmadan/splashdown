@@ -405,7 +405,7 @@ and resource associations. Keep the settings you already chose for other apps, t
 
 For a fresh detection result to compare, use a disposable copy of the project outside the
 working checkout, preserving its files and workspace layout but omitting Git metadata.
-In that copy, run `splash init --overwrite --no-sync --loader none`
+In that copy, run `splash init --overwrite --loader none`
 when a recipe already exists, or omit `--overwrite` for a new recipe. Init can also modify
 integration files in the copy. Compare the generated recipe with the original and selectively
 apply the useful changes. Running `init --overwrite` in the real project replaces the entire

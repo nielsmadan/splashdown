@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .constants import ENV_FILE_NAME
-from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive
+from .hooks import _ensure_mise_file_directive, _remove_mise_file_directive, mise_config_path
 
 
 def _run_ok(argv: list[str], cwd: Path) -> bool:
@@ -25,20 +25,25 @@ class Loader:
     """Abstract base. Subclasses set `name` and override `detect` and `wire`."""
 
     name: str = ""
+    # Completes "trust also approves the <name> configuration splashdown wired, so …".
+    approval_detail: str = ""
 
     def detect(self, cwd: Path) -> bool:
         raise NotImplementedError
 
-    def wire(self, cwd: Path) -> bool:
-        """Idempotently configure the loader to source splashdown.env. Returns
-        True only when this call created the loader config from nothing — the
-        signal `cmd_init` uses to decide whether to auto-approve it."""
+    def wire(self, cwd: Path) -> None:
+        """Idempotently configure the loader to source splashdown.env."""
         raise NotImplementedError
+
+    def owns_config(self, cwd: Path) -> bool:
+        """True when the loader's configuration holds splashdown's integration
+        and nothing else, so approving it cannot authorize user-authored code."""
+        return False
 
     def approve(self, cwd: Path, *, announce: bool = False) -> bool:
         """Run the loader's trust/allow step so it will actually load
         splashdown.env. No-op by default (only mise/direnv gate on trust).
-        Never raises. `announce` prints a one-line result on the init path."""
+        Never raises. `announce` prints a one-line result."""
         return False
 
     def unwire(self, cwd: Path) -> None:
@@ -49,15 +54,28 @@ class Loader:
 
 class MiseLoader(Loader):
     name = "mise"
+    approval_detail = "mise trusts that path permanently and loads whatever the file holds later"
 
     def detect(self, cwd: Path) -> bool:
         return (cwd / "mise.toml").exists() or (cwd / ".mise.toml").exists()
 
-    def wire(self, cwd: Path) -> bool:
-        return _ensure_mise_file_directive(cwd)
+    def wire(self, cwd: Path) -> None:
+        _ensure_mise_file_directive(cwd)
+
+    def owns_config(self, cwd: Path) -> bool:
+        from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
+
+        path = mise_config_path(cwd)
+        if not path.exists():
+            return False
+        try:
+            remainder = remove_mise_file_directive_text(path.read_text())
+        except (OSError, ValueError):
+            return False
+        return remainder is not None and not remainder.strip()
 
     def approve(self, cwd: Path, *, announce: bool = False) -> bool:
-        path = cwd / "mise.toml" if (cwd / "mise.toml").exists() else cwd / ".mise.toml"
+        path = mise_config_path(cwd)
         if not path.exists():
             return False
         ok = _run_ok(["mise", "trust", str(path)], cwd)
@@ -86,11 +104,14 @@ _DIRENV_BLOCK_RE = re.compile(
 
 class DirenvLoader(Loader):
     name = "direnv"
+    approval_detail = (
+        "direnv loads the file as it stands now and prompts again after any later edit"
+    )
 
     def detect(self, cwd: Path) -> bool:
         return (cwd / ".envrc").exists() or (cwd / ".envrc.local").exists()
 
-    def wire(self, cwd: Path) -> bool:
+    def wire(self, cwd: Path) -> None:
         path = cwd / ".envrc"
         created = not path.exists()
         existing = path.read_text() if path.exists() else ""
@@ -102,12 +123,23 @@ class DirenvLoader(Loader):
                 text += "\n\n"
             new_text = text + _DIRENV_BLOCK
         if new_text == existing:
-            return False
+            return
         path.write_text(new_text)
         # Editing an existing .envrc invalidates its trust hash, but auto-allowing user commands would be unsafe.
         if not created:
             print("wired .envrc — run `direnv allow` to load splashdown.env", file=sys.stderr)
-        return created
+
+    def owns_config(self, cwd: Path) -> bool:
+        path = cwd / ".envrc"
+        if not path.exists():
+            return False
+        try:
+            text = path.read_text()
+        except OSError:
+            return False
+        if not _DIRENV_BLOCK_RE.search(text):
+            return False
+        return not _DIRENV_BLOCK_RE.sub("", text).strip()
 
     def approve(self, cwd: Path, *, announce: bool = False) -> bool:
         if not (cwd / ".envrc").exists():
@@ -144,7 +176,7 @@ class DevboxLoader(Loader):
     def detect(self, cwd: Path) -> bool:
         return (cwd / "devbox.json").exists()
 
-    def wire(self, cwd: Path) -> bool:
+    def wire(self, cwd: Path) -> None:
         path = cwd / "devbox.json"
         if not path.exists():
             path.write_text("{}")
@@ -156,11 +188,9 @@ class DevboxLoader(Loader):
         new_hooks = [h for h in hooks if isinstance(h, str) and _DEVBOX_HOOK_MARKER not in h]
         new_hooks.append(_DEVBOX_HOOK_CMD)
         if new_hooks == hooks:
-            return False
+            return
         shell["init_hook"] = new_hooks
         path.write_text(json.dumps(data, indent=2) + "\n")
-        # devbox has no trust gate, so the create/edit distinction is unused.
-        return False
 
     def unwire(self, cwd: Path) -> None:
         path = cwd / "devbox.json"
@@ -200,8 +230,8 @@ class NoneLoader(Loader):
     def detect(self, cwd: Path) -> bool:
         return False
 
-    def wire(self, cwd: Path) -> bool:
-        return False
+    def wire(self, cwd: Path) -> None:
+        pass
 
 
 LOADERS: dict[str, Loader] = {

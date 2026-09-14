@@ -8,6 +8,7 @@ from typing import Any, NamedTuple
 
 from .hooks import (
     _ensure_post_checkout_hook,
+    _nested_project,
     post_checkout_manual_instructions,
     post_checkout_readiness,
 )
@@ -30,6 +31,9 @@ class WiringCheck(NamedTuple):
     # Used when autofix is None or when --fix isn't requested. Returns the
     # exact change the user should apply themselves.
     manual_instructions: Callable[[Path], str] | None
+    # True when the fix activates the local checkout instead of writing
+    # project-owned configuration, so `splash init` skips it.
+    activation: bool = False
 
 
 # RN checks accumulate as helpers are defined; ReactNativeProfile returns a copy after module import completes.
@@ -178,16 +182,21 @@ def _autofix_ensure_post_checkout_hook(cwd: Path) -> None:
     _ensure_post_checkout_hook(cwd)
 
 
-_RN_WIRING_CHECKS.append(
-    WiringCheck(
-        id="hook",
-        description="post-checkout forwards Git events to Splashdown",
-        applies=lambda cwd: True,
-        detect=_rn_hook_detect,
-        autofix=_autofix_ensure_post_checkout_hook,
-        manual_instructions=_rn_hook_manual,
-    ),
+def _rn_hook_applies(cwd: Path) -> bool:
+    return not _nested_project(cwd)
+
+
+_HOOK_WIRING_CHECK = WiringCheck(
+    id="hook",
+    description="post-checkout forwards Git events to Splashdown",
+    applies=_rn_hook_applies,
+    detect=_rn_hook_detect,
+    autofix=_autofix_ensure_post_checkout_hook,
+    manual_instructions=_rn_hook_manual,
+    activation=True,
 )
+
+_RN_WIRING_CHECKS.append(_HOOK_WIRING_CHECK)
 
 
 # Recognized metro.config.js shapes:
@@ -435,14 +444,4 @@ _RN_WIRING_CHECKS.append(
         autofix=_rn_xcode_autofix,
         manual_instructions=_rn_xcode_manual,
     ),
-)
-
-
-_HOOK_WIRING_CHECK = WiringCheck(
-    id="hook",
-    description="post-checkout forwards Git events to Splashdown",
-    applies=lambda cwd: True,
-    detect=_rn_hook_detect,
-    autofix=_autofix_ensure_post_checkout_hook,
-    manual_instructions=_rn_hook_manual,
 )

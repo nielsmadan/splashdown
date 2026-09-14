@@ -40,10 +40,20 @@ scaffolding so a fresh setup lands wired.
 
 `WiringCheck` (`wiring.py`) is a `NamedTuple` carrying everything `doctor` needs
 to handle one fact: an `id`, a human `description`, `applies(cwd) -> bool`,
-`detect(cwd) -> ("ok"|"problem", detail)`, an optional `autofix(cwd) -> None`, and
-`manual_instructions(cwd) -> str`. The contract is deliberately three-state per
-check: not-applicable (skip), ok, or problem — with two escape hatches on a
-problem (an autofix that may exist, and manual instructions that always do).
+`detect(cwd) -> ("ok"|"problem", detail)`, an optional `autofix(cwd) -> None`,
+`manual_instructions(cwd) -> str`, and an `activation` flag. The contract is
+deliberately three-state per check: not-applicable (skip), ok, or problem — with
+two escape hatches on a problem (an autofix that may exist, and manual
+instructions that always do).
+
+`activation` classifies what the autofix writes. A check is `activation=True` when
+its repair touches the local checkout rather than project-owned, committable
+configuration: `_HOOK_WIRING_CHECK` sets it, because its autofix installs the local
+Git hook and runs `lefthook install`. `_apply_init_wiring_checks` (`commands.py`)
+skips those checks, which is what keeps `splash init` configuration-only; `doctor`
+and `doctor --fix` run them as before. Classifying the check itself, rather than
+filtering by `id` at init, means a future activation-class check is excluded from
+init by construction and by whichever Profile returns it.
 
 `autofix is None` is the load-bearing signal for **report-only** checks: a check
 with no safe mechanical rewrite (Spring Boot) sets it to `None`, and the run loop
@@ -56,7 +66,13 @@ Checks are owned by **Profiles**, not by `doctor` directly. The RN checks live i
 a module-level list `_RN_WIRING_CHECKS` (`wiring.py`) that is populated by a
 sequence of top-level `.append(...)` calls as each `rn-*` helper is defined. The shared `_HOOK_WIRING_CHECK`
 (`wiring.py`) is a single check reused by native Profiles that otherwise have no
-per-checkout wiring.
+per-checkout wiring; `_RN_WIRING_CHECKS` appends that same object, so the RN and
+native hook checks cannot drift apart.
+
+Its `applies` returns `False` in a nested project. Git invokes checkout hooks from
+the worktree root, so the hook the check would install belongs to a directory where
+the nested recipe is invisible: doctor reports `hook: not applicable` there instead
+of a permanent problem pointing at a `--fix` that cannot work.
 
 This is **order-dependent**, and the coupling runs through `profiles_mobile.py`:
 

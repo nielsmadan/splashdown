@@ -81,48 +81,40 @@ def _ensure_gitignore(cwd: Path) -> None:
     print(f"updated .gitignore (+{', '.join(additions)})", file=sys.stderr)
 
 
-def _ensure_mise_file_directive(cwd: Path) -> bool:
-    """Ensure mise's config has `_.file = "splashdown.env"` under [env].
+def mise_config_path(cwd: Path) -> Path:
+    """The mise config splashdown reads and edits. Prefers an existing file so we
+    edit the one the user already has instead of scaffolding a second one; falls
+    back to `mise.toml` as the path to create."""
+    if (cwd / "mise.toml").exists():
+        return cwd / "mise.toml"
+    if (cwd / ".mise.toml").exists():
+        return cwd / ".mise.toml"
+    return cwd / "mise.toml"
 
-    Targets an existing `.mise.toml` when that is the only config present, so we
-    edit the file the user already has instead of scaffolding a second one.
 
-    Returns True only when this call created the config file from nothing — the
-    signal callers use to decide whether to auto-`mise trust` it. A pre-existing
-    (even untrusted) file returns False so we never auto-trust config that may
-    carry the user's own unreviewed `[tools]`/`[tasks]`.
-    """
+def _ensure_mise_file_directive(cwd: Path) -> None:
+    """Ensure mise's config has `_.file = "splashdown.env"` under [env]."""
     from .tomlio import ensure_mise_file_directive_text  # noqa: PLC0415
 
     directive = f'_.file = "{ENV_FILE_NAME}"'
-    if (cwd / "mise.toml").exists():
-        path = cwd / "mise.toml"
-    elif (cwd / ".mise.toml").exists():
-        path = cwd / ".mise.toml"
-    else:
-        path = cwd / "mise.toml"
+    path = mise_config_path(cwd)
     text = path.read_text() if path.exists() else None
     new_text = ensure_mise_file_directive_text(text)
     if new_text is None:
-        return False  # directive already present
+        return  # directive already present
     path.write_text(new_text)
     verb = "updated" if text is not None else "created"
     print(f"{verb} {path.name} (+{directive})", file=sys.stderr)
-    return text is None
 
 
 def _remove_mise_file_directive(cwd: Path) -> None:
     """Inverse of _ensure_mise_file_directive: drop `_.file = "splashdown.env"`.
     If that empties the `[env]` table it's dropped too; if the whole file is left
-    empty it's deleted. Other keys/tables are preserved. Targets `.mise.toml`
-    when that's the only config present (mirrors _ensure_mise_file_directive)."""
+    empty it's deleted. Other keys/tables are preserved."""
     from .tomlio import remove_mise_file_directive_text  # noqa: PLC0415
 
-    if (cwd / "mise.toml").exists():
-        path = cwd / "mise.toml"
-    elif (cwd / ".mise.toml").exists():
-        path = cwd / ".mise.toml"
-    else:
+    path = mise_config_path(cwd)
+    if not path.exists():
         return
     new_text = remove_mise_file_directive_text(path.read_text())
     if new_text is None:
@@ -151,6 +143,39 @@ def _revert_gitignore(cwd: Path) -> None:
         return
     path.write_text("\n".join(kept) + ("\n" if kept else ""))
     print(f"updated .gitignore (-{', '.join(reported)})", file=sys.stderr)
+
+
+def _git_worktree_root(cwd: Path) -> Path | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    root = result.stdout.strip()
+    if result.returncode != 0 or not root:
+        return None
+    return Path(root).resolve()
+
+
+def _nested_worktree(cwd: Path, worktree_root: Path | None) -> bool:
+    return worktree_root is not None and worktree_root != cwd.resolve()
+
+
+def _nested_project(cwd: Path) -> bool:
+    return _nested_worktree(cwd, _git_worktree_root(cwd))
+
+
+def _print_nested_checkout_hook_note(cwd: Path) -> None:
+    print(
+        "note: post-checkout hook not installed for nested project; "
+        f"run `splash --cwd {cwd.resolve()} sync` after checkout",
+        file=sys.stderr,
+    )
 
 
 def _detect_hook_manager(cwd: Path) -> str:
@@ -255,6 +280,9 @@ def _lefthook_run_value(line: str) -> str | None:
 
 
 def _wire_post_checkout_lefthook(cwd: Path) -> bool:
+    """Write splashdown's job into the project's lefthook configuration. Returns
+    True when the configuration carries our current job afterwards. Installing
+    the local hooks is activation, not configuration, and happens elsewhere."""
     path = _lefthook_config_path(cwd)
     text = read_optional_editable_text(path, root=cwd) or ""
     lines = text.splitlines()
@@ -263,7 +291,7 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         _, _, run_index = owned
         value = _lefthook_run_value(lines[run_index]) if run_index is not None else None
         if value == _LEFTHOOK_RUN:
-            return _run_lefthook_install(cwd)
+            return True
         if value == _LEFTHOOK_LEGACY_RUN and run_index is not None:
             run_indent = lines[run_index][: len(lines[run_index]) - len(lines[run_index].lstrip())]
             lines[run_index] = f"{run_indent}run: {_LEFTHOOK_RUN}"
@@ -273,9 +301,8 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
                 root=cwd,
                 create=True,
             )
-            installed = _run_lefthook_install(cwd)
             print(f"updated post-checkout in {path.name} (lefthook)", file=sys.stderr)
-            return installed
+            return True
         print(
             f"existing splashdown job in {path.name} was modified — leaving it untouched",
             file=sys.stderr,
@@ -320,9 +347,8 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
             root=cwd,
             create=True,
         )
-    installed = _run_lefthook_install(cwd)
     print(f"wired post-checkout in {path.name} (lefthook)", file=sys.stderr)
-    return installed
+    return True
 
 
 def _run_lefthook_install(cwd: Path) -> bool:
@@ -386,6 +412,9 @@ def _native_hook_path(cwd: Path) -> Path | None:
 
 
 def _wire_post_checkout_native(cwd: Path) -> bool:
+    if _nested_project(cwd):
+        _print_nested_checkout_hook_note(cwd)
+        return False
     hook = _native_hook_path(cwd)
     if hook is None:
         print("note: not a Git checkout; post-checkout hook not installed", file=sys.stderr)
@@ -456,30 +485,54 @@ def post_checkout_manual_instructions(cwd: Path) -> str:
     )
 
 
-def _ensure_post_checkout_hook(cwd: Path) -> None:
+def _warn_custom_hooks_path(cwd: Path) -> None:
+    try:
+        current = (
+            subprocess.check_output(
+                ["git", "config", "--get", "core.hooksPath"],
+                cwd=cwd,
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+    except (subprocess.CalledProcessError, OSError):
+        current = "?"
+    print(
+        f"warning: core.hooksPath is `{current}` — not wiring automatically. "
+        "Use a trusted absolute splash path and forward `$1`, `$2`, `$3`.",
+        file=sys.stderr,
+    )
+
+
+def _configure_post_checkout_hook(cwd: Path) -> None:
+    """Write the project-owned hook configuration only. The native wrapper lives
+    in the local `.git` directory, so it is installed by trusted activation."""
     manager = _detect_hook_manager(cwd)
     if manager == "lefthook":
         _wire_post_checkout_lefthook(cwd)
     elif manager == "husky":
         _wire_post_checkout_husky(cwd)
     elif manager == "core-hookspath-other":
-        try:
-            current = (
-                subprocess.check_output(
-                    ["git", "config", "--get", "core.hooksPath"],
-                    cwd=cwd,
-                    stderr=subprocess.DEVNULL,
-                )
-                .decode()
-                .strip()
-            )
-        except (subprocess.CalledProcessError, OSError):
-            current = "?"
+        _warn_custom_hooks_path(cwd)
+    elif _native_hook_path(cwd) is None:
+        print("note: not a Git checkout; post-checkout hook not installed", file=sys.stderr)
+    else:
         print(
-            f"warning: core.hooksPath is `{current}` — not wiring automatically. "
-            "Use a trusted absolute splash path and forward `$1`, `$2`, `$3`.",
+            "note: the local post-checkout hook is installed by `splash trust`",
             file=sys.stderr,
         )
+
+
+def _ensure_post_checkout_hook(cwd: Path) -> None:
+    manager = _detect_hook_manager(cwd)
+    if manager == "lefthook":
+        if _wire_post_checkout_lefthook(cwd):
+            _run_lefthook_install(cwd)
+    elif manager == "husky":
+        _wire_post_checkout_husky(cwd)
+    elif manager == "core-hookspath-other":
+        _warn_custom_hooks_path(cwd)
     else:
         _wire_post_checkout_native(cwd)
 

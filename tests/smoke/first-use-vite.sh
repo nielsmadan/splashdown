@@ -390,7 +390,6 @@ run_logged "$CURRENT_LOG" run_in_directory "$APP" splash init
 
 assert_file "$APP/splashdown.toml"
 assert_file "$APP/splashdown.local.toml"
-assert_file "$APP/splashdown.env"
 assert_contains "$CURRENT_LOG" "→ vite"
 assert_contains "$APP/splashdown.toml" 'profile = "vite"'
 assert_contains "$APP/splashdown.toml" '[resources.WEB_DEV_PORT]'
@@ -402,6 +401,13 @@ assert_loader_wiring "$APP" "$LOADER" "$CURRENT_LOG"
 
 git -C "$APP" check-ignore -q -- splashdown.local.toml \
     || fail "splashdown.local.toml is not ignored"
+
+phase "trust and first sync"
+CURRENT_LOG="$LOG_DIR/splash-trust.log"
+run_logged "$CURRENT_LOG" run_in_directory "$APP" splash trust
+CURRENT_LOG="$LOG_DIR/splash-first-sync.log"
+run_logged "$CURRENT_LOG" run_in_directory "$APP" splash sync
+assert_file "$APP/splashdown.env"
 
 capture_logged MAIN_PORT "$CURRENT_LOG" splash --cwd "$APP" env get WEB_DEV_PORT
 assert_port "main WEB_DEV_PORT" "$MAIN_PORT"

@@ -54,16 +54,23 @@ def _fake_toolchain(tmp_path: Path) -> tuple[Path, Path]:
         if [[ "${{1:-}}" == "init" ]]; then
             printf '[apps.app]\nprofile = "vite"\nresources = ["WEB_DEV_PORT"]\n\n[resources.WEB_DEV_PORT]\ntype = "port"\n' > splashdown.toml
             printf '[targets]\n' > splashdown.local.toml
-            printf 'WEB_DEV_PORT=5174\n' > splashdown.env
             printf 'splashdown.local.toml\n' > .gitignore
             printf '  → vite\n'
             if [[ -f "$state/loader-none" ]]; then
                 printf '  shell loader\t→ none\n'
-                printf 'no shell loader detected — wrote splashdown.env but nothing sources it.\n'
+                printf 'no shell loader detected — splashdown.env will be generated but nothing sources it.\n'
             else
                 printf '  shell loader\t→ mise\n'
                 printf '_.file = "splashdown.env"\n' > mise.toml
             fi
+            exit 0
+        fi
+        if [[ "${{1:-}}" == "trust" ]]; then
+            printf 'trusted this clone for automatic splashdown handling\n'
+            exit 0
+        fi
+        if [[ "${{1:-}}" == "sync" ]]; then
+            printf 'WEB_DEV_PORT=5174\n' > splashdown.env
             exit 0
         fi
         checkout="$2"

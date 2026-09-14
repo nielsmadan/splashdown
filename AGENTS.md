@@ -64,9 +64,11 @@ The package has an explicit acyclic import policy:
 - Pylint's `cyclic-import` check analyzes the package in `just check`. Keep shared exception and
   capability seams dependency-free rather than hiding cycles behind lazy imports.
 
-`tomlio.py` is the sole top-level `tomlkit` importer. Its write-path callers (`commands.py`,
-`targets.py`, and `hooks.py`) import it lazily, and `__init__.py` does not re-export it. Reads use
+`tomlio.py` is the sole top-level `tomlkit` importer. Its callers (`commands.py`, `targets.py`,
+`hooks.py`, and `loaders.py`) import it lazily, and `__init__.py` does not re-export it. Reads use
 stdlib `tomllib`, keeping bare `splash` and the post-checkout hook path light.
+`MiseLoader.owns_config` is a read that reuses `remove_mise_file_directive_text` because
+ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 
 ## Load-bearing constraints
 

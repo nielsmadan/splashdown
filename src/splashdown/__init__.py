@@ -157,6 +157,7 @@ from .errors import (
 )
 from .hooks import (
     LEGACY_POST_CHECKOUT_HOOK,
+    _configure_post_checkout_hook,
     _detect_hook_manager,
     _ensure_post_checkout_hook,
     _native_hook_path,

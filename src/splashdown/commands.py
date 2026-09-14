@@ -6,7 +6,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -35,12 +34,16 @@ from .devices import DeviceError, device_destroy_row
 from .errors import MissingRecipeError, UsageError
 from .hooks import (
     _activate_post_checkout_hook,
+    _configure_post_checkout_hook,
     _ensure_gitignore,
-    _ensure_post_checkout_hook,
+    _git_worktree_root,
+    _nested_project,
+    _nested_worktree,
+    _print_nested_checkout_hook_note,
     _revert_gitignore,
 )
 from .inventory import ProjectInventory
-from .loaders import LOADERS
+from .loaders import LOADERS, Loader
 from .provisioning import (
     WriterResult,
     clear_writer_destinations,
@@ -171,7 +174,7 @@ def cmd_completion(shell: str | None) -> int:
 
 
 _NO_LOADER_INSTRUCTIONS = (
-    "no shell loader detected — wrote splashdown.env but nothing sources it.\n"
+    "no shell loader detected — splashdown.env will be generated but nothing sources it.\n"
     "  install mise/direnv/devbox and re-run `splash init`, or source it "
     "yourself (e.g. `set -a; . ./splashdown.env; set +a`)"
 )
@@ -255,7 +258,7 @@ def _apply_no_loader_fallback(
 
 
 def _write_minimal_monorepo_recipe(
-    cwd: Path, inv: ProjectInventory, *, wire_checkout_hook: bool
+    cwd: Path, inv: ProjectInventory, worktree_root: Path | None, *, wire_checkout_hook: bool
 ) -> None:
     """Write a structure-only recipe for an ambiguous monorepo and configure its integrations."""
     from .tomlio import render_scanned_recipe  # noqa: PLC0415
@@ -273,12 +276,10 @@ def _write_minimal_monorepo_recipe(
     if _create_local_skeleton(cwd):
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
     _ensure_gitignore(cwd)
-    loader = LOADERS[inv.loader]
-    if loader.wire(cwd):
-        loader.approve(cwd, announce=True)
+    LOADERS[inv.loader].wire(cwd)
     _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
-    _trust_generated_sync(cwd)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
+    _print_init_next_steps(cwd, worktree_root)
 
 
 _ELECTRON_PROFILE_RESOURCE = "ELECTRON_PROFILE_ID"
@@ -413,37 +414,26 @@ def _resolve_init_project_metadata(
     return metadata or None
 
 
-def _trust_generated_sync(cwd: Path) -> None:
-    with suppress(OSError, ValueError):
-        record_trust(git_dirs(cwd), bootstrap=False)
-
-
-def _git_worktree_root(cwd: Path) -> Path | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    root = result.stdout.strip()
-    if result.returncode != 0 or not root:
-        return None
-    return Path(root).resolve()
-
-
 def _wire_init_checkout_hook(cwd: Path, *, enabled: bool) -> None:
     if enabled:
-        _ensure_post_checkout_hook(cwd)
+        _configure_post_checkout_hook(cwd)
         return
-    print(
-        "note: post-checkout hook not installed for nested project; "
-        f"run `splash --cwd {cwd.resolve()} sync` after checkout",
-        file=sys.stderr,
-    )
+    _print_nested_checkout_hook_note(cwd)
+
+
+def _print_init_next_steps(cwd: Path, worktree_root: Path | None) -> None:
+    print("configuration written; nothing is allocated or active yet", file=sys.stderr)
+    steps = []
+    if worktree_root is not None:
+        detail = (
+            "authorize automatic environment output"
+            if _nested_worktree(cwd, worktree_root)
+            else "activate automatic post-checkout handling"
+        )
+        steps.append(f"run `splash trust` to {detail}")
+    steps.append(f"run `splash` to allocate values and write {ENV_FILE_NAME}")
+    for index, step in enumerate(steps):
+        print(f"{'next:' if index == 0 else '     '} {step}", file=sys.stderr)
 
 
 @dataclass(frozen=True)
@@ -495,7 +485,7 @@ def cmd_init(
     recipe_path = cwd / RECIPE_NAME
     recipe_exists = _init_recipe_exists(recipe_path)
     worktree_root = _git_worktree_root(cwd)
-    nested = worktree_root is not None and worktree_root != cwd.resolve()
+    nested = _nested_worktree(cwd, worktree_root)
     if recipe_exists and not options.overwrite:
         raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
@@ -519,7 +509,7 @@ def cmd_init(
             continue
         res_by_app[app.name] = PROFILES[app.profile].resources(app)
     if _should_defer_monorepo(cwd, res_by_app, inv.apps):
-        _write_minimal_monorepo_recipe(cwd, inv, wire_checkout_hook=not nested)
+        _write_minimal_monorepo_recipe(cwd, inv, worktree_root, wire_checkout_hook=not nested)
         return
     electron_isolated = _add_electron_resources(cwd, inv, res_by_app, electron_profile)
     merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
@@ -554,13 +544,10 @@ def cmd_init(
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
     _ensure_gitignore(cwd)
-    loader = LOADERS[inv.loader]
-    if loader.wire(cwd):
-        loader.approve(cwd, announce=True)
+    LOADERS[inv.loader].wire(cwd)
     if no_loader_msg:
         print(f"  {no_loader_msg}", file=sys.stderr)
     _wire_init_checkout_hook(cwd, enabled=not nested)
-    _trust_generated_sync(cwd)
     if electron_isolated:
         resource_names = [
             name
@@ -574,16 +561,18 @@ def cmd_init(
     if any(app.profile != "unknown" for app in inv.apps):
         _apply_init_wiring_checks(inv)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
+    _print_init_next_steps(cwd, worktree_root)
 
 
 def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
-    """Apply autofix wiring checks for every known-profile app found during init."""
+    """Apply the project-configuration wiring checks for every known-profile app
+    found during init. Activation checks belong to `splash trust` and `splash doctor`."""
     for app in inv.apps:
         if app.profile == "unknown":
             continue
         checks = PROFILES[app.profile].wiring_checks(app)
         for check in checks:
-            if not check.applies(app.path):
+            if check.activation or not check.applies(app.path):
                 continue
             status, _ = check.detect(app.path)
             if status != "ok" and check.autofix is not None:
@@ -790,17 +779,17 @@ def _bootstrap_commands(recipe: Recipe) -> tuple[str, ...]:
     return recipe.bootstrap.commands
 
 
-def cmd_trust(cwd: Path) -> int:
-    if _reject_nested_lifecycle():
-        return 1
-    try:
-        dirs = git_dirs(cwd)
-        recipe = _load_required_recipe(cwd)
-    except (FileNotFoundError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
+def _splashdown_owned_loader(cwd: Path, recipe: Recipe) -> Loader | None:
+    """Return the loader whose configuration holds nothing but splashdown's
+    integration. Configuration carrying anything else is the user's to approve."""
+    loader = LOADERS.get(str(recipe.project.get("loader") or "none"))
+    if loader is None or not loader.owns_config(cwd):
+        return None
+    return loader
 
-    bootstrap_was_trusted = is_trusted(dirs)
+
+def _print_trust_preamble(cwd: Path, recipe: Recipe) -> Loader | None:
+    """Print what trust authorizes and return the loader configuration it approves."""
     if recipe.bootstrap is not None:
         print("bootstrap commands:", file=sys.stderr)
         for index, command in enumerate(recipe.bootstrap.commands, start=1):
@@ -814,6 +803,28 @@ def cmd_trust(cwd: Path) -> int:
     if recipe.bootstrap is not None:
         warning += " and run declared bootstrap commands with your user permissions"
     print(warning, file=sys.stderr)
+    owned_loader = _splashdown_owned_loader(cwd, recipe)
+    if owned_loader is not None:
+        print(
+            f"warning: trust also approves the {owned_loader.name} configuration splashdown "
+            f"wired, so {owned_loader.approval_detail}",
+            file=sys.stderr,
+        )
+    return owned_loader
+
+
+def cmd_trust(cwd: Path) -> int:
+    if _reject_nested_lifecycle():
+        return 1
+    try:
+        dirs = git_dirs(cwd)
+        recipe = _load_required_recipe(cwd)
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    bootstrap_was_trusted = is_trusted(dirs)
+    owned_loader = _print_trust_preamble(cwd, recipe)
     if recipe.bootstrap is None and bootstrap_was_trusted:
         print(
             "bootstrap execution remains authorized from earlier trust; "
@@ -825,17 +836,23 @@ def cmd_trust(cwd: Path) -> int:
             "bootstrap execution is not authorized; adding [bootstrap] requires `splash trust`",
             file=sys.stderr,
         )
-    try:
-        automatic = _activate_post_checkout_hook(cwd)
-    except OSError as error:
+    if _nested_project(cwd):
         automatic = False
-        print(f"note: could not activate automatic handling: {error}", file=sys.stderr)
+        _print_nested_checkout_hook_note(cwd)
+    else:
+        try:
+            automatic = _activate_post_checkout_hook(cwd)
+        except OSError as error:
+            automatic = False
+            print(f"note: could not activate automatic handling: {error}", file=sys.stderr)
     try:
         record_trust(dirs, bootstrap=recipe.bootstrap is not None)
     except OSError as error:
         print(f"error: could not record trust: {error}", file=sys.stderr)
         return 1
     print("trusted this clone for automatic splashdown handling", file=sys.stderr)
+    if owned_loader is not None:
+        owned_loader.approve(cwd, announce=True)
     if not automatic:
         print("automatic post-checkout handling is not active for this checkout", file=sys.stderr)
     if recipe.bootstrap is not None:

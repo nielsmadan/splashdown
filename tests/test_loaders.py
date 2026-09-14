@@ -183,22 +183,20 @@ def test_devbox_loader_unwire_deletes_solely_managed_file(tmp_path):
     assert not (tmp_path / "devbox.json").exists()
 
 
-def test_mise_loader_wire_returns_true_on_create_false_on_rerun(tmp_path):
-    assert sd.LOADERS["mise"].wire(tmp_path) is True
-    assert (tmp_path / "mise.toml").exists()
-    assert sd.LOADERS["mise"].wire(tmp_path) is False
+def test_mise_loader_wire_creates_config_and_is_idempotent(tmp_path):
+    sd.LOADERS["mise"].wire(tmp_path)
+    first = (tmp_path / "mise.toml").read_text()
+    assert '_.file = "splashdown.env"' in first
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert (tmp_path / "mise.toml").read_text() == first
 
 
-def test_mise_loader_wire_returns_false_when_editing_existing_file(tmp_path):
+def test_mise_loader_wire_keeps_user_content_when_editing_existing_file(tmp_path):
     (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
-    assert sd.LOADERS["mise"].wire(tmp_path) is False
-    assert '_.file = "splashdown.env"' in (tmp_path / "mise.toml").read_text()
-
-
-def test_direnv_loader_wire_returns_true_on_create_false_when_editing_existing(tmp_path):
-    assert sd.LOADERS["direnv"].wire(tmp_path) is True
-    (tmp_path / ".envrc").write_text("use nix\n")
-    assert sd.LOADERS["direnv"].wire(tmp_path) is False
+    sd.LOADERS["mise"].wire(tmp_path)
+    text = (tmp_path / "mise.toml").read_text()
+    assert '_.file = "splashdown.env"' in text
+    assert 'node = "20"' in text
 
 
 def test_direnv_loader_wire_manual_hint_only_when_editing_existing(tmp_path, capsys):
@@ -209,10 +207,17 @@ def test_direnv_loader_wire_manual_hint_only_when_editing_existing(tmp_path, cap
     assert "direnv allow" in capsys.readouterr().err
 
 
-def test_devbox_and_none_loader_wire_return_false(tmp_path):
+def test_devbox_loader_wire_is_idempotent(tmp_path):
     (tmp_path / "devbox.json").write_text("{}")
-    assert sd.LOADERS["devbox"].wire(tmp_path) is False
-    assert sd.LOADERS["none"].wire(tmp_path) is False
+    sd.LOADERS["devbox"].wire(tmp_path)
+    first = (tmp_path / "devbox.json").read_text()
+    sd.LOADERS["devbox"].wire(tmp_path)
+    assert (tmp_path / "devbox.json").read_text() == first
+
+
+def test_none_loader_wire_writes_nothing(tmp_path):
+    sd.LOADERS["none"].wire(tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_mise_loader_approve_invokes_mise_trust_with_config_path(tmp_path, monkeypatch):
@@ -310,3 +315,64 @@ def test_run_ok_false_on_timeout(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sd.loaders.subprocess, "run", boom)
     assert _real_run_ok(["mise", "trust"], tmp_path) is False
+
+
+def test_mise_loader_owns_config_true_for_splashdown_only_config(tmp_path):
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is True
+
+
+def test_mise_loader_owns_config_true_for_dot_mise_toml(tmp_path):
+    (tmp_path / ".mise.toml").write_text("")
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is True
+
+
+def test_mise_loader_owns_config_false_with_user_content(tmp_path):
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
+    sd.LOADERS["mise"].wire(tmp_path)
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is False
+
+
+def test_mise_loader_owns_config_false_without_splashdown_directive(tmp_path):
+    (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is False
+
+
+def test_mise_loader_owns_config_false_for_a_malformed_config(tmp_path):
+    (tmp_path / "mise.toml").write_text("[env\n_.file = ")
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is False
+
+
+def test_mise_loader_owns_config_false_for_empty_config(tmp_path):
+    (tmp_path / "mise.toml").write_text("")
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is False
+
+
+def test_mise_loader_owns_config_false_when_config_missing(tmp_path):
+    assert sd.LOADERS["mise"].owns_config(tmp_path) is False
+
+
+def test_direnv_loader_owns_config_true_for_splashdown_only_envrc(tmp_path):
+    sd.LOADERS["direnv"].wire(tmp_path)
+    assert sd.LOADERS["direnv"].owns_config(tmp_path) is True
+
+
+def test_direnv_loader_owns_config_false_with_user_content(tmp_path):
+    (tmp_path / ".envrc").write_text("use nix\n")
+    sd.LOADERS["direnv"].wire(tmp_path)
+    assert sd.LOADERS["direnv"].owns_config(tmp_path) is False
+
+
+def test_direnv_loader_owns_config_false_without_splashdown_block(tmp_path):
+    (tmp_path / ".envrc").write_text("use nix\n")
+    assert sd.LOADERS["direnv"].owns_config(tmp_path) is False
+
+
+def test_direnv_loader_owns_config_false_for_empty_envrc(tmp_path):
+    (tmp_path / ".envrc").write_text("")
+    assert sd.LOADERS["direnv"].owns_config(tmp_path) is False
+
+
+def test_direnv_loader_owns_config_false_when_envrc_missing(tmp_path):
+    assert sd.LOADERS["direnv"].owns_config(tmp_path) is False

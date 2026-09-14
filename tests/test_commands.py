@@ -1716,6 +1716,7 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
     _git_init(tmp_path)
     sd.cmd_init(tmp_path)
     assert (tmp_path / "splashdown.toml").exists()
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
     assert hook.exists()
     rc = sd.main(["--cwd", str(tmp_path), "deinit"])

@@ -105,7 +105,7 @@ def test_cli_help_shows_tiers(capsys):
     normalized = " ".join(out.split())
     assert sd.KNOWN_CMDS - {"hook"} <= visible_commands
     assert "output format for sync, status, env/target lists, or target claims" in normalized
-    assert "include resolved values for sync, status, normal init, or bare env" in normalized
+    assert "include resolved values for sync, status, or bare env" in normalized
     assert "provision" not in out
 
 
@@ -320,17 +320,8 @@ def test_cli_target_help_points_to_supported_format_flag(capsys):
     assert "--format" in out
 
 
-def test_cli_init_help_points_to_supported_value_flag(capsys):
-    with pytest.raises(SystemExit) as exc:
-        sd.main(["init", "--help"])
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert "place before the command" in out
-    assert "--show-values" in out
-
-
 @pytest.mark.parametrize("existing_recipe", [False, True])
-@pytest.mark.parametrize("option", ["--rescan", "--allow-nested"])
+@pytest.mark.parametrize("option", ["--rescan", "--allow-nested", "--no-sync"])
 def test_cli_init_rejects_removed_option(option, existing_recipe, tmp_path, monkeypatch, capsys):
     recipe_path = tmp_path / sd.RECIPE_NAME
     original = '[resources.RUN_ID]\ntype = "uuid"\n'
@@ -363,7 +354,7 @@ def test_cli_init_rejects_removed_option(option, existing_recipe, tmp_path, monk
         ["--format", "json", "target", "refresh"],
         ["--show-values", "target"],
         ["--format", "json", "init", "minimal"],
-        ["--show-values", "init", "--no-sync"],
+        ["--show-values", "init"],
     ],
 )
 def test_cli_rejects_output_flags_where_they_are_ignored(argv, tmp_path, monkeypatch, capsys):
@@ -460,27 +451,6 @@ def test_cli_target_physical_device_remove_rejects_keep_instance(capsys):
     err = capsys.readouterr().err
     assert "device" in err
     assert "--keep-instance" in err
-
-
-def test_cli_init_show_values_prints_first_sync_values(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-
-    assert (
-        sd.main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "--show-values",
-                "init",
-                "--loader",
-                "none",
-            ]
-        )
-        == 0
-    )
-
-    assert "WEB_DEV_PORT=" in capsys.readouterr().err
 
 
 def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):
@@ -602,7 +572,7 @@ def test_cli_init_creates_nested_project_in_selected_directory(tmp_path, monkeyp
         monkeypatch.chdir(nested)
         args = ["init"]
 
-    rc = sd.main([*args, "--loader", "none", "--no-sync"])
+    rc = sd.main([*args, "--loader", "none"])
 
     assert rc == 0
     assert sd.Recipe.load(nested / sd.RECIPE_NAME).project["loader"] == "none"
@@ -620,7 +590,7 @@ def test_cli_init_nested_project_preserves_root_checkout_hook(tmp_path, capsys, 
     if existing_hook:
         hook.write_text(original)
 
-    rc = sd.main(["--cwd", str(nested), "init", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init"])
 
     assert rc == 0
     if existing_hook:
@@ -630,6 +600,25 @@ def test_cli_init_nested_project_preserves_root_checkout_hook(tmp_path, capsys, 
     err = capsys.readouterr().err
     assert "post-checkout hook not installed for nested project" in err
     assert f"splash --cwd {nested.resolve()} sync" in err
+
+
+def test_cli_nested_project_trust_leaves_root_checkout_hook_uninstalled(tmp_path, capsys):
+    root = tmp_path / "repo"
+    nested = root / "apps" / "web"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    hook = root / ".git" / "hooks" / "post-checkout"
+
+    assert sd.main(["--cwd", str(nested), "init", "--loader", "none"]) == 0
+    init_err = capsys.readouterr().err
+    assert f"splash --cwd {nested.resolve()} sync" in init_err
+    assert "activate automatic post-checkout handling" not in init_err
+
+    assert sd.main(["--cwd", str(nested), "trust"]) == 0
+
+    trust_err = capsys.readouterr().err
+    assert not hook.exists()
+    assert "post-checkout hook not installed for nested project" in trust_err
 
 
 def test_cli_nested_existing_project_requires_overwrite(tmp_path, capsys):
@@ -642,11 +631,11 @@ def test_cli_nested_existing_project_requires_overwrite(tmp_path, capsys):
     original = '[resources.PARENT_ID]\ntype = "uuid"\n'
     recipe_path.write_text(original)
 
-    assert sd.main(["--cwd", str(nested), "init", "--no-sync"]) == 2
+    assert sd.main(["--cwd", str(nested), "init"]) == 2
     assert "use --overwrite" in capsys.readouterr().err
     assert recipe_path.read_text() == original
 
-    rc = sd.main(["--cwd", str(nested), "init", "--overwrite", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--overwrite"])
 
     assert rc == 0
     assert "[resources.WEB_DEV_PORT]" in recipe_path.read_text()
@@ -664,7 +653,7 @@ def test_cli_init_rejects_symlinked_nested_recipe_before_overwrite(tmp_path, mon
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
 
-    rc = sd.main(["--cwd", str(nested), "init", "--overwrite", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--overwrite"])
 
     assert rc == 2
     assert "not a regular file" in capsys.readouterr().err
@@ -683,7 +672,7 @@ def test_cli_init_overwrite_replaces_recipe_hardlink_without_mutating_target(tmp
     os.link(outside, nested / sd.RECIPE_NAME)
     (nested / "vite.config.ts").write_text("export default {}")
 
-    rc = sd.main(["--cwd", str(nested), "init", "--overwrite", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--overwrite"])
 
     assert rc == 0
     assert outside.read_text() == original
@@ -830,7 +819,7 @@ def test_cli_init_native_ios_scheme_option(tmp_path, monkeypatch):
         raising=False,
     )
 
-    assert sd.main(["--cwd", str(tmp_path), "init", "--ios-scheme", "Demo", "--no-sync"]) == 0
+    assert sd.main(["--cwd", str(tmp_path), "init", "--ios-scheme", "Demo"]) == 0
     assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
 
 
@@ -940,7 +929,6 @@ def test_init_electron_profile_flag_works_noninteractively(tmp_path, monkeypatch
                 "init",
                 "--electron-profile",
                 "isolated",
-                "--no-sync",
             ]
         )
         == 0
@@ -1072,45 +1060,110 @@ def _record_approvals(monkeypatch):
     return calls
 
 
-def test_cmd_init_auto_approves_freshly_created_mise_toml(tmp_path, monkeypatch):
+@pytest.mark.parametrize("loader", ["mise", "direnv"])
+def test_cmd_init_never_runs_the_loader_approval_command(loader, tmp_path, monkeypatch):
+    # INIT-07: configuration-only init does not invoke `mise trust` or `direnv allow`.
     calls = _record_approvals(monkeypatch)
+    sd.cmd_init(tmp_path, loader_override=loader)
+    assert calls == []
+
+
+def test_cmd_init_records_no_trust(tmp_path):
+    # INIT-15: init does not implicitly record trust.
+    _git_init(tmp_path)
+    sd.cmd_init(tmp_path)
+    dirs = sd.git_dirs(tmp_path)
+    assert not sd.is_trusted(dirs, bootstrap=False)
+
+
+def test_trust_after_init_authorizes_automatic_handling(tmp_path):
+    _git_init(tmp_path)
+    sd.cmd_init(tmp_path)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
+
+    assert sd.is_trusted(sd.git_dirs(tmp_path), bootstrap=False)
+
+
+def test_trust_approves_generated_mise_toml(tmp_path, monkeypatch):
+    _git_init(tmp_path)
     sd.cmd_init(tmp_path, loader_override="mise")
+    calls = _record_approvals(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     assert ["mise", "trust", str(tmp_path / "mise.toml")] in calls
 
 
-def test_cmd_init_does_not_auto_approve_pre_existing_mise_toml(tmp_path, monkeypatch):
-    # A pre-existing mise.toml may contain user commands, so init must not auto-trust it.
+@pytest.mark.parametrize(
+    ("loader", "detail"),
+    [
+        ("mise", "mise trusts that path permanently and loads whatever the file holds later"),
+        (
+            "direnv",
+            "direnv loads the file as it stands now and prompts again after any later edit",
+        ),
+    ],
+)
+def test_trust_warns_how_the_loader_treats_the_approval(tmp_path, capsys, loader, detail):
+    _git_init(tmp_path)
+    sd.cmd_init(tmp_path, loader_override=loader)
+    capsys.readouterr()
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
+
+    err = capsys.readouterr().err
+    assert f"trust also approves the {loader} configuration splashdown wired, so {detail}" in err
+
+
+def test_trust_does_not_approve_pre_existing_mise_toml(tmp_path, monkeypatch):
+    # A pre-existing mise.toml may contain user commands, so trust must not auto-trust it.
+    _git_init(tmp_path)
     (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
-    calls = _record_approvals(monkeypatch)
     sd.cmd_init(tmp_path, loader_override="mise")
+    calls = _record_approvals(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     assert calls == []
 
 
-def test_full_init_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+def test_trust_approves_mise_config_holding_only_the_splashdown_directive(tmp_path, monkeypatch):
+    # Ownership is judged by content: an empty [env] table carries no user commands,
+    # and after wiring it is indistinguishable from a file init created itself.
+    _git_init(tmp_path)
     (tmp_path / "mise.toml").write_text("[env]\n")
+    sd.cmd_init(tmp_path, loader_override="mise")
     calls = _record_approvals(monkeypatch)
-    assert sd.main(["--cwd", str(tmp_path), "init", "--loader", "mise"]) == 0
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
+    assert ["mise", "trust", str(tmp_path / "mise.toml")] in calls
+
+
+def test_trust_does_not_approve_mise_config_carrying_other_tables(tmp_path, monkeypatch):
+    _git_init(tmp_path)
+    (tmp_path / "mise.toml").write_text('[env]\nAPI_URL = "http://localhost"\n')
+    sd.cmd_init(tmp_path, loader_override="mise")
+    calls = _record_approvals(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     assert calls == []
 
 
-def test_init_no_sync_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
-    (tmp_path / "mise.toml").write_text("[env]\n")
-    calls = _record_approvals(monkeypatch)
-    assert sd.main(["--cwd", str(tmp_path), "init", "--loader", "mise", "--no-sync"]) == 0
-    assert calls == []
-
-
-def test_cmd_init_auto_approves_freshly_created_envrc(tmp_path, monkeypatch):
-    calls = _record_approvals(monkeypatch)
+def test_trust_approves_generated_envrc(tmp_path, monkeypatch):
+    _git_init(tmp_path)
     sd.cmd_init(tmp_path, loader_override="direnv")
+    calls = _record_approvals(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     assert ["direnv", "allow", str(tmp_path)] in calls
 
 
-def test_cmd_init_does_not_auto_approve_pre_existing_envrc(tmp_path, monkeypatch):
+def test_trust_does_not_approve_pre_existing_envrc(tmp_path, monkeypatch):
+    _git_init(tmp_path)
     (tmp_path / ".envrc").write_text("use nix\n")
-    calls = _record_approvals(monkeypatch)
     sd.cmd_init(tmp_path, loader_override="direnv")
+    calls = _record_approvals(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     assert calls == []
 
 
@@ -1148,11 +1201,14 @@ def test_sync_writes_env_without_loader_approval(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_init_writes_post_checkout_hook(tmp_path):
+def test_trust_installs_native_post_checkout_hook(tmp_path):
     _git_init(tmp_path)
     sd.cmd_init(tmp_path)
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
-    assert hook.exists()
+    assert not hook.exists()
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
+
     assert os.access(hook, os.X_OK)
     assert POST_CHECKOUT_SENTINEL in hook.read_text()
 

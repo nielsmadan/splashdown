@@ -42,10 +42,10 @@ stored inside the clone's Git administrative directory. Linked worktrees share i
 clone of the same repository starts untrusted. If you trust a recipe before it has `[bootstrap]`,
 adding the section later requires another `splash trust` before commands can run.
 
-`splash init` grants automatic sync trust for the recipe it just generated, but never grants
-bootstrap trust. This keeps the normal init workflow automatic without authorizing shell commands
-that may appear in a future ref. Once bootstrap trust has been granted, it remains until
-`splash untrust`, even while the current ref has no `[bootstrap]` section.
+`splash init` grants no trust at all. It writes project configuration and then points at
+`splash trust`, so authorizing a clone is always an explicit decision taken after you can read the
+recipe. Once bootstrap trust has been granted, it remains until `splash untrust`, even while the
+current ref has no `[bootstrap]` section.
 
 !!! warning
     Trust covers current and future refs in that clone. A future branch can change both the

@@ -34,7 +34,7 @@ does not require `--show-values`.
 
 Both output flags are root options and therefore precede the command. `--format` is supported by
 sync, status, bare `env`, bare `target`, `target claims`, and `target claim`. `--show-values` is
-supported by sync, status, a normal init's first sync, and bare `env`. Other nested env/target
+supported by sync, status, and bare `env`. Other nested env/target
 actions and commands reject flags they would otherwise ignore.
 
 ## How it works

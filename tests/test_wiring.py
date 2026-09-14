@@ -190,6 +190,98 @@ def test_wire_native_hook_preserves_user_owned_hook(tmp_path, capsys):
     assert "leaving it untouched" in capsys.readouterr().err
 
 
+def test_configure_hook_writes_lefthook_config(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("")
+    sd._configure_post_checkout_hook(tmp_path)
+    assert "splashdown:" in (tmp_path / "lefthook.yml").read_text()
+
+
+def test_configure_hook_writes_husky_script(tmp_path):
+    (tmp_path / ".husky").mkdir()
+    sd._configure_post_checkout_hook(tmp_path)
+    assert (tmp_path / ".husky" / "post-checkout").exists()
+
+
+def test_configure_hook_leaves_native_hook_to_activation(tmp_path, capsys):
+    _git_init(tmp_path)
+    sd._configure_post_checkout_hook(tmp_path)
+    assert not _native_hook(tmp_path).exists()
+    assert "installed by `splash trust`" in capsys.readouterr().err
+
+
+def test_configure_hook_reports_a_directory_outside_git(tmp_path, capsys):
+    sd._configure_post_checkout_hook(tmp_path)
+    assert "not a Git checkout; post-checkout hook not installed" in capsys.readouterr().err
+
+
+def _record_lefthook_installs(monkeypatch) -> list[Path]:
+    installs: list[Path] = []
+    monkeypatch.setattr(
+        sd.hooks, "_run_lefthook_install", lambda cwd: bool(installs.append(cwd)) or True
+    )
+    return installs
+
+
+def test_configure_hook_does_not_install_lefthook(tmp_path, monkeypatch):
+    installs = _record_lefthook_installs(monkeypatch)
+    (tmp_path / "lefthook.yml").write_text("")
+
+    sd._configure_post_checkout_hook(tmp_path)
+
+    assert installs == []
+
+
+def test_ensure_hook_installs_lefthook_after_wiring(tmp_path, monkeypatch):
+    installs = _record_lefthook_installs(monkeypatch)
+    (tmp_path / "lefthook.yml").write_text("")
+
+    sd._ensure_post_checkout_hook(tmp_path)
+
+    assert installs == [tmp_path]
+
+
+def test_ensure_hook_skips_install_for_a_modified_splashdown_job(tmp_path, monkeypatch):
+    installs = _record_lefthook_installs(monkeypatch)
+    (tmp_path / "lefthook.yml").write_text(
+        "post-checkout:\n  commands:\n    splashdown:\n      run: custom\n"
+    )
+
+    sd._ensure_post_checkout_hook(tmp_path)
+
+    assert installs == []
+
+
+def test_cmd_init_writes_lefthook_config_without_installing_hooks(tmp_path, monkeypatch):
+    installs = _record_lefthook_installs(monkeypatch)
+    _git_init(tmp_path)
+    (tmp_path / "lefthook.yml").write_text("")
+
+    sd.cmd_init(tmp_path)
+
+    assert "splashdown:" in (tmp_path / "lefthook.yml").read_text()
+    assert installs == []
+
+
+def test_cmd_init_writes_husky_hook_script(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".husky").mkdir()
+
+    sd.cmd_init(tmp_path)
+
+    assert "splash" in (tmp_path / ".husky" / "post-checkout").read_text()
+
+
+def test_cmd_trust_installs_lefthook_hooks(tmp_path, monkeypatch):
+    _git_init(tmp_path)
+    (tmp_path / "lefthook.yml").write_text("")
+    sd.cmd_init(tmp_path)
+    installs = _record_lefthook_installs(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
+
+    assert installs == [tmp_path.resolve()]
+
+
 def test_lefthook_install_does_not_invoke_project_package_managers(tmp_path, monkeypatch):
     (tmp_path / "package.json").write_text('{"devDependencies":{"lefthook":"1"}}')
     (tmp_path / "yarn.lock").write_text("")
@@ -1099,3 +1191,64 @@ def test_rn_hook_detect_ignores_a_commented_out_husky_hook(tmp_path):
     (tmp_path / ".husky").mkdir()
     (tmp_path / ".husky" / "post-checkout").write_text("#!/bin/sh\n# splash\n")
     assert sd._rn_hook_detect(tmp_path)[0] == "problem"
+
+
+_RN_PACKAGE_JSON = '{"dependencies":{"react-native":"0.83"}}'
+
+
+def _nested_mobile_project(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "repo"
+    nested = root / "apps" / "mobile"
+    nested.mkdir(parents=True)
+    _git_init(root)
+    (nested / "package.json").write_text(_RN_PACKAGE_JSON)
+    return root, nested
+
+
+def test_cmd_init_leaves_native_hook_uninstalled_for_a_mobile_project(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text(_RN_PACKAGE_JSON)
+
+    sd.cmd_init(tmp_path)
+
+    assert not _native_hook(tmp_path).exists()
+    assert "installed by `splash trust`" in capsys.readouterr().err
+
+
+def test_cmd_init_does_not_install_lefthook_for_a_mobile_project(tmp_path, monkeypatch):
+    installs = _record_lefthook_installs(monkeypatch)
+    _root, nested = _nested_mobile_project(tmp_path)
+    (nested / "lefthook.yml").write_text("")
+
+    sd.cmd_init(nested)
+
+    assert installs == []
+
+
+def test_cmd_init_nested_mobile_project_leaves_worktree_root_hook_uninstalled(tmp_path):
+    root, nested = _nested_mobile_project(tmp_path)
+
+    sd.cmd_init(nested)
+
+    assert not (root / ".git" / "hooks" / "post-checkout").exists()
+
+
+def test_doctor_fix_leaves_worktree_root_hook_uninstalled_from_a_nested_project(tmp_path):
+    root, nested = _nested_mobile_project(tmp_path)
+    sd.cmd_init(nested)
+
+    sd.cmd_doctor(nested, fix=True)
+
+    assert not (root / ".git" / "hooks" / "post-checkout").exists()
+
+
+def test_doctor_reports_the_hook_check_inapplicable_in_a_nested_project(tmp_path, capsys):
+    _root, nested = _nested_mobile_project(tmp_path)
+    sd.cmd_init(nested)
+    capsys.readouterr()
+
+    sd.cmd_doctor(nested)
+
+    err = capsys.readouterr().err
+    assert "hook: not applicable" in err
+    assert "splash doctor --fix" not in err

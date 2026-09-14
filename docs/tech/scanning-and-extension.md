@@ -281,6 +281,10 @@ A `Loader` (`loaders.py`) detects or selects a shell-env tool and idempotently
 wires it to source `splashdown.env` on `cd`. Two methods: `detect(cwd)` and `wire(cwd)`.
 Every `wire` is **idempotent** — re-running it produces no diff — and uses
 sentinel-wrapped blocks so the managed region is visually obvious and machine-findable.
+`owns_config(cwd)` reports whether the loader's configuration holds splashdown's
+integration and nothing else; `approve(cwd)` runs the loader's trust command; and
+`approval_detail` states what that approval means for that loader, which `splash trust`
+prints as a warning.
 
 - **MiseLoader** detects `mise.toml`/`.mise.toml`; `wire()` delegates to
   `_ensure_mise_file_directive()` in `hooks.py`, which
@@ -289,11 +293,11 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
   regex-replaces, between `_DIRENV_BEGIN`/`_DIRENV_END` sentinels at `loaders.py`) a
   block containing `dotenv_if_exists splashdown.env`. It uses `dotenv_if_exists` rather
   than `dotenv` so a fresh checkout doesn't hard-error before `splashdown.env` exists
-  (`loaders.py`). `wire()` returns whether it created `.envrc`; `approve()` runs
+  (`loaders.py`). `approve()` runs
   `direnv allow` (mise's runs `mise trust`) so the config actually loads. Editing a
   *pre-existing* `.envrc` invalidates direnv's trust hash but is not auto-approved — `wire()`
-  prints the `direnv allow` reminder instead (a freshly-created file skips the reminder because
-  `approve()` handles it).
+  prints the `direnv allow` reminder instead. A freshly-created file skips the reminder
+  because init leaves approval to `splash trust`, which prints its own line.
 - **DevboxLoader** (`loaders.py`) detects `devbox.json`; `wire()` parses the JSON, finds
   or appends a `shell.init_hook` entry carrying the `# splashdown-managed` marker
   (`loaders.py`), and the hook does `set -a; source splashdown.env; set +a`. It
@@ -309,9 +313,10 @@ sentinel-wrapped blocks so the managed region is visually obvious and machine-fi
 installed binary in that order is selected so a fresh repo can be wired. `none` is used
 only when no loader is installed or the user explicitly requests it.
 
-Init calls `approve()` only when `wire()` created a mise or direnv config from nothing.
-It does not trust a pre-existing or inherited config, and sync/post-checkout provisioning
-never runs an approval command.
+Init never calls `approve()`. `splash trust` does, and only when `owns_config()` is true —
+the configuration carries splashdown's integration and nothing else — so a pre-existing or
+inherited config is never trusted on the user's behalf. Sync and post-checkout provisioning
+never run an approval command.
 
 ## Key entry points
 
@@ -366,9 +371,10 @@ never runs an approval command.
   falls back to installed binaries on `PATH`. A repository's chosen loader therefore wins
   even when another loader appears earlier in PATH fallback order.
 - **mise wiring must not scaffold a second config file.** `MiseLoader.detect` matches
-  either `mise.toml` or `.mise.toml` (`loaders.py`), so `_ensure_mise_file_directive`
-  (`hooks.py`) prefers an existing `mise.toml`, falls back to an existing
-  `.mise.toml`, and only creates a new `mise.toml` when neither exists. Hardcoding
+  either `mise.toml` or `.mise.toml` (`loaders.py`), so every read and write goes
+  through the single `mise_config_path` helper (`hooks.py`), which prefers an existing
+  `mise.toml`, falls back to an existing `.mise.toml`, and only names a new `mise.toml`
+  when neither exists. Hardcoding
   `mise.toml` here would scaffold a duplicate beside a `.mise.toml`-only user's file
   (mise merges both, so it silently "works" while leaving two configs).
 

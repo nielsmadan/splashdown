@@ -69,10 +69,9 @@ submodule imports inside handlers.
 4. `parse_args`, validate cross-option contracts, dispatch completion before checkout resolution,
    then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d).
 5. Dispatch the hidden hook event before constructing a Registry. Handle `init` inside the ordinary
-   error renderer but before Registry construction, so rejected and `--no-sync` init
-   paths do not touch machine-wide registry state or output writers.
-6. A successful init that proceeds to sync constructs the shared `Registry`, consumes pending
-   physical-claim notices, and provisions. Every other checkout command constructs the Registry
+   error renderer but before Registry construction, so no init path touches machine-wide registry
+   state or output writers.
+6. Every other checkout command constructs the Registry
    and consumes notices before dispatching trust, untrust, bootstrap, or the ordinary flat command
    table. The final fall-through is `sync` (the default), so both bare `splash` and explicit
    `splash sync` land on `_cmd_provision`.
@@ -193,8 +192,8 @@ requested setup name or a failing command can occur after registry and writer
 changes and is not transactional. The renderer chooses the no-op or per-line report. JSON exposes
 `resolved_keys` by default; `--show-values` opts into `resolved`. Explicit stdout-writer values are
 always placed in the JSON `stdout` object. In text mode, `--show-values` prints every sorted
-resolved `KEY=VALUE` line, annotating changed keys. This applies equally to normal sync, an
-up-to-date no-op sync, and init's first sync.
+resolved `KEY=VALUE` line, annotating changed keys. This applies equally to normal sync and an
+up-to-date no-op sync.
 
 `cmd_init` applies the same contract to generated TOML. Scanner recipes and
 minimal-monorepo recipes go through `Recipe.parse` before
@@ -203,11 +202,21 @@ that the next sync cannot load. Every generated-recipe write uses same-directory
 regular file's mode while replacing its directory entry. Symlinks and non-regular entries are
 rejected; hardlinks are safely broken rather than truncating their shared inode.
 
-`cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader → hook →
-sync-only clone trust → framework wiring. For a nested project, the hook step
-prints a manual nested sync command instead because Git invokes checkout hooks from the worktree
-root. The refusal path raises `UsageError`; `main()` renders it and returns exit 2. The
-first sync runs after init unless `--no-sync`. Init never grants bootstrap trust.
+`cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader →
+project hook configuration → framework wiring → next-step report. For a nested project, the hook
+step prints a manual nested sync command instead because Git invokes checkout hooks from the
+worktree root. The refusal path raises `UsageError`; `main()` renders it and returns exit 2.
+
+Init is configuration-only. It allocates nothing, writes no environment output, records no trust,
+runs no loader approval command, and installs no local hook. Its framework-wiring pass reinforces
+that boundary: `_apply_init_wiring_checks` skips every `WiringCheck` marked `activation`, so the
+`hook` check cannot install the local wrapper behind init's back. `cmd_trust` owns those activation
+effects: it installs the native wrapper or runs `lefthook install` through
+`_activate_post_checkout_hook`, records trust, and runs the loader's `approve()`. A nested project
+skips hook activation there too, for the same worktree-root reason. Approval runs `mise trust` /
+`direnv allow` only when `Loader.owns_config` reports that the loader file holds splashdown's
+integration and nothing else, so pre-existing or inherited configuration carrying user commands is
+never approved automatically.
 
 #### `deinit` teardown
 
@@ -229,15 +238,23 @@ originals. Clone-wide trust and the shared hook remain; checkout completion is r
 
 #### Git post-checkout hook installation
 
-`hooks.py` owns post-checkout integration. `_ensure_post_checkout_hook` wires the internal
-post-checkout event command while *coexisting* with whatever hook manager the project already uses, rather than
+`hooks.py` owns post-checkout integration. `_configure_post_checkout_hook` (init) writes only the
+project-owned configuration; `_ensure_post_checkout_hook` (doctor `--fix`) additionally performs
+local installation. Both *coexist* with whatever hook manager the project already uses, rather than
 clobbering it. `_detect_hook_manager` classifies the project into one of four cases, in priority
 order:
 
-1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout.commands.splashdown` job that forwards `{1} {2} {3}`, then best-effort runs the installed `lefthook` binary. It never executes project-controlled `yarn` or `npx` commands during init.
+1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout.commands.splashdown` job that forwards `{1} {2} {3}` and returns whether the configuration carries that job. `_run_lefthook_install` is a separate activation step invoked by `_ensure_post_checkout_hook` and `_activate_post_checkout_hook`, never by init. It never executes project-controlled `yarn` or `npx` commands.
 2. **`husky`** — a `.husky/` directory exists. `_wire_post_checkout_husky` drops a `.husky/post-checkout` script using the shared `POST_CHECKOUT_HOOK` body and makes it executable.
 3. **`core-hookspath-other`** — `git config core.hooksPath` is set to any nonempty value. Splashdown refuses to take over that hooks directory: it prints event-forwarding instructions using a trusted absolute executable and wires nothing.
-4. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`.
+4. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`. It lives in the local `.git` directory, so init only announces it and `cmd_trust` writes it.
+
+Nesting detection lives in `hooks.py` alongside the other Git shell-outs: `_git_worktree_root`,
+`_nested_worktree`, `_nested_project`, and the shared `_print_nested_checkout_hook_note`.
+`_wire_post_checkout_native` refuses to write and prints that note when the directory is a nested
+project, so the guard sits at the single point of installation rather than at each of its callers
+(init wiring, doctor `--fix`, and trust activation). `commands.py` imports the same helpers, so
+init and trust cannot classify a directory differently.
 
 The shared `POST_CHECKOUT_HOOK` script is defensive: Git supplies the checkout root as its working
 directory, the script exits 0 if there is no `splashdown.toml`, resolves `splash` once, rejects a
@@ -400,10 +417,11 @@ device does not hide simulator variants in a simulator-only project.
 - `_build_parser` — the single flat parser — `cli.py`
 - `_EpilogOnlyFormatter` / `_VersionAction` — help and lazy version presentation — `cli.py`
 - `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py`
-- `_cmd_provision_inner` — shared `sync`/`init` provisioning engine — `commands.py`
+- `_cmd_provision_inner` — the `sync` provisioning engine — `commands.py`
 - `cmd_trust` / `cmd_untrust` / `cmd_bootstrap` / `cmd_post_checkout_hook` — trust and bootstrap orchestration — `commands.py`
 - `cmd_init` / `cmd_deinit` — onboarding and teardown orchestration — `commands.py`
-- `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
+- `_configure_post_checkout_hook` / `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
+- `_git_worktree_root` / `_nested_worktree` / `_nested_project` — nesting detection shared by init, trust, and the hook check — `hooks.py`
 - `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py`
 - `render_sync` / `render_status` / `render_application_error` — `cli_output.py`
 - `build_status_report` and typed report records — `status.py`

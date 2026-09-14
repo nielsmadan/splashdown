@@ -322,7 +322,7 @@ def test_scanner_init_updates_guidance_without_sync(tmp_path):
     assert not (tmp_path / sd.ENV_FILE_NAME).exists()
 
 
-def test_cli_no_sync_still_updates_guidance(tmp_path, monkeypatch):
+def test_cli_init_updates_guidance(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     path = tmp_path / "AGENTS.md"
     path.write_text("# Rules\n")
@@ -335,7 +335,6 @@ def test_cli_no_sync_still_updates_guidance(tmp_path, monkeypatch):
                 "init",
                 "--loader",
                 "none",
-                "--no-sync",
             ]
         )
         == 0

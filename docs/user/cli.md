@@ -12,7 +12,7 @@ splash [--cwd PATH] [--format text|json] [--show-values] …  # root options pre
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
-splash init [--no-sync] [--loader=…] [--overwrite]
+splash init [--loader=…] [--overwrite]
             [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
 splash trust                        # authorize automatic handling for this clone
@@ -59,14 +59,15 @@ identify them. JSON port records include `owners`, a list of `{pid, command}` ob
 list for a free port, or `null` when the owner is unavailable. Process arguments are not collected.
 Routine status, env-list, and sync JSON output hides resolved values. Add the root-level
 `--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
-single-value read. `splash sync --force` reallocates ports. `splash init` scans the project,
-scaffolds the project files, and runs the first sync (`--no-sync` scaffolds only).
+single-value read. `splash sync --force` reallocates ports. `splash init` scans the project and
+writes the project files. It allocates nothing, so run `splash trust` and then bare `splash`
+after it.
 Root output options go before the command. `--format` applies to sync, status, bare `env`, bare
-`target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, a normal
-init's first sync, and bare `env`. Other combinations are usage errors instead of accepted no-ops.
-In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync and the first
-sync performed by init. With `status all`, it selects detailed checkout blocks so those values have
-a place to appear instead of silently remaining in the compact table.
+`target`, `target claims`, and `target claim`. `--show-values` applies to sync, status, and bare
+`env`. Other combinations are usage errors instead of accepted no-ops.
+In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync. With
+`status all`, it selects detailed checkout blocks so those values have a place to appear instead
+of silently remaining in the compact table.
 
 Init creates a project in the current directory, or the directory selected by `--cwd`, whether
 at a Git worktree root, inside it, or outside Git. Replacing an existing recipe requires

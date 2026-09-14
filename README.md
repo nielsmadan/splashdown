@@ -62,7 +62,7 @@ eval "$(splash completion bash)"
 
 ## Quick start
 
-At the Git worktree root of any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, wires your loader and the post-checkout hook, then allocates ports for this checkout. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports. Most popular frameworks are auto-detected, nothing to declare:
+Adoption takes two commands. At the Git worktree root of any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, and writes the project's loader and post-checkout hook configuration. It allocates nothing, so you can read and edit the generated recipe first. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports. Most popular frameworks are auto-detected, nothing to declare:
 
 ```sh
 splash init
@@ -71,14 +71,22 @@ splash init
 #   apps/api          → node-backend
 #   apps/web-admin    → vite
 #   shell loader      → mise
-# wrote splashdown.toml + splashdown.local.toml + mise.toml + post-checkout hook
+# wrote splashdown.toml + splashdown.local.toml + mise.toml
 # updated AGENTS.md
+# configuration written; nothing is allocated or active yet
+# next: run `splash trust` to activate automatic post-checkout handling
+#       run `splash` to allocate values and write splashdown.env
+```
+
+Then activate the checkout. `splash trust` authorizes automatic handling for this clone, installs the local post-checkout hook, and allows the loader configuration when it holds splashdown's integration and nothing else. Bare `splash` runs the first sync:
+
+```sh
+splash trust
+splash
 #   PORT (changed)
 #   WEB_DEV_PORT (changed)
 #   -> splashdown.env: 2 vars (changed)
 ```
-
-(Pass `--no-sync` to scaffold the files without reserving ports.)
 
 Init creates a project in the current directory, or the directory selected by top-level
 `--cwd PATH`, including subdirectories of a Git worktree. Replacing an existing recipe requires
@@ -118,7 +126,7 @@ Review the recipe, then run `splash trust` and `splash bootstrap`. Trust belongs
 is shared by its linked worktrees. Another clone starts untrusted and its hook writes nothing.
 Future `git worktree add` operations provision the checkout and run bootstrap once, while ordinary
 branch switches only sync resources. Trust covers code in future refs too, including scripts called
-by an unchanged command. `splash init` grants only automatic sync trust, never bootstrap trust.
+by an unchanged command. `splash init` grants no trust of its own.
 Revoke it with `splash untrust`. Full security and retry behavior:
 [splashdown.dev/bootstrap](https://splashdown.dev/bootstrap/).
 

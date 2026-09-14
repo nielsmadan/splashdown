@@ -18,21 +18,22 @@
 
 ## Overview
 
-`splash init` is the single adoption command. In one run it scans the workspace and each
+`splash init` is the project-adoption command. In one run it scans the workspace and each
 app's framework, scaffolds the committed `splashdown.toml` (plus a per-checkout
-`splashdown.local.toml` skeleton), wires the detected shell-env loader (mise/direnv/devbox)
-and a git `post-checkout` hook that coexists with an existing hook manager, runs framework
-wiring checks (the same engine as `splash doctor --fix`), and finishes with the first
-`sync` so this checkout lands with live values (allocated ports, generated ids,
-`splashdown.env`). The promise: a checkout has working, collision-free resources in one
-command — a bad first run means abandonment.
+`splashdown.local.toml` skeleton), writes the detected shell-env loader's configuration
+(mise/direnv/devbox) and the project-owned `post-checkout` hook configuration that coexists
+with an existing hook manager, runs the project-configuration framework wiring checks (the same
+engine as `splash doctor --fix`), and reports the commands that make the checkout ready.
 
-Five options reshape that flow:
+Init is configuration-only. It allocates no resources, writes no environment output, records no
+trust, runs no loader approval command, and installs nothing into the local `.git` directory, so
+the user can read and edit the generated recipe before anything reaches the machine. Adoption is
+two commands: `splash init`, then `splash trust` plus a sync (bare `splash`).
+
+Four options reshape that flow:
 
 - `splash init --loader=mise|direnv|devbox|none` — override loader detection, including
   an explicit no-loader setup.
-- `splash init --no-sync` — scaffold and wire only; skip the first sync (no port allocation,
-  no `splashdown.env`).
 - `splash init --overwrite` — replace an existing recipe (init refuses otherwise).
 - `splash init --electron-profile=isolated|shared` — make the scanner-driven Electron
   profile choice explicit instead of relying on the interactive prompt/default.
@@ -115,38 +116,40 @@ is written if absent after the recipe passes validation. `_ensure_gitignore` (`h
 (`loaders.py`): mise sets `_.file = "splashdown.env"` under `[env]` (editing an existing
 `.mise.toml`/`mise.toml` rather than scaffolding a second), direnv appends a sentinel-wrapped
 `dotenv_if_exists splashdown.env` block to `.envrc`, devbox adds a marker-tagged `init_hook`,
-and `none` wires nothing. `wire()` returns whether it created the config from nothing; if so,
-init calls the loader's `approve()` (`mise trust` / `direnv allow`) so the freshly-wired
-config actually loads — see the trust-approval note below.
+and `none` wires nothing. Init never runs `mise trust` or `direnv allow`; approval is an
+activation effect owned by `cmd_trust` — see the trust-approval note below.
 
-**Git hook.** `_ensure_post_checkout_hook` (`hooks.py`) installs a `post-checkout`
-hook that forwards Git's event arguments to Splashdown on later checkout and worktree transitions. `_detect_hook_manager`
-(`hooks.py`) classifies the project's existing setup as `lefthook` / `husky` /
-`core-hookspath-other` / `none`, and splashdown **coexists** rather than clobbers:
+**Git hook configuration.** `_configure_post_checkout_hook` (`hooks.py`) writes the
+project-owned configuration that forwards Git's event arguments to Splashdown on later checkout
+and worktree transitions. `_detect_hook_manager` (`hooks.py`) classifies the project's existing
+setup as `lefthook` / `husky` / `core-hookspath-other` / `none`, and splashdown **coexists**
+rather than clobbers:
 
 - **lefthook** → idempotently add a `post-checkout.commands.splashdown` entry that forwards
-  `{1} {2} {3}` to the lefthook
-  config and run the installed `lefthook` binary's `lefthook install` command best-effort.
-  Project-controlled `yarn` or `npx` commands are never executed during init.
-- **husky** → drop a `.husky/post-checkout` hook.
+  `{1} {2} {3}` to the tracked lefthook config. `lefthook install` is local activation and is not
+  run by init. Project-controlled `yarn` or `npx` commands are never executed.
+- **husky** → drop a `.husky/post-checkout` hook, which is a tracked project file.
 - **any configured `core.hooksPath`** → do **not** touch it; print a warning telling the
   user to invoke a trusted absolute `splash` executable with the post-checkout event arguments,
   or run bootstrap manually.
-- **none** → write the native `post-checkout` hook under Git's common hooks directory.
+- **none** → there is no project file to write. The native hook lives under Git's common hooks
+  directory, which is local state, so init only notes that `splash trust` installs it. Outside a
+  Git checkout there is no such hook, and init notes that instead of naming `splash trust`.
   Splashdown never changes `core.hooksPath`, and the common hook is shared by all worktrees.
   The hook body is `POST_CHECKOUT_HOOK` (`hooks.py`): Git already starts it at the repo top, so it
   no-ops if `splashdown.toml` is absent, resolves `splash` once, rejects an executable inside the
   checkout, and invokes the internal event handler once with all three Git arguments. A missing
   executable prints a note. The wrapper absorbs the handler's failure after diagnostics.
 
-Every successful init path records sync-only clone trust after hook installation. This lets the
-generated hook provision later checkouts while ensuring a `[bootstrap]` added by a future ref still
-requires explicit `splash trust`.
+`_ensure_post_checkout_hook` is the fused configure-plus-install variant, reached only from
+`doctor --fix` through `_autofix_ensure_post_checkout_hook` (`wiring.py`).
 
 **Wiring checks.** For each known-profile app, `cmd_init` runs the profile's `wiring_checks`,
 and for any check whose `detect` is not `"ok"` it applies the `autofix` if one exists, swallowing
 failures with a printed `✗` line (`commands.py`). This is the same `WiringCheck`
-machinery as `splash doctor` (see UC5 / `wiring.py`).
+machinery as `splash doctor` (see UC5 / `wiring.py`), minus the checks marked `activation`:
+`_apply_init_wiring_checks` skips those, so the `hook` check the mobile profiles carry cannot
+install the local hook init just said `splash trust` owns.
 
 **Agent guidance.** After the generated recipe validates, every init path parses that recipe
 and derives a sentinel-wrapped Markdown block for port-bearing apps. The block uses each
@@ -158,11 +161,26 @@ blocks are replaced idempotently, while malformed markers, symlinks, and non-reg
 left untouched with a warning. `init --overwrite` can replace or remove stale guidance, and `deinit`
 removes complete blocks even when the recipe cannot be parsed.
 
-**First sync.** After `cmd_init` returns, the CLI runs the first sync via
-`_cmd_provision_inner` unless `--no-sync` was passed (`cli.py`). That allocates ports
-through the registry, expands templates, and writes outputs. Text output names changed keys
-without revealing their values. JSON also returns keys by default; root `--show-values` is the
-deliberate disclosure opt-in. Explicit `writer = "stdout"` resources remain value-bearing.
+**Next-step report.** `_print_init_next_steps` (`commands.py`) closes every successful init
+path, on both the scanned and the structure-only monorepo route. It states that nothing is
+allocated or active yet and names bare `splash` (sync). It names `splash trust` for automatic
+post-checkout handling only at a worktree root, offers it for environment-output
+authorization in a nested project, and omits it outside a Git checkout, where trust cannot run.
+`cmd_init` resolves the worktree root once and passes it in, so the report and the hook
+decision cannot disagree.
+
+**Activation.** `cmd_trust` (`commands.py`) is the trusted-activation seam. `_print_trust_preamble`
+prints the recipe's bootstrap commands and the trust warning and returns the loader the grant will
+approve, so the warning and the later `approve()` share one `_splashdown_owned_loader` lookup. The
+warning quotes that loader's `approval_detail`, because the grants differ: mise trusts the config
+path permanently, while direnv re-prompts after any later edit. `cmd_trust` then calls
+`_activate_post_checkout_hook` (which installs the native wrapper or runs `lefthook install`),
+records trust, and runs the loader's `approve()` (`mise trust` / `direnv allow`) when
+`Loader.owns_config` reports that the loader file holds splashdown's integration and nothing else.
+In a nested project it skips activation and repeats init's nested `splash --cwd PATH sync` note,
+since the wrapper it would install belongs to the worktree root where the nested recipe is
+invisible. The first sync is an ordinary bare `splash` / `splash sync` run, or the post-checkout
+hook on the next worktree.
 
 **Recipe evolution.** Users edit the existing recipe manually or with an agent when apps change.
 `init --overwrite` regenerates the whole recipe, replacing manual edits.
@@ -182,8 +200,11 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - `cmd_init` — orchestrator and typed refusal guard: `src/splashdown/commands.py`.
 - `_add_electron_resources` / `_resolve_init_ios_scheme`: `src/splashdown/commands.py`.
 - `cmd_deinit` — surgical teardown: `src/splashdown/commands.py`.
-- `_ensure_post_checkout_hook` / `_detect_hook_manager` / `_native_hook_path`:
-  `src/splashdown/hooks.py`.
+- `_print_init_next_steps` — the closing report: `src/splashdown/commands.py`.
+- `cmd_trust` / `_print_trust_preamble` / `_splashdown_owned_loader` — activation:
+  `src/splashdown/commands.py`.
+- `_configure_post_checkout_hook` / `_ensure_post_checkout_hook` / `_activate_post_checkout_hook`
+  / `_detect_hook_manager` / `_native_hook_path` / `_nested_project`: `src/splashdown/hooks.py`.
 - Hook wiring per manager — lefthook/husky/native common hook — and the shared
   `POST_CHECKOUT_HOOK` body: `src/splashdown/hooks.py`.
 - `_apply_no_loader_fallback` / `_resolve_no_loader_delivery`: `src/splashdown/commands.py`.
@@ -198,25 +219,23 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 
 ## Configuration
 
-- **`splash init`** — scan-driven scaffold + wire + sync. It takes no positional argument;
+- **`splash init`** — scan-driven scaffold + project-configuration wiring. It takes no positional argument;
   scanner-driven generation is the only recipe path. Recipes that a scan cannot infer, such as a
   generic `PORT`, a per-checkout Postgres database name, or Electron user-data isolation, are
   documented examples in `docs/user/recipe.md`.
 - **`--loader mise|direnv|devbox|none`** — override loader auto-detection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
-- **`--no-sync`** — scaffold + wire only; skip port allocation and `splashdown.env`. The opt-out
-  for CI / scaffold-only runs: generate the committable files without touching the machine registry.
 - **`--electron-profile=isolated|shared`** — scanner-only Electron choice. `isolated` adds a
   stable process-env profile id; `shared` explicitly declines isolation.
 - **`--ios-scheme=NAME`** — scanner-only native iOS scheme override; required for ambiguous
   non-interactive discovery.
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
-  loader config (`mise.toml`/`.envrc`/`devbox.json`), and the hook target
-  (`lefthook.yml` / `.husky/post-checkout` / Git's common `hooks/post-checkout`),
-  and managed blocks in existing root `AGENTS.md` / independent `CLAUDE.md` files.
-  `--no-sync` additionally omits `splashdown.env`.
+  loader config (`mise.toml`/`.envrc`/`devbox.json`), the project-owned hook target
+  (`lefthook.yml` / `.husky/post-checkout`), and managed blocks in existing root `AGENTS.md` /
+  independent `CLAUDE.md` files. Git's common `hooks/post-checkout` belongs to `splash trust`,
+  and `splashdown.env` to the first sync.
 
 ## Gotchas
 
@@ -226,19 +245,20 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   and `splashdown.env` are per-machine and never committed. So even when a teammate clones a
   repo that already commits `splashdown.toml`, they get no clone-local trust and no live values.
   After reviewing the recipe, `splash trust` is the lightweight onboarding verb: it grants
-  automatic sync, grants bootstrap only when currently declared, and activates or verifies the
-  local hook without rewriting the recipe. The teammate then runs `splash sync`, or
-  `splash bootstrap` when the recipe declares it. Tracked Lefthook/Husky changes still require the
-  project's normal hook-manager install step.
+  automatic sync, grants bootstrap only when currently declared, activates or verifies the
+  local hook (including `lefthook install`), and approves loader configuration splashdown
+  generated, all without rewriting the recipe. The teammate then runs `splash sync`, or
+  `splash bootstrap` when the recipe declares it. This is the same second step a project's own
+  author takes after `splash init`.
 
 - **Init usage failures are typed.** The refusal guard raises `UsageError`. The CLI renders
   exit 2; embedded callers can catch the application exception. Argparse still raises
   `SystemExit` for an unrecognized argument before dispatch.
 
-- **The first sync lives in the CLI layer, not `cmd_init`.** `cmd_init` scaffolds and wires
-  but does **not** itself sync; `cli.py` runs `_cmd_provision_inner` afterward. So
-  calling `cmd_init` directly (or with `--no-sync`) leaves the checkout scaffolded but
-  **without** allocated ports or `splashdown.env`.
+- **Init never reaches the registry or the machine.** It leaves the checkout configured but
+  **without** allocated ports, `splashdown.env`, recorded trust, an installed native hook, or an
+  approved loader. Anything that looks for live values after a bare `cmd_init` must run a sync
+  first, and anything that needs automatic handling must run `splash trust`.
 
 - **The local skeleton is create-only.** Init and sync preserve an existing regular
   `splashdown.local.toml`. A symlink or other non-regular entry is an error, so the automatic
@@ -249,15 +269,17 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   a trusted absolute executable as `splash hook post-checkout "$1" "$2" "$3"` in that hook
   directory, or run bootstrap manually. A sync-only call cannot recognize worktree creation.
 
-- **`lefthook install` is best-effort.** Splashdown invokes only an installed `lefthook`
-  binary. If it is unavailable or fails, the config entry is written but **not registered**
-  until the user runs `lefthook install`; a note is printed.
+- **`lefthook install` is best-effort, and it happens at activation.** Init writes only the
+  tracked config entry. `splash trust` (and `doctor --fix`) invoke an installed `lefthook`
+  binary; if it is unavailable or fails, the entry stays **unregistered** until the user runs
+  `lefthook install`, and a note is printed.
 
-- **Only newly-created loader config is auto-approved.** mise and direnv only load a config
-  after `mise trust` / `direnv allow`. During init, splashdown calls `Loader.approve()` only
-  when `wire()` created the loader config from nothing. It never approves pre-existing or
-  inherited config, and `sync`/post-checkout never approves anything; users must review and
-  trust those files themselves.
+- **Only splashdown-owned loader config is auto-approved, and only at trust.** mise and direnv
+  only load a config after `mise trust` / `direnv allow`. `cmd_trust` calls `Loader.approve()`
+  only when `Loader.owns_config()` reports that removing splashdown's own directive would leave
+  the file empty. It never approves pre-existing or inherited config that may carry the user's
+  `[tools]`, `[tasks]`, or `.envrc` commands, and `init`/`sync`/post-checkout never approve
+  anything; users must review and trust those files themselves.
   `approve()` never fails the run — a missing `mise`/`direnv` binary, non-zero exit, or timeout
   is swallowed (`loaders.py`, `_run_ok`).
 
@@ -271,8 +293,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 
 - **No-loader + process-only apps = silent no-op risk.** Only reachable now when *no* loader is
   installed at all (or `--loader none` was passed) and the only apps read env from the process
-  (Vite, Spring Boot, mobile) rather than a dotenv file: splashdown keeps writing
-  `splashdown.env` and prints how to source it, but nothing sources it automatically
+  (Vite, Spring Boot, mobile) rather than a dotenv file: sync keeps writing
+  `splashdown.env` and init prints how to source it, but nothing sources it automatically
   (`_resolve_no_loader_delivery` and `_NO_LOADER_INSTRUCTIONS` in `commands.py`).
 
 - **`profile = "unknown"` apps are skipped, not failed.** An unrecognized framework gets no
@@ -288,15 +310,16 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 
 Onboarding is once-per-project but high-stakes: per the persona, a bad first run equals
 abandonment, and the parallel-agent persona needs setup to be zero-touch because an agent
-won't run a step it doesn't know about. Folding scan + scaffold + loader + hook + wiring +
-sync into one command is what makes "spin up a worktree and it just works" true. A teammate's clone
-is still different from a linked worktree because trust, hook activation, and registry state do not
-travel with Git. `splash trust` makes that difference an explicit security decision without
-requiring the teammate to regenerate project configuration.
+won't run a step it doesn't know about. Folding scan + scaffold + loader + hook configuration +
+wiring into one command is what makes "spin up a worktree and it just works" true once the
+checkout is activated. A teammate's clone is still different from a linked worktree because trust,
+hook activation, and registry state do not travel with Git. `splash trust` makes that difference
+an explicit security decision without requiring the teammate to regenerate project configuration.
 
-**Why the first sync lives in the CLI dispatch layer, not `cmd_init`.** `cmd_init` stays pure
-scaffolding so the ~30 tests that call `cmd_init(tmp_path, ...)` directly — without a `Registry` —
-keep working; folding the sync into `cmd_init` would either break them or make them write to the
-real machine registry. The dispatch composes `cmd_init(...)` then `_cmd_provision_inner(cwd,
-registry)` (the same call bare `splash` runs), mirroring how the git post-checkout hook composes
-scaffold and sync rather than fusing them.
+**Why adoption is two commands.** Everything init writes is project configuration a user can read,
+edit, and commit; everything that follows touches the machine — the machine-wide registry, the
+local `.git` directory, recorded trust, and the loader's approval database. Splitting them at that
+line gives the user a review point before any of it happens, and gives the project's own author the
+same second step (`splash trust`) a cloning teammate already took. It also makes the boundary
+enforceable: init is dispatched before `Registry` construction, so no init path can reach machine
+state at all.

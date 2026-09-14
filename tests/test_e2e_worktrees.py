@@ -159,6 +159,7 @@ def test_post_checkout_hook_provisions_new_worktree(tmp_path, monkeypatch):
     _git(main, "config", "user.name", "Test")
 
     assert sd.main(["--cwd", str(main), "init"]) == 0
+    assert sd.main(["--cwd", str(main), "trust"]) == 0
     # Commit the recipe so the shared native hook sees it in a fresh worktree.
     # splashdown.env / .local.toml are gitignored, so they are not committed.
     _git(main, "add", "-A")

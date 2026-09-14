@@ -62,7 +62,7 @@ Every `[setup.NAME]` is validated while the recipe loads, whether or not that se
 
 Operational sync output is key-only by default. Text change reports already name keys without
 values; JSON returns `resolved_keys`. Add `--show-values` to print every resolved `KEY=VALUE` in
-text, including an up-to-date sync and init's first sync, or to replace the JSON field with
+text, including an up-to-date sync, or to replace the JSON field with
 `resolved`. The explicit `stdout` writer remains value-bearing in either mode.
 
 ## Key entry points

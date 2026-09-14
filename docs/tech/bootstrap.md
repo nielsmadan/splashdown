@@ -17,7 +17,8 @@ JSON contains a version and one boolean. Both are written with a sibling tempora
 and `os.replace`. Corrupt or unknown trust state fails closed for both capabilities. Corrupt
 completion blocks automatic execution and requires explicit `splash bootstrap --rerun`.
 
-`record_trust(..., bootstrap=False)` is used by init to grant sync-only trust. `splash trust`
+`record_trust(..., bootstrap=False)` records sync-only trust; no command path grants it
+implicitly. `splash trust`
 always grants sync and also grants bootstrap when the current recipe declares it. A later sync-only
 grant does not downgrade existing bootstrap trust. Revocation atomically writes both booleans false
 instead of deleting state, so removing `[bootstrap]` cannot turn an explicit untrust into missing

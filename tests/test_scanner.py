@@ -447,16 +447,49 @@ def test_cmd_init_unknown_framework_app_gets_unknown_profile(tmp_path):
     assert "[resources." not in recipe_text
 
 
-def test_cli_init_runs_first_sync(tmp_path, monkeypatch):
-    # `splash init` scaffolds AND allocates ports for the current checkout, so
-    # splashdown.env exists immediately (no manual `splash sync` needed).
+def test_cli_init_configures_without_allocating(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "vite.config.ts").write_text("export default {}")
     rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"])
     assert rc == 0
     assert (tmp_path / "splashdown.toml").exists()
-    env_text = (tmp_path / "splashdown.env").read_text()
-    assert "WEB_DEV_PORT=" in env_text
+    assert not (tmp_path / "splashdown.env").exists()
+    ports_file = tmp_path / "state" / "splashdown" / "ports.tsv"
+    assert not ports_file.exists() or str(tmp_path.resolve()) not in ports_file.read_text()
+    err = capsys.readouterr().err
+    assert "nothing is allocated or active yet" in err
+    assert "next: run `splash` to allocate values and write splashdown.env" in err
+
+
+def test_cli_init_at_a_worktree_root_prints_trust_before_allocation(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 0
+
+    lines = capsys.readouterr().err.splitlines()
+    trust = lines.index("next: run `splash trust` to activate automatic post-checkout handling")
+    assert lines[trust + 1] == "      run `splash` to allocate values and write splashdown.env"
+
+
+def test_cli_init_outside_git_reports_no_checkout_and_omits_trust(tmp_path, capsys):
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 0
+
+    err = capsys.readouterr().err
+    assert "not a Git checkout; post-checkout hook not installed" in err
+    assert "splash trust" not in err
+
+
+def test_cli_sync_after_init_allocates_the_scanned_resources(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise"]) == 0
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+
+    assert "WEB_DEV_PORT=" in (tmp_path / "splashdown.env").read_text()
     ports = (tmp_path / "state" / "splashdown" / "ports.tsv").read_text()
     assert str(tmp_path.resolve()) in ports
 
@@ -471,21 +504,21 @@ def test_cli_init_overwrite_flag(tmp_path, monkeypatch, capsys):
     assert sd.main(["--cwd", str(tmp_path), "init", "--loader=mise", "--overwrite"]) == 0
 
 
-def test_cli_init_no_sync_skips_provision(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=mise", "--no-sync"])
-    assert rc == 0
-    assert (tmp_path / "splashdown.toml").exists()
-    assert not (tmp_path / "splashdown.env").exists()
-    ports_file = tmp_path / "state" / "splashdown" / "ports.tsv"
-    assert not ports_file.exists() or str(tmp_path.resolve()) not in ports_file.read_text()
-
-
-def test_cmd_init_writes_post_checkout_hook(tmp_path):
+def test_cmd_init_leaves_the_native_hook_to_trusted_activation(tmp_path, capsys):
     _git_init(tmp_path)
     (tmp_path / "vite.config.ts").write_text("export default {}")
     sd.cmd_init(tmp_path)
+    assert not (tmp_path / ".git" / "hooks" / "post-checkout").exists()
+    assert "the local post-checkout hook is installed by `splash trust`" in capsys.readouterr().err
+
+
+def test_cmd_trust_writes_post_checkout_hook(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    sd.cmd_init(tmp_path)
+
+    assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
+
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
     assert '"$SPLASH" hook post-checkout "$1" "$2" "$3"' in hook.read_text()
 

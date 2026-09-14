@@ -47,13 +47,15 @@ An existing recipe requires `--overwrite` to replace it.
 Nested init leaves the worktree-root post-checkout hook untouched because Git invokes that hook
 from the root. Init prints the `splash --cwd PATH sync` command to run manually after checkout.
 
-Splashdown scans the filesystem, detects your workspace layout and framework, and does five things:
+Splashdown scans the filesystem, detects your workspace layout and framework, and does four things:
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.
 2. Writes `splashdown.local.toml`, a gitignored per-checkout file (empty to start).
-3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, then activates compatible post-checkout integration. A custom `core.hooksPath` is left untouched with manual forwarding instructions; tracked Lefthook configuration may still require `lefthook install` locally.
+3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, and writes the project's own post-checkout hook configuration for Lefthook or Husky. A custom `core.hooksPath` is left untouched with manual forwarding instructions.
 4. Adds managed framework and port guidance to an existing root `AGENTS.md` or independent `CLAUDE.md`.
-5. Allocates this checkout's resources and writes them to `splashdown.env`.
+
+Init writes configuration only. It allocates nothing, records no trust, and installs nothing on
+your machine, so you can read and edit the generated recipe before anything else happens.
 
 Sample output for a small backend:
 
@@ -63,16 +65,37 @@ scanning project…
   .            → node-backend
   shell loader → mise
 wrote splashdown.toml
-updated mise.toml (+_.file = "splashdown.env")
-wrote .git/hooks/post-checkout
-  PORT (changed)
-  -> splashdown.env: 1 vars (changed)
+wrote splashdown.local.toml (skeleton)
+updated .gitignore (+splashdown.env, splashdown.local.toml)
+created mise.toml (+_.file = "splashdown.env")
+note: the local post-checkout hook is installed by `splash trust`
+configuration written; nothing is allocated or active yet
+next: run `splash trust` to activate automatic post-checkout handling
+      run `splash` to allocate values and write splashdown.env
 ```
-
-Pass `--no-sync` to scaffold the files without reserving ports yet.
 
 !!! note "Commit the recipe"
     Commit `splashdown.toml` and the loader change. Do not commit `splashdown.local.toml` or `splashdown.env` (both are gitignored by init). Committing the recipe is what lets new worktrees inherit it.
+
+## Activate this checkout
+
+```sh
+splash trust
+splash
+```
+
+`splash trust` authorizes automatic handling for this clone. It installs the local post-checkout
+hook, runs `lefthook install` when the project uses Lefthook, and runs `mise trust` or
+`direnv allow` when the loader file holds splashdown's integration and nothing else. A loader
+file that also holds settings of your own is left for you to approve with the loader's own
+command.
+
+Bare `splash` is a sync. It allocates this checkout's resources and writes `splashdown.env`:
+
+```
+  PORT (changed)
+  -> splashdown.env: 1 vars (changed)
+```
 
 ## What got created
 

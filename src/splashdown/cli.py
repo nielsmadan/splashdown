@@ -11,7 +11,6 @@ from .cli_output import render_application_error, render_claim_notices, render_u
 from .commands import (
     InitOptions,
     _cmd_provision,
-    _cmd_provision_inner,
     _env_dispatch,
     cmd_bootstrap,
     cmd_completion,
@@ -88,7 +87,7 @@ This checkout
   status   [all]              state of this checkout (or every checkout)
 
 Set up a project
-  init                        scaffold splashdown.toml + first sync (--no-sync skips it)
+  init                        scaffold splashdown.toml + project integrations
   deinit                     remove checkout-local state (keeps shared hook and trust)
   trust                      authorize automatic recipe handling for this clone
   untrust                    revoke automatic recipe handling for this clone
@@ -106,9 +105,6 @@ _VALUE_OUTPUT_HELP = (
     "Global output options (place before the command): --format {text,json}; --show-values."
 )
 _FORMAT_OUTPUT_HELP = "Global output option (place before the command): --format {text,json}."
-_INIT_OUTPUT_HELP = (
-    "Global output option (place before the command): --show-values applies to the first sync."
-)
 
 KNOWN_CMDS = {
     "sync",
@@ -155,7 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     parser.add_argument(
         "--show-values",
         action="store_true",
-        help="include resolved values for sync, status, normal init, or bare env",
+        help="include resolved values for sync, status, or bare env",
     )
     parser.add_argument("--version", action=_VersionAction)
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
@@ -184,7 +180,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         action="store_true",
         help="with `all`, expand each checkout into the per-block view",
     )
-    p = sub.add_parser("init", help=argparse.SUPPRESS, epilog=_INIT_OUTPUT_HELP)
+    p = sub.add_parser("init", help=argparse.SUPPRESS)
     p.add_argument(
         "--loader",
         default=None,
@@ -192,11 +188,6 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         help="override loader auto-detection (none = write a dotenv file, wire nothing)",
     )
     p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
-    p.add_argument(
-        "--no-sync",
-        action="store_true",
-        help="scaffold only; skip the first sync (don't allocate ports / write splashdown.env)",
-    )
     p.add_argument(
         "--electron-profile",
         choices=("isolated", "shared"),
@@ -523,13 +514,9 @@ def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namesp
             "--format is only supported by sync, status, bare env, target lists, and target claims"
         )
 
-    supports_values = (
-        args.cmd in {"sync", "status"}
-        or (args.cmd == "env" and args.env_cmd is None)
-        or (args.cmd == "init" and not args.no_sync)
-    )
+    supports_values = args.cmd in {"sync", "status"} or (args.cmd == "env" and args.env_cmd is None)
     if args.show_values and not supports_values:
-        parser.error("--show-values is only supported by sync, status, normal init, and bare env")
+        parser.error("--show-values is only supported by sync, status, and bare env")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -572,11 +559,7 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 �
                 electron_profile=args.electron_profile,
                 ios_scheme=args.ios_scheme,
             )
-            if args.no_sync:
-                return 0
-            registry = Registry()
-            _consume_claim_notices(cwd, registry)
-            return _cmd_provision_inner(cwd, registry, show_values=args.show_values)
+            return 0
         except ApplicationError as error:
             return render_application_error(error)
         except (DeviceError, ValueError) as error:

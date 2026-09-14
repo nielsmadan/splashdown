@@ -19,8 +19,9 @@ never executes bootstrap or edits tracked Husky/Lefthook files. `splash untrust`
 recipe-independent and revokes both clone-wide capabilities by writing an explicit untrusted
 state. Removing `[bootstrap]` cannot erase revocation.
 
-Every init path records sync-only trust after it installs the generated hook. That preserves the
-automatic init workflow without granting command execution to a `[bootstrap]` added later.
+No init path records trust. Init writes project configuration and names `splash trust`, which is
+the only command that grants sync trust and, when the current recipe declares `[bootstrap]`,
+command execution.
 
 `splash bootstrap` requires trust before provisioning. It resolves resources, writes outputs, and
 runs commands sequentially from the checkout root. Successful completion is recorded under the
