@@ -86,6 +86,9 @@ def _run_doctor_targets(targets: list[tuple[WiringCheck, Path]], *, fix: bool) -
         if status == "ok":
             print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
             continue
+        if status == "warning" and not (fix and check.autofix is not None):
+            print(f"  ⚠  {check.id}: {detail}", file=sys.stderr)
+            continue
         if fix and check.autofix is not None:
             try:
                 check.autofix(check_dir)
@@ -96,6 +99,9 @@ def _run_doctor_targets(targets: list[tuple[WiringCheck, Path]], *, fix: bool) -
             status_after, detail_after = run_wiring_detect(check, check_dir)
             if status_after == "ok":
                 print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
+                continue
+            if status_after == "warning":
+                print(f"  ⚠  {check.id}: {detail_after}", file=sys.stderr)
                 continue
             print(f"  ✗  {check.id}: still problem after autofix: {detail_after}", file=sys.stderr)
             if check.manual_instructions is not None:

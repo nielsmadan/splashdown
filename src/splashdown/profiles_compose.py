@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from .errors import DeviceError
-from .wiring import WiringCheck, _strip_hash_comments, _yaml_key_regions
+from .wiring import WiringCheck
+from .yamltext import _strip_hash_comments, _yaml_key_regions
 
 # A compose file is infrastructure spanning apps, not an app, so it is not matched
 # per-directory by the scanner. Its resources are emitted once for the repo and its

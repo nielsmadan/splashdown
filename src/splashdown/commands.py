@@ -573,7 +573,7 @@ def _apply_init_wiring_check(
     """Detect, fix what is safely mechanical, then detect again. A fix that did not
     resolve the problem is reported with the edit the user has to make by hand."""
     status, detail = run_wiring_detect(check, app_dir)
-    if status == "ok":
+    if status in {"ok", "warning"}:
         return
     if check.autofix is None:
         _report_wiring_problem(check, app_dir, detail)
@@ -589,7 +589,7 @@ def _apply_init_wiring_check(
         if _file_bytes(path) != original:
             report.changed.append(os.path.relpath(path, cwd))
     status, detail = run_wiring_detect(check, app_dir)
-    if status != "ok":
+    if status not in {"ok", "warning"}:
         _report_wiring_problem(check, app_dir, detail)
 
 

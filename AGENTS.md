@@ -80,9 +80,15 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 - Provisioning destinations never follow checkout-controlled links. Generated env files use the
   shared no-symlink, regular-file-only atomic writer; local skeleton creation is create-only and
   rejects symlinks and non-regular entries.
-- Wiring checks must not return `ok` for input they did not parse. Strip comments, recognize the
-  relevant value slot, and report unrecognized shapes as a problem. Use `_yaml_key_regions` for
-  YAML value regions instead of line-only regular expressions.
+- Wiring checks and hook-configuration editors must not return `ok` for input they did not parse.
+  Strip comments, recognize the relevant value slot, and report unrecognized shapes as a problem.
+  Use `yamltext.py`'s `_yaml_key_regions` for YAML value regions instead of line-only regular
+  expressions. There is no runtime YAML parser, so an editor that cannot place a shape exactly
+  must preserve the file and emit manual instructions; `_pre_commit_analysis` additionally
+  re-reads the document it built and abandons the edit unless its own hook parses back out.
+- Hook-manager configuration paths follow each tool's own first-match-wins lookup. Never create a
+  file that outranks the configuration a project already uses (`prek.toml` over an existing
+  `.pre-commit-config.yaml`, a `.simple-git-hooks.json` over a declared `package.json` block).
 - `.NET` `launchSettings.json` may contain a UTF-8 BOM and CRLF. Read and write it through
   `_read_launch_settings` so both survive.
 - Env destinations are co-owned, so everything outside splashdown's keys survives verbatim.

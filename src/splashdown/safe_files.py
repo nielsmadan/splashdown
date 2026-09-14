@@ -85,6 +85,11 @@ def read_editable_bytes(path: Path, *, root: Path | None = None) -> bytes:
     return current[0]
 
 
+def read_optional_editable_bytes(path: Path, *, root: Path | None = None) -> bytes | None:
+    current = _read_regular_file(path, root=root, missing_ok=True)
+    return None if current is None else current[0]
+
+
 def read_editable_text(
     path: Path,
     *,

@@ -5,7 +5,7 @@ description: Understand splashdown's recipe, local config, generated environment
 
 # How it works
 
-Splashdown is the glue between git and your env loader (mise, direnv, devbox). It installs a `post-checkout` git hook, coexisting with lefthook/husky if you already use a hook manager, that forwards each checkout event to Splashdown. For a trusted clone, each checkout's free ports and other resources are allocated and handed to your loader automatically.
+Splashdown is the glue between git and your env loader (mise, direnv, devbox). It installs a `post-checkout` git hook that forwards each checkout event to Splashdown, coexisting with your hook manager if you already use one. For a trusted clone, each checkout's free ports and other resources are allocated and handed to your loader automatically.
 
 Run `splash init` once in your project. Splashdown walks the filesystem, identifies your apps and their frameworks, and writes a recipe (`splashdown.toml`) declaring per-checkout resources (ports, db urls, UUIDs, sim/emulator variants). On every `git checkout` or `git worktree add`, the post-checkout event handler checks clone trust and then allocates concrete values into a gitignored `splashdown.env`. Your shell-env loader (mise / direnv / devbox) sources that file automatically, so every process in the checkout sees the right `PORT`, `DATABASE_URL`, etc.
 
@@ -33,7 +33,7 @@ The registry at `~/.local/state/splashdown/` is machine-wide, so when two checko
 splashdown: up to date (3 vars, 2 files)
 ```
 
-This is what you see through lefthook or other hook managers when nothing actually changed.
+This is what you see through a hook manager when nothing actually changed.
 
 The hook does nothing until the clone has Splashdown trust, so a cloned repository cannot make an
 installed Splashdown write recipe-controlled output. `splash init` grants no trust. Clone-local

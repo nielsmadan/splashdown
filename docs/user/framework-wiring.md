@@ -11,7 +11,7 @@ Checks that patch a consumer of generated values read the environment file this 
 
 | Profile | Check | What it ensures |
 |---|---|---|
-| react-native | `hook` | post-checkout forwards Git's event to Splashdown through your existing hook manager (lefthook / husky) instead of clobbering `core.hooksPath` |
+| react-native | `hook` | post-checkout forwards Git's event to Splashdown through your existing hook manager instead of clobbering `core.hooksPath` |
 | react-native | `rn-metro-config` | `metro.config.js` consumes `RCT_METRO_PORT`. Auto-patches the recognized `port: <N>` literal shape, otherwise prints the exact snippet to paste |
 | react-native | `rn-pkg-port` | `package.json` `start`/`ios`/`android` scripts don't carry `--port <N>` (which would override the env var), auto-stripped |
 | react-native | `rn-xcode-env` | `ios/.xcode.env` exports a splashdown-managed `RCT_METRO_PORT` block that reads your configured environment file. iOS bakes the port into the binary at compile time, so Xcode-GUI builds need this to pick up the per-checkout port. Only a line that assigns or exports `RCT_METRO_PORT` counts, so a dotenv path mentioned for any other reason, such as `export ENVFILE=.env.staging`, is left alone and does not stop the fix. Any spelling that resolves to the configured file counts, including a hand-written conditional, and a reference through a shell variable splashdown does not recognize is reported rather than accepted |
@@ -35,7 +35,9 @@ before removing it with `watchman watch-del PATH`, then restart Metro from this 
 and invalid responses leave roots unverified and produce a ✗. A ✓ only confirms that no ancestor
 watch was found. It does not verify Metro or hot reload.
 
-**Hook-manager coexistence.** `splash` detects lefthook (`lefthook.{yml,yaml}` or in `package.json` devDeps), husky (`.husky/`), or an existing `core.hooksPath`. It adds an entry to lefthook or husky, and invokes only an installed `lefthook` binary to register lefthook changes. With no manager it installs an untracked hook in Git's common hooks directory, which is shared by the repository's worktrees. It never changes `core.hooksPath`. If another hooks path is configured, it leaves it alone and prints the exact event-forwarding `splash hook post-checkout "$1" "$2" "$3"` command to add there.
+**Hook-manager coexistence.** `splash` integrates automatically with Husky, Lefthook, pre-commit, prek, and simple-git-hooks. It adds or updates only its own entry, so your other hook jobs and scripts stay exactly as they are. With no manager it installs an untracked hook in Git's common hooks directory, which is shared by the repository's worktrees.
+
+To decide who owns the event, `splash` looks first at `core.hooksPath`, then at the hooks already installed in the directory Git actually runs, then at the manager configuration files in your checkout, and last at what `package.json` declares. It never changes `core.hooksPath`, and it never installs a hook manager for you. Overcommit, an unrecognized `core.hooksPath`, and a checkout that configures two managers with equal weight are all left untouched. In those cases `splash` prints the exact entry to add yourself, written in that manager's own syntax.
 
 ```sh
 splash doctor                    # read-only report (✓/✗ per check)

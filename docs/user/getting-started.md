@@ -51,7 +51,7 @@ Splashdown scans the filesystem, detects your workspace layout and framework, an
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.
 2. Writes `splashdown.local.toml`, a gitignored per-checkout file (empty to start).
-3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, and writes the project's own post-checkout hook configuration for Lefthook or Husky. A custom `core.hooksPath` is left untouched with manual forwarding instructions.
+3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, and writes the project's own post-checkout hook configuration for Husky, Lefthook, pre-commit, prek, or simple-git-hooks. Overcommit and a custom `core.hooksPath` are left untouched with manual forwarding instructions.
 4. Adds managed framework and port guidance to an existing root `AGENTS.md` or independent `CLAUDE.md`.
 
 Init writes configuration only. It allocates nothing, records no trust, and installs nothing on
@@ -86,8 +86,9 @@ splash
 ```
 
 `splash trust` authorizes automatic handling for this clone. It installs the local post-checkout
-hook, runs `lefthook install` when the project uses Lefthook, and runs `mise trust` or
-`direnv allow` when the loader file holds splashdown's integration and nothing else. A loader
+hook, runs your hook manager's own install command when one of them owns the event, and runs
+`mise trust` or `direnv allow` when the loader file holds splashdown's integration and nothing
+else. A loader
 file that also holds settings of your own is left for you to approve with the loader's own
 command.
 

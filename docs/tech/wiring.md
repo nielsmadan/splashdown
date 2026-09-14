@@ -71,7 +71,7 @@ per app from the recipe's `env_file`; `doctor.py` computes it from
 `activation` classifies what the autofix writes. A check is `activation=True` when
 its repair touches the local checkout rather than project-owned, committable
 configuration: `_HOOK_WIRING_CHECK` sets it, because its autofix installs the local
-Git hook and runs `lefthook install`. `_apply_init_wiring_checks` (`commands.py`)
+Git hook or runs the owning hook manager's install command. `_apply_init_wiring_checks` (`commands.py`)
 skips those checks, which is what keeps `splash init` configuration-only; `doctor`
 and `doctor --fix` run them as before. Classifying the check itself, rather than
 filtering by `id` at init, means a future activation-class check is excluded from
@@ -148,23 +148,33 @@ problem prints `✗` with the check's manual instructions rather than passing si
 files whose bytes changed are appended to `InitReport.changed` (see
 `docs/features/framework-wiring.md`).
 
+A detect returns `ok`, `warning`, or `problem`. `doctor` renders a warning as `⚠` and does not
+count it against the exit code; `splash init` treats it as settled, because the remaining step is
+local activation rather than a project edit.
+
 Every writable check uses `safe_files.py` for its edit. The helper rejects a final symlink,
 non-regular destination, configured-root escape, or symlinked parent component; opens existing files with
 `O_NOFOLLOW` where available; and commits through same-directory atomic replacement while
 preserving the existing mode. The .NET writer additionally passes the detected BOM encoding and
-newline convention. Lefthook, Husky, and native-hook repairs use the same helper, with executable
-mode applied to hook replacements rather than a follow-up `chmod`.
+newline convention. Every hook-manager repair — lefthook, husky, pre-commit, prek,
+simple-git-hooks, and the native hook — uses the same helper, with executable mode applied to hook
+replacements rather than a follow-up `chmod`.
 
 ### The individual checks
 
 - **`hook`** (`_rn_hook_detect` and `_HOOK_WIRING_CHECK`) — delegates detection to
-  `post_checkout_readiness`, the same exact policy used during `splash trust`. Lefthook must have
-  the owned event-forwarding run value; Husky and native hooks must have the owned body and be
-  executable. A modified hook is reported as unverifiable instead of accepted by substring.
-  Configured `core.hooksPath` is reported but not touched. Autofix delegates to
-  `_ensure_post_checkout_hook` through `_autofix_ensure_post_checkout_hook`
-  so it coexists with the project's existing manager. RN and project-level registrations use the
-  same `hook` id, so doctor emits one diagnostic.
+  `post_checkout_readiness`, the same exact policy used during `splash trust`. Lefthook,
+  pre-commit, prek, and simple-git-hooks must carry the owned event-forwarding entry; Husky and
+  native hooks must have the owned body and be executable. A modified hook is reported as
+  unverifiable instead of accepted by substring, and so is a configuration shape the editor could
+  not parse. Overcommit, a conflict between two managers, and a configured `core.hooksPath` are
+  reported but not touched. Autofix delegates to `_ensure_post_checkout_hook` through
+  `_autofix_ensure_post_checkout_hook` so it coexists with the project's existing manager.
+  `_rn_hook_files` reports the file the owning adapter writes, through `post_checkout_files`, and
+  reports nothing when that adapter's state is `unrecognized`. Correct configuration whose manager
+  hook is not installed in this checkout detects as `warning`, not `ok`: the project file is right
+  but no event can arrive until that manager's own install has run. RN and project-level
+  registrations use the same `hook` id, so doctor emits one diagnostic.
 - **`rn-metro-config`** (`_rn_metro_detect` in `wiring.py`) —
   `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix
   (`_rn_metro_autofix`, `wiring.py`) recognizes three object-literal shapes
@@ -346,7 +356,9 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
 - **A configured `core.hooksPath` is reported, not auto-wired.** The hook check stays `✗`
   even under `--fix`; Splashdown never changes or writes into that configured path. Manual
   instructions show the event-aware hidden command with a trusted absolute executable, plus manual
-  bootstrap as the fallback. A sync-only instruction would not satisfy the check.
+  bootstrap as the fallback. A sync-only instruction would not satisfy the check. Overcommit and
+  an unresolved conflict between two hook managers behave the same way: reported, preserved, and
+  given instructions in that manager's own syntax.
 
 ## Why
 

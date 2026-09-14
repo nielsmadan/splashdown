@@ -68,7 +68,7 @@ extension rules live in [Framework wiring engine](../tech/wiring.md).
 
 | Check | What it verifies | Fix policy |
 | --- | --- | --- |
-| Post-checkout hook | Exact event-aware Lefthook, Husky, or native hook readiness | Safe repair, except configured `core.hooksPath` |
+| Post-checkout hook | Exact event-aware readiness for the manager that owns the event: Lefthook, Husky, pre-commit, prek, simple-git-hooks, or the native hook | Safe repair, except Overcommit, a manager conflict, and a configured `core.hooksPath` |
 | React Native Metro | Metro config, package scripts, and `ios/.xcode.env` consume `RCT_METRO_PORT` from the configured output | Safe recognized shapes; manual otherwise |
 | React Native/Expo Watchman | No existing Watchman root is an ancestor of the checkout | Report-only when Watchman is installed |
 | Vite | Shell environment reads and use of `WEB_DEV_PORT` | Env-read rewrite; port consumption report-only |
@@ -111,7 +111,8 @@ receive an explicit env-only success verdict.
   An ancestor finding asks the user to review shared use before removing that watch and
   restarting Metro.
 - **A configured `core.hooksPath` is never taken over.** Doctor reports it and prints manual
-  event-forwarding instructions even in fix mode.
+  event-forwarding instructions even in fix mode. Overcommit and an unresolved conflict between
+  two hook managers are handled the same way.
 - **Vite's env rewrite is narrow.** It changes matched `env.X` reads to `process.env.X` but leaves
   the `loadEnv` call and deliberate shell-then-dotenv fallbacks intact. It is skipped when Vite
   already loads the configured destination itself, which needs a destination Vite loads in

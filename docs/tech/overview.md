@@ -19,10 +19,12 @@ is the canonical contributor summary; `CLAUDE.md` imports it. These docs go deep
   `device_ios.py`/`device_android.py`: platform adapters; `device_tools.py`: finite subprocess
   deadlines; `launching.py`: framework selection and launch dispatch.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
-  `doctor.py` owns check selection, execution, and rendering.
+  `yamltext.py`: the dependency-free comment-stripping and YAML value-region readers both the
+  checks and the hook-configuration editors use; `doctor.py` owns check selection, execution, and
+  rendering.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
-  `cli_output.py` + `hooks.py` + `completion.py`: entry, parse, dispatch, typed status reports,
-  output/error rendering, command handlers, and git-hook installation.
+  `cli_output.py` + `hooks.py` + `hook_configs.py` + `completion.py`: entry, parse, dispatch,
+  typed status reports, output/error rendering, command handlers, and git-hook installation.
   Port-owner snapshots live in `port_inspection.py`; bounded Watchman and device-network checks
   live in `runtime_checks.py` and are composed by doctor and launch orchestration.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
@@ -41,8 +43,9 @@ reconciles target state through the platform adapters, `launching.py` dispatches
 `wiring.py` defines framework checks,
 `doctor.py` orchestrates them, and `agentdocs.py` derives and
 synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init and deinit.
-`hooks.py` owns git-hook, gitignore, and mise-directive wiring and is consumed directly by
-`loaders.py`, `wiring.py`, and `commands.py`. `cli.py`/`commands.py` are the entry + orchestration.
+`hooks.py` owns git-hook detection, gitignore, and mise-directive wiring and is consumed directly
+by `loaders.py`, `wiring.py`, and `commands.py`; `hook_configs.py` sits below it and holds the
+per-manager post-checkout configuration editors. `cli.py`/`commands.py` are the entry + orchestration.
 `bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.
 `status.py` gathers typed reports and `cli_output.py` renders ordinary registry-backed command
 output; trust/bootstrap and the hidden hook keep their early, command-specific boundary.
@@ -65,6 +68,11 @@ output; trust/bootstrap and the hidden hook keep their early, command-specific b
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
   so the read path never loads it. `__version__` and other costly lookups are lazy in `__init__.py`.
   Keep the two-dependency floor (`argcomplete`, `tomlkit`) and the read path light.
+- **Lexical YAML seams.** `yamltext.py` holds `_strip_hash_comments`, `_yaml_flow_value`, and
+  `_yaml_key_regions`. It imports nothing from the package, so `wiring.py`, the `profiles_*`
+  checks, and `hook_configs.py` all read value slots the same flow-aware, comment-stripped way
+  without an import cycle. Splashdown ships no YAML parser: any shape these helpers cannot place
+  exactly is reported as unrecognized rather than guessed at.
 - **Safe editable files.** `safe_files.py` is the dependency-free seam for framework autofixes,
   hook repairs, and local target changes. It rejects symlinked path components and non-regular
   destinations, opens existing files without following the final link where the platform supports

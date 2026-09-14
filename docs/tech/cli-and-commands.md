@@ -47,7 +47,8 @@ handler. `commands.py` owns trust/bootstrap, init, sync, deinit, and env orchest
 owns status report construction and `cli_output.py` owns rendering. `target_commands.py`
 owns run/start/stop/destroy, fleet maintenance, and the nested target dispatcher; `targets.py` owns
 local/global catalog edits. `hooks.py` owns post-checkout
-installation and coexistence with other hook managers. `completion.py` provides the argcomplete
+installation and coexistence with other hook managers, delegating the per-manager configuration
+editors to `hook_configs.py`. `completion.py` provides the argcomplete
 completers, which must never raise or print because they run on every `<Tab>`.
 
 The package is built for a fast hot path: the git post-checkout event handler must reach trust
@@ -211,8 +212,8 @@ Init is configuration-only. It allocates nothing, writes no environment output, 
 runs no loader approval command, and installs no local hook. Its framework-wiring pass reinforces
 that boundary: `_apply_init_wiring_checks` skips every `WiringCheck` marked `activation`, so the
 `hook` check cannot install the local wrapper behind init's back. `cmd_trust` owns those activation
-effects: it installs the native wrapper or runs `lefthook install` through
-`_activate_post_checkout_hook`, records trust, and runs the loader's `approve()`. A nested project
+effects: it installs the native wrapper, or runs the owning hook manager's own install command,
+through `_activate_post_checkout_hook`, records trust, and runs the loader's `approve()`. A nested project
 skips hook activation there too, for the same worktree-root reason. Approval runs `mise trust` /
 `direnv allow` only when `Loader.owns_config` reports that the loader file holds splashdown's
 integration and nothing else, so pre-existing or inherited configuration carrying user commands is
@@ -243,13 +244,57 @@ originals. Clone-wide trust and the shared hook remain; checkout completion is r
 `hooks.py` owns post-checkout integration. `_configure_post_checkout_hook` (init) writes only the
 project-owned configuration; `_ensure_post_checkout_hook` (doctor `--fix`) additionally performs
 local installation. Both *coexist* with whatever hook manager the project already uses, rather than
-clobbering it. `_detect_hook_manager` classifies the project into one of four cases, in priority
-order:
+clobbering it.
 
-1. **`lefthook`** — a `lefthook.{yml,yaml}`/`.lefthook.yml` file exists, or `lefthook` is a (dev)dependency in `package.json`. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout.commands.splashdown` job that forwards `{1} {2} {3}` and returns whether the configuration carries that job. `_run_lefthook_install` is a separate activation step invoked by `_ensure_post_checkout_hook` and `_activate_post_checkout_hook`, never by init. It never executes project-controlled `yarn` or `npx` commands.
-2. **`husky`** — a `.husky/` directory exists. `_wire_post_checkout_husky` drops a `.husky/post-checkout` script using the shared `POST_CHECKOUT_HOOK` body and makes it executable.
-3. **`core-hookspath-other`** — `git config core.hooksPath` is set to any nonempty value. Splashdown refuses to take over that hooks directory: it prints event-forwarding instructions using a trusted absolute executable and wires nothing.
-4. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`. It lives in the local `.git` directory, so init only announces it and `cmd_trust` writes it.
+`detect_hook_configuration` returns a `HookDetection` with the owning manager, the reason, and
+every candidate. It ranks evidence from what Git enforces down to what a project declares:
+
+1. **`core.hooksPath`**, when set. A path inside `.husky` is `husky` (husky 9 sets `.husky/_`);
+   any other value is `core-hookspath-other`.
+2. **The installed `post-checkout` hook** in the effective hooks directory, matched against
+   `_INSTALLED_HOOK_SIGNATURES`. Splashdown's own bodies and `*.sample` files are skipped.
+3. **Any other installed hook** in that directory carrying such a signature.
+4. **A manager configuration file** in the checkout.
+5. **A `package.json` declaration** — a dependency, or the `simple-git-hooks` key.
+
+The first level with a candidate decides. Two or more candidates at that level is `conflict`:
+splashdown preserves every file, names the candidates, and writes nothing. This means a
+checkout with both a `.husky/` directory and lefthook in `package.json` resolves to `husky`,
+because a configuration directory outranks a bare dependency.
+
+`_ADAPTERS` maps each automatically integrated manager to its `configure`, `state`, `install`,
+`config_path`, and manual text:
+
+1. **`lefthook`** — `lefthook.{yml,yaml}` / `.lefthook.{yml,yaml}`, or a `lefthook` (dev)dependency. `_wire_post_checkout_lefthook` idempotently injects a `post-checkout.commands.splashdown` job that forwards `{1} {2} {3}`. `_run_lefthook_install` is a separate activation step invoked by `_ensure_post_checkout_hook` and `_activate_post_checkout_hook`, never by init. It never executes project-controlled `yarn` or `npx` commands.
+2. **`husky`** — a `.husky/` directory, or `core.hooksPath` inside it. `_wire_post_checkout_husky` drops a `.husky/post-checkout` script using the shared `POST_CHECKOUT_HOOK` body and makes it executable. Activation installs nothing; it verifies that husky's own shims exist in this checkout, which they do not in a fresh linked worktree because `.husky/_` is gitignored.
+3. **`pre-commit`** — `.pre-commit-config.yaml`, the only spelling pre-commit reads. `wire_pre_commit` (`hook_configs.py`) adds a `local` repo hook with `id: splashdown`, `language: system`, `always_run: true`, `pass_filenames: false`, and `stages: [post-checkout]`. Its `entry` is `sh -c` over the shared guard, translating `$PRE_COMMIT_FROM_REF`, `$PRE_COMMIT_TO_REF` and `$PRE_COMMIT_CHECKOUT_TYPE` into the three positional values the handler takes. Activation runs `pre-commit install --hook-type post-checkout`.
+4. **`prek`** — `prek.toml`, `.pre-commit-config.yaml`, then `.pre-commit-config.yml`: `prek_config_path` mirrors prek's own first-match-wins lookup, so `wire_prek` never creates a file that outranks the configuration the project already uses. A native `prek.toml` is edited through `tomlkit`, so comments and existing entries survive; a YAML configuration is handed to `wire_pre_commit(manager="prek")` and reported as prek. Detection still keys on `prek.toml` alone (`_MANAGER_CONFIG_NAMES`), so a checkout with only `.pre-commit-config.yaml` is classified `pre-commit` and the same entry serves both. Activation runs `prek install --hook-type post-checkout`.
+5. **`simple-git-hooks`** — a JSON or `package.json` configuration, or the dependency. `wire_simple_git_hooks` writes a `post-checkout` command into the first configuration the tool itself would read, and the command forwards `"$1" "$2" "$3"` because simple-git-hooks copies it into the generated hook verbatim. Dynamic `.js`/`.cjs`/`.mjs` configuration is never executed or edited, and a `package.json` value that is a string is a path to another configuration file, so it is reported as an indirection and left alone. `_write_json` restores the file's own line endings and passes `ensure_ascii=False`, so a first rewrite preserves CRLF and non-ASCII content. Activation runs the checkout's own `node_modules/.bin/simple-git-hooks` and never fetches the package.
+6. **`overcommit`** — `.overcommit.{yml,yaml}`. Recognized and preserved; manual instructions only, no adapter.
+7. **`core-hookspath-other`** — `core.hooksPath` points somewhere splashdown does not recognize. Splashdown refuses to take over that hooks directory: it prints event-forwarding instructions using a trusted absolute executable and wires nothing.
+8. **`conflict`** — two managers with equal evidence. Everything is preserved and the candidates are named.
+9. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`. It lives in the local `.git` directory, so init only announces it and `cmd_trust` writes it.
+
+Every adapter shares `SPLASH_GUARD` (`hook_configs.py`), the one-line form of the native hook's
+executable resolution and checkout-controlled-executable rejection.
+
+The YAML editor in `hook_configs.py` recognizes one narrow document shape and refuses everything
+else. `_pre_commit_analysis` strips comments through `yamltext.py` (the dependency-free seam that
+also serves the framework checks), requires exactly one top-level `repos:` whose value is a block
+— `_yaml_key_regions` is what rejects a flow spelling — then reads each sequence item as a block
+mapping through `_item_fields`. That reader rejects a key indented below a scalar, a sequence item
+where a key belongs, a duplicated key, and a `hooks:` with any inline value, which is the whole
+class of shapes that used to be rewritten into YAML no parser would load. `_block_sequence`
+accepts a sequence at its key's own column as well as an indented one, and the insertion reuses
+whatever column the project already writes. Before writing, `_pre_commit_analysis` re-analyzes the
+document it built and returns `unrecognized` unless splashdown's hook reads back out of it, so the
+editor can only emit text it can itself parse. `pre_commit_state` runs the same analysis, so
+`doctor` cannot report `ok` for a file the editor could not read.
+
+The JSON and TOML editors refuse the same way: malformed TOML, a `package.json` `simple-git-hooks`
+value that is a string path, an unparsable `package.json`, and a symlinked configuration of any
+kind all yield `unrecognized`. An `unrecognized` state preserves the file and routes to manual
+instructions; it is never reported as wired, and `post_checkout_files` names nothing for it.
 
 Nesting detection lives in `hooks.py` alongside the other Git shell-outs: `_git_worktree_root`,
 `_nested_worktree`, `_nested_project`, and the shared `_print_nested_checkout_hook_note`.
@@ -266,9 +311,16 @@ probe or older-binary fallback. Trust activates only local state; tracked Leftho
 belongs to init/doctor.
 
 Hook readiness is a single `HookReadiness` policy in `hooks.py`, shared by doctor detection and
-trust activation. Native and Husky hooks must exactly match the owned event-aware body and be
-executable. Lefthook must contain the exact event-aware run value. A custom or modified form is
-reported as unverifiable rather than green. `splash doctor --fix` can add the project-level hook
+trust activation. `ready` means the project-owned configuration carries splashdown's current
+entry; `active` means the owning manager's `post-checkout` hook is installed in this checkout, so
+the two halves of the configuration/activation split are reported separately rather than
+conflated. Native and Husky hooks must exactly match the owned event-aware body and be
+executable. Lefthook must contain the exact event-aware run value; pre-commit, prek, and
+simple-git-hooks must carry the exact forwarding entry. A custom or modified form is
+reported as unverifiable rather than green, and `ready` without `active` is a `doctor` warning
+rather than a tick, because the configuration is correct but no event can arrive yet.
+`post_checkout_files` names the file an adapter writes, which is what doctor reports as changed,
+and names nothing when the adapter's state is `unrecognized`. `splash doctor --fix` can add the project-level hook
 check for a recipe with `[bootstrap]` even when framework detection fails, so minimal and generic
 projects have the same migration path.
 
@@ -470,7 +522,7 @@ device does not hide simulator variants in a simulator-only project.
 - **Default-to-`sync` for interactive use.** Bare `splash` remains the shortest explicit sync command.
   The hook uses `splash hook post-checkout` because automatic bootstrap needs Git's event arguments
   and because trust must be checked before Registry construction or output writes.
-- **Hook-manager coexistence over clobbering.** A project that already uses lefthook or husky has a hooks pipeline a developer depends on; silently overwriting its hook or seizing `core.hooksPath` would break it. Splashdown adds its entry to the detected manager, uses Git's common native hook only when no manager or custom hooks path exists, and refuses to touch any configured `core.hooksPath`.
+- **Hook-manager coexistence over clobbering.** A project that already uses a hook manager has a hooks pipeline a developer depends on; silently overwriting its hook or seizing `core.hooksPath` would break it. Splashdown adds only its own entry to the detected manager, preserving unrelated jobs and scripts, uses Git's common native hook only when no manager or custom hooks path exists, and refuses to touch any configured `core.hooksPath`. When the evidence is ambiguous it reports the conflict rather than guessing, because an entry written into a file the project does not actually run is worse than no entry at all.
 
 ## Related
 

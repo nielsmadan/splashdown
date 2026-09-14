@@ -802,7 +802,7 @@ def test_trust_does_not_edit_tracked_husky_hook(tmp_path, capsys):
 
     assert hook.read_text() == sd.LEGACY_POST_CHECKOUT_HOOK
     err = capsys.readouterr().err
-    assert "husky post-checkout is missing or modified" in err
+    assert "husky post-checkout was modified" in err
     assert '/trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true' in err
     assert "`splash doctor --fix` writes that hook" in err
 

@@ -157,8 +157,15 @@ from .errors import (
     SetupError,
     UsageError,
 )
+from .hook_configs import (
+    wire_pre_commit,
+    wire_prek,
+    wire_simple_git_hooks,
+)
 from .hooks import (
     LEGACY_POST_CHECKOUT_HOOK,
+    HookDetection,
+    _activate_post_checkout_hook,
     _configure_post_checkout_hook,
     _detect_hook_manager,
     _ensure_post_checkout_hook,
@@ -167,6 +174,9 @@ from .hooks import (
     _wire_post_checkout_husky,
     _wire_post_checkout_lefthook,
     _wire_post_checkout_native,
+    detect_hook_configuration,
+    post_checkout_files,
+    post_checkout_manual_instructions,
     post_checkout_readiness,
 )
 from .inventory import AppInventory, ProjectInventory, RunnableProfile

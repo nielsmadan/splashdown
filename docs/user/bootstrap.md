@@ -77,11 +77,13 @@ The initial checkout performed by `git clone` happens before Splashdown can inst
 is why fresh-clone onboarding uses `splash trust` followed by `splash bootstrap`. Git emits no
 checkout hook for `git worktree add --no-checkout`, so that form also needs the manual command.
 
-Tracked Husky and Lefthook configuration comes from the branch being created. An older branch may
-contain a sync-only hook that cannot identify worktree creation. Run `splash doctor --fix` to
-upgrade Splashdown-owned integration, or run `splash bootstrap` manually. A custom
-`core.hooksPath` must invoke a trusted absolute `splash` executable and forward Git's three event
-arguments. Splashdown does not take over that path.
+A hook manager's configuration is tracked, so it comes from the branch being created. An older
+branch may contain a sync-only hook that cannot identify worktree creation. Run
+`splash doctor --fix` to upgrade Splashdown-owned integration, or run `splash bootstrap` manually.
+Husky is a special case, because it points `core.hooksPath` at the gitignored `.husky/_` directory.
+A brand new worktree has no Husky hooks until your project's own Husky install has run there.
+A custom `core.hooksPath` must invoke a trusted absolute `splash` executable and forward Git's
+three event arguments. Splashdown does not take over that path.
 
 ## Retry and rerun
 

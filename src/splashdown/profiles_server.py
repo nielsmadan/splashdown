@@ -9,7 +9,8 @@ from typing import Any
 from .inventory import AppInventory
 from .profile_core import Profile, _manual_port_guidance, _profile_port
 from .safe_files import atomic_write_text, read_editable_bytes
-from .wiring import WiringCheck, _strip_hash_comments, _yaml_key_regions
+from .wiring import WiringCheck
+from .yamltext import _strip_hash_comments, _yaml_key_regions
 
 
 class DjangoProfile(Profile):

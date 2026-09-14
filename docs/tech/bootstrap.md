@@ -77,15 +77,20 @@ are not involved in automatic allocation.
 
 ## Hook path
 
-The generated native/Husky hook and Lefthook job resolve `splash` once, normalize a relative PATH
-result, and reject an executable located inside the checkout. They pass all three post-checkout
-arguments to one hidden `splash hook post-checkout` invocation. There is no support probe or
+Every generated entry — the native and Husky hook bodies, and the one-line lefthook, pre-commit,
+prek, and simple-git-hooks commands — resolves `splash` once, normalizes a relative PATH result,
+and rejects an executable located inside the checkout. They pass all three post-checkout
+arguments to one hidden `splash hook post-checkout` invocation. lefthook supplies them through its
+`{1} {2} {3}` templating, pre-commit and prek through `PRE_COMMIT_FROM_REF`, `PRE_COMMIT_TO_REF`
+and `PRE_COMMIT_CHECKOUT_TYPE`, and the rest through shell positionals. There is no support probe or
 fallback invocation. The outer manager command absorbs failure only after the internal command has
 printed an actionable retry.
 
 The event handler is dispatched before CLI Registry construction, so an untrusted hook cannot
 touch registry state or output writers. Native hooks live under the common Git hooks directory and
-can be upgraded locally. Husky and Lefthook files are tracked, so `splash trust` only
-verifies/activates their current integration; `splash init` and `splash doctor --fix` own exact
-legacy migration. Readiness uses one exact parser shared by trust activation and doctor, including
-executable checks for native and Husky hooks and exact argument forwarding for all managers.
+can be upgraded locally. Every manager's configuration is tracked project content, so
+`splash trust` only verifies its current integration and runs that manager's own hook installer;
+`splash init` and `splash doctor --fix` own exact legacy migration. Readiness uses one exact parser
+shared by trust activation and doctor, including executable checks for native and Husky hooks and
+exact argument forwarding for all managers, and reports configuration and local activation
+separately.

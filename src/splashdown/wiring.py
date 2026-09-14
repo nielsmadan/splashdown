@@ -9,15 +9,14 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from .hooks import (
-    _detect_hook_manager,
     _ensure_post_checkout_hook,
-    _lefthook_config_path,
-    _native_hook_path,
     _nested_project,
+    post_checkout_files,
     post_checkout_manual_instructions,
     post_checkout_readiness,
 )
 from .safe_files import atomic_write_text, read_editable_text
+from .yamltext import _strip_hash_comments
 
 # The wiring-check registries (_RN_WIRING_CHECKS, _HOOK_WIRING_CHECK) are the
 # per-framework spec shipped with the tool. Each WiringCheck names
@@ -56,7 +55,8 @@ class WiringCheck(NamedTuple):
 
 def run_wiring_detect(check: WiringCheck, cwd: Path) -> tuple[str, str]:
     """A detect that raises has not parsed the project, so it reports a problem
-    rather than aborting the command that asked."""
+    rather than aborting the command that asked. A check reports `"ok"`, `"warning"`
+    for a fact that holds but is not yet in force, or `"problem"`."""
     try:
         return check.detect(cwd)
     except Exception as error:  # noqa: BLE001
@@ -69,26 +69,6 @@ _RN_WIRING_CHECKS: list[WiringCheck] = []
 
 
 # Lexical checks strip comments first so commented-out config cannot produce a false “wired” result.
-
-
-def _strip_hash_comments(text: str) -> str:
-    """Drop `#` comments from YAML / .properties / shell text, honouring quotes.
-    Indentation is preserved: YAML block structure is read off it."""
-    out: list[str] = []
-    for line in text.splitlines():
-        kept: list[str] = []
-        quote = ""
-        for ch in line:
-            if quote:
-                if ch == quote:
-                    quote = ""
-            elif ch in "\"'":
-                quote = ch
-            elif ch == "#" and (not kept or kept[-1] in " \t"):
-                break
-            kept.append(ch)
-        out.append("".join(kept).rstrip())
-    return "\n".join(out)
 
 
 def _strip_js_comments(text: str) -> str:
@@ -133,73 +113,13 @@ def _strip_js_comments(text: str) -> str:
     return "".join(out)
 
 
-def _yaml_flow_value(text: str, start: int) -> str:
-    """The flow scalar or bracketed collection at `start`, ending at the first
-    top-level `,`/`}`/`]` or end of line. Quote- and depth-aware so a `,` inside
-    `['5432:5432', ...]` or a `:` inside `${PORT:-5432}` doesn't terminate it."""
-    depth, quote = 0, ""
-    i = start
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = ""
-        elif ch in "\"'":
-            quote = ch
-        elif ch in "[{":
-            depth += 1
-        elif ch in "]}":
-            if depth == 0:
-                break
-            depth -= 1
-        elif depth == 0 and ch in ",\n":
-            break
-        i += 1
-    return text[start:i]
-
-
-def _yaml_key_regions(text: str, key: str, *, indent: int | None = None) -> list[str]:
-    """The value text of every `<key>:` mapping entry: the flow value on the same
-    line, or the indented block beneath it. Anchoring a regex on block layout is
-    what silently missed every flow-style spelling, so the key is matched both at
-    line start and inside a flow mapping (`db: { ports: [...] }`). Pass `indent` to
-    accept only keys at that column — spring's `server:` must not match
-    `management:`'s nested one. Comments are stripped here so no caller can forget."""
-    text = _strip_hash_comments(text)
-    pattern = re.compile(
-        rf"(?:^|(?<=[{{,]))([ \t]*)(?:-[ \t]+)?{re.escape(key)}[ \t]*:", re.MULTILINE
-    )
-    regions: list[str] = []
-    for m in pattern.finditer(text):
-        at_line_start = m.start() == text.rfind("\n", 0, m.start()) + 1
-        if indent is not None and not (at_line_start and len(m.group(1)) == indent):
-            continue
-        inline = _yaml_flow_value(text, m.end()).strip()
-        if inline:
-            regions.append(inline)
-            continue
-        if not at_line_start:
-            continue
-        key_indent = len(m.group(1))
-        block: list[str] = []
-        for line in text[m.end() :].splitlines()[1:]:
-            stripped = line.lstrip()
-            if stripped:
-                line_indent = len(line) - len(stripped)
-                # A block sequence may sit at its key's own indent, which is both
-                # legal and common (`ports:` then `- "5432:5432"` at the same column).
-                if line_indent < key_indent:
-                    break
-                if line_indent == key_indent and not stripped.startswith("-"):
-                    break
-            block.append(line)
-        regions.append("\n".join(block))
-    return regions
-
-
 def _rn_hook_detect(cwd: Path) -> tuple[str, str]:
+    """Correct project configuration still delivers no event until the manager's own
+    hook is installed in this checkout, so that state is a warning, not a tick."""
     readiness = post_checkout_readiness(cwd)
-    return ("ok", readiness.detail) if readiness.ready else ("problem", readiness.detail)
+    if not readiness.ready:
+        return ("problem", readiness.detail)
+    return ("ok", readiness.detail) if readiness.active else ("warning", readiness.detail)
 
 
 def _rn_hook_manual(cwd: Path) -> str:
@@ -215,15 +135,7 @@ def _rn_hook_applies(cwd: Path) -> bool:
 
 
 def _rn_hook_files(cwd: Path) -> tuple[Path, ...]:
-    manager = _detect_hook_manager(cwd)
-    if manager == "lefthook":
-        return (_lefthook_config_path(cwd),)
-    if manager == "husky":
-        return (cwd / ".husky" / "post-checkout",)
-    if manager == "core-hookspath-other":
-        return ()
-    native = _native_hook_path(cwd)
-    return () if native is None else (native,)
+    return post_checkout_files(cwd)
 
 
 _HOOK_WIRING_CHECK = WiringCheck(

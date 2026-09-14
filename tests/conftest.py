@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,18 @@ def _isolate_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     the real `~/.config/splashdown/config.toml`. Tests that want a global config write
     one under this dir (or re-monkeypatch XDG_CONFIG_HOME themselves)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_configured_hooks_path` deliberately reads `core.hooksPath` from every config
+    level, so a developer's global setting would otherwise decide hook detection for
+    the whole suite. Point Git at an empty per-test global and no system config, and
+    drop the `GIT_CONFIG_COUNT` pairs, which outrank both files."""
+    for name in [name for name in os.environ if name.startswith("GIT_CONFIG")]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
 
 
 @pytest.fixture(autouse=True)

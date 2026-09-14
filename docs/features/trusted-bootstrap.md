@@ -15,7 +15,7 @@ characters escaped, warns that authorization covers future refs and inherited en
 activates only local hook state, then stores trust under Git's common directory. It always grants
 hook-driven sync and grants bootstrap execution only when the current recipe has `[bootstrap]`.
 Trusting a recipe without that section cannot authorize one added by a future ref. The command
-never executes bootstrap or edits tracked Husky/Lefthook files. `splash untrust` is
+never executes bootstrap or edits a hook manager's tracked configuration. `splash untrust` is
 recipe-independent and revokes both clone-wide capabilities by writing an explicit untrusted
 state. Removing `[bootstrap]` cannot erase revocation.
 
@@ -44,8 +44,9 @@ or manual bootstrap because it does not forward the event.
   completion. A shared clone trust lock is held during execution; untrust takes it exclusively.
 - Commands are fail-fast and non-transactional. Earlier external effects remain and retry begins at
   command one.
-- Hook failures print the direct retry command but are absorbed by native, Husky, and Lefthook
-  wrappers so a completed `git worktree add` is not reported as failed.
+- Hook failures print the direct retry command but are absorbed by the native hook body and by
+  every manager entry splashdown writes, so a completed `git worktree add` is not reported as
+  failed.
 - Nested lifecycle commands fail before lock acquisition, so a bootstrap command cannot deadlock
   by invoking sync, bootstrap, deinit, trust, untrust, or the hidden hook handler.
 - `deinit` removes only the current checkout's completion. Trust remains until explicit untrust.
