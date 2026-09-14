@@ -38,12 +38,16 @@ You can install it (mise, pipx, or `pip install splashdown`), but running `splas
 
 The one exception is a self-hosted runner executing several jobs at once that must not collide. There, installing splashdown and pinning each job's ports can help. Most CI never hits this.
 
-## If a script hard-requires `splashdown.env`
+## If a script hard-requires the env destination
 
-If some command specifically loads `splashdown.env` (for example `--env-file=splashdown.env`), write the file in the job with the fixed CI ports rather than trying to reproduce local allocation:
+If some command specifically loads the file splashdown writes (for example
+`--env-file=splashdown.env`), write that file in the job with the fixed CI ports rather than trying
+to reproduce local allocation. The destination is whatever `[project] env_file` names in
+`splashdown.toml`, and `splashdown.env` only when that key is absent, so substitute your own path
+below:
 
 ```yaml
-- name: Write splashdown.env with fixed CI ports
+- name: Write the env destination with fixed CI ports
   run: |
     cat > splashdown.env << 'EOF'
     DATABASE_URL=postgresql://user:pass@localhost:5432/testdb
@@ -51,7 +55,27 @@ If some command specifically loads `splashdown.env` (for example `--env-file=spl
     EOF
 ```
 
-Prefer the direct-env approach above when you can. Each CI step runs in a fresh shell, so a step that writes the file does not export its contents to later steps. Load it explicitly with `--env-file`, `source splashdown.env`, or an `env:` block.
+Check `[resources]` too. A resource carrying a `writer` of its own goes to that file instead of the
+default one, so a job that needs its value has to write that file as well.
+
+Prefer the direct-env approach above when you can. Each CI step runs in a fresh shell, so a step
+that writes the file does not export its contents to later steps. Load it explicitly with
+`--env-file`, `source <destination>`, or an `env:` block.
+
+## The ignore-coverage note on a fresh clone
+
+Any sync that writes a file names every destination Git would still show:
+
+```
+  note: apps/api/.env is not ignored (no rule matches)
+```
+
+Init reuses whatever ignore rules are already effective on the machine it runs on, and a rule in
+your personal `core.excludesFile` or in this clone's `.git/info/exclude` counts. Neither of those
+is committed, so a destination your own setup happens to hide can reach the repository with no rule
+protecting it. This note is the only thing that tells the next person, and CI is often where it
+first bites: a job that runs `splash` and then asserts a clean tree fails on a generated file
+nobody ignored. Add the rule to `.gitignore` and commit it.
 
 ## Keep `splashdown.local.toml` gitignored
 

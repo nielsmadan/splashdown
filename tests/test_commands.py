@@ -2032,9 +2032,7 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
     assert not (tmp_path / "splashdown.local.toml").exists()
     assert not (tmp_path / "mise.toml").exists()
     assert hook.exists()
-    gi = tmp_path / ".gitignore"
-    assert gi.exists()
-    assert gi.read_text() == ""
+    assert not (tmp_path / ".gitignore").exists()
 
 
 def test_deinit_keeps_user_rules_and_the_rule_for_a_retained_local_file(tmp_path, monkeypatch):
@@ -2380,11 +2378,38 @@ def test_deinit_proceeds_on_unparseable_recipe(tmp_path, registry):
     co.mkdir()
     # A broken/legacy recipe must not abort the one command meant to clean it up.
     (co / "splashdown.toml").write_text("this is not = valid toml ===\n")
+    registry.set_kv(str(co.resolve()), "X", "1")
     (co / "splashdown.env").write_text("X=1\n")
     rc = sd.cmd_deinit(co, registry)
     assert rc == 0
     assert not (co / "splashdown.env").exists()
     assert not (co / "splashdown.toml").exists()
+
+
+def test_deinit_on_an_invalid_recipe_clears_its_configured_destination(tmp_path, registry):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text('[project]\nenv_file = ".env"\nunknown_key = 1\n')
+    registry.set_kv(str(co.resolve()), "X", "1")
+    (co / ".env").write_text("X=1\nMINE=keep\n")
+    (co / "splashdown.env").write_text("STALE=1\n")
+
+    assert sd.cmd_deinit(co, registry) == 0
+
+    assert (co / ".env").read_text() == "MINE=keep\n"
+    assert (co / "splashdown.env").read_text() == "STALE=1\n"
+
+
+def test_deinit_on_an_unreadable_recipe_keeps_lines_it_did_not_write(tmp_path, registry):
+    co = tmp_path / "co"
+    co.mkdir()
+    (co / "splashdown.toml").write_text("this is not = valid toml ===\n")
+    registry.set_kv(str(co.resolve()), "X", "1")
+    (co / "splashdown.env").write_text("X=1\nMINE=keep\n")
+
+    assert sd.cmd_deinit(co, registry) == 0
+
+    assert (co / "splashdown.env").read_text() == "MINE=keep\n"
 
 
 def test_deinit_destroys_devices(tmp_path, registry, monkeypatch):
@@ -2490,8 +2515,16 @@ def test_cmd_init_reports_the_loader_and_how_it_was_selected(tmp_path, capsys):
 def test_cmd_init_reports_the_files_it_changed(tmp_path, capsys):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     report = sd.cmd_init(tmp_path, loader_override="mise")
-    assert report.changed == ["splashdown.toml", "splashdown.local.toml", "mise.toml"]
-    assert "changed: splashdown.toml, splashdown.local.toml, mise.toml" in capsys.readouterr().err
+    assert report.changed == [
+        "splashdown.toml",
+        "splashdown.local.toml",
+        ".gitignore",
+        "mise.toml",
+    ]
+    assert (
+        "changed: splashdown.toml, splashdown.local.toml, .gitignore, mise.toml"
+        in capsys.readouterr().err
+    )
 
 
 def test_cmd_init_reuses_an_existing_loader_directive_without_writing(tmp_path, capsys):
@@ -2518,7 +2551,12 @@ def test_cmd_init_json_reports_the_selection_and_the_changed_files(tmp_path, cap
         "configs": ["mise.toml"],
         "wiring": "updated",
     }
-    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml", "mise.toml"]
+    assert payload["changed"] == [
+        "splashdown.toml",
+        "splashdown.local.toml",
+        ".gitignore",
+        "mise.toml",
+    ]
 
 
 def test_cmd_init_json_reports_a_reused_integration_as_unchanged(tmp_path, capsys):
@@ -2527,7 +2565,7 @@ def test_cmd_init_json_reports_a_reused_integration_as_unchanged(tmp_path, capsy
     sd.cmd_init(tmp_path, output_format="json")
     payload = json.loads(capsys.readouterr().out)
     assert payload["loader"]["wiring"] == "reused"
-    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml"]
+    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml", ".gitignore"]
 
 
 def test_cmd_init_says_an_unmarked_mise_directive_stays_the_users(tmp_path, capsys):
@@ -2572,7 +2610,12 @@ def test_cmd_init_reports_completed_effects_when_a_later_write_fails(tmp_path, c
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["error"] == "guidance write failed"
-    assert payload["changed"] == ["splashdown.toml", "splashdown.local.toml", "mise.toml"]
+    assert payload["changed"] == [
+        "splashdown.toml",
+        "splashdown.local.toml",
+        ".gitignore",
+        "mise.toml",
+    ]
 
 
 def test_cmd_init_reports_completed_effects_when_an_effect_raises_oserror(
@@ -2826,7 +2869,7 @@ def test_sync_reports_a_hand_added_destination_that_stays_visible(tmp_path, monk
 
     err = capsys.readouterr().err
     assert (tmp_path / "apps" / "api" / ".env").read_text().startswith("API_TOKEN=")
-    assert "apps/api/.env is still not ignored (no rule matches)" in err
+    assert "apps/api/.env is not ignored (no rule matches)" in err
 
 
 def test_sync_leaves_gitignore_untouched_while_reporting(tmp_path, monkeypatch, capsys):
@@ -2863,7 +2906,183 @@ def test_sync_reports_the_visible_destination_once_per_write(tmp_path, monkeypat
     )
 
     assert _sync_with_writer_recipe(tmp_path, monkeypatch) == 0
-    assert "apps/api/.env is still not ignored" in capsys.readouterr().err
+    assert "apps/api/.env is not ignored" in capsys.readouterr().err
 
     assert sd.main(["--cwd", str(tmp_path)]) == 0
     assert "is still not ignored" not in capsys.readouterr().err
+
+
+def test_init_overwrite_keeps_the_configured_destination(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="config/.env"))
+    sd.main(["--cwd", str(tmp_path)])
+    capsys.readouterr()
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(overwrite=True))
+
+    err = capsys.readouterr().err
+    assert report.env_file == "config/.env"
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").env_file == "config/.env"
+    assert "/config/.env" in (tmp_path / ".gitignore").read_text()
+    assert "updated .gitignore" not in err
+
+
+def test_init_overwrite_moves_the_destination_when_env_file_is_restated(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file="config/.env"))
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(overwrite=True, env_file="other/.env"))
+
+    assert report.env_file == "other/.env"
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").env_file == "other/.env"
+    ignored = (tmp_path / ".gitignore").read_text()
+    assert "/other/.env" in ignored
+    assert "/config/.env" not in ignored
+
+
+def test_cmd_init_reports_every_file_it_wrote(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / ".pre-commit-config.yaml").write_text("repos:\n")
+    (tmp_path / "AGENTS.md").write_text("# Project\n")
+
+    report = sd.cmd_init(tmp_path, loader_override="mise")
+
+    assert report.changed == [
+        "splashdown.toml",
+        "splashdown.local.toml",
+        ".gitignore",
+        "mise.toml",
+        ".pre-commit-config.yaml",
+        "AGENTS.md",
+    ]
+
+
+def test_cmd_init_json_reports_the_hook_and_guidance_files(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "vite.config.ts").write_text("export default {}")
+    (tmp_path / ".pre-commit-config.yaml").write_text("repos:\n")
+    (tmp_path / "AGENTS.md").write_text("# Project\n")
+
+    sd.cmd_init(tmp_path, loader_override="none", output_format="json")
+
+    changed = json.loads(capsys.readouterr().out)["changed"]
+    assert ".gitignore" in changed
+    assert ".pre-commit-config.yaml" in changed
+    assert "AGENTS.md" in changed
+
+
+def test_init_reports_a_read_only_directory_through_its_own_envelope(tmp_path, capsys):
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    tmp_path.chmod(0o555)
+    try:
+        with pytest.raises(ValueError) as failure:
+            sd.cmd_init(tmp_path, output_format="json")
+    finally:
+        tmp_path.chmod(0o755)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"] == str(failure.value)
+    assert "splashdown.toml" in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    ("loader", "config", "original"),
+    [
+        ("mise", "mise.toml", '[tools]\nnode = "22"\n'),
+        ("direnv", ".envrc", "use nix\n"),
+        ("devbox", "devbox.json", '{\n  "packages": [\n    "nodejs@22"\n  ]\n}\n'),
+    ],
+)
+def test_deinit_restores_the_loader_config_byte_for_byte(
+    tmp_path, registry, monkeypatch, loader, config, original
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    (tmp_path / config).write_text(original)
+
+    sd.cmd_init(tmp_path, loader_override=loader)
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+
+    assert (tmp_path / config).read_text() == original
+
+
+def test_deinit_removes_a_gitignore_it_created(tmp_path, registry, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, loader_override="none")
+    assert (tmp_path / ".gitignore").exists()
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+
+    assert not (tmp_path / ".gitignore").exists()
+
+
+def test_deinit_keeps_a_gitignore_the_user_wrote(tmp_path, registry, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    (tmp_path / ".gitignore").write_text("node_modules/\n")
+
+    sd.cmd_init(tmp_path, loader_override="none")
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+
+    assert (tmp_path / ".gitignore").read_text() == "node_modules/\n"
+
+
+def test_deinit_reports_the_values_it_could_not_chase(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[resources.API_PORT]\ntype = "port"\nrange = [18990, 18995]\n'
+        'writer = "envfile=apps/api/.env"\n'
+    )
+    sd.main(["--cwd", str(tmp_path)])
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[resources.WEB_PORT]\ntype = "port"\nrange = [18996, 18999]\n'
+    )
+    capsys.readouterr()
+
+    assert sd.main(["--cwd", str(tmp_path), "deinit"]) == 0
+
+    err = capsys.readouterr().err
+    assert (
+        "note: no destination this recipe declares carried API_PORT; if a writer sent "
+        "those values to another file, remove them there yourself" in err
+    )
+    assert "API_PORT=" in (tmp_path / "apps" / "api" / ".env").read_text()
+
+
+def test_deinit_says_nothing_about_values_it_cleaned(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[resources.WEB_PORT]\ntype = "port"\nrange = [18996, 18999]\n'
+    )
+    sd.main(["--cwd", str(tmp_path)])
+    capsys.readouterr()
+
+    assert sd.main(["--cwd", str(tmp_path), "deinit"]) == 0
+
+    assert "no destination this recipe declares carried" not in capsys.readouterr().err
+
+
+def test_deinit_names_the_hook_entry_it_preserves(tmp_path, registry, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    (tmp_path / ".pre-commit-config.yaml").write_text("repos:\n")
+    sd.cmd_init(tmp_path, loader_override="none")
+    capsys.readouterr()
+
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+
+    assert (
+        "note: left splashdown's post-checkout entry in .pre-commit-config.yaml (pre-commit)"
+        in capsys.readouterr().err
+    )

@@ -249,7 +249,17 @@ def remove_mise_file_directive_text(existing_text: str | None, env_file: str) ->
             del cast(Table, env_tbl)["_"]
         if not env_tbl:
             del doc["env"]
-    return tomlkit.dumps(doc)
+    return _without_added_trailing_blank(tomlkit.dumps(doc), existing_text)
+
+
+def _without_added_trailing_blank(text: str, original: str) -> str:
+    """A removed table takes back the blank line tomlkit inserted ahead of it, so
+    teardown leaves the file as it found it instead of one blank line longer."""
+    if not text.strip():
+        return ""
+    if original.endswith("\n\n") or not text.endswith("\n\n"):
+        return text
+    return text.rstrip("\n") + "\n"
 
 
 def target_add_text(

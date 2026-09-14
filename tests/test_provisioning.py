@@ -1220,9 +1220,9 @@ def test_deinit_keeps_a_hand_written_value_for_a_none_writer_resource(checkout):
     target.write_text("MSG=hello\n")
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
 
-    changed = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"MSG"})
+    teardown = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"MSG"})
 
-    assert changed == []
+    assert teardown.changed == []
     assert target.read_text() == "MSG=hello\n"
 
 
@@ -1235,9 +1235,9 @@ def test_deinit_keeps_a_hand_written_value_for_a_stdout_writer_resource(checkout
     target.write_text("MSG=hello\n")
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
 
-    changed = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"MSG"})
+    teardown = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"MSG"})
 
-    assert changed == []
+    assert teardown.changed == []
     assert target.read_text() == "MSG=hello\n"
 
 
@@ -1276,9 +1276,9 @@ def test_deinit_leaves_a_destination_with_an_unterminated_quote_alone(checkout):
     target.write_text(original)
     recipe = sd.Recipe.load(checkout / sd.RECIPE_NAME)
 
-    changed = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"PORT"})
+    teardown = sd.provisioning.clear_writer_destinations(checkout, recipe, known_keys={"PORT"})
 
-    assert changed == [(sd.ENV_FILE_NAME, "unparsed")]
+    assert teardown.changed == [(sd.ENV_FILE_NAME, "unparsed")]
     assert target.read_text() == original
 
 

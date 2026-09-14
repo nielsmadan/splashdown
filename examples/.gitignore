@@ -1,4 +1,11 @@
-splashdown.env
-splashdown.local.toml
-.env.local
-.envrc.local
+# Example consumer .gitignore. Your own rules stay exactly where you put them;
+# `splash init` only ever edits the marked block, and anchors every rule it
+# writes with a leading `/` so an unanchored `.env` cannot silence a sibling
+# app's unrelated `.env`.
+node_modules/
+*.log
+
+# >>> splashdown >>>
+/splashdown.local.toml
+/splashdown.env
+# <<< splashdown <<<

@@ -390,7 +390,10 @@ quoting, tabs and a leading `./` are normalized by `normalized_env_reference`
   column 0. A chained (`&&`) statement never matches either. It
   find-and-replaces by marker rather than parsing the hook string, normalizing
   a string-valued `init_hook` into a list first (`loaders.py`), and preserves entries it does
-  not own.
+  not own. The write goes through `jsontext` (`_devbox_text` / `_devbox_unwired` in `loaders.py`),
+  which splices the `shell.init_hook` member and leaves the rest of `devbox.json` byte-identical,
+  so a wire/unwire round trip restores the file the project committed. A whole-document render is
+  the fallback for a document whose member bytes the splicer cannot place and read back.
 - **NoneLoader** (`loaders.py`) wires nothing. `detect()` is always `False`; it is only ever
   *selected*, never matched. Its plan is `nothing`, so `--loader none` configures the destination
   and touches no loader file. `cmd_init` prints how to source it instead.
@@ -513,4 +516,8 @@ out of a filesystem accident, so `--env-file` replaced it.
 - `docs/tech/wiring.md` — the doctor / `WiringCheck` internals that `wiring_checks()`
   feeds (see also `docs/features/framework-wiring.md` for the user-facing wiring behavior).
 - [`0003: Separate inferred frameworks from explicit intent`](../decisions/0003-separate-inferred-frameworks-from-explicit-intent.md)
-  — why Profiles and secondary capabilities remain separate concepts.
+  — why framework coverage comes from scanner-selected Profiles, with Electron layered on top as a
+  secondary capability rather than competing for detection precedence.
+- [`0009: Generate every recipe from the scanner`](../decisions/0009-generate-every-recipe-from-the-scanner.md)
+  — why the named presets are gone and an opt-in capability that needs application code is
+  documented rather than generated.

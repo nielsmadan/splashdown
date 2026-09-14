@@ -337,7 +337,7 @@ def successful_canary(
     )
 
 
-def test_canary_accepts_the_no_loader_fallback(
+def test_canary_passes_with_no_shell_loader(
     successful_canary: tuple[subprocess.CompletedProcess[str], Path],
 ) -> None:
     result, _state = successful_canary

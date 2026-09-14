@@ -160,6 +160,23 @@ missing-recipe notice, and setup failures. `DeviceError` and configuration `Valu
 same renderer as exit-1 failures. These handlers raise rather than terminating the process, so
 direct callers can handle failures and CLI output is emitted exactly once.
 
+#### One shape for a file splashdown declines to edit
+
+Severity says whether the command continued, not which subsystem noticed. A project file
+splashdown preserves instead of editing is always reported as
+`warning: left <name> alone: <cause>` at exit 0, and the cause is the real one: `safe_files`
+raises `UneditablePath`, whose `reason` a caller prints through `refusal_reason` so a symlinked
+config is never described as a shape problem. `_report_left_alone` (`hook_configs.py`) is that
+shape for the hook-configuration editors, `agentdocs._refuse` for the guidance files, and
+`_ensure_gitignore`/`_revert_gitignore` for the ignore block. An `error:` prefix and a non-zero
+exit are for a refusal that stops the command: a loader splashdown cannot wire leaves the checkout
+with nothing sourcing its environment output, so `LoaderConflictError` still exits 1 and names
+`--loader none` as the way through.
+
+`_configure_post_checkout_hook` prints the manager's manual instructions when its adapter refuses,
+the way `_activate_post_checkout_hook` already did for `splash trust`, so the preservation and the
+edit that finishes the integration arrive together.
+
 The hidden post-checkout event is dispatched before Registry construction and before that ordinary
 renderer. Init remains inside the renderer but runs before Registry construction so its refusal
 guards have no machine-state side effects. Trust, untrust, and bootstrap retain command-specific

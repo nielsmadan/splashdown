@@ -1541,12 +1541,34 @@ def test_revert_gitignore_keeps_the_rule_for_a_retained_file(tmp_path):
     assert (tmp_path / ".gitignore").read_text() == _block("/splashdown.local.toml")
 
 
-def test_revert_gitignore_keeps_file(tmp_path):
+def test_revert_gitignore_removes_an_untracked_file_left_with_nothing(tmp_path):
+    _git_init(tmp_path)
     (tmp_path / ".gitignore").write_text(_block("/splashdown.local.toml", "/splashdown.env"))
     sd._revert_gitignore(tmp_path)
-    # File stays even when it ends up empty (we never own .gitignore wholesale).
-    assert (tmp_path / ".gitignore").exists()
+    assert not (tmp_path / ".gitignore").exists()
+
+
+def test_revert_gitignore_keeps_a_tracked_file_left_with_nothing(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text(_block("/splashdown.local.toml", "/splashdown.env"))
+    subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+    sd._revert_gitignore(tmp_path)
     assert (tmp_path / ".gitignore").read_text() == ""
+    assert _tracked_files(tmp_path) == [".gitignore"]
+
+
+def test_revert_gitignore_keeps_a_file_left_with_nothing_when_git_cannot_answer(tmp_path):
+    (tmp_path / ".gitignore").write_text(_block("/splashdown.local.toml", "/splashdown.env"))
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == ""
+
+
+def test_revert_gitignore_keeps_a_file_that_still_has_user_rules(tmp_path):
+    (tmp_path / ".gitignore").write_text(
+        "node_modules/\n" + _block("/splashdown.local.toml", "/splashdown.env")
+    )
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == "node_modules/\n"
 
 
 def test_revert_gitignore_noop_when_absent(tmp_path):
@@ -2212,3 +2234,69 @@ def test_ensure_gitignore_ignores_a_developers_personal_git_ignore_file(tmp_path
     assert (tmp_path / ".gitignore").read_text() == _block(
         "/splashdown.local.toml", "/splashdown.env"
     )
+
+
+def test_rn_pkg_autofix_keeps_the_formatting_it_did_not_write(tmp_path):
+    original = (
+        "{\n"
+        '\t"name": "app",\n'
+        '\t"scripts": {\n'
+        '\t\t"start": "react-native start --port 8081",\n'
+        '\t\t"lint": "eslint ."\n'
+        "\t},\n"
+        '\t"dependencies": { "react-native": "0.83" }\n'
+        "}\n"
+    )
+    (tmp_path / "package.json").write_text(original)
+
+    sd._rn_pkg_autofix(tmp_path)
+
+    text = (tmp_path / "package.json").read_text()
+    assert '\t\t"start": "react-native start",\n' in text
+    assert '\t\t"lint": "eslint ."\n' in text
+    assert '\t"dependencies": { "react-native": "0.83" }\n' in text
+    assert text.count("\t") == original.count("\t")
+
+
+def test_rn_pkg_autofix_strips_every_script_in_one_pass(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {"start": "react-native start --port 8081",'
+        ' "ios": "react-native run-ios --port 8081"}}\n'
+    )
+
+    sd._rn_pkg_autofix(tmp_path)
+
+    scripts = json.loads((tmp_path / "package.json").read_text())["scripts"]
+    assert scripts == {"start": "react-native start", "ios": "react-native run-ios"}
+
+
+@pytest.mark.parametrize("character", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85"])
+def test_lefthook_wiring_keeps_a_line_break_lookalike_inside_a_value(tmp_path, character):
+    original = (
+        "pre-commit:\n"
+        "  commands:\n"
+        "    lint:\n"
+        f'      run: echo "a{character}b"\n'
+        "post-checkout:\n"
+        "  commands:\n"
+        "    other:\n"
+        "      run: echo hi\n"
+    )
+    (tmp_path / "lefthook.yml").write_text(original, encoding="utf-8")
+
+    assert sd.hooks._wire_post_checkout_lefthook(tmp_path) is True
+
+    text = (tmp_path / "lefthook.yml").read_text(encoding="utf-8")
+    assert f'      run: echo "a{character}b"\n' in text
+    assert "    splashdown:\n" in text
+
+
+def test_lefthook_wiring_keeps_crlf_line_endings(tmp_path):
+    original = b"post-checkout:\r\n  commands:\r\n    other:\r\n      run: echo hi\r\n"
+    (tmp_path / "lefthook.yml").write_bytes(original)
+
+    assert sd.hooks._wire_post_checkout_lefthook(tmp_path) is True
+
+    raw = (tmp_path / "lefthook.yml").read_bytes()
+    assert raw.count(b"\r\n") == raw.count(b"\n")
+    assert b"    splashdown:\r\n" in raw

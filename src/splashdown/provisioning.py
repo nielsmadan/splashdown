@@ -7,8 +7,9 @@ import uuid as uuid_mod
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from typing import NamedTuple
 
-from .constants import RECIPE_NAME, newline_for, normalized_env_reference
+from .constants import RECIPE_NAME, newline_for, normalized_env_reference, split_lines
 from .errors import SetupError
 from .recipe import (
     CommandSpec,
@@ -323,8 +324,7 @@ def existing_managed_keys(path: Path, keys: set[str], *, root: Path | None) -> l
     current = read_optional_editable_text(path, root=root)
     if current is None:
         return []
-    newline = newline_for(current)
-    assignments, problems = _scan_assignments(_split_lines(current, newline), export=False)
+    assignments, problems = _scan_assignments(_destination_lines(current), export=False)
     _reject_ambiguous(path, keys, assignments, problems)
     return sorted({item.key for item in assignments if item.key in keys})
 
@@ -338,10 +338,10 @@ def _replaced_lines(assignments: list[_Assignment], managed: set[str]) -> set[in
     }
 
 
-def _split_lines(text: str, newline: str) -> list[str]:
-    """Split on the destination's own line ending only. `str.splitlines` also
-    breaks on form feed and friends, which rewrites values that contain one."""
-    lines = text.split(newline)
+def _destination_lines(text: str) -> list[str]:
+    """`split_lines` without the trailing empty element a final newline produces,
+    so an appended assignment lands on its own line rather than after a blank."""
+    lines = split_lines(text)
     if lines and lines[-1] == "":
         lines.pop()
     return lines
@@ -383,7 +383,7 @@ def _rewrite(
 ) -> bool:
     current = read_optional_editable_text(path, root=root)
     newline = newline_for(current or "")
-    lines = _split_lines(current, newline) if current is not None else []
+    lines = _destination_lines(current) if current is not None else []
     assignments, problems = _scan_assignments(lines, export=export)
     _reject_ambiguous(path, managed, assignments, problems)
     new = _merged_lines(lines, assignments, managed, rendered)
@@ -443,38 +443,46 @@ def write_envrc(path: Path, items: dict[str, str], *, root: Path | None) -> bool
 
 def _strip_destination(
     path: Path, keys: set[str], *, export: bool, root: Path | None
-) -> str | None:
+) -> tuple[str, frozenset[str]] | None:
+    """`(action, keys actually removed)`, or `None` when the file carried none."""
     current = read_optional_editable_text(path, root=root)
     if current is None:
         return None
     newline = newline_for(current)
-    lines = _split_lines(current, newline)
+    lines = _destination_lines(current)
     assignments, problems = _scan_assignments(lines, export=export)
     if any(problem == _UNTERMINATED_QUOTE for _line, _key, problem in problems):
         # Below an unclosed quote the scanner matches inside the quoted region, so an
         # edit here could delete part of a value rather than an assignment.
-        return "unparsed"
+        return "unparsed", frozenset()
     replaced = _replaced_lines(assignments, keys)
     if not replaced:
         return None
+    cleared = frozenset(item.key for item in assignments if item.key in keys)
     kept = [line for index, line in enumerate(lines) if index not in replaced]
     if not any(line.strip() for line in kept):
         path.unlink()
-        return "removed"
+        return "removed", cleared
     atomic_write_text(path, newline.join(kept) + newline, root=root)
-    return "cleaned"
+    return "cleaned", cleared
 
 
-def clear_writer_destinations(
-    cwd: Path, recipe: Recipe, *, known_keys: set[str]
-) -> list[tuple[str, str]]:
+class TeardownResult(NamedTuple):
+    """What teardown changed, and the keys the registry still held that no
+    destination this recipe declares carried, so the caller can say which values
+    it could not chase instead of leaving them behind in silence."""
+
+    changed: list[tuple[str, str]]
+    uncleaned: frozenset[str]
+
+
+def clear_writer_destinations(cwd: Path, recipe: Recipe, *, known_keys: set[str]) -> TeardownResult:
     """Remove splashdown's keys from every writer destination, the default one
     included: splashdown co-owns specific keys in these files rather than owning
     any of them wholesale. `known_keys` names what the registry still holds for
     this checkout, so a key the recipe stopped declaring goes from the default
     destination too; a resource whose writer delivers no file is never removed on
-    that basis. Deletes a destination left with nothing else. Returns
-    `[(relpath, "cleaned" | "removed" | "unparsed")]` for what changed."""
+    that basis. Deletes a destination left with nothing else."""
     default_writer = resolve_writer(DEFAULT_WRITER, recipe.env_file)
     default_keys = (set(recipe.resources) | known_keys) - _undelivered_keys(recipe)
     groups: dict[str, set[str]] = {default_writer: default_keys}
@@ -484,6 +492,7 @@ def clear_writer_destinations(
             groups.setdefault(writer, set()).add(name)
 
     changed: list[tuple[str, str]] = []
+    cleared: set[str] = set()
     for writer, keys in groups.items():
         if writer == "envrc":
             relpath, export = ".envrc.local", True
@@ -494,12 +503,13 @@ def clear_writer_destinations(
         if not target.resolve().is_relative_to(cwd.resolve()):
             continue
         try:
-            action = _strip_destination(target, keys, export=export, root=cwd)
+            outcome = _strip_destination(target, keys, export=export, root=cwd)
         except (OSError, ValueError):
             continue
-        if action is not None:
-            changed.append((relpath, action))
-    return changed
+        if outcome is not None:
+            changed.append((relpath, outcome[0]))
+            cleared |= outcome[1]
+    return TeardownResult(changed, frozenset(known_keys - _undelivered_keys(recipe) - cleared))
 
 
 def _run_commands(

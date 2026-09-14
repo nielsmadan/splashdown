@@ -790,3 +790,45 @@ def test_devbox_reuses_a_user_hook_for_the_configured_destination(tmp_path):
     plan = sd.LOADERS["devbox"].plan(tmp_path, ".env")
     assert plan.status == "reused"
     assert plan.writes is False
+
+
+def test_devbox_loader_wire_keeps_the_formatting_it_did_not_write(tmp_path):
+    original = '{\n\t"packages": [\n\t\t"nodejs@22"\n\t],\n\t"env": { "A": "1" }\n}\n'
+    (tmp_path / "devbox.json").write_text(original)
+
+    sd.LOADERS["devbox"].wire(tmp_path, sd.ENV_FILE_NAME)
+
+    text = (tmp_path / "devbox.json").read_text()
+    assert '\t"packages": [\n\t\t"nodejs@22"\n\t]' in text
+    assert '"env": { "A": "1" }' in text
+    assert json.loads(text)["shell"]["init_hook"]
+
+
+def test_devbox_loader_unwire_restores_the_original_bytes(tmp_path):
+    original = '{\n\t"packages": [\n\t\t"nodejs@22"\n\t]\n}\n'
+    (tmp_path / "devbox.json").write_text(original)
+
+    sd.LOADERS["devbox"].wire(tmp_path, sd.ENV_FILE_NAME)
+    sd.LOADERS["devbox"].unwire(tmp_path, sd.ENV_FILE_NAME)
+
+    assert (tmp_path / "devbox.json").read_text() == original
+
+
+def test_devbox_loader_unwire_keeps_a_user_init_hook_and_its_layout(tmp_path):
+    original = '{\n  "shell": {\n    "init_hook": [\n      "echo hi"\n    ]\n  }\n}\n'
+    (tmp_path / "devbox.json").write_text(original)
+
+    sd.LOADERS["devbox"].wire(tmp_path, sd.ENV_FILE_NAME)
+    sd.LOADERS["devbox"].unwire(tmp_path, sd.ENV_FILE_NAME)
+
+    assert (tmp_path / "devbox.json").read_text() == original
+
+
+def test_devbox_loader_wire_extends_a_single_line_document_in_place(tmp_path):
+    (tmp_path / "devbox.json").write_text('{"packages": ["nodejs@22"]}\n')
+
+    sd.LOADERS["devbox"].wire(tmp_path, sd.ENV_FILE_NAME)
+
+    text = (tmp_path / "devbox.json").read_text()
+    assert text.startswith('{"packages": ["nodejs@22"], "shell": {')
+    assert json.loads(text)["shell"]["init_hook"]

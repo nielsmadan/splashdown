@@ -11,7 +11,7 @@ silent = true
 
 [tasks."wt-list"]
 description = "Show this checkout's resolved resources"
-run = "splash list"
+run = "splash env"
 
 [tasks."wt-gc"]
 description = "Garbage-collect dead registry entries"
@@ -19,7 +19,7 @@ run = "splash gc"
 
 [tasks.sim]
 description = "Boot this checkout's iOS sim (auto-creates / auto-upgrades on latest)"
-run = "splash boot simulator"
+run = "splash start simulator"
 
 [tasks.run]
 description = "Boot sim + build + launch the app (framework auto-detected)"

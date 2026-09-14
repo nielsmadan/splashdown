@@ -104,6 +104,21 @@ Bare `splash` is a sync. It allocates this checkout's resources and writes `spla
   -> splashdown.env: 1 vars (changed)
 ```
 
+Every sync that writes a file also checks its destinations against Git and names any that would
+still show up in `git status`:
+
+```
+  note: apps/api/.env is not ignored (no rule matches)
+```
+
+That is a read, never an edit, because sync runs from the post-checkout hook and must not dirty a
+fresh clone. The note matters most on a clone or a worktree that is not the one where init ran.
+Init reuses ignore rules that are already effective, and a rule in your personal
+`core.excludesFile` or in this clone's `.git/info/exclude` counts. Neither is committed, so a
+destination your own setup happens to hide can reach the repository with no rule protecting it, and
+this note on a teammate's first sync is the only thing that says so. Add the rule to `.gitignore`
+and commit it.
+
 ## What got created
 
 | File | Committed | Purpose |

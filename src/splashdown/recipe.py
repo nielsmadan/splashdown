@@ -377,7 +377,7 @@ def _validated_env_file(project: dict[str, Any], *, source: str, base_dir: Path)
             source,
             "project.env_file",
             problem=f"invalid env file path `{candidate}`",
-            expected="a non-empty relative path that stays inside the checkout",
+            expected="a non-empty relative path that stays inside the checkout, outside `.git`",
         )
     return normalized
 
@@ -454,7 +454,8 @@ def _validate_project(data: dict[str, Any], *, source: str, base_dir: Path) -> d
 
 
 def _checkout_relative_path(path_arg: str, base_dir: Path) -> bool:
-    """Whether an output destination stays inside the checkout it was declared in."""
+    """Whether an output destination stays inside the checkout it was declared in,
+    and out of `.git`, which the checkout ignores wholesale and Git owns."""
     candidate = Path(path_arg)
     return not (
         not path_arg
@@ -462,6 +463,7 @@ def _checkout_relative_path(path_arg: str, base_dir: Path) -> bool:
         or PureWindowsPath(path_arg).is_absolute()
         or candidate == Path(".")
         or ".." in candidate.parts
+        or ".git" in candidate.parts
         or not (base_dir / candidate).resolve().is_relative_to(base_dir.resolve())
     )
 
@@ -474,7 +476,7 @@ def validate_env_file_option(value: str, base_dir: Path) -> str:
     if not _checkout_relative_path(normalized, base_dir):
         raise ValueError(
             f"invalid --env-file path `{value}`; "
-            "expected a non-empty relative path that stays inside the checkout"
+            "expected a non-empty relative path that stays inside the checkout, outside `.git`"
         )
     return normalized
 
@@ -497,7 +499,7 @@ def _validate_writer(value: Any, *, source: str, path: str, base_dir: Path) -> s
             source,
             path,
             problem=f"invalid envfile path `{candidate}`",
-            expected="a non-empty relative path that stays inside the checkout",
+            expected="a non-empty relative path that stays inside the checkout, outside `.git`",
         )
     return f"envfile={normalized}"
 

@@ -1,12 +1,21 @@
 #!/bin/sh
-# Splashdown per-checkout provisioning. Fires on git checkout / clone / worktree add.
+# Splashdown per-checkout provisioning. Fires on checkout and worktree add.
 set -e
-TOP=$(git rev-parse --show-toplevel) || exit 0
-cd "$TOP"
+TOP=$PWD
 [ -f splashdown.toml ] || exit 0
-if command -v splash >/dev/null 2>&1; then
-    splash >&2 || true
-else
+SPLASH=$(command -v splash) || {
     echo "post-checkout: \`splash\` not on PATH — install splashdown" >&2
-fi
+    exit 0
+}
+case "$SPLASH" in
+    /*) ;;
+    *) SPLASH="$TOP/$SPLASH" ;;
+esac
+case "$SPLASH" in
+    "$TOP"/*)
+        echo "post-checkout: refusing checkout-controlled splash executable" >&2
+        exit 0
+        ;;
+esac
+"$SPLASH" hook post-checkout "$1" "$2" "$3" >&2 || true
 exit 0

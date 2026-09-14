@@ -42,3 +42,12 @@ def newline_for(text: str) -> str:
     if "\r" in text and "\n" not in text:
         return "\r"
     return "\n"
+
+
+def split_lines(text: str) -> list[str]:
+    """Split on the text's own line ending only, keeping the trailing empty element
+    a final newline produces. `str.splitlines` also breaks on vertical tab, form
+    feed, the information separators, NEL and the Unicode separators, none of which
+    ends a line in the formats splashdown edits, so an editor that rewrote from it
+    would promote any of them to a real line break."""
+    return text.split(newline_for(text))

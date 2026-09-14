@@ -22,7 +22,7 @@ splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
 
 The local file can also carry a `[settings]` block. See [Settings](settings.md).
 
-`settings` and `targets` are the only top-level sections accepted in this file. Target fields are type-specific: simulators accept `model`, `ios`, and `name`; emulators accept `device`, `image`, and `name`; physical devices accept `id`, `name`, and `platform`. All are optional, but supplied values must be non-empty strings, and `platform` must be `ios` or `android`. The same rules apply to `splash target add`, so an incompatible flag is rejected before the file is changed.
+`settings` and `targets` are the only top-level sections accepted in this file. Target fields are type-specific. Simulators accept `model`, `ios`, and `name`, emulators accept `device`, `image`, and `name`, and physical devices accept `id`, `name`, and `platform`. All are optional, but supplied values must be non-empty strings, and `platform` must be `ios` or `android`. The same rules apply to `splash target add`, so an incompatible flag is rejected before the file is changed.
 
 ## Machine-wide test devices
 
@@ -47,8 +47,8 @@ splash target remove device my-iphone --global
 
 How global variants surface in a project:
 
-- **Physical `device` variants are available in every project** — even one that declares no targets. `splash run` in any repo resolves your global device (it matches connected hardware; nothing is created). This is the main use case.
-- **`simulator` / `emulator` variants only surface in projects that already declare that target type** — a global simulator never adds device support to a backend repo.
+- **Physical `device` variants are available in every project**, even one that declares no targets. `splash run` in any repo resolves your global device, matching connected hardware without creating anything. This is the main use case.
+- **`simulator` / `emulator` variants only surface in projects that already declare that target type**, so a global simulator never adds device support to a backend repo.
 - **A project's own recipe/local variant always wins** a name collision with a global one, silently. `splash target` shows the source (`global`, or `recipe (shadows global)` for the winner) so you can tell what's in effect.
 
 The same file holds machine-wide `[settings]`. See [Settings](settings.md).

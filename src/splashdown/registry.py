@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
 
-from .constants import state_directory
+from .constants import split_lines, state_directory
 from .device_types import (
     ClaimAttempt,
     ClaimNotice,
@@ -39,14 +39,28 @@ _OPERATION_LOCK_SHARDS = 256
 # The registry files are flat tab/newline-delimited TSV with no escaping, so a
 # field containing a tab or newline would forge or corrupt rows on the next read
 # (a value like "a\n/other\tKEY\tval" parses as a second, well-formed row for a
-# different checkout). These chars never legitimately appear in checkout paths,
-# resource keys, ports, or resolved values, so reject them at write time.
-_TSV_FORBIDDEN = ("\t", "\n", "\r")
+# different checkout). The other characters some readers treat as line breaks are
+# rejected too, so no field can ever depend on which splitter reads it back. None
+# of them legitimately appears in checkout paths, resource keys, ports, or
+# resolved values, so reject them at write time.
+_TSV_FORBIDDEN = (
+    "\t",
+    "\n",
+    "\r",
+    "\v",
+    "\f",
+    "\x1c",
+    "\x1d",
+    "\x1e",
+    "\x85",
+    "\u2028",
+    "\u2029",
+)
 
 
 def _tsv_field(value: str, *, what: str) -> str:
     if any(ch in value for ch in _TSV_FORBIDDEN):
-        raise ValueError(f"registry {what} may not contain tab or newline characters: {value!r}")
+        raise ValueError(f"registry {what} may not contain tab or line-break characters: {value!r}")
     return value
 
 
@@ -209,7 +223,7 @@ class Registry:
 
     def _read_ports(self) -> list[tuple[int, str, str]]:
         out: list[tuple[int, str, str]] = []
-        for line in self.port_file.read_text().splitlines():
+        for line in split_lines(self.port_file.read_text()):
             if not line.strip():
                 continue
             parts = line.split("\t")
@@ -320,7 +334,7 @@ class Registry:
 
     def _read_kv(self) -> list[tuple[str, str, str]]:
         out: list[tuple[str, str, str]] = []
-        for line in self.kv_file.read_text().splitlines():
+        for line in split_lines(self.kv_file.read_text()):
             if not line.strip():
                 continue
             parts = line.split("\t", 2)
@@ -378,7 +392,7 @@ class Registry:
 
     def _read_devices(self) -> list[ManagedDevice]:
         out: list[ManagedDevice] = []
-        for line in self.device_file.read_text().splitlines():
+        for line in split_lines(self.device_file.read_text()):
             if not line.strip():
                 continue
             parts = line.split("\t")
@@ -412,7 +426,7 @@ class Registry:
 
     def _read_claims(self) -> list[PhysicalClaim]:
         out: list[PhysicalClaim] = []
-        for line in self.claim_file.read_text().splitlines():
+        for line in split_lines(self.claim_file.read_text()):
             if not line.strip():
                 continue
             parts = line.split("\t")
@@ -441,7 +455,7 @@ class Registry:
 
     def _read_claim_notices(self) -> list[ClaimNotice]:
         out: list[ClaimNotice] = []
-        for line in self.claim_notice_file.read_text().splitlines():
+        for line in split_lines(self.claim_notice_file.read_text()):
             if not line.strip():
                 continue
             parts = line.split("\t")

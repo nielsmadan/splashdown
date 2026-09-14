@@ -111,7 +111,7 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
   default destination and the fixed `.envrc.local` name, so a checked-out link cannot redirect
   sync to another file.
 - **Templates forbid attribute access by design.** `{{ x.foo }}` won't work; the evaluator only allows scope names, calls, indexing/slicing, and arithmetic (`src/splashdown/recipe.py`).
-- **TSV has no escaping.** Resolved values containing a tab, newline, or CR are rejected at write time to prevent row forgery in the registry (`_tsv_field`, `src/splashdown/registry.py`).
+- **TSV has no escaping.** Resolved values containing a tab, or any character some reader treats as a line break (`\n`, `\r`, `\v`, `\f`, the information separators, NEL, `U+2028`, `U+2029`), are rejected at write time to prevent row forgery in the registry (`_tsv_field`, `src/splashdown/registry.py`).
 - **No-op syncs do not rewrite files.** `_rewrite` compares the new text first, so a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through any hook manager on `git pull --rebase` (`src/splashdown/provisioning.py`). An explicit `--show-values` still prints the resolved values before that summary.
 - **Changing to JSON does not opt into secret disclosure.** Sync JSON contains `resolved_keys`,
   and bare env JSON is a sorted key array. Use `--show-values`, `env get`, or `writer = "stdout"`

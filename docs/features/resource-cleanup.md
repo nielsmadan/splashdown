@@ -107,6 +107,22 @@ loader and managed checkout files. Physical devices are never destroyed. This is
 before deleting an actively configured checkout; unlike `env release`, it does not leave device
 instances behind.
 
+Two things it cannot take back are reported rather than left silent. `clear_writer_destinations`
+returns the registry keys no destination the recipe declares carried, and `_report_uncleaned_values`
+names them: a resource routed to `envfile=apps/api/.env` and then deleted from the recipe keeps its
+line in that foreign file, because nothing records which file a vanished resource targeted.
+`_report_preserved_hook_entry` names the hook manager's own configuration file — lefthook, husky,
+pre-commit, prek, or simple-git-hooks — that still carries splashdown's post-checkout entry, which
+teardown never edits because it is tracked project content shared with every linked worktree.
+
+A recipe teardown cannot validate does not change the ownership rule. `_destination_only_recipe`
+(`commands.py`) reads `[project] env_file` back out of the document with `tomllib`, falling back to
+`ENV_FILE_NAME` when the file will not parse or names no destination, and hands
+`clear_writer_destinations` a recipe carrying nothing but that path. The removal is still scoped to
+the registry rows for this checkout, so a broken recipe never costs the user lines splashdown did
+not write, and the destination it deletes is the one the checkout actually configured rather than
+the default name.
+
 ### `splash target prune [ios|android]` (foreign sims splashdown didn't create)
 
 `cmd_target_prune` (`src/splashdown/target_commands.py`) is *not* about dead checkouts. It

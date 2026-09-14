@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from .constants import split_lines
 from .hooks import (
     _ensure_post_checkout_hook,
     _nested_project,
@@ -15,6 +16,7 @@ from .hooks import (
     post_checkout_manual_instructions,
     post_checkout_readiness,
 )
+from .jsontext import _object_span, _set_json_member
 from .safe_files import atomic_write_text, read_editable_text
 from .yamltext import _strip_hash_comments
 
@@ -290,22 +292,34 @@ def _rn_pkg_detect(cwd: Path) -> tuple[str, str]:
 
 
 def _rn_pkg_autofix(cwd: Path) -> None:
+    """Strip `--port` from the RN scripts that hardcode it, splicing each script's
+    own bytes. A shape this editor cannot place exactly is left for the manual
+    instructions rather than reflowed into splashdown's own formatting."""
     import sys  # noqa: PLC0415
 
     path = cwd / "package.json"
-    data = json.loads(read_editable_text(path, root=cwd))
+    text = read_editable_text(path, root=cwd)
+    data = json.loads(text)
     scripts = data.get("scripts") or {}
-    changed = False
-    for name in _pkg_scripts_with_port(data):
-        new_val = _PKG_PORT_RE.sub("", scripts[name])
-        if new_val != scripts[name]:
-            scripts[name] = new_val
-            changed = True
-    if not changed:
+    stripped = {
+        name: _PKG_PORT_RE.sub("", scripts[name])
+        for name in _pkg_scripts_with_port(data)
+        if _PKG_PORT_RE.sub("", scripts[name]) != scripts[name]
+    }
+    if not stripped:
         return
+    updated = text
+    for name, value in stripped.items():
+        span = _object_span(updated, scripts, "scripts")
+        if span is None:
+            return
+        updated = _set_json_member(updated, span, name, json.dumps(value, ensure_ascii=False))
+        scripts[name] = value
     data["scripts"] = scripts
-    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", root=cwd)
-    print("rewrote package.json (stripped --port from scripts)", file=sys.stderr)
+    if json.loads(updated) != data:
+        return
+    atomic_write_text(path, updated, root=cwd)
+    print("updated package.json (stripped --port from scripts)", file=sys.stderr)
 
 
 def _rn_pkg_manual(cwd: Path) -> str:
@@ -426,7 +440,7 @@ def _xcode_statements(text: str) -> list[tuple[str, tuple[str, ...]]]:
     """Each shell statement in `ios/.xcode.env` with the conditions guarding it."""
     statements: list[tuple[str, tuple[str, ...]]] = []
     guards: list[str] = []
-    for line in text.splitlines():
+    for line in split_lines(text):
         for segment in _split_unquoted(line, ";"):
             word = segment.strip()
             while word and word.split()[0] in {"then", "else", "do"}:

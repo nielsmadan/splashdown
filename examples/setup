@@ -11,6 +11,7 @@ if ! command -v splash >/dev/null 2>&1; then
 fi
 
 splash init
+splash trust
 splash
 echo
 echo "Done. Future 'git checkout' / 'git worktree add' provision automatically."

@@ -11,6 +11,13 @@ from typing import Any
 from .constants import normalized_env_reference
 from .errors import LoaderConflictError
 from .hooks import mise_config_path
+from .jsontext import (
+    _new_json_document,
+    _object_span,
+    _remove_json_member,
+    _render_json_value,
+    _set_json_member,
+)
 from .safe_files import atomic_write_text, read_optional_editable_text
 
 CREATED = "created"
@@ -222,6 +229,8 @@ _DIRENV_BLOCK_RE = re.compile(
     re.escape(_DIRENV_BEGIN) + r".*?" + re.escape(_DIRENV_END) + r"\n?",
     re.DOTALL,
 )
+# Teardown also takes back the blank line `plan` put in front of the block.
+_DIRENV_BLOCK_REMOVAL_RE = re.compile(r"\n?" + _DIRENV_BLOCK_RE.pattern, re.DOTALL)
 # A `#` only starts a comment at the start of a word, so `file.env#x` names a file.
 _SHELL_COMMENT_RE = re.compile(r"(?:^|(?<=[ \t]))#.*$")
 # Column 0 only: an indented directive sits inside a function or conditional,
@@ -305,7 +314,7 @@ class DirenvLoader(Loader):
         existing = read_optional_editable_text(path, root=cwd)
         if existing is None:
             return
-        new = _DIRENV_BLOCK_RE.sub("", existing)
+        new = _DIRENV_BLOCK_REMOVAL_RE.sub("", existing)
         if new == existing:
             return
         if new.strip():
@@ -379,6 +388,36 @@ def _is_managed_hook(hook: Any) -> bool:
     return isinstance(hook, str) and _DEVBOX_HOOK_MARKER in hook
 
 
+def _devbox_text(existing: str | None, data: Any, hooks: list[Any]) -> str:
+    """`devbox.json` carrying `hooks`, splicing only the member splashdown owns so
+    the rest of the project's own formatting survives. A document whose member bytes
+    this editor cannot place exactly is rendered whole, the one case splashdown
+    reflows a JSON file it did not create."""
+    if existing is None or not existing.strip():
+        data.setdefault("shell", {})["init_hook"] = hooks
+        return _new_json_document(data)
+    shell = data.get("shell")
+    member: str = "init_hook"
+    value: Any = hooks
+    if isinstance(shell, dict):
+        span = _object_span(existing, shell, "shell")
+    else:
+        span = _object_span(existing, data, None)
+        member, value = "shell", {"init_hook": hooks}
+    data.setdefault("shell", {})["init_hook"] = hooks
+    if span is None:
+        return _new_json_document(data)
+    updated = _set_json_member(existing, span, member, _render_json_value(value, existing))
+    return updated if _reads_back_as(updated, data) else _new_json_document(data)
+
+
+def _reads_back_as(text: str, data: Any) -> bool:
+    try:
+        return bool(json.loads(text) == data)
+    except json.JSONDecodeError:
+        return False
+
+
 class DevboxLoader(Loader):
     name = "devbox"
 
@@ -414,7 +453,7 @@ class DevboxLoader(Loader):
                     self.name, REUSED, f"reusing the devbox.json init hook for {env_file}"
                 )
             return WirePlan(self.name, CONFIGURED, f"devbox.json already loads {env_file}")
-        data.setdefault("shell", {})["init_hook"] = new_hooks
+        text = _devbox_text(existing, data, new_hooks)
         verb = UPDATED if existing is not None else CREATED
         note = (
             f"updated devbox.json (-duplicate init_hook for {env_file})"
@@ -426,7 +465,7 @@ class DevboxLoader(Loader):
             REUSED if reusable else verb,
             note,
             path=path,
-            text=json.dumps(data, indent=2) + "\n",
+            text=text,
             root=cwd,
         )
 
@@ -435,8 +474,8 @@ class DevboxLoader(Loader):
         existing = read_optional_editable_text(path, root=cwd)
         if existing is None:
             return
-        data = json.loads(existing)
-        shell = data.get("shell")
+        original = json.loads(existing)
+        shell = original.get("shell") if isinstance(original, dict) else None
         if not isinstance(shell, dict):
             return
         hooks = shell.get("init_hook")
@@ -444,19 +483,46 @@ class DevboxLoader(Loader):
             hooks = [hooks]
         if not isinstance(hooks, list):
             return
-        new_hooks = [hook for hook in hooks if not _is_managed_hook(hook)]
-        if new_hooks == hooks:
+        kept = [hook for hook in hooks if not _is_managed_hook(hook)]
+        if kept == hooks:
             return
-        if new_hooks:
-            shell["init_hook"] = new_hooks
-        else:
-            del shell["init_hook"]
-            if not shell:
-                del data["shell"]
-        if data:
-            atomic_write_text(path, json.dumps(data, indent=2) + "\n", root=cwd)
-        else:
+        wanted = json.loads(existing)
+        updated = _devbox_unwired(existing, original, wanted, kept)
+        if not wanted:
             path.unlink()
+            return
+        atomic_write_text(path, updated, root=cwd)
+
+
+def _devbox_unwired(existing: str, original: Any, wanted: Any, kept: list[Any]) -> str:
+    """`devbox.json` with splashdown's init hook taken back out, splicing the same
+    member `_devbox_text` wrote and mutating `wanted` into the data it should hold."""
+    shell_span = _object_span(existing, original["shell"], "shell")
+    if kept:
+        wanted["shell"]["init_hook"] = kept
+        rendered = _render_json_value(kept, existing)
+        updated = (
+            None
+            if shell_span is None
+            else _set_json_member(existing, shell_span, "init_hook", rendered)
+        )
+    else:
+        del wanted["shell"]["init_hook"]
+        if wanted["shell"]:
+            updated = (
+                None
+                if shell_span is None
+                else _remove_json_member(existing, shell_span, "init_hook")
+            )
+        else:
+            del wanted["shell"]
+            root_span = _object_span(existing, original, None)
+            updated = (
+                None if root_span is None else _remove_json_member(existing, root_span, "shell")
+            )
+    if updated is None or not _reads_back_as(updated, wanted):
+        return _new_json_document(wanted)
+    return updated
 
 
 class NoneLoader(Loader):

@@ -23,9 +23,13 @@ Map of the `docs/` tree. `README.md` (repo root) is the authoritative user-facin
   tradeoffs. Current behavior remains in `features/` and `tech/`.
 - [product/](product/overview.md): personas, jobs-to-be-done, dated product reviews (the
   why / for-whom layer). Owned by the `review-product` skill.
+- [tests/](tests/qa-1.0/README.md): repeatable manual QA procedures and dated run records for
+  scenarios the unit suite must not depend on (real external tooling, real Git events, real
+  hardware). Automated coverage stays in `tests/` at the repo root.
 
 ## Layering
 `product/` (who & why) → `features/` (what it does, tracks code) → `tech/` + source in
 `src/splashdown/` (how). `user/` is the human-facing view of the same behavior, in walkthrough
-form. `decisions/` records why cross-cutting constraints were adopted. `doc --update` keeps
+form. `decisions/` records why cross-cutting constraints were adopted, and `docs/tests/` records
+what a manual run actually observed. `doc --update` keeps
 `features/` and `tech/` in sync with code; `review-product` checks `product/` ↔ `features/`.

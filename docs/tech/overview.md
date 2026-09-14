@@ -19,9 +19,9 @@ is the canonical contributor summary; `CLAUDE.md` imports it. These docs go deep
   `device_ios.py`/`device_android.py`: platform adapters; `device_tools.py`: finite subprocess
   deadlines; `launching.py`: framework selection and launch dispatch.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
-  `yamltext.py`: the dependency-free comment-stripping and YAML value-region readers both the
-  checks and the hook-configuration editors use; `doctor.py` owns check selection, execution, and
-  rendering.
+  `yamltext.py`: the comment-stripping and YAML value-region readers both the checks and the
+  hook-configuration editors use; `jsontext.py`: the byte-preserving JSON member splicer they and
+  the loader wiring share; `doctor.py` owns check selection, execution, and rendering.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
   `cli_output.py` + `hooks.py` + `hook_configs.py` + `completion.py`: entry, parse, dispatch,
   typed status reports, output/error rendering, command handlers, and git-hook installation.
@@ -69,11 +69,23 @@ output; trust/bootstrap and the hidden hook keep their early, command-specific b
   `tomlio.py` top level, but `tomlio` itself is lazy-imported by its callers and never re-exported,
   so the read path never loads it. `__version__` and other costly lookups are lazy in `__init__.py`.
   Keep the two-dependency floor (`argcomplete`, `tomlkit`) and the read path light.
-- **Lexical YAML seams.** `yamltext.py` holds `_strip_hash_comments`, `_yaml_flow_value`, and
-  `_yaml_key_regions`. It imports nothing from the package, so `wiring.py`, the `profiles_*`
-  checks, and `hook_configs.py` all read value slots the same flow-aware, comment-stripped way
-  without an import cycle. Splashdown ships no YAML parser: any shape these helpers cannot place
-  exactly is reported as unrecognized rather than guessed at.
+- **Lexical YAML seams.** `yamltext.py` holds `_strip_hash_comment_lines`, `_strip_hash_comments`,
+  `_yaml_flow_value`, and `_yaml_key_regions`. It depends only on `constants.py`, so `wiring.py`,
+  the `profiles_*` checks, and `hook_configs.py` all read value slots the same flow-aware,
+  comment-stripped way without an import cycle. Splashdown ships no YAML parser: any shape these
+  helpers cannot place exactly is reported as unrecognized rather than guessed at.
+- **One line splitter.** `constants.split_lines` splits on the text's own `newline_for` ending and
+  nothing else. `str.splitlines` also breaks on vertical tab, form feed, the information
+  separators, NEL, and the Unicode separators, so an editor that rewrote from it would promote any
+  of those to a real line break and splice its own block through the value carrying one. Every
+  reader of a project file, a destination, or a registry row goes through it; only subprocess
+  output and in-tree constant strings may use `str.splitlines`.
+- **One JSON editing policy.** `jsontext.py` splices a project-owned JSON document: it locates the
+  member splashdown owns and replaces only those bytes, so hand formatting, tab indentation, and
+  every nested literal survive. A whole-document `json.dumps` is for a document splashdown
+  creates; the loader wiring falls back to one only when a splice cannot be read back as the data
+  it intended, and the framework autofixes decline to write rather than reflow. `hook_configs.py`,
+  `wiring.py`, and `loaders.py` all edit through it.
 - **Safe editable files.** `safe_files.py` is the dependency-free seam for framework autofixes,
   hook repairs, and local target changes. It rejects symlinked path components and non-regular
   destinations, opens existing files without following the final link where the platform supports
@@ -83,7 +95,7 @@ output; trust/bootstrap and the hidden hook keep their early, command-specific b
   `fcntl` locks and committed with same-directory atomic replacement. Checkout-scoped operation
   locks use a bounded hash-shard set to serialize registry changes, output-file writes, target
   edits, and device lifecycle side effects. The format has **no escaping** — `_tsv_field` rejects
-  tab/newline/CR to prevent row forgery. See registry.md.
+  tab plus every line-break lookalike to prevent row forgery. See registry.md.
 
 ## Why this shape
 Python for zero install friction (brew vendors `python@3.13`); a flat TSV + `fcntl` instead of a

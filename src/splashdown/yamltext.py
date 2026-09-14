@@ -1,17 +1,19 @@
-"""Line-preserving lexical helpers for YAML-shaped text. Dependency-free so both
-the framework-wiring checks and the hook-configuration editors can read the same
-value regions without importing each other."""
+"""Line-preserving lexical helpers for YAML-shaped text. It imports only the
+`constants.py` seam, so the framework-wiring checks and the hook-configuration
+editors read the same value regions without importing each other."""
 
 from __future__ import annotations
 
 import re
 
+from .constants import split_lines
 
-def _strip_hash_comments(text: str) -> str:
-    """Drop `#` comments from YAML / .properties / shell text, honouring quotes.
-    Indentation is preserved: YAML block structure is read off it."""
+
+def _strip_hash_comment_lines(lines: list[str]) -> list[str]:
+    """`lines` with `#` comments dropped, one output line per input line, so a
+    caller can map an index in the stripped view back onto the original bytes."""
     out: list[str] = []
-    for line in text.splitlines():
+    for line in lines:
         kept: list[str] = []
         quote = ""
         for ch in line:
@@ -24,7 +26,13 @@ def _strip_hash_comments(text: str) -> str:
                 break
             kept.append(ch)
         out.append("".join(kept).rstrip())
-    return "\n".join(out)
+    return out
+
+
+def _strip_hash_comments(text: str) -> str:
+    """Drop `#` comments from YAML / .properties / shell text, honouring quotes.
+    Indentation is preserved: YAML block structure is read off it."""
+    return "\n".join(_strip_hash_comment_lines(split_lines(text)))
 
 
 def _yaml_flow_value(text: str, start: int) -> str:
@@ -76,7 +84,7 @@ def _yaml_key_regions(text: str, key: str, *, indent: int | None = None) -> list
             continue
         key_indent = len(m.group(1))
         block: list[str] = []
-        for line in text[m.end() :].splitlines()[1:]:
+        for line in text[m.end() :].split("\n")[1:]:
             stripped = line.lstrip()
             if stripped:
                 line_indent = len(line) - len(stripped)
@@ -87,5 +95,7 @@ def _yaml_key_regions(text: str, key: str, *, indent: int | None = None) -> list
                 if line_indent == key_indent and not stripped.startswith("-"):
                     break
             block.append(line)
+        while block and not block[-1].strip():
+            block.pop()
         regions.append("\n".join(block))
     return regions

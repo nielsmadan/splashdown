@@ -111,7 +111,7 @@ def _split_flow_entries(region: str) -> list[str]:
 def _split_block_entries(region: str) -> list[str]:
     """One string per `- …` item; a long-syntax item keeps its continuation lines."""
     entries: list[str] = []
-    for line in region.splitlines():
+    for line in region.split("\n"):
         stripped = line.strip()
         if not stripped:
             continue

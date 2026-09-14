@@ -14,13 +14,6 @@ from .runtime_checks import WATCHMAN_CHECK
 from .wiring import _HOOK_WIRING_CHECK, WiringCheck, run_wiring_detect, wiring_destination
 
 
-def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
-    try:
-        return _resolve_doctor_target(cwd, override)[0]
-    except DeviceError:
-        return None
-
-
 def _resolve_doctor_target(cwd: Path, override: str | None) -> tuple[str, Path]:
     if override:
         return (override, cwd)

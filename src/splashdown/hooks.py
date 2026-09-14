@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import LOCAL_NAME, newline_for
+from .constants import LOCAL_NAME, newline_for, split_lines
 from .hook_configs import (
     OVERCOMMIT_CONFIG_NAMES,
     PRE_COMMIT_CONFIG_NAMES,
@@ -18,6 +18,7 @@ from .hook_configs import (
     SIMPLE_GIT_HOOKS_JSON_NAMES,
     SIMPLE_GIT_HOOKS_PACKAGE_KEY,
     SPLASH_GUARD,
+    _report_left_alone,
     existing_config,
     pre_commit_config_path,
     pre_commit_state,
@@ -34,6 +35,7 @@ from .safe_files import (
     atomic_write_text,
     read_optional_editable_bytes,
     read_optional_editable_text,
+    refusal_reason,
 )
 
 LEGACY_POST_CHECKOUT_HOOK = """\
@@ -182,6 +184,22 @@ def _tracked(cwd: Path, paths: Sequence[str]) -> set[str]:
     return {name for name in result.stdout.decode().split("\0") if name}
 
 
+def _tracked_state(cwd: Path, relpath: str) -> bool | None:
+    """Whether Git tracks `relpath`, or None when Git cannot answer at all."""
+    try:
+        result = subprocess.run(
+            ["git", "--literal-pathspecs", "ls-files", "-z", "--", relpath],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return any(name for name in result.stdout.decode().split("\0") if name)
+
+
 def _block_bounds(lines: list[str]) -> tuple[int, int] | None:
     starts = [i for i, line in enumerate(lines) if line.strip() == GITIGNORE_BEGIN]
     ends = [i for i, line in enumerate(lines) if line.strip() == GITIGNORE_END]
@@ -260,21 +278,23 @@ def _matched_inside(cwd: Path, match: _IgnoreMatch, bounds: tuple[int, int] | No
     return bounds[0] < match.line - 1 < bounds[1]
 
 
-def _ensure_gitignore(cwd: Path, paths: Sequence[str]) -> None:
+def _ensure_gitignore(cwd: Path, paths: Sequence[str]) -> bool:
     """Ensure the checkout ignores its local config and generated env outputs.
     Adds only rules Git does not already apply, inside the managed block, and
-    leaves every other line of the file untouched."""
+    leaves every other line of the file untouched. Returns whether it wrote."""
     wanted = list(dict.fromkeys([LOCAL_NAME, *paths]))
     path = cwd / GITIGNORE_NAME
+    written = False
     try:
         existing = read_optional_editable_text(path, root=cwd) or ""
-        lines = existing.split(newline_for(existing)) if existing else []
+        lines = split_lines(existing) if existing else []
         bounds = _block_bounds(lines)
         owned, unavailable, outranked = _managed_ignore_lines(cwd, wanted, lines, bounds)
         previous = lines[bounds[0] + 1 : bounds[1]] if bounds else []
         text = _gitignore_text(existing, lines, bounds, owned)
         if text is not None:
             atomic_write_text(path, text, root=cwd, create=True)
+            written = True
             _report_ignore_change(previous, owned)
     except _AmbiguousBlock as error:
         print(
@@ -282,10 +302,13 @@ def _ensure_gitignore(cwd: Path, paths: Sequence[str]) -> None:
             f"{', '.join(gitignore_rule(entry) for entry in wanted)} yourself if needed",
             file=sys.stderr,
         )
-        return
+        return False
     except ValueError as error:
-        print(f"warning: left {GITIGNORE_NAME} alone: {error}", file=sys.stderr)
-        return
+        print(
+            f"warning: left {GITIGNORE_NAME} alone: {refusal_reason(error)}",
+            file=sys.stderr,
+        )
+        return False
     if unavailable is not None:
         print(
             f"  note: git could not report ignore status ({unavailable}), "
@@ -293,7 +316,7 @@ def _ensure_gitignore(cwd: Path, paths: Sequence[str]) -> None:
             file=sys.stderr,
         )
     else:
-        _report_uncovered(cwd, wanted, outranked)
+        _report_uncovered(cwd, wanted, outranked, after_edit=True)
     for relpath in sorted(_tracked(cwd, wanted)):
         print(
             f"  note: {relpath} is tracked by git, so its generated values will show up as "
@@ -301,12 +324,15 @@ def _ensure_gitignore(cwd: Path, paths: Sequence[str]) -> None:
             f"(`git rm --cached {relpath}` does)",
             file=sys.stderr,
         )
+    return written
 
 
 def _report_uncovered(
     cwd: Path,
     wanted: Sequence[str],
     outranked: Mapping[str, _IgnoreMatch] | None = None,
+    *,
+    after_edit: bool = False,
 ) -> None:
     """Ask Git which of `wanted` it ends up ignoring and say where that disagrees
     with the user: a managed rule still loses to a later `!` negation, and it beats
@@ -322,7 +348,8 @@ def _report_uncovered(
             reason = (
                 f"`{match.pattern}` in {match.source} un-ignores it" if match else "no rule matches"
             )
-            print(f"  note: {relpath} is still not ignored ({reason})", file=sys.stderr)
+            still = "still " if after_edit else ""
+            print(f"  note: {relpath} is {still}not ignored ({reason})", file=sys.stderr)
             continue
         negation = (outranked or {}).get(relpath)
         if negation is not None:
@@ -355,13 +382,15 @@ def mise_config_path(cwd: Path) -> Path:
 def _revert_gitignore(cwd: Path) -> None:
     """Drop the managed rules for files teardown removed and keep the rules for
     files it left behind. Only the managed block is touched: rules the user wrote
-    outside it were never splashdown's to remove."""
+    outside it were never splashdown's to remove. A file left with nothing is
+    removed only when Git does not track it, since an empty committed
+    `.gitignore` and one init created read identically on disk."""
     path = cwd / GITIGNORE_NAME
     try:
         existing = read_optional_editable_text(path, root=cwd)
         if existing is None:
             return
-        lines = existing.split(newline_for(existing))
+        lines = split_lines(existing)
         bounds = _block_bounds(lines)
         if bounds is None:
             return
@@ -371,11 +400,18 @@ def _revert_gitignore(cwd: Path) -> None:
         ]
         text = _gitignore_text(existing, lines, bounds, kept)
     except ValueError as error:
-        print(f"warning: left {GITIGNORE_NAME} alone: {error}", file=sys.stderr)
+        print(
+            f"warning: left {GITIGNORE_NAME} alone: {refusal_reason(error)}",
+            file=sys.stderr,
+        )
         return
-    if text is not None:
+    if text is None:
+        return
+    if not text.strip() and _tracked_state(cwd, GITIGNORE_NAME) is False:
+        path.unlink()
+    else:
         atomic_write_text(path, text, root=cwd, create=True)
-        _report_ignore_change(previous, kept)
+    _report_ignore_change(previous, kept)
 
 
 def _git_worktree_root(cwd: Path) -> Path | None:
@@ -656,7 +692,8 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
     the local hooks is activation, not configuration, and happens elsewhere."""
     path = _lefthook_config_path(cwd)
     text = read_optional_editable_text(path, root=cwd) or ""
-    lines = text.splitlines()
+    newline = newline_for(text)
+    lines = split_lines(text)
     owned = _lefthook_splashdown_job(lines)
     if owned is not None:
         _, _, run_index = owned
@@ -666,31 +703,21 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         if value == _LEFTHOOK_LEGACY_RUN and run_index is not None:
             run_indent = lines[run_index][: len(lines[run_index]) - len(lines[run_index].lstrip())]
             lines[run_index] = f"{run_indent}run: {_LEFTHOOK_RUN}"
-            atomic_write_text(
-                path,
-                "\n".join(lines) + ("\n" if text.endswith("\n") else ""),
-                root=cwd,
-                create=True,
-            )
+            atomic_write_text(path, newline.join(lines), root=cwd, create=True)
             print(f"updated post-checkout in {path.name} (lefthook)", file=sys.stderr)
             return True
-        print(
-            f"existing splashdown job in {path.name} was modified — leaving it untouched",
-            file=sys.stderr,
-        )
+        _report_left_alone(path, "its splashdown job was modified")
         return False
     pc_idx = next(
         (i for i, ln in enumerate(lines) if re.match(r"^post-checkout:\s*$", ln)),
         None,
     )
     if pc_idx is None:
-        sep = "" if not text or text.endswith("\n") else "\n"
-        text = (
-            text
-            + sep
-            + (f"\npost-checkout:\n  commands:\n    splashdown:\n      run: {_LEFTHOOK_RUN}\n")
+        sep = "" if not text or text.endswith(newline) else newline
+        job = newline.join(
+            ["", "post-checkout:", "  commands:", "    splashdown:", f"      run: {_LEFTHOOK_RUN}"]
         )
-        atomic_write_text(path, text, root=cwd, create=True)
+        atomic_write_text(path, text + sep + job + newline, root=cwd, create=True)
     else:
         end_idx = len(lines)
         for j in range(pc_idx + 1, len(lines)):
@@ -712,12 +739,7 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         else:
             addition = ["  commands:", "    splashdown:", f"      run: {_LEFTHOOK_RUN}"]
             lines = lines[: pc_idx + 1] + addition + lines[pc_idx + 1 :]
-        atomic_write_text(
-            path,
-            "\n".join(lines) + ("\n" if text.endswith("\n") or text == "" else ""),
-            root=cwd,
-            create=True,
-        )
+        atomic_write_text(path, newline.join(lines), root=cwd, create=True)
     print(f"wired post-checkout in {path.name} (lefthook)", file=sys.stderr)
     return True
 
@@ -849,7 +871,7 @@ def _wire_post_checkout_native(cwd: Path) -> bool:
 
 def _lefthook_state(cwd: Path) -> str:
     path = _lefthook_config_path(cwd)
-    lines = path.read_text().splitlines() if path.exists() else []
+    lines = split_lines(path.read_bytes().decode()) if path.exists() else []
     owned = _lefthook_splashdown_job(lines)
     if owned is None:
         return "missing"
@@ -1072,6 +1094,16 @@ def post_checkout_readiness(cwd: Path) -> HookReadiness:
     return HookReadiness(adapter.manager, False, template.format(manager=adapter.manager), active)
 
 
+def preserved_post_checkout_config(cwd: Path) -> tuple[str, Path] | None:
+    """`(manager, config path)` when a hook manager's own configuration carries
+    splashdown's entry. Teardown never edits it, so a caller can name what stays."""
+    detection = detect_hook_configuration(cwd)
+    adapter = _ADAPTERS.get(detection.manager)
+    if adapter is None or adapter.state(cwd) != "ok":
+        return None
+    return adapter.manager, adapter.config_path(cwd)
+
+
 def post_checkout_files(cwd: Path) -> tuple[Path, ...]:
     """The project files this checkout's hook integration writes, so a caller can
     report what changed without parsing each adapter's message."""
@@ -1124,7 +1156,8 @@ def _configure_post_checkout_hook(cwd: Path) -> None:
     detection = detect_hook_configuration(cwd)
     adapter = _ADAPTERS.get(detection.manager)
     if adapter is not None:
-        adapter.configure(cwd)
+        if not adapter.configure(cwd):
+            _report_manual_hook_activation(cwd)
         return
     if detection.manager == "core-hookspath-other":
         _warn_custom_hooks_path(cwd)

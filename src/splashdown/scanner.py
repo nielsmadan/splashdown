@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import PROFILES
+from .constants import split_lines
 from .errors import UsageError
 from .inventory import AppInventory, ProjectInventory
 from .loaders import LOADERS
@@ -50,7 +51,7 @@ def _enumerate_apps(cwd: Path, workspace: str) -> list[tuple[str, Path]]:
         text = (cwd / "pnpm-workspace.yaml").read_text()
         globs: list[str] = []
         in_packages = False
-        for line in text.splitlines():
+        for line in split_lines(text):
             stripped = line.strip()
             if stripped.startswith("packages:"):
                 in_packages = True

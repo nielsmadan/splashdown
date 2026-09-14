@@ -72,7 +72,10 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 
 ## Load-bearing constraints
 
-- Registry TSV has no escaping. `_tsv_field` must reject tabs, newlines, and carriage returns.
+- Registry TSV has no escaping. `_tsv_field` must reject tabs and every character some reader
+  treats as a line break: `\n`, `\r`, `\v`, `\f`, the information separators, NEL, and the
+  Unicode line and paragraph separators. Reads go through `split_lines`, which breaks on the
+  file's own line ending only, so the write side is what keeps a field from meaning two things.
   Registry writes use stable `fcntl` sidecars plus same-directory atomic replacement.
 - Registry `_lock` is non-reentrant. Call unlocked helpers while holding a file lock, and keep the
   checkout `operation_lock` outermost around registry changes, output writes, target edits, and
@@ -92,9 +95,20 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 - `.NET` `launchSettings.json` may contain a UTF-8 BOM and CRLF. Read and write it through
   `_read_launch_settings` so both survive.
 - Env destinations are co-owned, so everything outside splashdown's keys survives verbatim.
-  `_rewrite` splits on the file's own line ending, replaces a managed key where it already
-  stands, and keeps trailing blank lines; never reach for `str.splitlines`, which also breaks on
-  form feed. An unterminated quoted value is an error whoever opened it.
+  `_rewrite` replaces a managed key where it already stands and keeps trailing blank lines. An
+  unterminated quoted value is an error whoever opened it.
+- `constants.split_lines` is the only line splitter for file content, registry rows included.
+  Never reach for `str.splitlines`, which also breaks on vertical tab, form feed, the information
+  separators, NEL and the Unicode separators: an editor that rewrites from it promotes any of
+  those to a real line break and splices its own block through the value carrying one. Only
+  subprocess output and in-tree constant strings may use it.
+- A project-owned JSON file is edited by splicing the member splashdown owns, through
+  `jsontext.py`. Never render a whole document with `json.dumps` except one splashdown creates;
+  that reflows every nested literal the project hand-formatted and is not reverted on `deinit`.
+- A project file splashdown declines to edit is reported as
+  `warning: left <name> alone: <cause>` at exit 0, with the real cause (`safe_files.UneditablePath`
+  carries it, `refusal_reason` unwraps it). `error:` plus a non-zero exit is for a refusal that
+  stops the command.
 - The recipe cannot say which keys to remove: a deleted resource is absent from `resolved`. The
   checkout's registry rows are that record, passed to `write_outputs` and
   `clear_writer_destinations` as `known_keys`, and `cmd_deinit` reads them before

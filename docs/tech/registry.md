@@ -78,7 +78,7 @@ Public mutators are read-modify-write under the lock: `set_kv`/`remove_kv` filte
 
 ### `_tsv_field` and row forgery
 
-Because the TSV format has **no escaping**, a field containing a tab or newline would forge or corrupt rows on the next read — e.g. a value like `"a\n/other\tKEY\tval"` parses as a second, well-formed row for a *different* checkout. `_tsv_field` (`registry.py`) rejects `\t`, `\n`, and `\r` (`_TSV_FORBIDDEN`, `registry.py`) at **write** time, raising `ValueError`. It is applied to every field on write across all five files. These chars never legitimately appear in checkout paths, resource keys, ports, or resolved values, so rejection is a guard, not a constraint users will hit.
+Because the TSV format has **no escaping**, a field containing a tab or newline would forge or corrupt rows on the next read — e.g. a value like `"a\n/other\tKEY\tval"` parses as a second, well-formed row for a *different* checkout. `_tsv_field` (`registry.py`) rejects `\t` and every character some reader treats as a line break — `\n`, `\r`, `\v`, `\f`, `\x1c`, `\x1d`, `\x1e`, `\x85`, `U+2028`, `U+2029` (`_TSV_FORBIDDEN`, `registry.py`) — at **write** time, raising `ValueError`. Reads split on the file's own line ending only, so the wider write-side set is what keeps a stored field from meaning one thing to `split_lines` and another to `str.splitlines`. It is applied to every field on write across all five files. These chars never legitimately appear in checkout paths, resource keys, ports, or resolved values, so rejection is a guard, not a constraint users will hit.
 
 ### Port allocation
 

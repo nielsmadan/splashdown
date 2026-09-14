@@ -11,7 +11,7 @@ from splashdown import hook_configs as hc
 
 
 def _yaml(tmp_path):
-    return (tmp_path / ".pre-commit-config.yaml").read_text()
+    return (tmp_path / ".pre-commit-config.yaml").read_text(encoding="utf-8")
 
 
 def test_pre_commit_creates_config_when_absent(tmp_path):
@@ -104,7 +104,10 @@ def test_pre_commit_leaves_a_modified_entry_alone(tmp_path, capsys):
 
     assert hc.wire_pre_commit(tmp_path) is False
     assert _yaml(tmp_path) == original
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left .pre-commit-config.yaml alone: its splashdown hook was modified"
+        in capsys.readouterr().err
+    )
     assert hc.pre_commit_state(tmp_path) == "modified"
 
 
@@ -114,14 +117,20 @@ def test_pre_commit_reports_a_shape_it_cannot_edit(tmp_path, capsys):
 
     assert hc.wire_pre_commit(tmp_path) is False
     assert _yaml(tmp_path) == original
-    assert "not in a shape splashdown can edit safely" in capsys.readouterr().err
+    assert (
+        "warning: left .pre-commit-config.yaml alone: it is not in a shape splashdown "
+        "can edit safely (pre-commit)" in capsys.readouterr().err
+    )
 
 
 def test_pre_commit_reports_a_config_without_repos(tmp_path, capsys):
     (tmp_path / ".pre-commit-config.yaml").write_text("default_stages: [pre-commit]\n")
 
     assert hc.wire_pre_commit(tmp_path) is False
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left .pre-commit-config.yaml alone: it is not in a shape splashdown "
+        "can edit safely (pre-commit)" in capsys.readouterr().err
+    )
 
 
 def test_pre_commit_writes_the_only_spelling_pre_commit_reads(tmp_path):
@@ -199,14 +208,19 @@ def test_prek_leaves_a_modified_entry_alone(tmp_path, capsys):
 
     assert hc.wire_prek(tmp_path) is False
     assert (tmp_path / "prek.toml").read_text() == original
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left prek.toml alone: its splashdown hook was modified" in capsys.readouterr().err
+    )
 
 
 def test_prek_reports_invalid_toml(tmp_path, capsys):
     (tmp_path / "prek.toml").write_text("repos = [\n")
 
     assert hc.wire_prek(tmp_path) is False
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left prek.toml alone: it is not in a shape splashdown can edit safely (prek)"
+        in capsys.readouterr().err
+    )
 
 
 def test_simple_git_hooks_creates_json_when_only_the_dependency_exists(tmp_path):
@@ -286,7 +300,10 @@ def test_simple_git_hooks_leaves_a_modified_command_alone(tmp_path, capsys):
 
     assert hc.wire_simple_git_hooks(tmp_path) is False
     assert (tmp_path / ".simple-git-hooks.json").read_text() == original
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left .simple-git-hooks.json alone: its splashdown post-checkout command "
+        "was modified" in capsys.readouterr().err
+    )
 
 
 def test_simple_git_hooks_keeps_tab_indentation(tmp_path):
@@ -357,6 +374,33 @@ _EDITABLE_SHAPES = {
         "      entry: echo lint\n"
     ),
     "block-indented hooks": _LOCAL_REPO,
+    "next line inside a quoted value": (
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: lint\n"
+        '        name: "a\x85b"\n'
+        "        language: system\n"
+        "        entry: echo lint\n"
+    ),
+    "line separator inside a quoted value": (
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: lint\n"
+        '        name: "a\u2028b"\n'
+        "        language: system\n"
+        "        entry: echo lint\n"
+    ),
+    "paragraph separator inside a quoted value": (
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: lint\n"
+        '        name: "a\u2029b"\n'
+        "        language: system\n"
+        "        entry: echo lint\n"
+    ),
 }
 _PRESERVED_SHAPES = {
     "flow-empty hooks": "repos:\n  - repo: local\n    hooks: []\n",
@@ -386,7 +430,7 @@ def _splashdown_hook(document):
 
 @pytest.mark.parametrize("shape", sorted(_EDITABLE_SHAPES))
 def test_pre_commit_writes_yaml_a_parser_accepts(tmp_path, shape):
-    (tmp_path / ".pre-commit-config.yaml").write_text(_EDITABLE_SHAPES[shape])
+    (tmp_path / ".pre-commit-config.yaml").write_text(_EDITABLE_SHAPES[shape], encoding="utf-8")
 
     assert hc.wire_pre_commit(tmp_path) is True
 
@@ -402,7 +446,7 @@ def test_pre_commit_writes_yaml_a_parser_accepts(tmp_path, shape):
 @pytest.mark.parametrize("shape", sorted(_EDITABLE_SHAPES))
 def test_pre_commit_keeps_every_hook_the_project_already_had(tmp_path, shape):
     original = _EDITABLE_SHAPES[shape]
-    (tmp_path / ".pre-commit-config.yaml").write_text(original)
+    (tmp_path / ".pre-commit-config.yaml").write_text(original, encoding="utf-8")
     before = yaml.safe_load(original) or {}
 
     hc.wire_pre_commit(tmp_path)
@@ -429,7 +473,10 @@ def test_pre_commit_preserves_a_shape_it_cannot_parse(tmp_path, capsys, shape):
 
     assert hc.wire_pre_commit(tmp_path) is False
     assert _yaml(tmp_path) == original
-    assert "not in a shape splashdown can edit safely" in capsys.readouterr().err
+    assert (
+        "warning: left .pre-commit-config.yaml alone: it is not in a shape splashdown "
+        "can edit safely (pre-commit)" in capsys.readouterr().err
+    )
 
 
 _REFUSED_SHAPES = {
@@ -456,7 +503,10 @@ def test_pre_commit_refuses_to_write_a_shape_it_cannot_place(tmp_path, capsys, s
     assert hc.wire_pre_commit(tmp_path) is False
     assert _yaml(tmp_path) == original
     assert hc.pre_commit_state(tmp_path) == "unrecognized"
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left .pre-commit-config.yaml alone: it is not in a shape splashdown "
+        "can edit safely (pre-commit)" in capsys.readouterr().err
+    )
 
 
 def test_pre_commit_state_refuses_a_config_a_parser_rejects(tmp_path):
@@ -519,7 +569,10 @@ def test_pre_commit_leaves_a_symlinked_config_untouched(tmp_path, capsys):
     assert hc.wire_pre_commit(tmp_path) is False
 
     assert outside.read_text() == "repos:\n"
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left .pre-commit-config.yaml alone: destination is a symlink"
+        in capsys.readouterr().err
+    )
 
 
 def test_prek_leaves_a_symlinked_config_untouched(tmp_path, capsys):
@@ -530,7 +583,7 @@ def test_prek_leaves_a_symlinked_config_untouched(tmp_path, capsys):
     assert hc.wire_prek(tmp_path) is False
 
     assert outside.read_text() == "# mine\n"
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert "warning: left prek.toml alone: destination is a symlink" in capsys.readouterr().err
 
 
 def test_simple_git_hooks_leaves_a_symlinked_package_json_untouched(tmp_path, capsys):
@@ -542,7 +595,7 @@ def test_simple_git_hooks_leaves_a_symlinked_package_json_untouched(tmp_path, ca
 
     assert outside.read_text() == '{"simple-git-hooks": {"pre-commit": "npm test"}}'
     assert not (tmp_path / ".simple-git-hooks.json").exists()
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert "warning: left package.json alone: destination is a symlink" in capsys.readouterr().err
 
 
 def test_simple_git_hooks_leaves_a_symlinked_json_config_untouched(tmp_path, capsys):
@@ -553,7 +606,10 @@ def test_simple_git_hooks_leaves_a_symlinked_json_config_untouched(tmp_path, cap
     assert hc.wire_simple_git_hooks(tmp_path) is False
 
     assert outside.read_text() == '{"pre-commit": "npm test"}'
-    assert "leaving it untouched" in capsys.readouterr().err
+    assert (
+        "warning: left .simple-git-hooks.json alone: destination is a symlink"
+        in capsys.readouterr().err
+    )
 
 
 def test_simple_git_hooks_changes_only_the_bytes_it_owns(tmp_path):
@@ -618,3 +674,82 @@ def test_simple_git_hooks_keeps_non_ascii_and_crlf_on_the_first_write(tmp_path):
     data = json.loads(raw)
     assert data["simple-git-hooks"]["post-checkout"] == hc.SIMPLE_GIT_HOOKS_COMMAND
     assert data["simple-git-hooks"]["pre-commit"] == "npm test"
+
+
+_LINE_BREAK_LOOKALIKES = {
+    "file separator": "\x1c",
+    "form feed": "\x0c",
+    "group separator": "\x1d",
+    "line separator": "\u2028",
+    "next line": "\x85",
+    "paragraph separator": "\u2029",
+    "record separator": "\x1e",
+    "vertical tab": "\x0b",
+}
+
+
+def _quoted_value_config(character: str) -> str:
+    return (
+        "repos:\n"
+        "  - repo: local\n"
+        "    hooks:\n"
+        "      - id: lint\n"
+        f'        name: "a{character}b"\n'
+        "        language: system\n"
+        "        entry: echo lint\n"
+    )
+
+
+@pytest.mark.parametrize("lookalike", sorted(_LINE_BREAK_LOOKALIKES))
+def test_pre_commit_keeps_a_line_break_lookalike_inside_a_value(tmp_path, lookalike):
+    character = _LINE_BREAK_LOOKALIKES[lookalike]
+    original = _quoted_value_config(character)
+    (tmp_path / ".pre-commit-config.yaml").write_text(original, encoding="utf-8")
+
+    assert hc.wire_pre_commit(tmp_path) is True
+
+    text = _yaml(tmp_path)
+    assert f'        name: "a{character}b"\n' in text
+    assert text.count("\n") == original.count("\n") + len(hc._pre_commit_hook_lines(0))
+    assert hc.pre_commit_state(tmp_path) == "ok"
+
+
+@pytest.mark.parametrize("lookalike", ["line separator", "next line", "paragraph separator"])
+def test_pre_commit_writes_a_parseable_document_beside_a_line_break_lookalike(tmp_path, lookalike):
+    original = _quoted_value_config(_LINE_BREAK_LOOKALIKES[lookalike])
+    (tmp_path / ".pre-commit-config.yaml").write_text(original, encoding="utf-8")
+
+    assert hc.wire_pre_commit(tmp_path) is True
+
+    document = yaml.safe_load(_yaml(tmp_path))
+    assert _local_hook_ids(document) == ["lint", hc.HOOK_ID]
+    assert _splashdown_hook(document)["entry"] == hc.PRE_COMMIT_ENTRY
+    assert (
+        document["repos"][0]["hooks"][0]["name"]
+        == (yaml.safe_load(original)["repos"][0]["hooks"][0]["name"])
+    )
+
+
+def test_pre_commit_keeps_carriage_return_line_endings(tmp_path):
+    original = b"repos:\r  - repo: local\r    hooks:\r      - id: lint\r        entry: echo lint\r"
+    (tmp_path / ".pre-commit-config.yaml").write_bytes(original)
+
+    assert hc.wire_pre_commit(tmp_path) is True
+
+    raw = (tmp_path / ".pre-commit-config.yaml").read_bytes()
+    assert b"\n" not in raw
+    assert raw.count(b"\r") == original.count(b"\r") + len(hc._pre_commit_hook_lines(0))
+    assert b"- id: splashdown" in raw
+
+
+def test_prek_reports_toml_it_cannot_parse_as_an_unreadable_shape(tmp_path, capsys):
+    (tmp_path / "prek.toml").write_text("repos = [\n")
+
+    assert hc.wire_prek(tmp_path) is False
+
+    err = capsys.readouterr().err
+    assert (
+        "warning: left prek.toml alone: it is not in a shape splashdown can edit safely (prek)"
+        in err
+    )
+    assert "was modified" not in err

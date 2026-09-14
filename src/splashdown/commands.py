@@ -5,7 +5,7 @@ import json
 import os
 import stat
 import sys
-import tempfile
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +34,7 @@ from .device_claims import claim_available_target
 from .devices import DeviceError, device_destroy_row
 from .errors import ApplicationError, MissingRecipeError, UsageError
 from .hooks import (
+    GITIGNORE_NAME,
     _activate_post_checkout_hook,
     _configure_post_checkout_hook,
     _ensure_gitignore,
@@ -43,6 +44,8 @@ from .hooks import (
     _print_nested_checkout_hook_note,
     _report_uncovered,
     _revert_gitignore,
+    post_checkout_files,
+    preserved_post_checkout_config,
 )
 from .inventory import ProjectInventory
 from .loaders import LOADERS, NOTHING, Loader, WirePlan, apply_wire_plan
@@ -65,6 +68,7 @@ from .recipe import (
     validate_env_file_option,
 )
 from .registry import Registry
+from .safe_files import atomic_write_text
 from .scanner import (
     LoaderSelection,
     Scanner,
@@ -229,7 +233,7 @@ def _write_minimal_monorepo_recipe(
         inv, {}, {}, cwd, project_metadata={"env_file": persisted} if persisted else None
     )
     recipe = Recipe.parse(rendered, recipe_path)
-    _write_init_recipe(recipe_path, rendered)
+    atomic_write_text(recipe_path, rendered, root=cwd, create=True)
     report.changed.append(RECIPE_NAME)
     print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
     print(
@@ -241,10 +245,11 @@ def _write_minimal_monorepo_recipe(
     if _create_local_skeleton(cwd):
         report.changed.append(LOCAL_NAME)
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
-    _ensure_gitignore(cwd, env_output_paths(recipe))
+    if _ensure_gitignore(cwd, env_output_paths(recipe)):
+        report.changed.append(GITIGNORE_NAME)
     _commit_loader_plan(plan, report)
-    _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
-    sync_agent_guidance(cwd, Recipe.load(recipe_path))
+    _wire_init_checkout_hook(cwd, report, enabled=wire_checkout_hook)
+    report.changed.extend(sync_agent_guidance(cwd, Recipe.load(recipe_path)))
     _print_init_next_steps(cwd, worktree_root, report.env_file)
 
 
@@ -279,11 +284,15 @@ def _resolve_init_project_metadata(
     return metadata or None
 
 
-def _wire_init_checkout_hook(cwd: Path, *, enabled: bool) -> None:
-    if enabled:
-        _configure_post_checkout_hook(cwd)
+def _wire_init_checkout_hook(cwd: Path, report: InitReport, *, enabled: bool) -> None:
+    if not enabled:
+        _print_nested_checkout_hook_note(cwd)
         return
-    _print_nested_checkout_hook_note(cwd)
+    before = {path: _file_bytes(path) for path in post_checkout_files(cwd)}
+    _configure_post_checkout_hook(cwd)
+    for path in dict.fromkeys([*before, *post_checkout_files(cwd)]):
+        if _file_bytes(path) != before.get(path):
+            report.changed.append(os.path.relpath(path, cwd))
 
 
 def _default_destination_keys(
@@ -407,19 +416,19 @@ def _init_recipe_exists(path: Path) -> bool:
     return _init_recipe_mode(path) is not None
 
 
-def _write_init_recipe(path: Path, text: str) -> None:
-    mode = _init_recipe_mode(path)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temp_path = Path(temp_name)
+def _init_env_file(cwd: Path, recipe_path: Path, options: InitOptions, *, exists: bool) -> str:
+    """The destination this init writes to. A re-scan under `--overwrite` rediscovers
+    the project, but not the destination: that is the user's own choice, it is what
+    the ignore block and teardown are derived from, and nothing in the checkout
+    records it except the recipe being replaced. Restating `--env-file` moves it."""
+    if options.env_file is not None:
+        return validate_env_file_option(options.env_file, cwd)
+    if not exists:
+        return ENV_FILE_NAME
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
-            os.fchmod(file.fileno(), mode if mode is not None else 0o644)
-            file.write(text)
-        os.replace(temp_path, path)
-    except OSError as error:
-        raise ValueError(f"could not safely write `{path}`: {error}") from error
-    finally:
-        temp_path.unlink(missing_ok=True)
+        return Recipe.load(recipe_path).env_file
+    except (ApplicationError, ValueError, OSError):
+        return ENV_FILE_NAME
 
 
 def _print_init_scan(cwd: Path, inv: ProjectInventory, selection: LoaderSelection) -> None:
@@ -455,11 +464,7 @@ def cmd_init(
         if recipe_exists and not options.overwrite:
             raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
 
-        env_file = (
-            validate_env_file_option(options.env_file, cwd)
-            if options.env_file is not None
-            else ENV_FILE_NAME
-        )
+        env_file = _init_env_file(cwd, recipe_path, options, exists=recipe_exists)
         report.env_file = env_file
 
         selection = select_loader(cwd, loader_override)
@@ -509,7 +514,7 @@ def cmd_init(
             project_metadata,
         )
         recipe = Recipe.parse(rendered, recipe_path)
-        _write_init_recipe(recipe_path, rendered)
+        atomic_write_text(recipe_path, rendered, root=cwd, create=True)
         report.changed.append(RECIPE_NAME)
         print(f"wrote {RECIPE_NAME}", file=sys.stderr)
 
@@ -518,14 +523,15 @@ def cmd_init(
                 report.changed.append(LOCAL_NAME)
                 print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
-            _ensure_gitignore(cwd, env_output_paths(recipe))
+            if _ensure_gitignore(cwd, env_output_paths(recipe)):
+                report.changed.append(GITIGNORE_NAME)
             _commit_loader_plan(wire_plan, report)
-            _wire_init_checkout_hook(cwd, enabled=not nested)
+            _wire_init_checkout_hook(cwd, report, enabled=not nested)
             _print_electron_isolation_pointer(inv)
 
             if any(app.profile != "unknown" for app in inv.apps):
                 _apply_init_wiring_checks(inv, cwd, env_file, report)
-            sync_agent_guidance(cwd, Recipe.load(recipe_path))
+            report.changed.extend(sync_agent_guidance(cwd, Recipe.load(recipe_path)))
         _print_init_next_steps(cwd, worktree_root, env_file)
         return report
 
@@ -632,28 +638,14 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
     if removed:
         print(f"released {removed} registry entr{'y' if removed == 1 else 'ies'}", file=sys.stderr)
 
-    # Every writer destination, the default one included, holds splashdown's own
-    # keys inside a file it does not own wholesale: remove those keys and delete
-    # the file only when nothing else remains.
-    if recipe is not None:
-        for relpath, action in clear_writer_destinations(cwd, recipe, known_keys=written_keys):
-            if action == "unparsed":
-                print(
-                    f"warning: left {relpath} alone; it opens a quoted value that is never "
-                    "closed, so splashdown cannot tell which lines are its own",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"{action} {relpath}", file=sys.stderr)
-    elif (cwd / ENV_FILE_NAME).exists():
-        (cwd / ENV_FILE_NAME).unlink()
-        print(f"removed {ENV_FILE_NAME}", file=sys.stderr)
+    _clear_destinations(cwd, recipe, written_keys)
 
     loader = LOADERS.get(loader_name) if loader_name else None
     if loader is not None:
         loader.unwire(cwd, recipe.env_file if recipe is not None else ENV_FILE_NAME)
 
     remove_agent_guidance(cwd)
+    _report_preserved_hook_entry(cwd)
 
     # Only remove splashdown.local.toml when it's still the untouched skeleton.
     local_path = cwd / LOCAL_NAME
@@ -678,6 +670,74 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
 
     print("splashdown removed from this checkout", file=sys.stderr)
     return 0
+
+
+def _clear_destinations(cwd: Path, recipe: Recipe | None, written_keys: set[str]) -> None:
+    """Every writer destination, the default one included, holds splashdown's own
+    keys inside a file it does not own wholesale: remove those keys and delete the
+    file only when nothing else remains. A recipe teardown could not validate is
+    reduced to the destination it names, so the same rule still applies."""
+    teardown = clear_writer_destinations(
+        cwd,
+        recipe if recipe is not None else _destination_only_recipe(cwd),
+        known_keys=written_keys,
+    )
+    for relpath, action in teardown.changed:
+        if action == "unparsed":
+            print(
+                f"warning: left {relpath} alone: it opens a quoted value that is never "
+                "closed, so splashdown cannot tell which lines are its own",
+                file=sys.stderr,
+            )
+        else:
+            print(f"{action} {relpath}", file=sys.stderr)
+    _report_uncleaned_values(teardown.uncleaned)
+
+
+def _destination_only_recipe(cwd: Path) -> Recipe:
+    """A recipe carrying nothing but the destination a rejected document names, so
+    teardown clears the file the checkout actually wrote through the same
+    key-scoped path every other destination takes. A document validation rejected
+    is often still well-formed TOML, and the default name is only right when it
+    names nothing else."""
+    destination = ENV_FILE_NAME
+    try:
+        data = tomllib.loads((cwd / RECIPE_NAME).read_text(encoding="utf-8"))
+        project = data.get("project")
+        value = project.get("env_file") if isinstance(project, dict) else None
+        if isinstance(value, str):
+            destination = validate_env_file_option(value, cwd)
+    except (OSError, UnicodeDecodeError, ValueError):
+        destination = ENV_FILE_NAME
+    return Recipe({"project": {"env_file": destination}}, cwd / RECIPE_NAME)
+
+
+def _report_uncleaned_values(keys: frozenset[str]) -> None:
+    """Nothing records which file a writer that the recipe no longer declares sent
+    a value to, so teardown names the values it could not chase rather than leaving
+    them in a foreign destination without a word."""
+    if not keys:
+        return
+    names = ", ".join(sorted(keys))
+    print(
+        f"note: no destination this recipe declares carried {names}; if a writer sent "
+        "those values to another file, remove them there yourself",
+        file=sys.stderr,
+    )
+
+
+def _report_preserved_hook_entry(cwd: Path) -> None:
+    """A hook manager's own configuration is tracked project content, so teardown
+    never edits it. Name the entry that stays and who owns it."""
+    preserved = preserved_post_checkout_config(cwd)
+    if preserved is None:
+        return
+    manager, path = preserved
+    print(
+        f"note: left splashdown's post-checkout entry in {path.name} ({manager}); it is "
+        "tracked project content, so remove it yourself once no checkout needs it",
+        file=sys.stderr,
+    )
 
 
 def _cmd_provision(args: Any, cwd: Path, registry: Registry) -> int:

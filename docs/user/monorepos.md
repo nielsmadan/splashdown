@@ -199,7 +199,7 @@ splash run emulator       # Android AVD
 
 When exactly one declared app has a known runnable profile, the built-in launcher selects it and
 runs from that app's directory. This recipe declares several known apps, so launch selection is
-ambiguous; it also needs yarn/pnpm rather than the launcher's default command. Set explicit
+ambiguous. It also needs yarn/pnpm rather than the launcher's default command. Set explicit
 per-platform commands (see [Custom run command](devices.md#custom-run-command)):
 
 ```toml
@@ -208,7 +208,7 @@ ios     = "yarn --cwd apps/mobile react-native run-ios --udid {device_id}"
 android = "yarn --cwd apps/mobile react-native run-android --deviceId {device_id}"
 ```
 
-This overrides the built-in launcher; splashdown still reconciles and boots the
+This overrides the built-in launcher. Splashdown still reconciles and boots the
 declared `[targets.*]` first, then runs your command with the booted device id
 injected.
 
@@ -335,7 +335,7 @@ resolved checkout path, so unrelated clones with matching directory names stay s
 
 Recipes generated before this suffix was added are not rewritten. To migrate, run
 `docker compose down` while the old `COMPOSE_PROJECT_NAME` is still loaded, update the template,
-run `splash sync`, and start the stack again. Compose creates a new set of named resources; remove
+run `splash sync`, and start the stack again. Compose creates a new set of named resources. Remove
 the old volumes only when their data is no longer needed.
 
 Host ports still need an edit, because compose bakes them into the `ports:` mapping. Declare a

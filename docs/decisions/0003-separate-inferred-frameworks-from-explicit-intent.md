@@ -1,6 +1,7 @@
 # 0003: Separate inferred frameworks from explicit intent
 
-- Status: Accepted
+- Status: Accepted; the named-preset clause and the Electron isolated/shared clause are
+  superseded by [0009](0009-generate-every-recipe-from-the-scanner.md)
 - Decision date: 2026-08-13
 - Recorded: 2026-08-24
 

@@ -42,7 +42,12 @@ Three options reshape that flow:
 
 **Location and replacement.** `cmd_init` uses the current directory or explicit `--cwd` as the
 project location, including nested Git directories and non-Git projects. It refuses to replace an
-existing `splashdown.toml` unless `--overwrite` is passed. Symlinked and other non-regular recipe
+existing `splashdown.toml` unless `--overwrite` is passed. `--overwrite` re-scans the project, but
+it does not re-decide the environment destination: `_init_env_file` (`commands.py`) carries the
+recorded `[project] env_file` forward unless `--env-file` restates it. A re-scan can rediscover
+apps, resources and the loader; nothing in the checkout records the destination except the recipe
+being replaced, and the ignore block and teardown are both derived from it, so silently reverting
+to `splashdown.env` would un-ignore the live file and strand its values. Symlinked and other non-regular recipe
 entries are rejected rather than followed. These failures raise `UsageError`; the CLI renders
 them as exit 2, while direct callers receive the exception. Init is dispatched before `Registry`
 construction so a refusal leaves machine state untouched.
@@ -318,6 +323,14 @@ instructions, so incomplete or unsupported integration is reported rather than a
 whose bytes changed around a fix are added to `InitReport.changed`, which is what the `changed:`
 line and the JSON report list.
 
+**What `changed` covers.** Every writer reports into `InitReport.changed`, not just the ones that
+return a value: the recipe, the local skeleton, `.gitignore` (`_ensure_gitignore` returns whether
+it wrote), the loader plan path, the wiring-check files, the hook-manager configuration
+(`_wire_init_checkout_hook` compares the bytes of `post_checkout_files` before and after
+`_configure_post_checkout_hook`), and the guidance files (`sync_agent_guidance` returns the names
+it rewrote). A `--format json` consumer has no narration to fall back on, so a writer that printed
+its own line but appended nothing was reporting a false list.
+
 Integration that already reads the configured destination detects as `ok`, so it is never
 rewritten and stays byte-identical. Ordinary adoption therefore needs no follow-up
 `splash doctor --fix`; doctor keeps its diagnosis and repair role for later drift.
@@ -460,7 +473,9 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
 - **`--env-file PATH`** — checkout-relative destination for generated values
-  (default `splashdown.env`).
+  (default `splashdown.env`). It must stay inside the checkout and outside `.git`, which the
+  checkout ignores wholesale and Git owns. `--overwrite` keeps the recorded destination unless
+  this flag restates it.
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (a marked block holding only the rules Git does not
   already apply to `splashdown.local.toml` and the configured env destination), the

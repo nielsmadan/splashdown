@@ -260,9 +260,10 @@ A workspace with more than one Electron app needs a distinct identifier and a di
 
 Splashdown validates the complete recipe whenever it loads it. Unknown sections or fields, wrong value types, unknown workspace/loader/profile names, malformed targets, and invalid resource definitions are hard errors. `[apps.NAME]` must contain `path`, `profile`, and a unique `resources` list whose entries are declared under `[resources]`.
 
-`[project]` accepts `workspace`, `loader`, `framework`, `run`, `worktree`, `ios`, and `android`.
-`run` is either one non-empty command string or a table containing `ios` and/or `android`
-commands. `worktree` has the strict shape shown above. The `ios` table accepts `scheme`, `mode`,
+`[project]` accepts `workspace`, `loader`, `framework`, `env_file`, `run`, `worktree`, `ios`, and
+`android`. `env_file` is the default output destination, `splashdown.env` when absent. `run` is
+either one non-empty command string or a table containing `ios` and/or `android` commands.
+`worktree` has the strict shape shown above. The `ios` table accepts `scheme`, `mode`,
 `configuration`, `workspace`, and `project`. The `android` table accepts `mode`, `module`,
 `variant`, `application_id`, and `launch_activity`. All supplied leaf values are non-empty
 strings. App profiles use a built-in profile name or `unknown`. `framework` takes a built-in

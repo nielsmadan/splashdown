@@ -6,8 +6,34 @@ import uuid
 from pathlib import Path
 
 
+class UneditablePath(ValueError):
+    """A destination splashdown will not read or write, carrying the reason apart
+    from the sentence naming the file, so a caller that already names the file in
+    its own report can print only the cause."""
+
+    def __init__(self, path: Path, reason: str, *, verb: str = "refusing to edit") -> None:
+        super().__init__(f"{verb} `{path}`: {reason}")
+        self.reason = reason
+
+
+def refusal_reason(error: ValueError) -> str:
+    """Why a destination could not be edited, without repeating its name."""
+    return error.reason if isinstance(error, UneditablePath) else str(error)
+
+
 def _absolute(path: Path) -> Path:
     return Path(os.path.abspath(path))
+
+
+def _named(path: Path, root: Path | None) -> Path:
+    """The destination as the user knows it: relative to the checkout when it is
+    inside one, so a warning quotes `.gitignore` rather than an absolute path."""
+    if root is None:
+        return path
+    try:
+        return Path(os.path.relpath(_absolute(path), _absolute(root)))
+    except ValueError:
+        return path
 
 
 def _validate_parent_chain(path: Path, root: Path | None) -> None:
@@ -18,9 +44,9 @@ def _validate_parent_chain(path: Path, root: Path | None) -> None:
     try:
         relative = absolute_path.relative_to(absolute_root)
     except ValueError as error:
-        raise ValueError(f"refusing to edit `{path}`: destination is outside `{root}`") from error
+        raise UneditablePath(_named(path, root), f"destination is outside `{root}`") from error
     if not relative.parts:
-        raise ValueError(f"refusing to edit `{path}`: destination is not a file below `{root}`")
+        raise UneditablePath(_named(path, root), f"destination is not a file below `{root}`")
 
     current = absolute_root
     for part in relative.parts[:-1]:
@@ -28,21 +54,29 @@ def _validate_parent_chain(path: Path, root: Path | None) -> None:
         try:
             entry = current.lstat()
         except OSError as error:
-            raise ValueError(f"could not inspect path component `{current}`: {error}") from error
+            raise UneditablePath(
+                _named(path, root),
+                f"path component `{_named(current, root)}` could not be inspected: {error}",
+                verb="could not edit",
+            ) from error
         if stat.S_ISLNK(entry.st_mode):
-            raise ValueError(f"refusing to edit `{path}`: path component `{current}` is a symlink")
+            raise UneditablePath(
+                _named(path, root), f"path component `{_named(current, root)}` is a symlink"
+            )
         if not stat.S_ISDIR(entry.st_mode):
-            raise ValueError(
-                f"refusing to edit `{path}`: path component `{current}` is not a directory"
+            raise UneditablePath(
+                _named(path, root), f"path component `{_named(current, root)}` is not a directory"
             )
 
     try:
         resolved_root = absolute_root.resolve(strict=True)
         resolved_parent = absolute_path.parent.resolve(strict=True)
     except OSError as error:
-        raise ValueError(f"could not resolve destination parent for `{path}`: {error}") from error
+        raise UneditablePath(
+            _named(path, root), f"its parent could not be resolved: {error}", verb="could not edit"
+        ) from error
     if not resolved_parent.is_relative_to(resolved_root):
-        raise ValueError(f"refusing to edit `{path}`: destination resolves outside `{root}`")
+        raise UneditablePath(_named(path, root), f"destination resolves outside `{root}`")
 
 
 def _read_regular_file(
@@ -57,13 +91,17 @@ def _read_regular_file(
     except FileNotFoundError:
         if missing_ok:
             return None
-        raise ValueError(f"could not edit `{path}`: file does not exist") from None
+        raise UneditablePath(
+            _named(path, root), "file does not exist", verb="could not edit"
+        ) from None
     except OSError as error:
-        raise ValueError(f"could not inspect `{path}`: {error}") from error
+        raise UneditablePath(
+            _named(path, root), f"it could not be inspected: {error}", verb="could not edit"
+        ) from error
     if stat.S_ISLNK(entry.st_mode):
-        raise ValueError(f"refusing to edit `{path}`: destination is a symlink")
+        raise UneditablePath(_named(path, root), "destination is a symlink")
     if not stat.S_ISREG(entry.st_mode):
-        raise ValueError(f"refusing to edit `{path}`: destination is not a regular file")
+        raise UneditablePath(_named(path, root), "destination is not a regular file")
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
@@ -71,10 +109,12 @@ def _read_regular_file(
         with os.fdopen(fd, "rb") as file:
             opened = os.fstat(file.fileno())
             if not stat.S_ISREG(opened.st_mode):
-                raise ValueError(f"refusing to edit `{path}`: destination is not a regular file")
+                raise UneditablePath(_named(path, root), "destination is not a regular file")
             raw = file.read()
     except OSError as error:
-        raise ValueError(f"could not safely read `{path}`: {error}") from error
+        raise UneditablePath(
+            _named(path, root), f"it could not be read: {error}", verb="could not edit"
+        ) from error
     return raw, stat.S_IMODE(opened.st_mode)
 
 

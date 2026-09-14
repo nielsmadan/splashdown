@@ -76,8 +76,8 @@ command to run after checkout.
 
 `--env-file` selects the file that receives the generated values. Without it the destination is
 `splashdown.env`, a file splashdown generates next to the recipe. The path is relative to the
-checkout and must stay inside it, so an absolute path or one that escapes is rejected before init
-writes anything. Init records the choice as `env_file` in the recipe's `[project]` table and
+checkout and must stay inside it and outside `.git`, so an absolute path, one that escapes, or one
+inside the Git directory is rejected before init writes anything. Init records the choice as `env_file` in the recipe's `[project]` table and
 reports the destination, the keys it will manage there, and any of those keys the file already
 sets. Values are never printed. Nothing is written to the destination by init itself, so run
 `splash` afterwards.
@@ -103,7 +103,9 @@ one is missing. `splash --format json init` reports the same selection, why it w
 every file init changed.
 
 Evolve an existing recipe by editing it manually or with an agent. `splash init --overwrite`
-regenerates the whole recipe, replacing manual edits. See
+regenerates the whole recipe, replacing manual edits. It keeps the destination the recipe already
+records, so a project set up with `--env-file config/.env` keeps writing there. Pass `--env-file`
+again to move it. See
 [adding an app](monorepos.md#adding-or-moving-an-app) for a comparison workflow.
 
 Init always generates the recipe from a project scan. For the choices a scan cannot infer, such
@@ -129,14 +131,18 @@ finds. With no scheme or several, the run stops before touching a simulator and 
 `splash deinit` surgically removes checkout-local init state plus state created by sync and device runs. It
 destroys simulator and emulator instances owned by this checkout, releases its registry entries,
 clears splashdown-managed keys from every writer destination and deletes one left with nothing else,
-and unwires the loader and managed agent instructions. From its `.gitignore` block it removes the rules for files it deleted and keeps the rules for files it left behind, such as a `splashdown.local.toml` you edited. The shared
+and unwires the loader and managed agent instructions. From its `.gitignore` block it removes the rules for files it deleted and keeps the rules for files it left behind, such as a `splashdown.local.toml` you edited, and it removes a `.gitignore` left with nothing in it at all. The loader configuration is restored to the bytes the project committed, blank separator lines included. The shared
 post-checkout integration and clone-wide bootstrap trust remain because linked worktrees may still
-use them. Deinit clears only this checkout's bootstrap completion.
+use them, and deinit names the hook configuration file it left that entry in. Deinit clears only this checkout's bootstrap completion.
 It then removes `splashdown.toml` and an untouched `splashdown.local.toml` skeleton.
 
 User-owned content is preserved: a modified local config or hook is left with a note, unrelated
 dotenv keys remain, physical devices are never destroyed, and framework changes made by
 `splash doctor --fix` are not reverted because they have no recoverable original.
+
+A value whose resource you deleted from the recipe before running deinit cannot be chased: nothing
+records which file a writer that the recipe no longer declares sent it to. Deinit names those keys
+so you can remove them from that file yourself.
 
 `splash sync --setup NAME` runs the recipe's `[setup.NAME]` commands after resolving and writing resources. Empty or malformed setup declarations fail during recipe validation, before those changes. An unknown requested name or failed command exits 1 after provisioning. Resource/output changes and earlier successful setup commands are not rolled back.
 

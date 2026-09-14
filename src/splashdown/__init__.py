@@ -80,7 +80,6 @@ from .commands import (
     InitOptions,
     InitReport,
     _env_dispatch,
-    _print_env_destination,
     cmd_completion,
     cmd_deinit,
     cmd_init,
@@ -164,7 +163,6 @@ from .hook_configs import (
 )
 from .hooks import (
     LEGACY_POST_CHECKOUT_HOOK,
-    HookDetection,
     _activate_post_checkout_hook,
     _configure_post_checkout_hook,
     _detect_hook_manager,
@@ -247,7 +245,6 @@ from .target_commands import (
 )
 from .targets import global_target_add, global_target_remove, target_add, target_remove
 from .wiring import (
-    _RN_WIRING_CHECKS,
     _XCODE_BEGIN,
     _XCODE_END,
     WiringCheck,

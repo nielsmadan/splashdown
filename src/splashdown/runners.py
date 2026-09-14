@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import require_macos, translate_tool_errors
+from .constants import split_lines
 from .device_tools import (
     DISCOVERY_TIMEOUT,
     MUTATION_TIMEOUT,
@@ -137,7 +138,7 @@ def _rn_ios_arch_hint(cwd: Path) -> str | None:
             text = path.read_text()
         except OSError:
             continue
-        if any(needle in ln and "arm64" in ln for ln in text.splitlines()):
+        if any(needle in ln and "arm64" in ln for ln in split_lines(text)):
             return _x86_64_sim_advice()
     return None
 

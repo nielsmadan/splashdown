@@ -11,8 +11,10 @@ import tomllib
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .safe_files import atomic_write_text, read_optional_editable_text
-from .yamltext import _strip_hash_comments, _yaml_key_regions
+from .constants import newline_for, split_lines
+from .jsontext import _insert_json_member, _new_json_document, _object_span
+from .safe_files import atomic_write_text, read_optional_editable_text, refusal_reason
+from .yamltext import _strip_hash_comment_lines, _yaml_key_regions
 
 HOOK_ID = "splashdown"
 _UNREADABLE = object()
@@ -264,8 +266,8 @@ def _pre_commit_insertion(lines: list[str], repos: int) -> tuple[int, list[str]]
 def _pre_commit_analysis(text: str) -> tuple[str, str | None]:
     """`(state, updated text)`. The update is returned only for `"missing"`, and only
     when the rewritten document reads back with splashdown's hook in place."""
-    raw = text.splitlines()
-    lines = _strip_hash_comments(text).split("\n")
+    raw = split_lines(text)
+    lines = _strip_hash_comment_lines(raw)
     repos = _repos_key(lines)
     if repos is None:
         return "unrecognized", None
@@ -273,9 +275,7 @@ def _pre_commit_analysis(text: str) -> tuple[str, str | None]:
     if isinstance(plan, str):
         return plan, None
     anchor, block = plan
-    newline = "\r\n" if "\r\n" in text else "\n"
-    updated = newline.join(raw[:anchor] + block + raw[anchor:])
-    updated += newline if text.endswith("\n") else ""
+    updated = newline_for(text).join(raw[:anchor] + block + raw[anchor:])
     if _pre_commit_analysis(updated)[0] != "ok":
         return "unrecognized", None
     return "missing", updated
@@ -317,12 +317,25 @@ def pre_commit_state(cwd: Path, *, path: Path | None = None) -> str:
     return _pre_commit_analysis(text)[0]
 
 
-def _report_unrecognized(path: Path, manager: str) -> None:
-    print(
-        f"{path.name} is not in a shape splashdown can edit safely ({manager}) — "
-        "leaving it untouched",
-        file=sys.stderr,
-    )
+def _report_unrecognized(path: Path, manager: str, cause: str | None = None) -> None:
+    detail = cause or f"it is not in a shape splashdown can edit safely ({manager})"
+    _report_left_alone(path, detail)
+
+
+def _read_refusal(path: Path, cwd: Path) -> str | None:
+    """Why a destination cannot be read, so a refusal names the symlink or the
+    missing permission instead of blaming the file's shape."""
+    try:
+        read_optional_editable_text(path, root=cwd)
+    except ValueError as error:
+        return refusal_reason(error)
+    return None
+
+
+def _report_left_alone(path: Path, cause: str) -> None:
+    """One shape for every project file splashdown declines to edit, so the reason
+    is the only thing that varies and the user never has to rank four phrasings."""
+    print(f"warning: left {path.name} alone: {cause}", file=sys.stderr)
 
 
 def wire_pre_commit(cwd: Path, *, manager: str = "pre-commit", path: Path | None = None) -> bool:
@@ -331,8 +344,8 @@ def wire_pre_commit(cwd: Path, *, manager: str = "pre-commit", path: Path | None
     path = pre_commit_config_path(cwd) if path is None else path
     try:
         text = read_optional_editable_text(path, root=cwd)
-    except ValueError:
-        _report_unrecognized(path, manager)
+    except ValueError as error:
+        _report_unrecognized(path, manager, refusal_reason(error))
         return False
     if text is None or not text.strip():
         atomic_write_text(path, _pre_commit_document(), root=cwd, create=True)
@@ -342,10 +355,7 @@ def wire_pre_commit(cwd: Path, *, manager: str = "pre-commit", path: Path | None
     if state == "ok":
         return True
     if state == "modified":
-        print(
-            f"existing splashdown hook in {path.name} was modified — leaving it untouched",
-            file=sys.stderr,
-        )
+        _report_left_alone(path, "its splashdown hook was modified")
         return False
     if updated is None:
         _report_unrecognized(path, manager)
@@ -454,17 +464,17 @@ def wire_prek(cwd: Path) -> bool:
         return wire_pre_commit(cwd, manager="prek", path=path)
     try:
         text = read_optional_editable_text(path, root=cwd)
-    except ValueError:
-        _report_unrecognized(path, "prek")
+    except ValueError as error:
+        _report_unrecognized(path, "prek", refusal_reason(error))
         return False
     state = prek_state(cwd)
     if state == "ok":
         return True
-    if state in {"modified", "unrecognized"}:
-        print(
-            f"existing splashdown hook in {path.name} was modified — leaving it untouched",
-            file=sys.stderr,
-        )
+    if state == "unrecognized":
+        _report_unrecognized(path, "prek")
+        return False
+    if state == "modified":
+        _report_left_alone(path, "its splashdown hook was modified")
         return False
     updated = _prek_document_text(text if text and text.strip() else None)
     if updated is None:
@@ -541,98 +551,17 @@ def simple_git_hooks_state(cwd: Path) -> str:
     return "ok" if current == SIMPLE_GIT_HOOKS_COMMAND else "modified"
 
 
-def _json_indent(text: str) -> str | int:
-    match = re.search(r"\n([ \t]+)\S", text)
-    if match is None:
-        return 2
-    return "\t" if match.group(1).startswith("\t") else len(match.group(1))
-
-
-def _line_indent(text: str, index: int) -> str:
-    line = text[text.rfind("\n", 0, index) + 1 : index]
-    return line[: len(line) - len(line.lstrip())]
-
-
-def _object_span(text: str, value: Any, key: str | None) -> tuple[int, int] | None:
-    """Offsets of the `{` and `}` of the object holding `value`: the document's own
-    outermost object when `key` is None, otherwise the one that member names."""
-    if key is None:
-        starts = [text.find("{")]
-    else:
-        starts = [m.end() for m in re.finditer(rf'"{re.escape(key)}"[ \t]*:\s*', text)]
-    for start in starts:
-        if start < 0 or start >= len(text) or text[start] != "{":
-            continue
-        close = _matching_brace(text, start)
-        if close is None:
-            continue
-        try:
-            if json.loads(text[start : close + 1]) == value:
-                return start, close
-        except json.JSONDecodeError:
-            continue
-    return None
-
-
-def _matching_brace(text: str, start: int) -> int | None:
-    depth, quote, index = 0, False, start
-    while index < len(text):
-        character = text[index]
-        if quote:
-            if character == "\\":
-                index += 2
-                continue
-            if character == '"':
-                quote = False
-        elif character == '"':
-            quote = True
-        elif character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return None
-
-
-def _member_text(name: str, value: str) -> str:
-    return f"{json.dumps(name, ensure_ascii=False)}: {json.dumps(value, ensure_ascii=False)}"
-
-
-def _insert_json_member(text: str, span: tuple[int, int], name: str, value: str) -> str:
-    """Splice one member into an existing JSON object, touching nothing else in the
-    file. `json.dumps` over the whole document would reflow every nested literal the
-    project hand-formatted, so only the inserted bytes are new."""
-    open_index, close_index = span
-    member = _member_text(name, value)
-    body = text[open_index + 1 : close_index]
-    newline = "\r\n" if "\r\n" in text else "\n"
-    if not body.strip():
-        step = _json_indent(text)
-        pad = "\t" if step == "\t" else " " * int(step)
-        base = _line_indent(text, open_index)
-        return f"{text[: open_index + 1]}{newline}{base}{pad}{member}{newline}{base}{text[close_index:]}"
-    cut = close_index - (len(body) - len(body.rstrip()))
-    if "\n" not in body:
-        return f"{text[:cut]}, {member}{text[cut:]}"
-    return f"{text[:cut]},{newline}{_line_indent(text, cut)}{member}{text[cut:]}"
-
-
-def _new_json_document(name: str, value: str) -> str:
-    return json.dumps({name: value}, indent=2, ensure_ascii=False) + "\n"
-
-
 def _simple_git_hooks_update(text: str | None, settings: dict[str, Any], kind: str) -> str | None:
     """The configuration text carrying splashdown's command, or `None` when the file
     cannot be edited by splicing and read back as the same data."""
     if text is None or not text.strip():
-        return _new_json_document("post-checkout", SIMPLE_GIT_HOOKS_COMMAND)
+        return _new_json_document({"post-checkout": SIMPLE_GIT_HOOKS_COMMAND})
     key = SIMPLE_GIT_HOOKS_PACKAGE_KEY if kind == "package" else None
     span = _object_span(text, settings, key)
     if span is None:
         return None
-    updated = _insert_json_member(text, span, "post-checkout", SIMPLE_GIT_HOOKS_COMMAND)
+    command = json.dumps(SIMPLE_GIT_HOOKS_COMMAND, ensure_ascii=False)
+    updated = _insert_json_member(text, span, "post-checkout", command)
     expected = json.loads(text)
     target = expected[SIMPLE_GIT_HOOKS_PACKAGE_KEY] if kind == "package" else expected
     target["post-checkout"] = SIMPLE_GIT_HOOKS_COMMAND
@@ -653,31 +582,21 @@ def wire_simple_git_hooks(cwd: Path) -> bool:
     if state == "ok":
         return True
     if kind == "dynamic":
-        print(
-            f"{path.name} configures simple-git-hooks dynamically — leaving it untouched",
-            file=sys.stderr,
-        )
+        _report_left_alone(path, "it configures simple-git-hooks dynamically")
         return False
     if kind == "pointer":
-        print(
-            f"{path.name} points simple-git-hooks at another configuration file — "
-            "leaving it untouched",
-            file=sys.stderr,
-        )
+        _report_left_alone(path, "it points simple-git-hooks at another configuration file")
         return False
     if state == "unrecognized":
-        _report_unrecognized(path, "simple-git-hooks")
+        _report_unrecognized(path, "simple-git-hooks", _read_refusal(path, cwd))
         return False
     if state == "modified":
-        print(
-            f"existing splashdown post-checkout in {path.name} was modified — leaving it untouched",
-            file=sys.stderr,
-        )
+        _report_left_alone(path, "its splashdown post-checkout command was modified")
         return False
     try:
         text = read_optional_editable_text(path, root=cwd)
-    except ValueError:
-        _report_unrecognized(path, "simple-git-hooks")
+    except ValueError as error:
+        _report_unrecognized(path, "simple-git-hooks", refusal_reason(error))
         return False
     settings = _simple_git_hooks_settings(cwd, kind, path)
     updated = None if settings is None else _simple_git_hooks_update(text, settings, kind)

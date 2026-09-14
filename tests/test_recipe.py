@@ -109,17 +109,26 @@ def test_template_allows_slicing_and_nested_calls(tmp_path):
 
 @pytest.mark.parametrize("bad", ["has\ttab", "has\nnewline", "has\rcarriage"])
 def test_registry_rejects_control_chars_in_value(registry, bad):
-    with pytest.raises(ValueError, match="tab or newline"):
+    with pytest.raises(ValueError, match="tab or line-break"):
         registry.set_kv("/checkout/a", "KEY", bad)
 
 
+@pytest.mark.parametrize(
+    "bad",
+    ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+)
+def test_registry_rejects_every_line_break_lookalike_in_value(registry, bad):
+    with pytest.raises(ValueError, match="tab or line-break"):
+        registry.set_kv("/checkout/a", "KEY", f"has{bad}break")
+
+
 def test_registry_rejects_control_chars_in_checkout_path(registry):
-    with pytest.raises(ValueError, match="tab or newline"):
+    with pytest.raises(ValueError, match="tab or line-break"):
         registry.set_kv("/checkout\twith-tab", "KEY", "value")
 
 
 def test_registry_rejects_control_chars_in_device_field(registry):
-    with pytest.raises(ValueError, match="tab or newline"):
+    with pytest.raises(ValueError, match="tab or line-break"):
         registry.set_device("/co", "simulator", "default", "udid\ninjected", "iPhone 17", "18.5")
 
 
@@ -1081,3 +1090,17 @@ def test_template_scope_helpers(tmp_path):
     p = sd.render_template("{{ port_hash('x') }}", scope)
     assert 8000 <= int(p) <= 9000
     assert sd.render_template("{{ port_hash('x') }}", scope) == p
+
+
+@pytest.mark.parametrize("candidate", [".git/foo.env", ".git/hooks/.env", "sub/.git/.env"])
+def test_env_file_option_rejects_a_destination_inside_git(tmp_path, candidate):
+    with pytest.raises(ValueError, match=r"outside `\.git`"):
+        sd.recipe.validate_env_file_option(candidate, tmp_path)
+
+
+def test_writer_rejects_a_destination_inside_git(tmp_path):
+    with pytest.raises(ValueError, match=r"outside `\.git`"):
+        sd.Recipe.parse(
+            '[resources.PORT]\ntype = "port"\nrange = [1, 2]\nwriter = "envfile=.git/x.env"\n',
+            tmp_path / "splashdown.toml",
+        )
