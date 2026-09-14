@@ -168,6 +168,7 @@ from .hooks import (
     _activate_post_checkout_hook,
     _configure_post_checkout_hook,
     _detect_hook_manager,
+    _ensure_gitignore,
     _ensure_post_checkout_hook,
     _native_hook_path,
     _revert_gitignore,

@@ -27,14 +27,20 @@ def _isolate_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.fixture(autouse=True)
-def _isolate_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_git_config(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`_configured_hooks_path` deliberately reads `core.hooksPath` from every config
-    level, so a developer's global setting would otherwise decide hook detection for
-    the whole suite. Point Git at an empty per-test global and no system config, and
-    drop the `GIT_CONFIG_COUNT` pairs, which outrank both files."""
+    level, and `git check-ignore` honours `core.excludesFile`, so a developer's global
+    settings would otherwise decide hook detection and ignore coverage for the whole
+    suite. Point Git at a per-test global that excludes nothing and at no system
+    config, and drop the `GIT_CONFIG_COUNT` pairs, which outrank both files. The file
+    lives outside `tmp_path` because tests assert on that directory's contents."""
     for name in [name for name in os.environ if name.startswith("GIT_CONFIG")]:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    global_config = tmp_path_factory.mktemp("gitconfig") / "config"
+    global_config.write_text(f"[core]\n\texcludesFile = {os.devnull}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
 
 

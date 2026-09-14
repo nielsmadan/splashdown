@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import ENV_FILE_NAME, LOCAL_NAME
+from .constants import LOCAL_NAME, newline_for
 from .hook_configs import (
     OVERCOMMIT_CONFIG_NAMES,
     PRE_COMMIT_CONFIG_NAMES,
@@ -99,16 +99,246 @@ class HookDetection:
     candidates: tuple[str, ...] = ()
 
 
-def _ensure_gitignore(cwd: Path) -> None:
-    path = cwd / ".gitignore"
-    existing = path.read_text() if path.exists() else ""
-    present = set(existing.splitlines())
-    additions = [entry for entry in (ENV_FILE_NAME, LOCAL_NAME) if entry not in present]
-    if not additions:
+GITIGNORE_NAME = ".gitignore"
+GITIGNORE_BEGIN = "# >>> splashdown >>>"
+GITIGNORE_END = "# <<< splashdown <<<"
+_GLOB_ESCAPES = str.maketrans({character: f"\\{character}" for character in "\\*?[]"})
+_TRAILING_SPACES = re.compile(r" +$")
+
+
+class _AmbiguousBlock(ValueError):
+    """The managed markers are missing a partner or appear more than once."""
+
+
+@dataclass(frozen=True)
+class _IgnoreMatch:
+    source: str
+    line: int
+    pattern: str
+
+    @property
+    def ignores(self) -> bool:
+        return not self.pattern.startswith("!")
+
+
+def gitignore_rule(relpath: str) -> str:
+    """A `.gitignore` line matching exactly `relpath` next to that file. Anchored
+    with a leading slash so `.env` never also silences a nested `apps/x/.env`, and
+    glob characters are escaped so a literal `[`, `*` or trailing space in a name
+    is matched as itself."""
+    escaped = _TRAILING_SPACES.sub(
+        lambda match: "\\ " * len(match.group(0)), relpath.translate(_GLOB_ESCAPES)
+    )
+    if escaped[:1] in {"#", "!"}:
+        escaped = "\\" + escaped
+    return "/" + escaped
+
+
+def gitignore_rule_path(rule: str) -> str:
+    """The literal path a rule written by `gitignore_rule` covers."""
+    return re.sub(r"\\(.)", r"\1", rule.strip("\r\n").removeprefix("/"))
+
+
+def _check_ignore(cwd: Path, paths: Sequence[str]) -> tuple[dict[str, _IgnoreMatch], str | None]:
+    """Which of `paths` Git already matches, and the rule that matched. The second
+    element explains why Git could not answer at all, leaving the map empty."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-v", "-z", "--stdin"],
+            cwd=cwd,
+            input="\0".join(paths).encode(),
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return {}, "`git` is not available"
+    if result.returncode not in {0, 1}:
+        detail = result.stderr.decode(errors="replace").strip().splitlines()
+        reason = detail[0].removeprefix("fatal: ") if detail else "git check-ignore failed"
+        if reason.startswith("not a git repository"):
+            reason = "not a git repository"
+        return {}, reason
+    fields = result.stdout.decode().split("\0")
+    matches: dict[str, _IgnoreMatch] = {}
+    for index in range(0, len(fields) - 3, 4):
+        source, line, pattern, pathname = fields[index : index + 4]
+        if pattern:
+            matches[pathname] = _IgnoreMatch(source, int(line), pattern)
+    return matches, None
+
+
+def _tracked(cwd: Path, paths: Sequence[str]) -> set[str]:
+    try:
+        result = subprocess.run(
+            ["git", "--literal-pathspecs", "ls-files", "-z", "--", *paths],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {name for name in result.stdout.decode().split("\0") if name}
+
+
+def _block_bounds(lines: list[str]) -> tuple[int, int] | None:
+    starts = [i for i, line in enumerate(lines) if line.strip() == GITIGNORE_BEGIN]
+    ends = [i for i, line in enumerate(lines) if line.strip() == GITIGNORE_END]
+    if not starts and not ends:
+        return None
+    if len(starts) != 1 or len(ends) != 1 or ends[0] < starts[0]:
+        raise _AmbiguousBlock(
+            f"{len(starts)} `{GITIGNORE_BEGIN}` and {len(ends)} `{GITIGNORE_END}` markers"
+        )
+    return starts[0], ends[0]
+
+
+def _gitignore_text(
+    existing: str, lines: list[str], bounds: tuple[int, int] | None, owned: list[str]
+) -> str | None:
+    """The `.gitignore` text whose managed block holds exactly `owned`, or None
+    when the file already says that."""
+    newline = newline_for(existing)
+    current = list(lines)
+    if current and current[-1] == "":
+        current.pop()
+    block = [GITIGNORE_BEGIN, *owned, GITIGNORE_END] if owned else []
+    if bounds is None:
+        separator = [""] if current and current[-1].strip() else []
+        updated = [*current, *separator, *block] if block else current
+    else:
+        start, end = bounds
+        head, tail = current[:start], current[end + 1 :]
+        if not block:
+            if head and not head[-1].strip():
+                head = head[:-1]
+            elif tail and not tail[0].strip():
+                tail = tail[1:]
+        updated = [*head, *block, *tail]
+    text = newline.join([*updated, ""]) if updated else ""
+    return None if text == existing else text
+
+
+def _managed_ignore_lines(
+    cwd: Path, wanted: Sequence[str], lines: list[str], bounds: tuple[int, int] | None
+) -> tuple[list[str], str | None, dict[str, _IgnoreMatch]]:
+    """The rules splashdown must own: one per wanted path that no rule outside the
+    managed block already covers, plus the user negations those rules are about to
+    outrank. Git decides coverage; when it cannot answer, a line already spelling
+    the path out keeps us from writing a duplicate."""
+    matches, unavailable = _check_ignore(cwd, wanted)
+    outside = _lines_outside_block(lines, bounds)
+    owned: list[str] = []
+    outranked: dict[str, _IgnoreMatch] = {}
+    for relpath in wanted:
+        match = matches.get(relpath)
+        if match is not None and not _matched_inside(cwd, match, bounds):
+            if match.ignores:
+                continue
+            outranked[relpath] = match
+        if unavailable is not None and {relpath, gitignore_rule(relpath)} & outside:
+            continue
+        owned.append(gitignore_rule(relpath))
+    return owned, unavailable, outranked
+
+
+def _lines_outside_block(lines: list[str], bounds: tuple[int, int] | None) -> set[str]:
+    if bounds is None:
+        return {line.strip() for line in lines}
+    return {line.strip() for line in [*lines[: bounds[0]], *lines[bounds[1] + 1 :]]}
+
+
+def _matched_inside(cwd: Path, match: _IgnoreMatch, bounds: tuple[int, int] | None) -> bool:
+    """True when the matching rule is one splashdown wrote in the managed block,
+    so it proves nothing about what the user's own rules already cover."""
+    if bounds is None:
+        return False
+    source = cwd / match.source
+    if source.resolve() != (cwd / GITIGNORE_NAME).resolve():
+        return False
+    return bounds[0] < match.line - 1 < bounds[1]
+
+
+def _ensure_gitignore(cwd: Path, paths: Sequence[str]) -> None:
+    """Ensure the checkout ignores its local config and generated env outputs.
+    Adds only rules Git does not already apply, inside the managed block, and
+    leaves every other line of the file untouched."""
+    wanted = list(dict.fromkeys([LOCAL_NAME, *paths]))
+    path = cwd / GITIGNORE_NAME
+    try:
+        existing = read_optional_editable_text(path, root=cwd) or ""
+        lines = existing.split(newline_for(existing)) if existing else []
+        bounds = _block_bounds(lines)
+        owned, unavailable, outranked = _managed_ignore_lines(cwd, wanted, lines, bounds)
+        previous = lines[bounds[0] + 1 : bounds[1]] if bounds else []
+        text = _gitignore_text(existing, lines, bounds, owned)
+        if text is not None:
+            atomic_write_text(path, text, root=cwd, create=True)
+            _report_ignore_change(previous, owned)
+    except _AmbiguousBlock as error:
+        print(
+            f"warning: left {GITIGNORE_NAME} alone: {error}; add "
+            f"{', '.join(gitignore_rule(entry) for entry in wanted)} yourself if needed",
+            file=sys.stderr,
+        )
         return
-    prefix = existing if existing.endswith("\n") or not existing else existing + "\n"
-    path.write_text(prefix + "\n".join(additions) + "\n")
-    print(f"updated .gitignore (+{', '.join(additions)})", file=sys.stderr)
+    except ValueError as error:
+        print(f"warning: left {GITIGNORE_NAME} alone: {error}", file=sys.stderr)
+        return
+    if unavailable is not None:
+        print(
+            f"  note: git could not report ignore status ({unavailable}), "
+            f"so {GITIGNORE_NAME} coverage is unverified",
+            file=sys.stderr,
+        )
+    else:
+        _report_uncovered(cwd, wanted, outranked)
+    for relpath in sorted(_tracked(cwd, wanted)):
+        print(
+            f"  note: {relpath} is tracked by git, so its generated values will show up as "
+            f"tracked changes; an ignore rule does not untrack it "
+            f"(`git rm --cached {relpath}` does)",
+            file=sys.stderr,
+        )
+
+
+def _report_uncovered(
+    cwd: Path,
+    wanted: Sequence[str],
+    outranked: Mapping[str, _IgnoreMatch] | None = None,
+) -> None:
+    """Ask Git which of `wanted` it ends up ignoring and say where that disagrees
+    with the user: a managed rule still loses to a later `!` negation, and it beats
+    an earlier one. Reads only, so callers on the post-checkout path stay safe."""
+    if not wanted:
+        return
+    final, unavailable = _check_ignore(cwd, wanted)
+    if unavailable is not None:
+        return
+    for relpath in wanted:
+        match = final.get(relpath)
+        if match is None or not match.ignores:
+            reason = (
+                f"`{match.pattern}` in {match.source} un-ignores it" if match else "no rule matches"
+            )
+            print(f"  note: {relpath} is still not ignored ({reason})", file=sys.stderr)
+            continue
+        negation = (outranked or {}).get(relpath)
+        if negation is not None:
+            print(
+                f"  note: {relpath} is now ignored by the managed block, which overrides "
+                f"`{negation.pattern}` in {negation.source}",
+                file=sys.stderr,
+            )
+
+
+def _report_ignore_change(previous: list[str], owned: list[str]) -> None:
+    added = [rule for rule in owned if rule not in previous]
+    dropped = [rule for rule in previous if rule not in owned]
+    changes = [f"+{rule}" for rule in added] + [f"-{rule}" for rule in dropped]
+    if changes:
+        print(f"updated {GITIGNORE_NAME} ({', '.join(changes)})", file=sys.stderr)
 
 
 def mise_config_path(cwd: Path) -> Path:
@@ -123,21 +353,29 @@ def mise_config_path(cwd: Path) -> Path:
 
 
 def _revert_gitignore(cwd: Path) -> None:
-    """Inverse of _ensure_gitignore: drop splashdown's exact lines if present.
-    Matches the exact lines _ensure_gitignore writes (no strip), so a user's
-    differently-formatted line (padding, comment) is left alone. Never delete
-    .gitignore — we only ever appended to it."""
-    path = cwd / ".gitignore"
-    if not path.exists():
+    """Drop the managed rules for files teardown removed and keep the rules for
+    files it left behind. Only the managed block is touched: rules the user wrote
+    outside it were never splashdown's to remove."""
+    path = cwd / GITIGNORE_NAME
+    try:
+        existing = read_optional_editable_text(path, root=cwd)
+        if existing is None:
+            return
+        lines = existing.split(newline_for(existing))
+        bounds = _block_bounds(lines)
+        if bounds is None:
+            return
+        previous = lines[bounds[0] + 1 : bounds[1]]
+        kept = [
+            rule for rule in previous if rule.strip() and (cwd / gitignore_rule_path(rule)).exists()
+        ]
+        text = _gitignore_text(existing, lines, bounds, kept)
+    except ValueError as error:
+        print(f"warning: left {GITIGNORE_NAME} alone: {error}", file=sys.stderr)
         return
-    lines = path.read_text().splitlines()
-    managed = {ENV_FILE_NAME, LOCAL_NAME}
-    reported = [entry for entry in (ENV_FILE_NAME, LOCAL_NAME) if entry in lines]
-    kept = [ln for ln in lines if ln not in managed]
-    if len(kept) == len(lines):
-        return
-    path.write_text("\n".join(kept) + ("\n" if kept else ""))
-    print(f"updated .gitignore (-{', '.join(reported)})", file=sys.stderr)
+    if text is not None:
+        atomic_write_text(path, text, root=cwd, create=True)
+        _report_ignore_change(previous, kept)
 
 
 def _git_worktree_root(cwd: Path) -> Path | None:

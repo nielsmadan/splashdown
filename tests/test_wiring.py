@@ -1384,23 +1384,169 @@ def test_scanner_scan_uses_an_explicit_loader_without_reselecting(tmp_path):
     assert sd.Scanner().scan(tmp_path, loader="direnv").loader == "direnv"
 
 
-def test_revert_gitignore_removes_only_our_lines(tmp_path):
+def _git_ignores(cwd: Path, relpath: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", "--", relpath],
+            cwd=cwd,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _tracked_files(cwd: Path) -> list[str]:
+    return subprocess.check_output(["git", "ls-files"], cwd=cwd, text=True).split()
+
+
+def _block(*rules: str) -> str:
+    return "\n".join([sd.hooks.GITIGNORE_BEGIN, *rules, sd.hooks.GITIGNORE_END, ""])
+
+
+def test_gitignore_rule_anchors_and_escapes_a_literal_path():
+    assert sd.hooks.gitignore_rule("splashdown.env") == "/splashdown.env"
+    assert sd.hooks.gitignore_rule("apps/api/.env") == "/apps/api/.env"
+    assert sd.hooks.gitignore_rule("env[a]*?.env") == "/env\\[a\\]\\*\\?.env"
+    assert sd.hooks.gitignore_rule("trailing .env ") == "/trailing .env\\ "
+    assert sd.hooks.gitignore_rule("#hash!.env") == "/\\#hash!.env"
+
+
+def test_gitignore_rule_path_round_trips_an_escaped_rule():
+    for relpath in ("splashdown.env", "apps/api/.env", "env[a]*?.env", "trailing .env "):
+        assert sd.hooks.gitignore_rule_path(sd.hooks.gitignore_rule(relpath)) == relpath
+
+
+def test_ensure_gitignore_writes_the_marked_block(tmp_path):
+    _git_init(tmp_path)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == _block(
+        "/splashdown.local.toml", "/splashdown.env"
+    )
+
+
+def test_ensure_gitignore_is_idempotent(tmp_path):
+    _git_init(tmp_path)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    first = (tmp_path / ".gitignore").read_text()
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == first
+
+
+def test_ensure_gitignore_reuses_an_effective_user_rule(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text("*.env\n")
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == "*.env\n\n" + _block("/splashdown.local.toml")
+
+
+def test_ensure_gitignore_keeps_unrelated_lines_and_comments(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text("# build output\ndist/\nnode_modules\n")
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    text = (tmp_path / ".gitignore").read_text()
+    assert text.startswith("# build output\ndist/\nnode_modules\n")
+    assert text.endswith(_block("/splashdown.local.toml", "/splashdown.env"))
+
+
+def test_ensure_gitignore_escapes_a_destination_holding_glob_characters(tmp_path):
+    _git_init(tmp_path)
+    sd._ensure_gitignore(tmp_path, ["env[dev].env"])
+    assert "/env\\[dev\\].env" in (tmp_path / ".gitignore").read_text()
+    (tmp_path / "env[dev].env").write_text("PORT=1\n")
+    (tmp_path / "envd.env").write_text("PORT=1\n")
+    assert _git_ignores(tmp_path, "env[dev].env")
+    assert not _git_ignores(tmp_path, "envd.env")
+
+
+def test_ensure_gitignore_anchors_a_nested_destination(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / "apps" / "api").mkdir(parents=True)
+    sd._ensure_gitignore(tmp_path, ["apps/api/.env"])
+    assert "/apps/api/.env" in (tmp_path / ".gitignore").read_text()
+    assert _git_ignores(tmp_path, "apps/api/.env")
+    assert not _git_ignores(tmp_path, ".env")
+
+
+def test_ensure_gitignore_leaves_duplicate_markers_alone(tmp_path, capsys):
+    _git_init(tmp_path)
+    original = _block("/splashdown.local.toml") + _block("/splashdown.env")
+    (tmp_path / ".gitignore").write_text(original)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == original
+    assert "left .gitignore alone" in capsys.readouterr().err
+
+
+def test_ensure_gitignore_leaves_an_unclosed_marker_alone(tmp_path, capsys):
+    _git_init(tmp_path)
+    original = sd.hooks.GITIGNORE_BEGIN + "\n/splashdown.env\n"
+    (tmp_path / ".gitignore").write_text(original)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == original
+    assert "left .gitignore alone" in capsys.readouterr().err
+
+
+def test_ensure_gitignore_reports_a_path_a_later_negation_keeps_visible(tmp_path, capsys):
+    _git_init(tmp_path)
+    original = _block("/splashdown.local.toml", "/splashdown.env") + "!/splashdown.env\n"
+    (tmp_path / ".gitignore").write_text(original)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    err = capsys.readouterr().err
+    assert "splashdown.env is still not ignored" in err
+    assert "!/splashdown.env" in err
+    assert (tmp_path / ".gitignore").read_text() == original
+
+
+def test_ensure_gitignore_reports_a_tracked_destination(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / "splashdown.env").write_text("PORT=1\n")
+    subprocess.run(["git", "add", "splashdown.env"], cwd=tmp_path, check=True)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    err = capsys.readouterr().err
+    assert "splashdown.env is tracked by git" in err
+    assert "git rm --cached splashdown.env" in err
+    assert _tracked_files(tmp_path) == ["splashdown.env"]
+
+
+def test_ensure_gitignore_reports_that_git_could_not_answer(tmp_path, capsys):
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert "not a git repository" in capsys.readouterr().err
+    assert (tmp_path / ".gitignore").read_text() == _block(
+        "/splashdown.local.toml", "/splashdown.env"
+    )
+
+
+def test_ensure_gitignore_refuses_a_symlinked_gitignore(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / "elsewhere").write_text("")
+    (tmp_path / ".gitignore").symlink_to(tmp_path / "elsewhere")
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert "left .gitignore alone" in capsys.readouterr().err
+    assert (tmp_path / "elsewhere").read_text() == ""
+
+
+def test_revert_gitignore_removes_only_the_managed_block(tmp_path):
     (tmp_path / ".gitignore").write_text(
-        "node_modules\nsplashdown.env\nsplashdown.local.toml\n*.log\n"
+        "node_modules\nsplashdown.env\n*.log\n\n"
+        + _block("/splashdown.local.toml", "/splashdown.env")
     )
     sd._revert_gitignore(tmp_path)
     text = (tmp_path / ".gitignore").read_text()
-    assert "node_modules" in text
-    assert "*.log" in text
-    assert "splashdown.env" not in text
-    assert "splashdown.local.toml" not in text
+    assert text == "node_modules\nsplashdown.env\n*.log\n"
+
+
+def test_revert_gitignore_keeps_the_rule_for_a_retained_file(tmp_path):
+    (tmp_path / ".gitignore").write_text(_block("/splashdown.local.toml", "/splashdown.env"))
+    (tmp_path / "splashdown.local.toml").write_text("[settings]\nprefix_match = false\n")
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == _block("/splashdown.local.toml")
 
 
 def test_revert_gitignore_keeps_file(tmp_path):
-    (tmp_path / ".gitignore").write_text("splashdown.env\nsplashdown.local.toml\n")
+    (tmp_path / ".gitignore").write_text(_block("/splashdown.local.toml", "/splashdown.env"))
     sd._revert_gitignore(tmp_path)
     # File stays even when it ends up empty (we never own .gitignore wholesale).
     assert (tmp_path / ".gitignore").exists()
+    assert (tmp_path / ".gitignore").read_text() == ""
 
 
 def test_revert_gitignore_noop_when_absent(tmp_path):
@@ -1408,13 +1554,11 @@ def test_revert_gitignore_noop_when_absent(tmp_path):
     assert not (tmp_path / ".gitignore").exists()
 
 
-def test_revert_gitignore_exact_match_preserves_padded_line(tmp_path):
-    # Only the exact line splashdown writes is removed; a user's padded variant stays.
-    (tmp_path / ".gitignore").write_text("  splashdown.env  \nsplashdown.env\n")
+def test_revert_gitignore_leaves_an_unmarked_file_alone(tmp_path):
+    original = "splashdown.env\nsplashdown.local.toml\n"
+    (tmp_path / ".gitignore").write_text(original)
     sd._revert_gitignore(tmp_path)
-    text = (tmp_path / ".gitignore").read_text()
-    assert "  splashdown.env  " in text
-    assert "splashdown.env\n" not in text.replace("  splashdown.env  ", "")
+    assert (tmp_path / ".gitignore").read_text() == original
 
 
 def test_doctor_runs_compose_check_alongside_the_framework(tmp_path, capsys):
@@ -1950,3 +2094,121 @@ def test_wire_husky_is_idempotent(tmp_path, capsys):
 
     assert sd._wire_post_checkout_husky(tmp_path) is True
     assert capsys.readouterr().err == ""
+
+
+def _tracked_notes(err: str) -> list[str]:
+    return [
+        line.split("note: ")[1].split(" is tracked by git")[0]
+        for line in err.splitlines()
+        if " is tracked by git" in line
+    ]
+
+
+def test_ensure_gitignore_reports_only_the_tracked_destination_itself(tmp_path, capsys):
+    _git_init(tmp_path)
+    for name in ("env[dev].env", "envd.env"):
+        (tmp_path / name).write_text("PORT=1\n")
+    subprocess.run(
+        ["git", "--literal-pathspecs", "add", "--", "env[dev].env", "envd.env"],
+        cwd=tmp_path,
+        check=True,
+    )
+    sd._ensure_gitignore(tmp_path, ["env[dev].env"])
+    assert _tracked_notes(capsys.readouterr().err) == ["env[dev].env"]
+
+
+def test_ensure_gitignore_reports_a_tracked_destination_named_like_pathspec_magic(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / ":weird.env").write_text("PORT=1\n")
+    subprocess.run(
+        ["git", "--literal-pathspecs", "add", "--", ":weird.env"], cwd=tmp_path, check=True
+    )
+    sd._ensure_gitignore(tmp_path, [":weird.env"])
+    assert _tracked_notes(capsys.readouterr().err) == [":weird.env"]
+
+
+def test_ensure_gitignore_reports_overriding_a_user_negation(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text("*.env\n!important.env\n")
+    sd._ensure_gitignore(tmp_path, ["important.env"])
+    err = capsys.readouterr().err
+    assert "important.env is now ignored by the managed block" in err
+    assert "overrides `!important.env` in .gitignore" in err
+    assert _git_ignores(tmp_path, "important.env")
+
+
+def test_ensure_gitignore_reuses_a_rule_from_the_repository_exclude_file(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".git" / "info").mkdir(exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("splashdown.env\n")
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == _block("/splashdown.local.toml")
+
+
+def test_ensure_gitignore_reuses_a_rule_from_a_configured_excludes_file(tmp_path):
+    _git_init(tmp_path)
+    excludes = tmp_path / "personal-excludes"
+    excludes.write_text("splashdown.env\n")
+    subprocess.run(["git", "config", "core.excludesFile", str(excludes)], cwd=tmp_path, check=True)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == _block("/splashdown.local.toml")
+
+
+def test_ensure_gitignore_keeps_crlf_line_endings(tmp_path):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_bytes(b"# build output\r\ndist/\r\n")
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    raw = (tmp_path / ".gitignore").read_bytes()
+    assert b"\n" not in raw.replace(b"\r\n", b"")
+    assert raw.startswith(b"# build output\r\ndist/\r\n")
+    assert raw.endswith(b"/splashdown.env\r\n" + sd.hooks.GITIGNORE_END.encode() + b"\r\n")
+
+
+def test_revert_gitignore_drops_only_the_separator_blank_line(tmp_path):
+    (tmp_path / ".gitignore").write_text("dist/\n\n\n" + _block("/splashdown.env"))
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == "dist/\n\n"
+
+
+def test_revert_gitignore_removes_a_block_between_user_rules(tmp_path):
+    (tmp_path / ".gitignore").write_text(
+        "dist/\n\n" + _block("/splashdown.local.toml", "/splashdown.env") + "\n*.log\n"
+    )
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == "dist/\n\n*.log\n"
+
+
+def test_revert_gitignore_leaves_duplicate_markers_alone(tmp_path, capsys):
+    original = _block("/splashdown.local.toml") + _block("/splashdown.env")
+    (tmp_path / ".gitignore").write_text(original)
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == original
+    assert "left .gitignore alone" in capsys.readouterr().err
+
+
+def test_revert_gitignore_leaves_an_unclosed_marker_alone(tmp_path, capsys):
+    original = sd.hooks.GITIGNORE_BEGIN + "\n/splashdown.env\n"
+    (tmp_path / ".gitignore").write_text(original)
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == original
+    assert "left .gitignore alone" in capsys.readouterr().err
+
+
+def test_revert_gitignore_leaves_a_reversed_marker_pair_alone(tmp_path, capsys):
+    original = f"{sd.hooks.GITIGNORE_END}\n/splashdown.env\n{sd.hooks.GITIGNORE_BEGIN}\n"
+    (tmp_path / ".gitignore").write_text(original)
+    sd._revert_gitignore(tmp_path)
+    assert (tmp_path / ".gitignore").read_text() == original
+    assert "left .gitignore alone" in capsys.readouterr().err
+
+
+def test_ensure_gitignore_ignores_a_developers_personal_git_ignore_file(tmp_path, monkeypatch):
+    xdg = tmp_path / "personal-xdg"
+    (xdg / "git").mkdir(parents=True)
+    (xdg / "git" / "ignore").write_text("*.env\n")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    _git_init(tmp_path)
+    sd._ensure_gitignore(tmp_path, ["splashdown.env"])
+    assert (tmp_path / ".gitignore").read_text() == _block(
+        "/splashdown.local.toml", "/splashdown.env"
+    )

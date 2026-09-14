@@ -129,7 +129,7 @@ finds. With no scheme or several, the run stops before touching a simulator and 
 `splash deinit` surgically removes checkout-local init state plus state created by sync and device runs. It
 destroys simulator and emulator instances owned by this checkout, releases its registry entries,
 clears splashdown-managed keys from every writer destination and deletes one left with nothing else,
-and unwires the loader, `.gitignore` entries, and managed agent instructions. The shared
+and unwires the loader and managed agent instructions. From its `.gitignore` block it removes the rules for files it deleted and keeps the rules for files it left behind, such as a `splashdown.local.toml` you edited. The shared
 post-checkout integration and clone-wide bootstrap trust remain because linked worktrees may still
 use them. Deinit clears only this checkout's bootstrap completion.
 It then removes `splashdown.toml` and an untouched `splashdown.local.toml` skeleton.

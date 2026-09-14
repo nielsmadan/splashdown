@@ -50,9 +50,14 @@ from the root. Init prints the `splash --cwd PATH sync` command to run manually 
 Splashdown scans the filesystem, detects your workspace layout and framework, and does four things:
 
 1. Writes `splashdown.toml`, the committed recipe describing this project's per-checkout resources.
-2. Writes `splashdown.local.toml`, a gitignored per-checkout file (empty to start).
+2. Writes `splashdown.local.toml`, a per-checkout file seeded with commented examples, and makes sure Git ignores it.
 3. Wires your env loader (`mise.toml`, `.envrc`, or `devbox.json`) to source `splashdown.env`, and writes the project's own post-checkout hook configuration for Husky, Lefthook, pre-commit, prek, or simple-git-hooks. Overcommit and a custom `core.hooksPath` are left untouched with manual forwarding instructions.
 4. Adds managed framework and port guidance to an existing root `AGENTS.md` or independent `CLAUDE.md`, unless another tool generates that file.
+
+Init asks Git which of those files are already ignored and adds only the rules that are missing,
+inside a marked block at the end of `.gitignore`. An existing rule of your own such as `*.env`
+counts, so nothing redundant is added, and your other lines and comments are never touched. If you
+point `--env-file` at another file, that file gets the rule and `splashdown.env` does not.
 
 Init writes configuration only. It allocates nothing, records no trust, and installs nothing on
 your machine, so you can read and edit the generated recipe before anything else happens.
@@ -66,7 +71,7 @@ scanning project…
   shell loader → mise (detected mise.toml)
 wrote splashdown.toml
 wrote splashdown.local.toml (skeleton)
-updated .gitignore (+splashdown.env, splashdown.local.toml)
+updated .gitignore (+/splashdown.local.toml, +/splashdown.env)
 updated mise.toml (+_.file = "splashdown.env")
 note: the local post-checkout hook is installed by `splash trust`
 changed: splashdown.toml, splashdown.local.toml, mise.toml
@@ -104,7 +109,7 @@ Bare `splash` is a sync. It allocates this checkout's resources and writes `spla
 | File | Committed | Purpose |
 | --- | --- | --- |
 | `splashdown.toml` | Yes | The recipe: resources, apps, and (for mobile) device targets |
-| `splashdown.local.toml` | No | Per-checkout additions (gitignored) |
+| `splashdown.local.toml` | No | Per-checkout additions, seeded with commented examples (gitignored) |
 | `splashdown.env` | No | Generated `KEY=VALUE` file: splashdown rewrites the keys your recipe declares and leaves anything else in it alone (gitignored) |
 | loader config | Yes | Gains one line that sources `splashdown.env`, and is created if absent |
 | `AGENTS.md` / `CLAUDE.md` | Yes | Existing files gain a sentinel-wrapped block telling coding agents which port variables, env destination, and launch commands to use |

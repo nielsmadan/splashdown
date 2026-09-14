@@ -158,9 +158,10 @@ and to the `Settings` dataclass.
   machine-specific device declarations that differ between machines and worktrees — it is
   not meant to be shared. If `.gitignore` is missing the entry, the file is tracked, every
   fresh clone inherits it, and `splash target add` mutating it pollutes `git status`
-  permanently. The seeded skeleton's first line announces it is gitignored
-  (`src/splashdown/recipe.py`), but nothing re-enforces the ignore on every run — verify
-  the entry exists. (Matches README "Gotchas".)
+  permanently. `init` ensures the rule in its `.gitignore` block unless one of the user's own
+  rules already covers the file, and the seeded skeleton announces the file is gitignored
+  (`src/splashdown/recipe.py`). Sync does not re-enforce it, because it runs from the
+  post-checkout hook and must not dirty a fresh clone. (Matches README "Gotchas".)
 - **Add-only, by hard rule.** A local variant whose name duplicates a recipe variant is an
   error in three places — at write time in `target_add`
   (`src/splashdown/targets.py`), at read time in `merged_targets`

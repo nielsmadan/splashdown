@@ -925,6 +925,12 @@ LOCAL_SKELETON = """\
 # Recipe-declared variants don't go here; use this only to ADD variants on top
 # of what the recipe exposes (no overrides — pick a distinct variant name).
 #
+# [settings] and [targets.<type>.<variant>] are the only sections accepted here.
+# Target fields by type:
+#   simulator: model, ios, name
+#   emulator:  device, image, name
+#   device:    id, name, platform
+#
 # Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
 #
 # [targets.simulator.repro-bug]

@@ -43,7 +43,8 @@ reconciles target state through the platform adapters, `launching.py` dispatches
 `wiring.py` defines framework checks,
 `doctor.py` orchestrates them, and `agentdocs.py` derives and
 synchronizes sentinel-managed `AGENTS.md`/`CLAUDE.md` guidance during init and deinit.
-`hooks.py` owns git-hook detection, gitignore, and mise-directive wiring and is consumed directly
+`hooks.py` owns git-hook detection, the marked `.gitignore` block for local and generated files,
+and mise-directive wiring, and is consumed directly
 by `loaders.py`, `wiring.py`, and `commands.py`; `hook_configs.py` sits below it and holds the
 per-manager post-checkout configuration editors. `cli.py`/`commands.py` are the entry + orchestration.
 `bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.

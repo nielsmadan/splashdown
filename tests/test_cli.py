@@ -1150,7 +1150,7 @@ def test_init_accepts_the_json_output_format(tmp_path, capsys):
 def test_init_reports_an_oserror_as_an_error_exit(tmp_path, capsys, monkeypatch):
     (tmp_path / "vite.config.ts").write_text("export default {}")
 
-    def boom(_cwd):
+    def boom(_cwd, _paths):
         raise PermissionError(13, "Permission denied", ".gitignore")
 
     monkeypatch.setattr(sd.commands, "_ensure_gitignore", boom)

@@ -102,10 +102,10 @@ depends on.
 empty, or Windows-absolute path fails in the same way at either entry point. The default is
 `ENV_FILE_NAME`. A non-default choice is recorded as `[project] env_file` through
 `_resolve_init_project_metadata`, and `Recipe.env_file` is the single reader. Init prints the
-destination, the keys that will land there (`_default_destination_keys`), the declared keys the
-file already assigns (`existing_managed_keys`, values never disclosed), and a warning when the
-destination is not gitignored. `existing_managed_keys` raises on an ambiguous assignment before
-init writes anything. There is no file-presence-based routing: finding a `.env` never selects it.
+destination, the keys that will land there (`_default_destination_keys`), and the declared keys the
+file already assigns (`existing_managed_keys`, values never disclosed). Ignore coverage for the
+destination is ensured rather than warned about; see **Ignore coverage** below.
+`existing_managed_keys` raises on an ambiguous assignment before init writes anything. There is no file-presence-based routing: finding a `.env` never selects it.
 
 **Native iOS scheme.** Init neither discovers nor records one, and never runs `xcodebuild`, so
 a native iOS project initializes with Xcode missing or broken. `[project.ios] scheme` stays a
@@ -123,8 +123,54 @@ and parsed in memory through the same
 strict `Recipe` validator used by provisioning before it is written. This catches scanner/profile
 drift, invalid app resource references, resource/writer/template/schema errors, and unknown
 fields before init mutates the recipe or proceeds to loader/hook wiring. A `splashdown.local.toml` skeleton (`LOCAL_SKELETON`)
-is written if absent after the recipe passes validation. `_ensure_gitignore` (`hooks.py`) adds
-`splashdown.env` and `splashdown.local.toml` to `.gitignore`.
+is written if absent after the recipe passes validation.
+
+**Ignore coverage.** `_ensure_gitignore(cwd, paths)` (`hooks.py`) covers
+`splashdown.local.toml` plus every file destination the recipe init just wrote delivers to, which
+`env_output_paths` (`provisioning.py`) derives from `Recipe.env_file` and each resource's
+`writer`. A recipe whose resources all route elsewhere yields no `splashdown.env` rule, so a
+`--env-file .env` project never gets an entry for a file it will not create.
+
+Coverage is decided by Git, not by comparing literal lines: `git check-ignore --no-index -v -z
+--stdin` reports the rule that matches each path, so an existing `*.env` suppresses a redundant
+addition and a user's `!` negation is recognized as a non-match. A match whose source is this
+`.gitignore` and whose line falls inside splashdown's own block does not count as pre-existing
+coverage, so repeated runs keep the rules they wrote. Rules splashdown adds live between the
+accepted markers:
+
+```gitignore
+# >>> splashdown >>>
+/splashdown.local.toml
+/splashdown.env
+# <<< splashdown <<<
+```
+
+Every rule is anchored with a leading `/` so `.env` never silences a nested `apps/api/.env`, and
+`gitignore_rule` escapes `\`, `*`, `?`, `[`, `]`, trailing spaces, and a leading `#`/`!` so a
+filename holding glob characters is matched literally. Writes go through `atomic_write_text` with
+the checkout as root, the file's existing line ending is preserved, and an unchanged block writes
+nothing. Lines outside the block are never read as ownership and never edited.
+
+Duplicate or unpaired markers raise `_AmbiguousBlock`: splashdown leaves the file alone and prints
+the rules to add by hand rather than claiming a block it cannot delimit. When Git cannot answer at
+all (no repository, no `git`, a failing command) the reason is printed, the rules are added anyway
+unless a line already spells the path out, and the report says coverage is unverified. A tracked
+destination is reported with `git rm --cached` as the user's own next step; splashdown never
+changes Git tracking and never claims an ignore rule untracks a file. That lookup runs
+`git --literal-pathspecs ls-files`, so a destination holding `*`, `[`, `]` or a leading `:` is
+matched as the name it is rather than as a pathspec.
+
+`_report_uncovered` then asks Git once more and speaks in both directions: a destination a later
+`!` negation keeps visible is named together with the rule that un-ignores it, and a destination
+the managed block re-ignores is named together with the user's negation it now outranks, so an
+explicit un-ignore is never reversed silently.
+
+Because init regenerates the recipe from a scan, the per-resource `writer` case reaches
+`_ensure_gitignore` only through `env_output_paths`. Sync never writes `.gitignore`, since it runs
+from the post-checkout hook and must not dirty a fresh clone, but it does report: after
+`write_outputs`, `_provision_locked` (`commands.py`) hands `_report_uncovered` the destinations
+that run actually wrote, so a hand-added `writer = "envfile=apps/api/.env"` no rule covers is named
+the first time values land in it. A sync that wrote nothing asks Git nothing.
 
 **Loader wiring.** `Loader.plan(cwd, env_file)` (`loaders.py`) parses and validates the edit and returns a
 `WirePlan` without writing; `cmd_init` builds it before the recipe is written, so a malformed
@@ -363,9 +409,13 @@ ordinary bare `splash` / `splash sync` run, or the post-checkout hook on the nex
 **Teardown.** `cmd_deinit` (`commands.py`) reverses the owned parts of init without
 blindly restoring user files: it destroys registered sims/AVDs that splashdown owns, releases
 all registry rows, removes `splashdown.env`, clears only splashdown keys from user-owned writer
-destinations, unwires the configured loader, reverts managed gitignore
-and agent-guidance entries, removes an untouched local skeleton, and finally deletes the recipe.
-A modified `splashdown.local.toml` is preserved, loader cleanup degrades safely when the recipe
+destinations, unwires the configured loader, reverts managed
+agent-guidance entries, removes an untouched local skeleton, and finally deletes the recipe.
+`_revert_gitignore` runs last, after the destinations and the local file are settled: it keeps
+every managed rule whose file still exists and drops the rest, so a preserved
+`splashdown.local.toml` or a shared `.env` that kept user content keeps its rule. Rules outside
+the markers were never splashdown's to remove; removing the block drops the single blank line that
+separated it from them and leaves every other line, blank ones included, where it was. A modified `splashdown.local.toml` is preserved, loader cleanup degrades safely when the recipe
 cannot be parsed, and framework edits made by `doctor --fix` are intentionally outside deinit's
 scope because they have no reversible sentinel/original snapshot. The shared hook and clone-wide
 bootstrap trust remain for sibling worktrees; only this checkout's bootstrap completion is cleared.
@@ -386,7 +436,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - `_print_env_destination` / `_persisted_env_file` / `_default_destination_keys`:
   `src/splashdown/commands.py`; `validate_env_file_option` / `Recipe.env_file`:
   `src/splashdown/recipe.py`.
-- `_ensure_gitignore` / `mise_config_path`: `src/splashdown/hooks.py`.
+- `_ensure_gitignore` / `_revert_gitignore` / `gitignore_rule` / `mise_config_path`:
+  `src/splashdown/hooks.py`; `env_output_paths`: `src/splashdown/provisioning.py`.
 - `Scanner.scan`: `src/splashdown/scanner.py`; `ProjectInventory` / `AppInventory`:
   `src/splashdown/inventory.py`.
 - `_detect_workspace` / `_enumerate_apps` / `select_loader` / `LoaderSelection`:
@@ -411,7 +462,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - **`--env-file PATH`** — checkout-relative destination for generated values
   (default `splashdown.env`).
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
-  (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
+  (gitignored, skeleton), `.gitignore` (a marked block holding only the rules Git does not
+  already apply to `splashdown.local.toml` and the configured env destination), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), the project-owned hook target
   (`lefthook.yml` / `.husky/post-checkout` / `.pre-commit-config.yaml` / `prek.toml` /
   `.simple-git-hooks.json` or the `package.json` block), and managed blocks in existing root `AGENTS.md` /

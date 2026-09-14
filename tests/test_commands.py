@@ -1471,34 +1471,63 @@ def test_init_rejects_an_ambiguous_duplicate_key_in_the_destination(tmp_path):
     assert not (tmp_path / "splashdown.toml").exists()
 
 
-def test_init_warns_when_the_destination_is_tracked(tmp_path, capsys):
+def test_init_ignores_a_custom_destination_and_not_the_default(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    text = (tmp_path / ".gitignore").read_text()
+    assert "/.env" in text
+    assert "splashdown.env" not in text
+    assert "updated .gitignore (+/splashdown.local.toml, +/.env)" in capsys.readouterr().err
+
+
+def test_init_reuses_an_effective_rule_for_the_destination(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("*.env\n")
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    text = (tmp_path / ".gitignore").read_text()
+    assert text.count(".env") == 1
+    assert "/.env" not in text
+    assert "/splashdown.local.toml" in text
+
+
+def test_init_is_idempotent_across_repeated_runs(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+    first = (tmp_path / ".gitignore").read_text()
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env", overwrite=True))
+
+    assert (tmp_path / ".gitignore").read_text() == first
+
+
+def test_init_reports_a_tracked_destination_without_untracking_it(tmp_path, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".env").write_text("")
+    subprocess.run(["git", "add", ".env"], cwd=tmp_path, check=True)
     (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
 
     sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
 
-    assert "not gitignored" in capsys.readouterr().err
+    assert ".env is tracked by git" in capsys.readouterr().err
+    tracked = subprocess.check_output(["git", "ls-files"], cwd=tmp_path, text=True).split()
+    assert tracked == [".env"]
 
 
-def test_init_does_not_warn_when_the_destination_is_ignored(tmp_path, capsys):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".gitignore").write_text(".env\n")
-    (tmp_path / ".env").write_text("")
+def test_init_reports_when_git_cannot_answer(tmp_path, capsys):
     (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
 
     sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
 
-    assert "not gitignored" not in capsys.readouterr().err
-
-
-def test_init_does_not_warn_outside_a_git_repo(tmp_path, capsys):
-    # No repo → `git check-ignore` exits 128; we must not nag spuriously.
-    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
-
-    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
-
-    assert "not gitignored" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "git could not report ignore status (not a git repository)" in err
+    assert "/.env" in (tmp_path / ".gitignore").read_text()
 
 
 def test_init_loader_none_configures_the_destination_and_wires_nothing(tmp_path, capsys):
@@ -2005,7 +2034,38 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
     assert hook.exists()
     gi = tmp_path / ".gitignore"
     assert gi.exists()
-    assert "splashdown.env" not in gi.read_text()
+    assert gi.read_text() == ""
+
+
+def test_deinit_keeps_user_rules_and_the_rule_for_a_retained_local_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    registry = sd.Registry()
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text("node_modules\n*.log\n")
+    sd.cmd_init(tmp_path)
+    (tmp_path / "splashdown.local.toml").write_text("[settings]\nprefix_match = false\n")
+
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+
+    assert (tmp_path / ".gitignore").read_text() == (
+        "node_modules\n*.log\n\n"
+        "# >>> splashdown >>>\n/splashdown.local.toml\n# <<< splashdown <<<\n"
+    )
+
+
+def test_deinit_keeps_the_rule_for_a_destination_it_did_not_delete(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _git_init(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
+    (tmp_path / ".env").write_text("DATABASE_URL=postgres://local\n")
+    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+    sd.main(["--cwd", str(tmp_path)])
+
+    sd.main(["--cwd", str(tmp_path), "deinit"])
+
+    assert (tmp_path / ".env").exists()
+    assert "/.env" in (tmp_path / ".gitignore").read_text()
+    assert "/splashdown.local.toml" not in (tmp_path / ".gitignore").read_text()
 
 
 def test_deinit_deletes_generated_env(tmp_path, monkeypatch):
@@ -2036,15 +2096,17 @@ def test_deinit_removes_a_destination_holding_undeclared_splashdown_keys(tmp_pat
     assert not (tmp_path / "splashdown.env").exists()
 
 
-def test_init_does_not_warn_about_a_default_destination_it_gitignores(tmp_path, capsys):
+def test_init_ignores_the_default_destination(tmp_path, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "package.json").write_text('{"dependencies":{"next":"16"}}')
 
     sd.cmd_init(tmp_path)
 
     err = capsys.readouterr().err
-    assert "not gitignored" not in err
-    assert "updated .gitignore (+splashdown.env" in err
+    assert "updated .gitignore (+/splashdown.local.toml, +/splashdown.env)" in err
+    assert (tmp_path / ".gitignore").read_text() == (
+        "# >>> splashdown >>>\n/splashdown.local.toml\n/splashdown.env\n# <<< splashdown <<<\n"
+    )
 
 
 def test_deinit_keeps_unrelated_content_in_a_shared_destination(tmp_path, monkeypatch):
@@ -2518,7 +2580,7 @@ def test_cmd_init_reports_completed_effects_when_an_effect_raises_oserror(
 ):
     (tmp_path / "vite.config.ts").write_text("export default {}")
 
-    def boom(_cwd):
+    def boom(_cwd, _paths):
         raise PermissionError(13, "Permission denied", ".gitignore")
 
     monkeypatch.setattr(sd.commands, "_ensure_gitignore", boom)
@@ -2738,3 +2800,70 @@ def test_init_reports_the_file_a_failed_wiring_autofix_rewrote(tmp_path, capsys)
 
     assert "halfway: still not wired" in capsys.readouterr().err
     assert report.changed == ["wired.conf"]
+
+
+_WRITER_RECIPE = (
+    '[project]\nloader = "none"\n\n'
+    '[resources.PORT]\ntype = "port"\nrange = [19100, 19110]\n\n'
+    '[resources.API_TOKEN]\ntype = "uuid"\nwriter = "envfile=apps/api/.env"\n'
+)
+
+
+def _sync_with_writer_recipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "splashdown.toml").write_text(_WRITER_RECIPE)
+    return sd.main(["--cwd", str(tmp_path)])
+
+
+def test_sync_reports_a_hand_added_destination_that_stays_visible(tmp_path, monkeypatch, capsys):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text(
+        f"{sd.hooks.GITIGNORE_BEGIN}\n/splashdown.local.toml\n/splashdown.env\n"
+        f"{sd.hooks.GITIGNORE_END}\n"
+    )
+
+    assert _sync_with_writer_recipe(tmp_path, monkeypatch) == 0
+
+    err = capsys.readouterr().err
+    assert (tmp_path / "apps" / "api" / ".env").read_text().startswith("API_TOKEN=")
+    assert "apps/api/.env is still not ignored (no rule matches)" in err
+
+
+def test_sync_leaves_gitignore_untouched_while_reporting(tmp_path, monkeypatch, capsys):
+    _git_init(tmp_path)
+    original = (
+        f"{sd.hooks.GITIGNORE_BEGIN}\n/splashdown.local.toml\n/splashdown.env\n"
+        f"{sd.hooks.GITIGNORE_END}\n"
+    )
+    (tmp_path / ".gitignore").write_text(original)
+
+    _sync_with_writer_recipe(tmp_path, monkeypatch)
+
+    capsys.readouterr()
+    assert (tmp_path / ".gitignore").read_text() == original
+
+
+def test_sync_says_nothing_when_every_destination_is_ignored(tmp_path, monkeypatch, capsys):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text(
+        f"{sd.hooks.GITIGNORE_BEGIN}\n/splashdown.local.toml\n/splashdown.env\n"
+        f"{sd.hooks.GITIGNORE_END}\n/apps/api/.env\n"
+    )
+
+    assert _sync_with_writer_recipe(tmp_path, monkeypatch) == 0
+
+    assert "is still not ignored" not in capsys.readouterr().err
+
+
+def test_sync_reports_the_visible_destination_once_per_write(tmp_path, monkeypatch, capsys):
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text(
+        f"{sd.hooks.GITIGNORE_BEGIN}\n/splashdown.local.toml\n/splashdown.env\n"
+        f"{sd.hooks.GITIGNORE_END}\n"
+    )
+
+    assert _sync_with_writer_recipe(tmp_path, monkeypatch) == 0
+    assert "apps/api/.env is still not ignored" in capsys.readouterr().err
+
+    assert sd.main(["--cwd", str(tmp_path)]) == 0
+    assert "is still not ignored" not in capsys.readouterr().err

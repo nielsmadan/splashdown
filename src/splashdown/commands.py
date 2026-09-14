@@ -4,7 +4,6 @@ import contextlib
 import json
 import os
 import stat
-import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -42,6 +41,7 @@ from .hooks import (
     _nested_project,
     _nested_worktree,
     _print_nested_checkout_hook_note,
+    _report_uncovered,
     _revert_gitignore,
 )
 from .inventory import ProjectInventory
@@ -50,12 +50,14 @@ from .provisioning import (
     DEFAULT_WRITER,
     WriterResult,
     clear_writer_destinations,
+    env_output_paths,
     existing_managed_keys,
     provision,
     resolve_writer,
     run_bootstrap,
     run_setup,
     write_outputs,
+    writer_output_path,
 )
 from .recipe import (
     LOCAL_SKELETON,
@@ -181,22 +183,6 @@ def cmd_completion(shell: str | None) -> int:
     return 0
 
 
-def _path_git_ignored(cwd: Path, name: str) -> bool:
-    """True if `name` is gitignored in `cwd`. Best-effort: any git error counts
-    as ignored so we never nag spuriously (e.g. outside a repo)."""
-    try:
-        r = subprocess.run(
-            ["git", "check-ignore", "-q", "--", name],
-            cwd=cwd,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return True
-    # Exit 1 is the only result that confirms the path is not ignored.
-    return r.returncode != 1
-
-
 def _persisted_env_file(env_file: str) -> str | None:
     """The recipe records a destination only when it is not the default."""
     return None if env_file == ENV_FILE_NAME else env_file
@@ -213,13 +199,6 @@ def _print_env_destination(cwd: Path, env_file: str, keys: list[str], loader: st
         print(
             f"  {env_file} already sets {', '.join(present)}; "
             "`splash sync` will replace those values",
-            file=sys.stderr,
-        )
-    # `_ensure_gitignore` adds a rule for the default destination moments later.
-    if _persisted_env_file(env_file) is not None and not _path_git_ignored(cwd, env_file):
-        print(
-            f"  warning: {env_file} is not gitignored — per-checkout values "
-            "will show up as local changes",
             file=sys.stderr,
         )
     if loader == "none":
@@ -249,7 +228,7 @@ def _write_minimal_monorepo_recipe(
     rendered = render_scanned_recipe(
         inv, {}, {}, cwd, project_metadata={"env_file": persisted} if persisted else None
     )
-    Recipe.parse(rendered, recipe_path)
+    recipe = Recipe.parse(rendered, recipe_path)
     _write_init_recipe(recipe_path, rendered)
     report.changed.append(RECIPE_NAME)
     print(f"wrote {RECIPE_NAME} (structure only)", file=sys.stderr)
@@ -262,7 +241,7 @@ def _write_minimal_monorepo_recipe(
     if _create_local_skeleton(cwd):
         report.changed.append(LOCAL_NAME)
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
-    _ensure_gitignore(cwd)
+    _ensure_gitignore(cwd, env_output_paths(recipe))
     _commit_loader_plan(plan, report)
     _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
     sync_agent_guidance(cwd, Recipe.load(recipe_path))
@@ -529,7 +508,7 @@ def cmd_init(
             merged_targets,
             project_metadata,
         )
-        Recipe.parse(rendered, recipe_path)
+        recipe = Recipe.parse(rendered, recipe_path)
         _write_init_recipe(recipe_path, rendered)
         report.changed.append(RECIPE_NAME)
         print(f"wrote {RECIPE_NAME}", file=sys.stderr)
@@ -539,7 +518,7 @@ def cmd_init(
                 report.changed.append(LOCAL_NAME)
                 print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
 
-            _ensure_gitignore(cwd)
+            _ensure_gitignore(cwd, env_output_paths(recipe))
             _commit_loader_plan(wire_plan, report)
             _wire_init_checkout_hook(cwd, enabled=not nested)
             _print_electron_isolation_pointer(inv)
@@ -674,7 +653,6 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
     if loader is not None:
         loader.unwire(cwd, recipe.env_file if recipe is not None else ENV_FILE_NAME)
 
-    _revert_gitignore(cwd)
     remove_agent_guidance(cwd)
 
     # Only remove splashdown.local.toml when it's still the untouched skeleton.
@@ -685,6 +663,10 @@ def _cmd_deinit_locked(cwd: Path, registry: Registry, dirs: GitDirs | None) -> i
             print(f"removed {LOCAL_NAME}", file=sys.stderr)
         else:
             print(f"note: {LOCAL_NAME} was modified — left in place", file=sys.stderr)
+
+    # After the destinations and the local file, so the surviving rules are the
+    # ones teardown still needs.
+    _revert_gitignore(cwd)
 
     recipe_path = cwd / RECIPE_NAME
     if recipe_path.exists():
@@ -727,6 +709,19 @@ def _load_required_recipe(cwd: Path) -> Recipe:
     return Recipe.load(path)
 
 
+def _written_destinations(writers: list[WriterResult], *, local: bool) -> list[str]:
+    """The files this sync just put values in. Coverage is reported when new
+    content lands rather than on every checkout, so the post-checkout hook spends
+    nothing on a sync that wrote nothing."""
+    names = [LOCAL_NAME] if local else []
+    names += [
+        path
+        for result in writers
+        if result.changed and (path := writer_output_path(result.writer)) is not None
+    ]
+    return list(dict.fromkeys(names))
+
+
 def _provision_locked(
     cwd: Path,
     registry: Registry,
@@ -744,8 +739,9 @@ def _provision_locked(
             reprovision=reprovision,
             recipe=recipe,
         )
-        _create_local_skeleton(cwd)
+        created_local = _create_local_skeleton(cwd)
         writers = write_outputs(cwd, recipe, resolved, known_keys=set(before))
+        _report_uncovered(cwd, _written_destinations(writers, local=created_local))
     setup_messages = run_setup(
         cwd,
         recipe,

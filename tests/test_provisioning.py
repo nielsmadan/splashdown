@@ -1280,3 +1280,48 @@ def test_deinit_leaves_a_destination_with_an_unterminated_quote_alone(checkout):
 
     assert changed == [(sd.ENV_FILE_NAME, "unparsed")]
     assert target.read_text() == original
+
+
+def _recipe(tmp_path, body: str) -> sd.Recipe:
+    return sd.Recipe.parse(body, tmp_path / sd.RECIPE_NAME)
+
+
+def test_env_output_paths_defaults_to_the_configured_destination(tmp_path):
+    recipe = _recipe(
+        tmp_path,
+        '[project]\nenv_file = ".env"\n\n[resources.PORT]\ntype = "port"\nrange = [1, 2]\n',
+    )
+    assert sd.provisioning.env_output_paths(recipe) == [".env"]
+
+
+def test_env_output_paths_lists_an_explicit_per_resource_writer(tmp_path):
+    recipe = _recipe(
+        tmp_path,
+        '[resources.PORT]\ntype = "port"\nrange = [1, 2]\n\n'
+        '[resources.TOKEN]\ntype = "uuid"\nwriter = "envfile=apps/api/.env"\n',
+    )
+    assert sd.provisioning.env_output_paths(recipe) == [sd.ENV_FILE_NAME, "apps/api/.env"]
+
+
+def test_env_output_paths_omits_the_default_when_nothing_delivers_there(tmp_path):
+    recipe = _recipe(
+        tmp_path,
+        '[resources.PORT]\ntype = "port"\nrange = [1, 2]\nwriter = "envfile=apps/api/.env"\n',
+    )
+    assert sd.provisioning.env_output_paths(recipe) == ["apps/api/.env"]
+
+
+def test_env_output_paths_skips_writers_that_deliver_no_file(tmp_path):
+    recipe = _recipe(
+        tmp_path,
+        '[resources.PORT]\ntype = "port"\nrange = [1, 2]\nwriter = "stdout"\n',
+    )
+    assert sd.provisioning.env_output_paths(recipe) == []
+
+
+def test_env_output_paths_names_the_envrc_destination(tmp_path):
+    recipe = _recipe(
+        tmp_path,
+        '[resources.PORT]\ntype = "port"\nrange = [1, 2]\nwriter = "envrc"\n',
+    )
+    assert sd.provisioning.env_output_paths(recipe) == [".envrc.local"]

@@ -55,4 +55,6 @@ Prefer the direct-env approach above when you can. Each CI step runs in a fresh 
 
 ## Keep `splashdown.local.toml` gitignored
 
-Its first line says "Gitignored, not committed". It holds per-checkout device declarations that vary between machines. If it gets committed, every fresh clone starts with a tracked file that `splash target add` will later mutate, polluting `git status`.
+Init adds the rule for you unless one of your own already covers the file. It holds per-checkout device declarations that vary between machines. If it gets committed, every fresh clone starts with a tracked file that `splash target add` will later mutate, polluting `git status`.
+
+If the file was already tracked when you ran init, init says so and leaves Git tracking alone. An ignore rule does not untrack a file, so run `git rm --cached splashdown.local.toml` yourself.

@@ -181,7 +181,9 @@ doctor orchestration lives in `doctor.py`. Status and output formatting have the
 `_cmd_provision_inner` snapshots `registry.all_for(abspath)` *before*
 provisioning so it can report only what changed, calls `provision()`
 (`provisioning.py`), then calls `write_outputs()` while the checkout operation lock is held.
-`run_setup()` runs after release. `render_sync` owns all text/JSON output. A missing recipe is
+`_report_uncovered` (`hooks.py`) follows in the same lock, naming any destination this run wrote
+that Git still leaves visible. It only reads, so sync never dirties a tracked `.gitignore`, and it
+asks Git nothing when the run wrote nothing. `run_setup()` runs after release. `render_sync` owns all text/JSON output. A missing recipe is
 translated to `MissingRecipeError`, which the CLI renders with the hook-compatible exit 0.
 
 `provision()` begins with `Recipe.load`, which validates the complete document
@@ -203,7 +205,7 @@ that the next sync cannot load. Every generated-recipe write uses same-directory
 regular file's mode while replacing its directory entry. Symlinks and non-regular entries are
 rejected; hardlinks are safely broken rather than truncating their shared inode.
 
-`cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader →
+`cmd_init` orchestrates scan → scaffold recipe → local skeleton → ignore coverage → loader →
 project hook configuration → framework wiring → next-step report. For a nested project, the hook
 step prints a manual nested sync command instead because Git invokes checkout hooks from the
 worktree root. The refusal path raises `UsageError`; `main()` renders it and returns exit 2.
@@ -232,10 +234,12 @@ and asks `clear_writer_destinations` to remove splashdown's keys — the recipe'
 the registry keys read before the release, minus any resource whose writer is `none` or `stdout` —
 from every destination including the default one, deleting a file left with nothing else. A
 destination whose scan reports an unterminated quoted value is left untouched with a warning
-rather than edited on a best-effort basis. It then calls the loader's `unwire`, reverts splashdown's gitignore
-entries and agent-guidance block,
-and removes `splashdown.local.toml` only when it still equals `LOCAL_SKELETON`. A modified
-local file is preserved with a note; `splashdown.toml` is deleted last. Framework files
+rather than edited on a best-effort basis. It then calls the loader's `unwire`, reverts the
+agent-guidance block, and removes `splashdown.local.toml` only when it still equals
+`LOCAL_SKELETON`. A modified local file is preserved with a note. `_revert_gitignore` runs after
+both, so it can decide per rule: a managed rule whose file still exists on disk is kept, every
+other managed rule is dropped, and the block disappears when nothing is left. Lines outside the
+markers belong to the user and are never removed. `splashdown.toml` is deleted last. Framework files
 patched by `doctor --fix` are outside this reversal because they have no sentinels or saved
 originals. Clone-wide trust and the shared hook remain; checkout completion is removed.
 
@@ -377,8 +381,10 @@ through `Loader.plan(cwd, env_file)`.
 
 Delivery is never inferred from what is on disk: an existing `.env` does not select itself.
 `_print_env_destination` (`commands.py`) reports the destination, the keys init will manage
-there, the declared keys the file already assigns (names only), a warning when the destination
-is not gitignored, and, for `loader == "none"`, how to source the file or which loader to add.
+there, the declared keys the file already assigns (names only), and, for `loader == "none"`, how to
+source the file or which loader to add. Ignore coverage is not warned about here: `_ensure_gitignore`
+covers the configured destination itself and reports what Git says about it, and every later sync
+re-reports a destination that stays visible when it writes to one.
 
 #### `_confirm` and typed usage failures
 

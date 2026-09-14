@@ -116,6 +116,26 @@ def resolve_writer(writer: str, env_file: str) -> str:
     return writer
 
 
+def writer_output_path(writer: str) -> str | None:
+    """The checkout-relative file a resolved writer delivers to, or None when it
+    delivers no file at all."""
+    if writer.startswith("envfile="):
+        return writer.removeprefix("envfile=")
+    return ".envrc.local" if writer == "envrc" else None
+
+
+def env_output_paths(recipe: Recipe) -> list[str]:
+    """Every checkout-relative file this recipe's writers deliver values to. A
+    recipe whose resources all route elsewhere never produces the default
+    destination, so it does not appear here."""
+    writers = [
+        resolve_writer(spec.get("writer", DEFAULT_WRITER), recipe.env_file)
+        for spec in recipe.resources.values()
+    ] or [resolve_writer(DEFAULT_WRITER, recipe.env_file)]
+    paths = [writer_output_path(writer) for writer in writers]
+    return list(dict.fromkeys(path for path in paths if path is not None))
+
+
 def _undelivered_keys(recipe: Recipe) -> set[str]:
     """Declared resources whose writer produces no file, so no destination ever
     held a line splashdown wrote for them and none may be removed on their behalf."""
