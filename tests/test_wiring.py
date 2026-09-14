@@ -703,12 +703,6 @@ def test_cmd_init_scanned_rn_wires_everything(tmp_path):
     assert sd.cmd_doctor(tmp_path) == 0
 
 
-def test_cmd_init_minimal_preset_skips_doctor(tmp_path, capsys):
-    sd.cmd_init(tmp_path, preset="minimal")
-    err = capsys.readouterr().err
-    assert "running framework wiring" not in err
-
-
 def test_doctor_fix_full_rn_project(tmp_path):
     _git_init(tmp_path)
     (tmp_path / "package.json").write_text(

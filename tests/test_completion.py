@@ -233,6 +233,16 @@ def test_comp_line_offers_variants_for_run_single_type(tmp_path):
     assert "default" in out
 
 
+def test_comp_line_offers_init_flags_and_no_presets(tmp_path):
+    parser = sd._build_parser()
+    out = _argcomplete_completions(parser, "splash init ", tmp_path)
+    assert "--loader" in out
+    assert "--overwrite" in out
+    assert "--electron-profile" in out
+    for preset in ("minimal", "server", "electron"):
+        assert preset not in out
+
+
 def test_install_is_noop_without_argcomplete_env(monkeypatch):
     from splashdown.completion import install
 

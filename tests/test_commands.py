@@ -1341,7 +1341,7 @@ def test_scanner_flutter_declares_both_defaults(tmp_path):
 
 
 def test_local_skeleton_documents_additions(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     text = (tmp_path / "splashdown.local.toml").read_text()
     assert "additional" in text.lower() or "additions" in text.lower()
     assert "simulator" in text
@@ -1714,7 +1714,7 @@ def test_declared_target_types_lists_declared(tmp_path):
 def test_deinit_round_trips_init(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _git_init(tmp_path)
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     assert (tmp_path / "splashdown.toml").exists()
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
     assert hook.exists()
@@ -1724,8 +1724,6 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
     assert not (tmp_path / "splashdown.local.toml").exists()
     assert not (tmp_path / "mise.toml").exists()
     assert hook.exists()
-    # init (minimal preset) deterministically creates .gitignore with the two
-    # managed lines; deinit must strip them but keep the file.
     gi = tmp_path / ".gitignore"
     assert gi.exists()
     assert "splashdown.env" not in gi.read_text()
@@ -1733,7 +1731,7 @@ def test_deinit_round_trips_init(tmp_path, monkeypatch):
 
 def test_deinit_deletes_generated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     (tmp_path / "splashdown.env").write_text("FOO=1\n")
     sd.main(["--cwd", str(tmp_path), "deinit"])
     assert not (tmp_path / "splashdown.env").exists()

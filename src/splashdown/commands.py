@@ -32,7 +32,6 @@ from .cli_output import render_env_list, render_status, render_sync
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME
 from .device_claims import claim_available_target
 from .devices import DeviceError, device_destroy_row
-from .doctor import _resolve_doctor_framework, _wiring_checks_for_framework, cmd_doctor
 from .errors import MissingRecipeError, UsageError
 from .hooks import (
     _activate_post_checkout_hook,
@@ -59,7 +58,6 @@ from .registry import Registry
 from .scanner import (
     Scanner,
     _build_resource_catalog,
-    _detect_loader,
     _merge_app_targets,
     _prune_unresolvable_templates,
     _should_defer_monorepo,
@@ -484,16 +482,14 @@ def _write_init_recipe(path: Path, text: str) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional integration
+def cmd_init(
     cwd: Path,
-    preset: str | None = None,
     options: InitOptions | None = None,
     loader_override: str | None = None,
     electron_profile: str | None = None,
     ios_scheme: str | None = None,
 ) -> None:
-    """Scaffold splashdown.toml from a project scan (default) or from a named
-    intent preset (`splash init <preset>`)."""
+    """Scaffold splashdown.toml from a project scan."""
 
     options = options or InitOptions()
     recipe_path = cwd / RECIPE_NAME
@@ -502,18 +498,6 @@ def cmd_init(  # noqa: PLR0912 — init orchestrator; one branch per optional in
     nested = worktree_root is not None and worktree_root != cwd.resolve()
     if recipe_exists and not options.overwrite:
         raise UsageError(f"refusing to overwrite existing {RECIPE_NAME} (use --overwrite)")
-
-    if preset is not None:
-        if electron_profile is not None:
-            raise ValueError("--electron-profile is only valid with scanner-driven `splash init`")
-        if ios_scheme is not None:
-            raise ValueError("--ios-scheme is only valid with scanner-driven `splash init`")
-        return _cmd_init_preset(
-            cwd,
-            preset,
-            loader_override=loader_override,
-            wire_checkout_hook=not nested,
-        )
 
     inv = Scanner().scan(cwd)
     if loader_override:
@@ -607,49 +591,6 @@ def _apply_init_wiring_checks(inv: ProjectInventory) -> None:
                     check.autofix(app.path)
                 except Exception as e:  # noqa: BLE001
                     print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
-
-
-def _cmd_init_preset(
-    cwd: Path,
-    preset: str,
-    *,
-    loader_override: str | None = None,
-    wire_checkout_hook: bool = True,
-) -> None:
-    """Write an intent preset, then configure its loader and checkout handling."""
-    from .scaffolds import SCAFFOLDS  # noqa: PLC0415
-
-    scaffold = SCAFFOLDS.get(preset)
-    if scaffold is None:
-        available = sorted(SCAFFOLDS)
-        raise UsageError(f"unknown preset `{preset}`; available: {', '.join(available)}")
-    loader_name = loader_override or _detect_loader(cwd)
-    recipe_path = cwd / RECIPE_NAME
-    rendered = scaffold.replace("__SPLASH_LOADER__", loader_name)
-    Recipe.parse(rendered, recipe_path)
-    _write_init_recipe(recipe_path, rendered)
-    print(f"wrote {RECIPE_NAME} (preset={preset})", file=sys.stderr)
-
-    if _create_local_skeleton(cwd):
-        print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
-
-    _ensure_gitignore(cwd)
-    loader = LOADERS[loader_name]
-    if loader.wire(cwd):
-        loader.approve(cwd, announce=True)
-    if loader_name == "none":
-        # Presets cannot reroute writers, so warn when the generated env file has no loader.
-        print(f"  {_NO_LOADER_INSTRUCTIONS}", file=sys.stderr)
-    _wire_init_checkout_hook(cwd, enabled=wire_checkout_hook)
-    _trust_generated_sync(cwd)
-    if preset == "electron":
-        _print_electron_integration([_ELECTRON_PROFILE_RESOURCE])
-
-    framework = _resolve_doctor_framework(cwd, None)
-    if framework and _wiring_checks_for_framework(framework, cwd):
-        print(f"running framework wiring for `{framework}`...", file=sys.stderr)
-        cmd_doctor(cwd, fix=True)
-    sync_agent_guidance(cwd, Recipe.load(recipe_path))
 
 
 def cmd_deinit(cwd: Path, registry: Registry) -> int:

@@ -54,6 +54,8 @@ Each resource type has a small, strict shape:
 
 Every resource also accepts the optional `writer` field. Fields belonging to another resource type are errors.
 
+Any server that reads `PORT` from its environment needs nothing more than the `[resources.PORT]` block in the example above, with a range wide enough for the checkouts you run at once.
+
 Templates are derived values and re-render on every sync. Referenced resource changes therefore propagate immediately. For a stable generated component, declare it separately as `type = "uuid"` and reference that resource from the template. Calling `uuid()` directly in a template creates a new value on every sync.
 
 `set` resources hold manually supplied values:
@@ -91,6 +93,16 @@ Three things to know before you add it:
 3. There is no per-checkout exception. The resource applies to every checkout including your primary one, so the base database from your compose file simply goes unused there. You cannot express "compute this only in worktrees".
 
 Splashdown writes the name. Creating the database is your app's job, typically a `CREATE DATABASE IF NOT EXISTS`-style step on first connect, or a `[setup.*]` block.
+
+To hand the app a whole connection string rather than a bare name, template the URL itself:
+
+```toml
+[resources.DATABASE_URL]
+type     = "template"
+template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}_{{ truncate(hash(cwd_abs), 8) }}"
+```
+
+Moving the checkout changes `cwd_abs`, and with it the generated name. Sync writes the new name rather than migrating anything, so create or migrate the newly named database yourself. The old one stays untouched until you remove it.
 
 Optional setup blocks run explicitly through `splash sync --setup NAME`:
 
@@ -171,6 +183,34 @@ Target types and their compatible fields:
 | `device` | `id`, `name`, `platform` (`ios` or `android`) |
 
 All supplied target values must be non-empty strings. A field for the wrong type, such as `image` on a simulator, is an error.
+
+## Electron user-data isolation
+
+Electron keeps its user data in one platform-specific directory per app, so two checkouts of the same project share logins, local storage, and the single-instance lock. Opt a project into per-checkout isolation by declaring a stable profile identifier:
+
+```toml
+[resources.ELECTRON_PROFILE_ID]
+type     = "template"
+template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
+writer   = "splashdown-env"
+```
+
+The value is a plain function of the checkout path, so it survives reallocation and is the same on every sync. Splashdown only supplies the identifier. The main process has to apply it, before `requestSingleInstanceLock()` and before any window is created:
+
+```js
+import { mkdirSync } from "node:fs"
+
+const profileId = process.env.ELECTRON_PROFILE_ID
+if (profileId) {
+  const userData = `${app.getPath("userData")}-${profileId}`
+  mkdirSync(userData, { recursive: true })
+  app.setPath("userData", userData)
+}
+```
+
+This keeps each checkout's profile beside Electron's normal user-data directory rather than inside the checkout, so cleaning the working tree does not delete it. Without the main-process change the resource is inert and Electron keeps sharing one profile.
+
+The profile id isolates user data only. A renderer dev server still needs a port of its own, declared like the `[resources.PORT]` block in the opening example.
 
 ## Validation
 

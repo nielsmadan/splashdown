@@ -464,6 +464,7 @@ def test_cli_target_physical_device_remove_rejects_keep_instance(capsys):
 
 def test_cli_init_show_values_prints_first_sync_values(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "vite.config.ts").write_text("export default {}")
 
     assert (
         sd.main(
@@ -472,7 +473,6 @@ def test_cli_init_show_values_prints_first_sync_values(tmp_path, monkeypatch, ca
                 str(tmp_path),
                 "--show-values",
                 "init",
-                "minimal",
                 "--loader",
                 "none",
             ]
@@ -480,7 +480,7 @@ def test_cli_init_show_values_prints_first_sync_values(tmp_path, monkeypatch, ca
         == 0
     )
 
-    assert "RUN_ID=" in capsys.readouterr().err
+    assert "WEB_DEV_PORT=" in capsys.readouterr().err
 
 
 def test_cli_keyboard_interrupt_returns_shell_status(tmp_path, monkeypatch):
@@ -582,25 +582,13 @@ def test_init_refuses_dangling_local_config_symlink(tmp_path):
     (tmp_path / sd.LOCAL_NAME).symlink_to(outside)
 
     with pytest.raises(ValueError, match="not a regular file"):
-        sd.cmd_init(tmp_path, preset="minimal")
+        sd.cmd_init(tmp_path)
 
     assert not outside.exists()
 
 
-def test_cli_init_named_preset_is_positional(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    rc = sd.main(["--cwd", str(tmp_path), "init", "server"])
-    assert rc == 0
-    recipe = (tmp_path / "splashdown.toml").read_text()
-    assert "[resources.PORT]" in recipe
-    assert "[resources.DATABASE_URL]" in recipe
-
-
 @pytest.mark.parametrize("use_cwd", [False, True])
-@pytest.mark.parametrize("preset", [None, "minimal"])
-def test_cli_init_creates_nested_project_in_selected_directory(
-    tmp_path, monkeypatch, use_cwd, preset
-):
+def test_cli_init_creates_nested_project_in_selected_directory(tmp_path, monkeypatch, use_cwd):
     root = tmp_path / "repo"
     nested = root / "apps" / "web"
     nested.mkdir(parents=True)
@@ -613,8 +601,6 @@ def test_cli_init_creates_nested_project_in_selected_directory(
     else:
         monkeypatch.chdir(nested)
         args = ["init"]
-    if preset is not None:
-        args.append(preset)
 
     rc = sd.main([*args, "--loader", "none", "--no-sync"])
 
@@ -634,7 +620,7 @@ def test_cli_init_nested_project_preserves_root_checkout_hook(tmp_path, capsys, 
     if existing_hook:
         hook.write_text(original)
 
-    rc = sd.main(["--cwd", str(nested), "init", "minimal", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--no-sync"])
 
     assert rc == 0
     if existing_hook:
@@ -651,18 +637,19 @@ def test_cli_nested_existing_project_requires_overwrite(tmp_path, capsys):
     nested = root / "apps" / "web"
     nested.mkdir(parents=True)
     _git_init(root)
-    sd.cmd_init(nested, preset="minimal")
+    (nested / "vite.config.ts").write_text("export default {}")
     recipe_path = nested / sd.RECIPE_NAME
-    original = recipe_path.read_text()
+    original = '[resources.PARENT_ID]\ntype = "uuid"\n'
+    recipe_path.write_text(original)
 
-    assert sd.main(["--cwd", str(nested), "init", "server", "--no-sync"]) == 2
+    assert sd.main(["--cwd", str(nested), "init", "--no-sync"]) == 2
     assert "use --overwrite" in capsys.readouterr().err
     assert recipe_path.read_text() == original
 
-    rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--overwrite", "--no-sync"])
 
     assert rc == 0
-    assert "[resources.PORT]" in (nested / sd.RECIPE_NAME).read_text()
+    assert "[resources.WEB_DEV_PORT]" in recipe_path.read_text()
 
 
 def test_cli_init_rejects_symlinked_nested_recipe_before_overwrite(tmp_path, monkeypatch, capsys):
@@ -677,7 +664,7 @@ def test_cli_init_rejects_symlinked_nested_recipe_before_overwrite(tmp_path, mon
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
 
-    rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--overwrite", "--no-sync"])
 
     assert rc == 2
     assert "not a regular file" in capsys.readouterr().err
@@ -694,21 +681,34 @@ def test_cli_init_overwrite_replaces_recipe_hardlink_without_mutating_target(tmp
     original = '[project]\nloader = "none"\n'
     outside.write_text(original)
     os.link(outside, nested / sd.RECIPE_NAME)
+    (nested / "vite.config.ts").write_text("export default {}")
 
-    rc = sd.main(["--cwd", str(nested), "init", "server", "--overwrite", "--no-sync"])
+    rc = sd.main(["--cwd", str(nested), "init", "--overwrite", "--no-sync"])
 
     assert rc == 0
     assert outside.read_text() == original
-    assert "[resources.PORT]" in (nested / sd.RECIPE_NAME).read_text()
+    assert "[resources.WEB_DEV_PORT]" in (nested / sd.RECIPE_NAME).read_text()
 
 
 @pytest.mark.parametrize(
-    "preset", ["rn", "react-native", "flutter", "ios-native", "android-native", "nextjs"]
+    "preset",
+    [
+        "minimal",
+        "server",
+        "electron",
+        "rn",
+        "react-native",
+        "flutter",
+        "ios-native",
+        "android-native",
+        "nextjs",
+    ],
 )
-def test_cli_init_rejects_removed_presets(tmp_path, preset):
+def test_cli_init_rejects_removed_presets(tmp_path, preset, capsys):
     with pytest.raises(SystemExit) as exc:
         sd.main(["--cwd", str(tmp_path), "init", preset])
     assert exc.value.code == 2
+    assert f"unrecognized arguments: {preset}" in capsys.readouterr().err
     assert not (tmp_path / "splashdown.toml").exists()
 
 
@@ -850,47 +850,6 @@ def test_init_native_ios_ambiguous_noninteractive_fails_before_writing(tmp_path,
     assert not (tmp_path / "splashdown.toml").exists()
 
 
-def test_init_server_preset_writes_generic_scaffold(tmp_path):
-    sd.cmd_init(tmp_path, preset="server")
-    recipe = (tmp_path / "splashdown.toml").read_text()
-    assert "[resources.PORT]" in recipe
-    assert "[resources.DATABASE_URL]" in recipe
-    assert "range = [3001, 3100]" in recipe
-    assert (
-        'template = "postgres://localhost:5432/myapp_{{ slug(cwd) }}_'
-        '{{ truncate(hash(cwd_abs), 8) }}"' in recipe
-    )
-    assert "Next.js preset" not in recipe
-
-
-def test_server_database_name_distinguishes_matching_path_tails(tmp_path):
-    sd.cmd_init(tmp_path, preset="server")
-    template = sd.Recipe.load(tmp_path / sd.RECIPE_NAME).resources["DATABASE_URL"]["template"]
-    one = sd.render_template(
-        template, sd._make_scope(tmp_path / "one" / "work" / "checkout", None, {})
-    )
-    two = sd.render_template(
-        template, sd._make_scope(tmp_path / "two" / "work" / "checkout", None, {})
-    )
-
-    assert one.startswith("postgres://localhost:5432/myapp_checkout_")
-    assert two.startswith("postgres://localhost:5432/myapp_checkout_")
-    assert one != two
-
-
-def test_init_electron_preset_includes_profile_id(tmp_path, capsys):
-    sd.cmd_init(tmp_path, preset="electron")
-    recipe = (tmp_path / "splashdown.toml").read_text()
-    assert "[resources.PORT]" in recipe
-    assert "[resources.ELECTRON_PROFILE_ID]" in recipe
-    assert "range = [3001, 3100]" in recipe
-    assert 'template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"' in recipe
-    err = capsys.readouterr().err
-    assert "const profileId = process.env.ELECTRON_PROFILE_ID" in err
-    assert "mkdirSync(userData, { recursive: true })" in err
-    assert "before requestSingleInstanceLock()" in err
-
-
 def test_init_electron_yes_adds_profile_without_replacing_vite(tmp_path, monkeypatch, capsys):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     (tmp_path / "package.json").write_text('{"devDependencies":{"electron":"40"}}')
@@ -905,7 +864,9 @@ def test_init_electron_yes_adds_profile_without_replacing_vite(tmp_path, monkeyp
     assert "WEB_DEV_PORT" in recipe.resources
     err = capsys.readouterr().err
     assert "Set up an independent Electron profile for this checkout?" in err
+    assert "before requestSingleInstanceLock():" in err
     assert "const profileId = process.env.ELECTRON_PROFILE_ID" in err
+    assert "mkdirSync(userData, { recursive: true })" in err
 
 
 def test_init_electron_no_keeps_renderer_resources(tmp_path, monkeypatch, capsys):
@@ -1044,7 +1005,7 @@ POST_CHECKOUT_SENTINEL = "splash"
 
 
 def test_init_appends_gitignore(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     gi = (tmp_path / ".gitignore").read_text()
     assert "splashdown.env" in gi
     assert "splashdown.local.toml" in gi
@@ -1052,13 +1013,13 @@ def test_init_appends_gitignore(tmp_path):
 
 def test_init_gitignore_no_duplicates(tmp_path):
     (tmp_path / ".gitignore").write_text("splashdown.env\n")
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     gi = (tmp_path / ".gitignore").read_text()
     assert gi.count("splashdown.env") == 1
 
 
 def test_init_adds_mise_file_directive_new_file(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    sd.cmd_init(tmp_path, loader_override="mise")
     mise = (tmp_path / "mise.toml").read_text()
     assert '_.file = "splashdown.env"' in mise
     assert "[env]" in mise
@@ -1066,7 +1027,7 @@ def test_init_adds_mise_file_directive_new_file(tmp_path):
 
 def test_init_adds_mise_file_directive_existing_env_table(tmp_path):
     (tmp_path / "mise.toml").write_text('[env]\nFOO = "bar"\n\n[tools]\nnode = "20"\n')
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     mise = (tmp_path / "mise.toml").read_text()
     assert '_.file = "splashdown.env"' in mise
     assert 'FOO = "bar"' in mise
@@ -1075,10 +1036,9 @@ def test_init_adds_mise_file_directive_existing_env_table(tmp_path):
 
 
 def test_init_mise_directive_idempotent(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    sd.cmd_init(tmp_path, loader_override="mise")
     sd.cmd_init(
         tmp_path,
-        preset="minimal",
         options=sd.InitOptions(overwrite=True),
         loader_override="mise",
     )
@@ -1098,7 +1058,6 @@ def test_mise_directive_edits_existing_underscore_table_in_place(tmp_path, exist
     (tmp_path / "mise.toml").write_text(existing)
     sd.cmd_init(
         tmp_path,
-        preset="minimal",
         options=sd.InitOptions(overwrite=True),
         loader_override="mise",
     )
@@ -1115,7 +1074,7 @@ def _record_approvals(monkeypatch):
 
 def test_cmd_init_auto_approves_freshly_created_mise_toml(tmp_path, monkeypatch):
     calls = _record_approvals(monkeypatch)
-    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    sd.cmd_init(tmp_path, loader_override="mise")
     assert ["mise", "trust", str(tmp_path / "mise.toml")] in calls
 
 
@@ -1123,7 +1082,7 @@ def test_cmd_init_does_not_auto_approve_pre_existing_mise_toml(tmp_path, monkeyp
     # A pre-existing mise.toml may contain user commands, so init must not auto-trust it.
     (tmp_path / "mise.toml").write_text('[tools]\nnode = "20"\n')
     calls = _record_approvals(monkeypatch)
-    sd.cmd_init(tmp_path, preset="minimal", loader_override="mise")
+    sd.cmd_init(tmp_path, loader_override="mise")
     assert calls == []
 
 
@@ -1144,14 +1103,14 @@ def test_init_no_sync_does_not_trust_pre_existing_mise(tmp_path, monkeypatch):
 
 def test_cmd_init_auto_approves_freshly_created_envrc(tmp_path, monkeypatch):
     calls = _record_approvals(monkeypatch)
-    sd.cmd_init(tmp_path, preset="minimal", loader_override="direnv")
+    sd.cmd_init(tmp_path, loader_override="direnv")
     assert ["direnv", "allow", str(tmp_path)] in calls
 
 
 def test_cmd_init_does_not_auto_approve_pre_existing_envrc(tmp_path, monkeypatch):
     (tmp_path / ".envrc").write_text("use nix\n")
     calls = _record_approvals(monkeypatch)
-    sd.cmd_init(tmp_path, preset="minimal", loader_override="direnv")
+    sd.cmd_init(tmp_path, loader_override="direnv")
     assert calls == []
 
 
@@ -1191,7 +1150,7 @@ def test_sync_writes_env_without_loader_approval(tmp_path, monkeypatch):
 
 def test_init_writes_post_checkout_hook(tmp_path):
     _git_init(tmp_path)
-    sd.cmd_init(tmp_path, preset="minimal")
+    sd.cmd_init(tmp_path)
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
     assert hook.exists()
     assert os.access(hook, os.X_OK)

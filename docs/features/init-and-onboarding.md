@@ -27,10 +27,8 @@ wiring checks (the same engine as `splash doctor --fix`), and finishes with the 
 `splashdown.env`). The promise: a checkout has working, collision-free resources in one
 command — a bad first run means abandonment.
 
-Six options reshape that flow:
+Five options reshape that flow:
 
-- `splash init <preset>` — write a named intent scaffold from `SCAFFOLDS`,
-  bypassing the scanner entirely.
 - `splash init --loader=mise|direnv|devbox|none` — override loader detection, including
   an explicit no-loader setup.
 - `splash init --no-sync` — scaffold and wire only; skip the first sync (no port allocation,
@@ -55,7 +53,7 @@ recipe is not visible. Nested init therefore skips automatic hook wiring and
 prints the nested `splash --cwd PATH sync` command to run after checkout. It never installs a hook
 that would silently sync the wrong project.
 
-**Scan.** The default (no preset) path runs `Scanner().scan(cwd)` (`scanner.py`), which:
+**Scan.** Init runs `Scanner().scan(cwd)` (`scanner.py`), which:
 detects the workspace manager (pnpm/yarn/npm/cargo/gradle/`single`) via `_detect_workspace`
 (`scanner.py`); enumerates apps via `_enumerate_apps` (`scanner.py`); matches each app
 to a Profile by name through the `PROFILES` registry, defaulting to `"unknown"` when nothing
@@ -166,13 +164,6 @@ through the registry, expands templates, and writes outputs. Text output names c
 without revealing their values. JSON also returns keys by default; root `--show-values` is the
 deliberate disclosure opt-in. Explicit `writer = "stdout"` resources remain value-bearing.
 
-**Intent preset path.** `splash init <preset>` routes to `_cmd_init_preset`
-(`commands.py`): it looks the name up in `SCAFFOLDS` (`scaffolds.py`; unknown name →
-`UsageError` for direct callers), substitutes `__SPLASH_LOADER__`, validates the complete scaffold in memory, then
-writes it. Only after validation does it write the local skeleton, ensure gitignore, wire the
-loader and hook, and run `cmd_doctor(cwd, fix=True)` when the resolved framework has wiring checks.
-Note this path is **not** sync-driven by itself — the post-init sync still comes from the CLI layer.
-
 **Recipe evolution.** Users edit the existing recipe manually or with an agent when apps change.
 `init --overwrite` regenerates the whole recipe, replacing manual edits.
 
@@ -190,7 +181,6 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 
 - `cmd_init` — orchestrator and typed refusal guard: `src/splashdown/commands.py`.
 - `_add_electron_resources` / `_resolve_init_ios_scheme`: `src/splashdown/commands.py`.
-- `_cmd_init_preset` — `init <preset>` path: `src/splashdown/commands.py`.
 - `cmd_deinit` — surgical teardown: `src/splashdown/commands.py`.
 - `_ensure_post_checkout_hook` / `_detect_hook_manager` / `_native_hook_path`:
   `src/splashdown/hooks.py`.
@@ -204,16 +194,14 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - `_build_resource_catalog` (collision mangling and app references):
   `src/splashdown/scanner.py`.
 - `LOADERS` registry and idempotent loader implementations: `src/splashdown/loaders.py`.
-- `SCAFFOLDS` presets / `PROFILES` registration:
-  `src/splashdown/scaffolds.py`; the templates themselves fill that module.
 - `init` argparse parser and dispatch: `src/splashdown/cli.py`.
 
 ## Configuration
 
-- **`splash init`** (no args) — scan-driven scaffold + wire + sync.
-- **`splash init <preset>`** — named scaffold; presets are the keys of `SCAFFOLDS`
-  (`scaffolds.py`): `minimal`, `server`, and `electron`. Framework integrations come
-  from scanner-driven init rather than one preset per Profile.
+- **`splash init`** — scan-driven scaffold + wire + sync. It takes no positional argument;
+  scanner-driven generation is the only recipe path. Recipes that a scan cannot infer, such as a
+  generic `PORT`, a per-checkout Postgres database name, or Electron user-data isolation, are
+  documented examples in `docs/user/recipe.md`.
 - **`--loader mise|direnv|devbox|none`** — override loader auto-detection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
@@ -243,9 +231,9 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   `splash bootstrap` when the recipe declares it. Tracked Lefthook/Husky changes still require the
   project's normal hook-manager install step.
 
-- **Init usage failures are typed.** The refusal guard and direct unknown-preset lookup raise
-  `UsageError`. The CLI renders exit 2; embedded callers can catch the application exception.
-  Argparse can still raise `SystemExit` while validating a positional preset before dispatch.
+- **Init usage failures are typed.** The refusal guard raises `UsageError`. The CLI renders
+  exit 2; embedded callers can catch the application exception. Argparse still raises
+  `SystemExit` for an unrecognized argument before dispatch.
 
 - **The first sync lives in the CLI layer, not `cmd_init`.** `cmd_init` scaffolds and wires
   but does **not** itself sync; `cli.py` runs `_cmd_provision_inner` afterward. So
@@ -291,8 +279,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   resources and no wiring; the rest of the project still scaffolds
   (`_apply_init_wiring_checks` in `commands.py`).
 
-- **Generated TOML is not trusted implicitly.** Scanner output, built-in preset output, and the
-  minimal-monorepo fallback all pass through `Recipe` before writing. A validation failure leaves
+- **Generated TOML is not trusted implicitly.** Scanner output and the
+  minimal-monorepo fallback both pass through `Recipe` before writing. A validation failure leaves
   the destination recipe absent or unchanged and prevents subsequent
   init mutations. Unknown recipe keys are hard errors.
 

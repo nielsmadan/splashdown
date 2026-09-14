@@ -6,8 +6,8 @@ happens. `inventory.py` defines scan results, `catalog.py` owns the shared order
 registry, and `scanner.py` performs filesystem detection. Framework rules are split across
 `profile_core.py` and the `profiles_*` implementation modules, while `profiles.py` assembles
 their detection order and provides the compatibility import surface. `runners.py` and
-`launching.py` own launch behavior, `scaffolds.py` holds preset data, `agentdocs.py` renders
-framework guidance, and `loaders.py` wires shell environments.
+`launching.py` own launch behavior, `agentdocs.py` renders framework guidance, and `loaders.py`
+wires shell environments.
 
 ## Contents
 
@@ -35,8 +35,7 @@ This layer is **pure inspection on the detection side** (the `Scanner` never wri
 **registry/plugin extension point** on the framework side (`PROFILES`, `LOADERS`). Both
 registries are dicts populated at import time, and **insertion order is load-bearing** for
 detection precedence. Profile implementations do not mutate the catalog themselves:
-`profiles.py` assembles the complete built-in sequence explicitly. `SCAFFOLDS` is a separate,
-intentionally small registry of intent presets, not another list of supported frameworks.
+`profiles.py` assembles the complete built-in sequence explicitly.
 
 ## How it works (current state)
 
@@ -232,17 +231,13 @@ falling back to Gradle properties for older builds. Recipe-supplied
 positionals passed to these tools go through `_no_flag()` in `runners.py` to reject
 leading-`-` values that argv would otherwise swallow as tool flags.
 
-**SCAFFOLDS** in `scaffolds.py` contains exactly `minimal`, `server`, and `electron`.
-Framework-specific and historical alias presets are deliberately absent: framework setup
-comes from scanner-driven init and Profiles. Electron is the boundary case. Its explicit
-preset deterministically requests a renderer port and stable profile identifier, while
-plain init detects Electron as a secondary capability and asks whether to add only the
-optional profile-isolation overlay.
+**Electron** is the boundary case for generation. Init detects it as a secondary capability and
+asks whether to add the optional profile-isolation overlay. A project that init does not detect as
+Electron uses the documented recipe example in `docs/user/recipe.md` instead of a generator.
 
 ### Profile-adjacent modules
 
-Launch implementations, launch orchestration, scaffold data, and profile categories have
-separate owners.
+Launch implementations, launch orchestration, and profile categories have separate owners.
 
 - **`runners.py`** — everything `Profile.run` delegates to: `_rn_run`, `_expo_run`,
   `_flutter_run`, `_ios_native_run`, `_android_native_run`, the xcodebuild/gradle
@@ -254,8 +249,6 @@ separate owners.
 - **`launching.py`** — framework detection, workspace app-directory resolution, runnable-profile
   preflight, custom-command selection, and final `Profile.run` dispatch. It depends on the
   profile catalog and runners, while `devices.py` remains solely below it.
-- **`scaffolds.py`** — the three intent-preset `splashdown.toml` templates and the
-  `SCAFFOLDS` dict. Pure strings, no imports, no logic.
 - **`profile_core.py` / `profiles_*.py`** — the base contract and categorized framework
   implementations. The implementation modules never register themselves; the facade's one
   `_BUILTIN_PROFILES` sequence keeps precedence reviewable and prevents import order from
@@ -269,8 +262,8 @@ commands through `Profile.agent_guidance`, while the common renderer names every
 port resource from the recipe. In monorepos those are the post-mangling names, not the
 profile's canonical defaults.
 
-`commands.py` calls `sync_agent_guidance()` only after successful scanner or preset
-init, including the structure-only deferred-monorepo path. A recipe with no
+`commands.py` calls `sync_agent_guidance()` only after a successful scanner init,
+including the structure-only deferred-monorepo path. A recipe with no
 port-bearing apps renders no block and removes any previous complete block. Deinit calls
 `remove_agent_guidance()` independently of recipe parsing, so malformed or missing recipes
 cannot strand managed content.
@@ -335,11 +328,10 @@ never runs an approval command.
   `remove_agent_guidance()`; invoked by init/deinit orchestration in `commands.py`.
 - `catalog.py` — the dependency-free `PROFILES` registry; `profiles.py` populates it in
   precedence order.
-- `scaffolds.py` — `SCAFFOLDS` registry; substituted by `_cmd_init_preset` in `commands.py`.
 - `loaders.py` — `Loader`, its mise/direnv/devbox/none implementations, and the precedence-ordered
   `LOADERS` registry.
-- Consumers: scanner-driven init in `commands.py`, `_build_resource_catalog`
-  in `scanner.py`, and `_cmd_init_preset` for `SCAFFOLDS`.
+- Consumers: scanner-driven init in `commands.py` and `_build_resource_catalog`
+  in `scanner.py`.
 - Registration wiring: `catalog.py` owns the dictionary and `__init__.py` imports
   `profiles` first to populate it before public consumers are re-exported. Internal modules
   import the catalog directly and never depend back on the package root.
@@ -352,7 +344,7 @@ never runs an approval command.
   `package.json`-based detector before a narrow one) will silently shadow later profiles.
   Same hazard for `LOADERS`. The explicit `_BUILTIN_PROFILES` tuple and its exact-order test
   make this visible; insert new profiles at the intended precedence point.
-- **Adding a Profile does not imply adding a preset.** A new framework needs the
+- **A new framework is a Profile, nothing else.** A new framework needs the
   `Profile` subclass in the appropriate implementation module and an entry in
   `_BUILTIN_PROFILES` at the right precedence position.
   Framework coverage belongs in scanner-driven init. If it has consumer configs to patch, also add
@@ -387,13 +379,12 @@ side-effect-free inspection so it can be re-run cheaply (`splash init`, status)
 and unit-tested without touching disk state. The integration side uses small implementation
 modules behind shared catalogs. `profiles.py` centralizes profile assembly because precedence
 is behavior, while `LOADERS` remains a compact module-local registry. There is no priority
-metadata, so insertion order is the only knob. `SCAFFOLDS` remains a policy-controlled list
-of intent presets outside that parity.
+metadata, so insertion order is the only knob.
 
 The import graph itself is a build invariant. Pylint's `cyclic-import` checker analyzes the
 package as a whole and fails the local and CI gates with `R0401` when a cycle is introduced.
 
-The split between the *declarative* `PROFILES`/`LOADERS`/`SCAFFOLDS` registries and the
+The split between the *declarative* `PROFILES`/`LOADERS` registries and the
 *imperative* `WiringCheck` lists returned from `wiring_checks()` mirrors the two phases:
 detection answers "what is this," while wiring imperatively patches consumer configs and
 must report/repair state — so the latter lives behind the doctor flow rather than in the
@@ -404,9 +395,9 @@ instructions instead.
 
 ## Related
 
-- `docs/features/init-and-onboarding.md` — user-facing model for `splash init`, preset
-  selection, and what gets written.
+- `docs/features/init-and-onboarding.md` — user-facing model for `splash init` and what gets
+  written.
 - `docs/tech/wiring.md` — the doctor / `WiringCheck` internals that `wiring_checks()`
   feeds (see also `docs/features/framework-wiring.md` for the user-facing wiring behavior).
 - [`0003: Separate inferred frameworks from explicit intent`](../decisions/0003-separate-inferred-frameworks-from-explicit-intent.md)
-  — why Profiles, intent presets, and secondary capabilities remain separate concepts.
+  — why Profiles and secondary capabilities remain separate concepts.

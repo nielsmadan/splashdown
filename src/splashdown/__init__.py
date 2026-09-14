@@ -78,7 +78,6 @@ from .cli_output import (
 )
 from .commands import (
     InitOptions,
-    _cmd_init_preset,
     _env_dispatch,
     _resolve_no_loader_delivery,
     cmd_completion,
@@ -209,7 +208,6 @@ from .recipe import (
     topo_sort,
 )
 from .registry import DeviceRow, Registry, _port_in_use
-from .scaffolds import SCAFFOLDS
 from .scanner import (
     Scanner,
     _build_resource_catalog,

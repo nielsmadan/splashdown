@@ -440,21 +440,6 @@ def test_cmd_init_scanner_rn_emits_default_targets(tmp_path):
     assert recipe.targets["simulator"]["default"]["model"]
 
 
-def test_cmd_init_intent_preset_path_works(tmp_path):
-    sd.cmd_init(tmp_path, preset="minimal")
-    recipe_text = (tmp_path / "splashdown.toml").read_text()
-    assert "[resources.RUN_ID]" in recipe_text
-    assert "[apps.main]" not in recipe_text
-
-
-def test_cmd_init_intent_preset_no_loader_prints_instructions(tmp_path, capsys):
-    # No loader config → the preset path can't route to a dotenv file, but it must
-    # not leave the user with a silent no-op.
-    sd.cmd_init(tmp_path, preset="minimal")
-    err = capsys.readouterr().err
-    assert "nothing sources it" in err
-
-
 def test_cmd_init_unknown_framework_app_gets_unknown_profile(tmp_path):
     sd.cmd_init(tmp_path)
     recipe_text = (tmp_path / "splashdown.toml").read_text()

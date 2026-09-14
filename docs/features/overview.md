@@ -15,7 +15,7 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   `run`/`start`/`stop`/`destroy`, auto-recreate of `latest` sims, and the committed device matrix
   (incl. lowest-supported-OS coverage). *(UC2, UC4, UC10)*
 - [init-and-onboarding.md](init-and-onboarding.md) — `splash init`: scan, scaffold, wire the
-  loader + post-checkout hook, first sync; presets; and fresh-clone trust onboarding. *(UC3, UC6)*
+  loader + post-checkout hook, first sync; and fresh-clone trust onboarding. *(UC3, UC6)*
 - [framework-wiring.md](framework-wiring.md) — `splash doctor`: detect and (where safe) auto-patch
   framework configs that hardcode the port / override the env var. *(UC5)*
 - [resource-cleanup.md](resource-cleanup.md) — `gc`, lazy GC, `target prune`, `deinit`, and

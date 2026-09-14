@@ -196,8 +196,8 @@ always placed in the JSON `stdout` object. In text mode, `--show-values` prints 
 resolved `KEY=VALUE` line, annotating changed keys. This applies equally to normal sync, an
 up-to-date no-op sync, and init's first sync.
 
-`cmd_init` applies the same contract to generated TOML. Scanner recipes,
-minimal-monorepo recipes, and built-in presets go through `Recipe.parse` before
+`cmd_init` applies the same contract to generated TOML. Scanner recipes and
+minimal-monorepo recipes go through `Recipe.parse` before
 the recipe path is written. This keeps generator/profile/loader drift from producing a file
 that the next sync cannot load. Every generated-recipe write uses same-directory atomic replacement, preserving an existing
 regular file's mode while replacing its directory entry. Symlinks and non-regular entries are
@@ -206,8 +206,7 @@ rejected; hardlinks are safely broken rather than truncating their shared inode.
 `cmd_init` orchestrates scan → scaffold recipe → local skeleton → gitignore → loader → hook →
 sync-only clone trust → framework wiring. For a nested project, the hook step
 prints a manual nested sync command instead because Git invokes checkout hooks from the worktree
-root. An intent preset short-circuits to `_cmd_init_preset`.
-Refusal and invalid-preset paths raise `UsageError`; `main()` renders them and returns exit 2. The
+root. The refusal path raises `UsageError`; `main()` renders it and returns exit 2. The
 first sync runs after init unless `--no-sync`. Init never grants bootstrap trust.
 
 #### `deinit` teardown
@@ -313,7 +312,7 @@ not gitignored.
 `_confirm` in `target_commands.py` is the shared interactive `[y/N]` gate for `cmd_destroy` and
 `cmd_target_prune`. `yes=True` (from `--yes`) skips the prompt and returns `True`.
 
-Init refusal, invalid presets, and invalid `env set` inputs raise `UsageError`. The CLI's shared
+Init refusal and invalid `env set` inputs raise `UsageError`. The CLI's shared
 renderer prints the message and returns exit 2; no application handler calls `sys.exit`.
 
 #### Device lifecycle handlers

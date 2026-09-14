@@ -12,8 +12,8 @@ splash [--cwd PATH] [--format text|json] [--show-values] …  # root options pre
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write splashdown.env
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
-splash init [preset] [--no-sync] [--loader=…] [--overwrite]
-                    [--electron-profile=isolated|shared] [--ios-scheme=NAME]
+splash init [--no-sync] [--loader=…] [--overwrite]
+            [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
 splash trust                        # authorize automatic handling for this clone
 splash untrust                      # revoke clone-wide automatic handling
@@ -78,39 +78,19 @@ Evolve an existing recipe by editing it manually or with an agent. `splash init 
 regenerates the whole recipe, replacing manual edits. See
 [adding an app](monorepos.md#adding-or-moving-an-app) for a comparison workflow.
 
-Named presets are limited to choices that project scanning cannot infer:
-
-- `minimal` creates a framework-neutral recipe with a generated run id.
-- `server` creates a generic `PORT` and a `DATABASE_URL` whose readable checkout slug includes a
-  short hash of the resolved path, preventing matching directory tails from sharing a database.
-- `electron` creates a renderer `PORT` and opts into checkout-specific Electron user data.
-
-Existing server recipes are not rewritten when the hash suffix changes. Update the
-`DATABASE_URL` template manually, run `splash sync`, then create or migrate the newly named
-database. The old database remains untouched until you remove it.
+Init always generates the recipe from a project scan. For the choices a scan cannot infer, such
+as a generic `PORT` for any server that reads one, a per-checkout Postgres database name, or
+Electron user-data isolation, add the resource yourself. See
+[The recipe](recipe.md) for each pattern.
 
 Plain `splash init` detects Electron in addition to the renderer framework. In an interactive
 terminal, it asks once whether to isolate Electron user data per checkout. The default is No,
 and non-interactive input or EOF also selects No. Automation can make the choice explicit with
 `--electron-profile=isolated|shared`. Choosing isolation adds a stable
 `ELECTRON_PROFILE_ID` and prints the main-process integration to add before
-`requestSingleInstanceLock()`:
-
-```js
-import { mkdirSync } from "node:fs"
-
-const profileId = process.env.ELECTRON_PROFILE_ID
-if (profileId) {
-  const userData = `${app.getPath("userData")}-${profileId}`
-  mkdirSync(userData, { recursive: true })
-  app.setPath("userData", userData)
-}
-```
-
-`splash init electron` is the explicit opt-in for a standalone project. It does not prompt,
-includes both `PORT` and `ELECTRON_PROFILE_ID`, and prints the same integration. This keeps
-profiles beside Electron's normal platform-specific user-data directory instead of inside the
-checkout.
+`requestSingleInstanceLock()`. A project that init does not detect as Electron can opt in by
+hand. See [Electron user-data isolation](recipe.md#electron-user-data-isolation) for that
+snippet and the resource it needs.
 
 For a detected native iOS project, init records the sole shared Xcode scheme automatically. If
 several schemes exist, it asks for an exact choice in a terminal. Non-interactive callers must

@@ -88,7 +88,7 @@ This checkout
   status   [all]              state of this checkout (or every checkout)
 
 Set up a project
-  init     [preset]           scaffold splashdown.toml + first sync (--no-sync skips it)
+  init                        scaffold splashdown.toml + first sync (--no-sync skips it)
   deinit                     remove checkout-local state (keeps shared hook and trust)
   trust                      authorize automatic recipe handling for this clone
   untrust                    revoke automatic recipe handling for this clone
@@ -138,7 +138,6 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         physical_variant_completer,
         variant_completer,
     )
-    from .scaffolds import SCAFFOLDS  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
         prog="splash",
@@ -186,13 +185,6 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         help="with `all`, expand each checkout into the per-block view",
     )
     p = sub.add_parser("init", help=argparse.SUPPRESS, epilog=_INIT_OUTPUT_HELP)
-    p.add_argument(
-        "preset",
-        nargs="?",
-        default=None,
-        choices=tuple(SCAFFOLDS),
-        help="intent preset (default: scan the project)",
-    )
     p.add_argument(
         "--loader",
         default=None,
@@ -575,7 +567,6 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 �
         try:
             cmd_init(
                 cwd,
-                preset=args.preset,
                 options=InitOptions(overwrite=args.overwrite),
                 loader_override=args.loader,
                 electron_profile=args.electron_profile,

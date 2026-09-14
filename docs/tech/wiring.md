@@ -31,9 +31,8 @@ per-framework registry of small, inspectable facts about a project ("does
 rewrite is safe and mechanical, auto-patch. `doctor.py` selects and executes those
 checks. `doctor` (no flag) is a read-only
 `✓`/`✗` report; `doctor --fix` applies the safe autofixes and prints manual
-snippets for the rest; scanner-driven `init` runs each detected app's safe fixes after
-scaffolding so a fresh setup lands wired. Intent presets bypass the scanner and run
-`doctor --fix` only when framework detection independently finds a Profile with checks.
+snippets for the rest; `init` runs each detected app's safe fixes after
+scaffolding so a fresh setup lands wired.
 
 ## How it works (current state)
 
@@ -101,10 +100,8 @@ The run loop in `doctor.py` walks each check:
    snippet, count it bad.
 
 Exit code is 0 only when nothing is left in the `problem` state.
-Scanner-driven init uses `_apply_init_wiring_checks` to run the same Profile-owned safe
-autofixes per app. The intent-preset path resolves a framework from the checkout and calls
-`cmd_doctor(cwd, fix=True)` only when checks exist (see
-`docs/features/framework-wiring.md`).
+Init uses `_apply_init_wiring_checks` to run the same Profile-owned safe autofixes per app
+(see `docs/features/framework-wiring.md`).
 
 Every writable check uses `safe_files.py` for its edit. The helper rejects a final symlink,
 non-regular destination, configured-root escape, or symlinked parent component; opens existing files with
@@ -196,8 +193,8 @@ mode applied to hook replacements rather than a follow-up `chmod`.
 
 Electron capability detection can safely identify the package dependency, but it cannot
 identify one stable main-process entrypoint or module shape. Scanner-driven init therefore
-asks whether to add `ELECTRON_PROFILE_ID`, and both accepted scanner init and the explicit
-`electron` intent preset print guarded integration code. That code derives a sibling of
+asks whether to add `ELECTRON_PROFILE_ID`, and an accepted overlay prints guarded
+integration code. That code derives a sibling of
 Electron's default `userData` directory, creates it, and sets the path before
 `requestSingleInstanceLock()`. There is no Electron Profile or autofix: rewriting arbitrary
 main-process source would be materially less safe than the mechanical Vite/RN transforms above.

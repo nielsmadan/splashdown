@@ -564,17 +564,68 @@ def test_schema_values_track_loader_and_profile_registries(tmp_path):
         )
 
 
-def test_all_builtin_scaffolds_validate(tmp_path):
-    for name, scaffold in sd.SCAFFOLDS.items():
-        recipe = sd.Recipe.parse(
-            scaffold.replace("__SPLASH_LOADER__", "none"),
-            tmp_path / f"{name}.toml",
-        )
-        assert isinstance(recipe.resources, dict)
+_RECIPE_DOC = Path(__file__).parent.parent / "docs" / "user" / "recipe.md"
+_DOC_TOML_BLOCK = re.compile(r"^```toml\n(.*?)^```", re.MULTILINE | re.DOTALL)
 
 
-def test_builtin_scaffolds_are_intent_only():
-    assert set(sd.SCAFFOLDS) == {"minimal", "server", "electron"}
+def _documented_recipe_examples() -> list[str]:
+    blocks = _DOC_TOML_BLOCK.findall(_RECIPE_DOC.read_text(encoding="utf-8"))
+    assert blocks, f"no toml examples found in {_RECIPE_DOC}"
+    return blocks
+
+
+def _documented_resources(tmp_path) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for index, block in enumerate(_documented_recipe_examples()):
+        for name, resource in sd.Recipe.parse(
+            block, tmp_path / f"documented-{index}.toml"
+        ).resources.items():
+            assert name not in merged, f"{_RECIPE_DOC.name} declares `{name}` in two examples"
+            merged[name] = resource
+    return merged
+
+
+@pytest.mark.parametrize(
+    "block", _documented_recipe_examples(), ids=lambda block: block.splitlines()[0]
+)
+def test_documented_recipe_examples_validate(tmp_path, block):
+    assert isinstance(sd.Recipe.parse(block, tmp_path / "splashdown.toml"), sd.Recipe)
+
+
+def test_documented_examples_keep_the_resources_a_scan_cannot_infer(tmp_path):
+    resources = _documented_resources(tmp_path)
+
+    assert resources["PORT"]["type"] == "port"
+    assert resources["DATABASE_URL"]["type"] == "template"
+    assert resources["ELECTRON_PROFILE_ID"]["type"] == "template"
+
+
+def test_documented_database_url_distinguishes_matching_path_tails(tmp_path):
+    template = _documented_resources(tmp_path)["DATABASE_URL"]["template"]
+    one = sd.render_template(
+        template, sd._make_scope(tmp_path / "one" / "work" / "checkout", None, {})
+    )
+    two = sd.render_template(
+        template, sd._make_scope(tmp_path / "two" / "work" / "checkout", None, {})
+    )
+
+    assert one.startswith("postgres://localhost:5432/myapp_checkout_")
+    assert two.startswith("postgres://localhost:5432/myapp_checkout_")
+    assert one != two
+
+
+def test_documented_electron_profile_id_is_stable_per_checkout(tmp_path):
+    template = _documented_resources(tmp_path)["ELECTRON_PROFILE_ID"]["template"]
+    checkout = tmp_path / "one" / "work" / "checkout"
+    elsewhere = tmp_path / "two" / "work" / "checkout"
+
+    first = sd.render_template(template, sd._make_scope(checkout, "main", {}))
+    again = sd.render_template(template, sd._make_scope(checkout, "feature", {}))
+    other = sd.render_template(template, sd._make_scope(elsewhere, "main", {}))
+
+    assert first.startswith("splashdown-")
+    assert again == first
+    assert other != first
 
 
 def test_template_name_schema_tracks_the_render_scope(tmp_path):

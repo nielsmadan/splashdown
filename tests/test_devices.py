@@ -772,7 +772,7 @@ def test_cli_status_all_on_empty_registry_renders_only_cwd(tmp_path, monkeypatch
 
 def test_cli_init_loader_override_writes_devbox_wiring(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    rc = sd.main(["--cwd", str(tmp_path), "init", "minimal", "--loader=devbox"])
+    rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=devbox"])
     assert rc == 0
     assert (tmp_path / "devbox.json").exists()
     assert not (tmp_path / "mise.toml").exists()

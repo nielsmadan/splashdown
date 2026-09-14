@@ -27,7 +27,7 @@ Ordered by centrality to the two co-primary personas. Paths cite the CLI surface
 - **Frequency / stakes**: many times a day; cross-checkout install confusion is the core pain.
 
 ## UC3 — When I adopt splashdown in a project, I want one command to set it all up, so I get value immediately (primary · onboarding, both)
-- **Trigger**: `splash init [preset]`.
+- **Trigger**: `splash init`.
 - **Path today**: scan workspace+frameworks → scaffold `splashdown.toml`(+`.local.toml`) →
   wire loader + post-checkout hook → grant sync-only clone trust → run wiring checks → first
   `sync` → print ports.
