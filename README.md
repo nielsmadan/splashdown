@@ -62,7 +62,7 @@ eval "$(splash completion bash)"
 
 ## Quick start
 
-Adoption takes two commands. At the Git worktree root of any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, and writes the project's loader and post-checkout hook configuration. It allocates nothing, so you can read and edit the generated recipe first. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports. Most popular frameworks are auto-detected, nothing to declare:
+Adoption takes two commands. At the Git worktree root of any project (single app or monorepo, web or backend or mobile), `splash init` scans the filesystem, scaffolds the recipe, and writes the project's loader and post-checkout hook configuration. It allocates nothing, so you can read and edit the generated recipe first. When the root already has `AGENTS.md` or an independent `CLAUDE.md`, init also adds concise framework-specific instructions so coding agents use the allocated ports, and it leaves that file alone when another tool generates it. Most popular frameworks are auto-detected, nothing to declare:
 
 ```sh
 splash init

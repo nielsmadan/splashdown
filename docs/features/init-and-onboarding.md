@@ -283,12 +283,30 @@ mobile profiles carry cannot install the local hook init just said `splash trust
 **Agent guidance.** After the generated recipe validates, every init path parses that recipe
 and derives a sentinel-wrapped Markdown block for port-bearing apps. The block uses each
 `[apps.*].resources` entry's actual resolved name and combines common
-no-numeric-port rules with `Profile.agent_guidance()` launch instructions. Existing root
+no-numeric-port rules with `Profile.agent_guidance()` launch instructions. It names the
+configured output destination (`Recipe.env_file`, so `init --env-file PATH` or
+`[project] env_file` is reflected) and only commands the 1.0 surface has: `splash env get KEY`,
+`splash env` (which lists variable names, not values), `splash sync`, and the profile's own
+`splash run` launches. It never embeds an
+allocated value, and it points agents at the project's existing scripts where those already
+consume the environment instead of wrapping them. Existing root
 `AGENTS.md` and independent `CLAUDE.md` files are updated; neither is created. A `CLAUDE.md`
 that imports `@AGENTS.md` has any previous complete block removed, then is skipped. Complete
 blocks are replaced idempotently, while malformed markers, symlinks, and non-regular files are
 left untouched with a warning. `init --overwrite` can replace or remove stale guidance, and `deinit`
 removes complete blocks even when the recipe cannot be parsed.
+
+A recipe with no port-bearing app renders nothing and any previous block is removed, so an
+empty block is never written and stale guidance never outlives the frameworks it described.
+Every sync rewrites the whole span between the sentinels, so a block from an older version is
+replaced wholesale rather than migrated.
+
+An instruction file another tool generates is recognized by the generator header that opens it
+and is left byte-identical by both sync and deinit, because an edit there would be destroyed on
+that tool's next sync. Splashdown reports the marker it recognized and tells the user to add the
+block to (or remove it from) the file's source instead. The recognition is generic: a leading
+HTML comment that attributes the file to a generator or forbids editing. There is no adapter for
+any particular tool, and a file that merely mentions generated content is edited normally.
 
 **Next-step report.** `_print_init_next_steps` (`commands.py`) closes every successful init
 path, on both the scanned and the structure-only monorepo route. It states that nothing is
