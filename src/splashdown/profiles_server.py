@@ -95,7 +95,7 @@ class SpringBootProfile(Profile):
     def resources(self, app: AppInventory) -> dict[str, dict[str, Any]]:
         return {"PORT": {"type": "port", "range": [8081, 8180]}}
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         return [_springboot_application_properties_check()]
 
 
@@ -189,7 +189,7 @@ class AspNetCoreProfile(Profile):
         # the default and look wired. 5174-5200 is vite's, so start above it.
         return {"ASPNETCORE_HTTP_PORTS": {"type": "port", "range": [5201, 5300]}}
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         if _aspnet_supports_http_ports(app.path):
             return [_aspnet_launch_settings_check()]
         return [_aspnet_legacy_tfm_check()]
@@ -295,6 +295,7 @@ def _aspnet_launch_settings_check() -> WiringCheck:
         detect=_aspnet_launch_settings_detect,
         autofix=_aspnet_launch_settings_autofix,
         manual_instructions=_aspnet_launch_settings_manual,
+        files=lambda cwd: (_launch_settings_path(cwd),),
     )
 
 

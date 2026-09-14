@@ -17,17 +17,26 @@
 ## Overview
 
 Allocating a free port is only half the job. Framework config can hardcode a default or override
-the inherited environment, causing the server to ignore `splashdown.env` without an obvious error.
+the inherited environment, causing the server to ignore the generated environment output without
+an obvious error.
 
 `splash doctor` evaluates small, framework-specific wiring facts. The read-only command prints a
 `✓`/`✗` report. `splash doctor --fix` applies only safe mechanical rewrites and prints manual
-instructions for report-only findings. Scanner-driven init runs the safe fixes after scaffolding so
-a fresh setup lands wired.
+instructions for report-only findings. Scanner-driven init runs the safe fixes after scaffolding,
+rechecks them, and names the files it changed, so ordinary adoption never needs a follow-up
+`splash doctor --fix`.
 
 Electron user-data isolation is adjacent but not a wiring check. Init only points at the opt-in
 recipe, because Splashdown cannot safely locate and rewrite an arbitrary Electron entrypoint.
 
 ## Behavior
+
+Checks that patch a consumer of generated values are built against the environment output
+destination this checkout writes, which `splash init --env-file` configures and the recipe records.
+A check judges the wiring against that path, so a project delivering values to `.env` is not
+reported wired because some file mentions `splashdown.env`, and a fix writes the path that
+resolves. Where the app sits below the project root the destination is spelled relative to the
+app directory.
 
 Checks come from the resolved app Profile plus project-level checks such as Compose and bootstrap
 hook readiness. Profile checks run in the resolved app directory. Project checks run at the
@@ -39,6 +48,12 @@ For each applicable check, doctor detects the current state. In fix mode it runs
 autofix, detects again, and reports either `fixed` or the remaining problem and manual action. One
 check raising or reading an unfamiliar shape is a `✗`, never a false green. Exit status is zero
 only when no applicable check remains in the problem state.
+
+Init runs the same detect, fix, recheck sequence over the project-owned checks of every detected
+app, skipping the activation-class hook check. Integration that already consumes the right values
+is recognized and left byte-identical. Integration that is unrecognized or unsupported is reported
+as a `✗` with the exact manual edit, never as readiness, and the file is left as the user wrote it.
+Files whose bytes changed are added to init's reported change list.
 
 Every writable check reopens its destination through the shared safe-edit path. Checkout-owned
 config paths must stay below the checkout with no symlinked parent, and every destination must be a
@@ -54,7 +69,7 @@ extension rules live in [Framework wiring engine](../tech/wiring.md).
 | Check | What it verifies | Fix policy |
 | --- | --- | --- |
 | Post-checkout hook | Exact event-aware Lefthook, Husky, or native hook readiness | Safe repair, except configured `core.hooksPath` |
-| React Native Metro | Metro config, package scripts, and `ios/.xcode.env` consume `RCT_METRO_PORT` | Safe recognized shapes; manual otherwise |
+| React Native Metro | Metro config, package scripts, and `ios/.xcode.env` consume `RCT_METRO_PORT` from the configured output | Safe recognized shapes; manual otherwise |
 | React Native/Expo Watchman | No existing Watchman root is an ancestor of the checkout | Report-only when Watchman is installed |
 | Vite | Shell environment reads and use of `WEB_DEV_PORT` | Env-read rewrite; port consumption report-only |
 | Astro | Top-level dev server port consumes `WEB_DEV_PORT` | Safe recognized object shapes |
@@ -78,7 +93,9 @@ receive an explicit env-only success verdict.
   an unknown name is a usage error and cannot pass as an empty check set.
 - Check lists are Profile-owned; there is no per-check toggle.
 - The React Native `ios/.xcode.env` block is sentinel-managed. Edits inside its marker pair are
-  overwritten by the next fix.
+  overwritten by the next fix, including when the configured destination changes.
+- There is no per-check destination override. Every destination-aware check reads the recipe's
+  single environment output setting.
 
 ## Gotchas
 
@@ -96,7 +113,17 @@ receive an explicit env-only success verdict.
 - **A configured `core.hooksPath` is never taken over.** Doctor reports it and prints manual
   event-forwarding instructions even in fix mode.
 - **Vite's env rewrite is narrow.** It changes matched `env.X` reads to `process.env.X` but leaves
-  the `loadEnv` call and deliberate shell-then-dotenv fallbacks intact.
+  the `loadEnv` call and deliberate shell-then-dotenv fallbacks intact. It is skipped when Vite
+  already loads the configured destination itself, which needs a destination Vite loads in
+  `development` mode sitting directly in the Vite root, a `loadEnv` call given that root, and the
+  empty prefix.
+- **`ios/.xcode.env` is read through its `RCT_METRO_PORT` assignments.** A dotenv path named for
+  any other purpose wires nothing, so it is ignored in both directions: it never counts as wiring,
+  and it never blocks the fix. A port wiring that reads another dotenv is a problem, not a
+  rewrite, because splashdown cannot tell whether that reference is load-bearing, so it preserves
+  the file and prints the edit.
+- **The React Native `package.json` fix reformats the file.** Stripping `--port` re-serializes the
+  JSON with two-space indent. Every key and value survives; the original layout does not.
 
 ## Why
 

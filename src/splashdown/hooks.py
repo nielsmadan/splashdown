@@ -440,13 +440,48 @@ def post_checkout_readiness(cwd: Path) -> HookReadiness:
     return HookReadiness(manager, False, "native post-checkout is missing or modified")
 
 
+_LEFTHOOK_MANUAL = (
+    "Forward the event from the post-checkout job in your lefthook configuration,\n"
+    "invoking a trusted absolute splash executable. lefthook substitutes `{1}`,\n"
+    "`{2}` and `{3}`; shell positionals expand to nothing there:\n"
+    '    run: /trusted/path/splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true\n'
+    "`splash doctor --fix` writes that job when the existing one is Splashdown's own."
+)
+_HUSKY_MANUAL = (
+    "Forward the event from .husky/post-checkout, invoking a trusted absolute\n"
+    "splash executable:\n"
+    '    /trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true\n'
+    "`splash doctor --fix` writes that hook when the existing one is Splashdown's own."
+)
+_HOOKSPATH_MANUAL = (
+    "Forward the event from the post-checkout hook in your core.hooksPath\n"
+    "directory, invoking a trusted absolute splash executable:\n"
+    '    /trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true\n'
+    "Splashdown never writes into a custom hooks path, so add that line yourself."
+)
+_NATIVE_MANUAL = (
+    "Forward the event from the hook this project owns, by\n"
+    "invoking a trusted absolute splash executable:\n"
+    '    /trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true\n'
+    "`splash trust` installs that line for you when the hook is Splashdown's own."
+)
+_MANAGER_MANUAL = {
+    "lefthook": _LEFTHOOK_MANUAL,
+    "husky": _HUSKY_MANUAL,
+    "core-hookspath-other": _HOOKSPATH_MANUAL,
+}
+
+
 def post_checkout_manual_instructions(cwd: Path) -> str:
     readiness = post_checkout_readiness(cwd)
-    return (
-        f"{readiness.detail}. Run `splash doctor --fix` when Splashdown owns the hook.\n"
-        "For a custom hook, invoke a trusted absolute splash executable as:\n"
-        '    /trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true\n'
-        "Otherwise run `splash bootstrap` manually after creating a worktree."
+    body = _MANAGER_MANUAL.get(readiness.manager, _NATIVE_MANUAL)
+    head, *rest = body.splitlines()
+    return "\n".join(
+        [
+            f"{readiness.detail}. {head}",
+            *rest,
+            "Otherwise run `splash bootstrap` manually after creating a worktree.",
+        ]
     )
 
 
@@ -502,25 +537,23 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
         _wire_post_checkout_native(cwd)
 
 
+def _report_manual_hook_activation(cwd: Path) -> None:
+    """The manager's own configuration is tracked project content, so activation
+    never rewrites it. Name the edit that finishes the integration instead."""
+    first, *rest = post_checkout_manual_instructions(cwd).splitlines()
+    print(f"note: {first}", file=sys.stderr)
+    for line in rest:
+        print(f"      {line}", file=sys.stderr)
+
+
 def _activate_post_checkout_hook(cwd: Path) -> bool:
     readiness = post_checkout_readiness(cwd)
     if readiness.ready:
         if readiness.manager == "lefthook":
             return _run_lefthook_install(cwd)
         return True
-    if readiness.manager == "lefthook":
-        print(
-            "note: lefthook needs `splash doctor --fix` before "
-            "event-aware automatic handling; use `splash bootstrap` manually",
-            file=sys.stderr,
-        )
-        return False
-    if readiness.manager == "husky":
-        print(
-            "note: .husky/post-checkout needs `splash doctor --fix` "
-            "before event-aware automatic handling; use `splash bootstrap` manually",
-            file=sys.stderr,
-        )
+    if readiness.manager in {"lefthook", "husky"}:
+        _report_manual_hook_activation(cwd)
         return False
     if readiness.manager == "core-hookspath-other":
         print(

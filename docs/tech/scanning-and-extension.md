@@ -142,8 +142,12 @@ defines eight extension points and flags; subclasses override the ones that appl
   port ranges start above the framework's default port so splashdown never allocates the
   conventional default.
 - `targets(app)` — default device targets emitted during scanner-driven init.
-- `wiring_checks(app)` — `WiringCheck`s the doctor runs to patch
-  consumer configs (see `docs/tech/wiring.md`).
+- `wiring_checks(app, env_file)` — `WiringCheck`s that `splash init` and `splash doctor` run
+  to patch consumer configs (see `docs/tech/wiring.md`). `env_file` is the environment output
+  destination this checkout writes, already spelled relative to `app.path`. A check that patches
+  a consumer of those values must bind it — through a factory closing over it, as
+  `_rn_xcode_check` and `_vite_process_env_check` do — instead of assuming the default name;
+  a check that patches nothing destination-specific ignores the argument.
 - `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
   Init supplies the recipe's actual names after collision mangling. Common guidance is
   generated automatically for every app that references a port resource.
@@ -423,7 +427,9 @@ never run an approval command.
   `Profile` subclass in the appropriate implementation module and an entry in
   `_BUILTIN_PROFILES` at the right precedence position.
   Framework coverage belongs in scanner-driven init. If it has consumer configs to patch, also add
-  `WiringCheck`s in `wiring.py` and return them from `wiring_checks()`.
+  `WiringCheck`s in `wiring.py` and return them from `wiring_checks()`. A check whose autofix
+  writes a file should set `files` so init can report what it changed, and a check that names the
+  environment output must build itself from the `env_file` argument.
 - **Capabilities do not compete with Profiles.** Electron must remain a secondary
   capability so it cannot shadow a renderer framework such as Vite or Next.js.
 - **`ReactNativeProfile` and `ExpoProfile` both emit `RCT_METRO_PORT`.** The allocation

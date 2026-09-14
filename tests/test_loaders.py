@@ -112,7 +112,7 @@ def test_android_native_profile_detects_via_gradle(tmp_path):
 def test_react_native_profile_inherits_existing_wiring_checks(tmp_path):
     (tmp_path / "package.json").write_text('{"dependencies": {"react-native": "0.83"}}')
     app = sd.AppInventory(name="main", path=tmp_path, profile="react-native")
-    checks = sd.PROFILES["react-native"].wiring_checks(app)
+    checks = sd.PROFILES["react-native"].wiring_checks(app, "splashdown.env")
     ids = {c.id for c in checks}
     assert "hook" in ids
     assert "rn-metro-config" in ids

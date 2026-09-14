@@ -24,15 +24,16 @@
 
 Allocating a free port is only half the job. Most frameworks hardcode the dev
 port — or override the env var — in one or two config files, so the value
-splashdown writes into `splashdown.env` is silently ignored and the server boots
-on its old default. `wiring.py` defines the checks behind `splash doctor`: a
+splashdown writes into the configured environment output is silently ignored and
+the server boots on its old default. `wiring.py` defines the checks behind `splash doctor`: a
 per-framework registry of small, inspectable facts about a project ("does
 `metro.config.js` read `RCT_METRO_PORT`?") that the tool can detect and, where the
 rewrite is safe and mechanical, auto-patch. `doctor.py` selects and executes those
 checks. `doctor` (no flag) is a read-only
 `✓`/`✗` report; `doctor --fix` applies the safe autofixes and prints manual
 snippets for the rest; `init` runs each detected app's safe fixes after
-scaffolding so a fresh setup lands wired.
+scaffolding, rechecks them, and reports what it changed so a fresh setup lands
+wired without a follow-up `doctor --fix`.
 
 ## How it works (current state)
 
@@ -41,10 +42,31 @@ scaffolding so a fresh setup lands wired.
 `WiringCheck` (`wiring.py`) is a `NamedTuple` carrying everything `doctor` needs
 to handle one fact: an `id`, a human `description`, `applies(cwd) -> bool`,
 `detect(cwd) -> ("ok"|"problem", detail)`, an optional `autofix(cwd) -> None`,
-`manual_instructions(cwd) -> str`, and an `activation` flag. The contract is
-deliberately three-state per check: not-applicable (skip), ok, or problem — with
-two escape hatches on a problem (an autofix that may exist, and manual
-instructions that always do).
+`manual_instructions(cwd) -> str`, an `activation` flag, and `files(cwd)`. The
+contract is deliberately three-state per check: not-applicable (skip), ok, or
+problem — with two escape hatches on a problem (an autofix that may exist, and
+manual instructions that always do).
+
+`files` names the project files this check's autofix may rewrite. The init pass
+snapshots those bytes around the fix so it can report the files it changed
+without parsing each autofix's own stderr message. Report-only checks leave it at
+the `_no_wiring_files` default.
+
+#### Threading the environment output destination
+
+The callables take only `cwd`, so a check that must know where this checkout
+writes its environment output closes over the destination at construction time.
+`Profile.wiring_checks(app, env_file)` carries it, `rn_wiring_checks(env_file)`
+builds the RN list around it, and `_vite_process_env_check(env_file)` and
+`_rn_xcode_check(env_file)` are the two factories that consume it. Checks that
+are destination-independent ignore the argument and stay module-level constants.
+
+`env_file` reaches a check spelled relative to the directory that check inspects,
+which is not always the project root: `wiring_destination(check_dir, project_dir,
+env_file)` does that conversion, so a React Native app at `apps/mobile` gets
+`../../splashdown.env` and patches a path that resolves. `commands.py` computes it
+per app from the recipe's `env_file`; `doctor.py` computes it from
+`_doctor_env_file`, which reads the same recipe key.
 
 `activation` classifies what the autofix writes. A check is `activation=True` when
 its repair touches the local checkout rather than project-owned, committable
@@ -62,9 +84,11 @@ also `Optional` in the type but every shipped check supplies one.
 
 ### Check registries and the profile boundary
 
-Checks are owned by **Profiles**, not by `doctor` directly. The RN checks live in
-a module-level list `_RN_WIRING_CHECKS` (`wiring.py`) that is populated by a
-sequence of top-level `.append(...)` calls as each `rn-*` helper is defined. The shared `_HOOK_WIRING_CHECK`
+Checks are owned by **Profiles**, not by `doctor` directly. The
+destination-independent RN checks live in a module-level list `_RN_WIRING_CHECKS`
+(`wiring.py`) that is populated by a sequence of top-level `.append(...)` calls as
+each `rn-*` helper is defined; `rn_wiring_checks(env_file)` returns that list plus
+the destination-bound `rn-xcode-env` check. The shared `_HOOK_WIRING_CHECK`
 (`wiring.py`) is a single check reused by native Profiles that otherwise have no
 per-checkout wiring; `_RN_WIRING_CHECKS` appends that same object, so the RN and
 native hook checks cannot drift apart.
@@ -80,9 +104,9 @@ This is **order-dependent**, and the coupling runs through `profiles_mobile.py`:
   Importing `wiring` executes its entire module body — including every
   `.append()` — before the profile module resumes, so by the time any Profile method runs
   the list is fully built.
-- `ReactNativeProfile.wiring_checks` returns
-  `list(_RN_WIRING_CHECKS)` — a snapshot copy taken at call time. The native
-  Profiles return `[_HOOK_WIRING_CHECK]`.
+- `ReactNativeProfile.wiring_checks` returns `rn_wiring_checks(env_file)` — a new
+  list built at call time around a snapshot of the registry. The native Profiles
+  return `[_HOOK_WIRING_CHECK]`.
 
 Practically: any new RN check must be appended in `wiring.py`'s module body (not
 lazily, not from another module after import), because Profiles read the populated
@@ -95,7 +119,9 @@ list. Web, server, and Compose checks are built by `profiles_web.py`,
 checks are collected first, and a recipe with `[bootstrap]` adds the hook check. Framework
 resolution then selects the app directory and Profile checks. When framework detection is
 ambiguous or unavailable, project checks still run; doctor asks for `--framework` only when there
-are no project checks to perform. Framework and project checks are combined by id so the shared
+are no project checks to perform. Profile checks are built with the recipe's environment output
+destination, spelled relative to the resolved app directory, so doctor judges the wiring against
+the file this checkout actually writes. Framework and project checks are combined by id so the shared
 hook check is emitted once. A resolved framework with no checks exits 0 with either the env-only
 positive verdict or a neutral "no checks defined" note.
 
@@ -116,8 +142,11 @@ The run loop in `doctor.py` walks each check:
    snippet, count it bad.
 
 Exit code is 0 only when nothing is left in the `problem` state.
-Init uses `_apply_init_wiring_checks` to run the same Profile-owned safe autofixes per app
-(see `docs/features/framework-wiring.md`).
+Init uses `_apply_init_wiring_checks` to run the same Profile-owned safe autofixes per app.
+`_apply_init_wiring_check` detects, fixes, then detects again: a fix that did not resolve the
+problem prints `✗` with the check's manual instructions rather than passing silently, and the
+files whose bytes changed are appended to `InitReport.changed` (see
+`docs/features/framework-wiring.md`).
 
 Every writable check uses `safe_files.py` for its edit. The helper rejects a final symlink,
 non-regular destination, configured-root escape, or symlinked parent component; opens existing files with
@@ -152,14 +181,28 @@ mode applied to hook replacements rather than a follow-up `chmod`.
   `start`/`ios`/`android`, plus any script invoking `react-native start`. The
   `react-native start` match (`wiring.py`) is deliberately narrow so `--port` on
   unrelated tools (`react-native-test-runner --port 4000`) is left alone. Autofix
-  re-serializes `package.json` with 2-space indent.
+  re-serializes `package.json` with 2-space indent, which reformats the whole file;
+  every key and value survives, the layout may not.
 - **`rn-xcode-env`** (`_rn_xcode_detect` in `wiring.py`) —
-  `ios/.xcode.env` should source `RCT_METRO_PORT` from this checkout's
-  `splashdown.env`. Detection treats *any* mention of `splashdown.env` as ok
-  (sentinel block, hand-written conditional, whatever). Autofix (`wiring.py`)
+  `ios/.xcode.env` should source `RCT_METRO_PORT` from the environment output this
+  checkout writes. Detection splits the file into shell statements
+  (`_xcode_statements`) and collects a dotenv path only from a statement that
+  assigns or exports `RCT_METRO_PORT`, and only when every `if` guarding that
+  statement itself names `RCT_METRO_PORT` or a dotenv path. A path named for any
+  other purpose — `source "${SRCROOT}/../splashdown.env"`, `export
+  ENVFILE=.env.staging`, a build-configuration-only branch — wires nothing, so it
+  neither proves wiring nor blocks repair. Collected paths are resolved
+  (`${SRCROOT}` and its aliases point at `ios/`, so `${SRCROOT}/../x.env` is the
+  app's `x.env`) and compared with the configured destination. A match is `ok`
+  however it was written — sentinel block, hand-written conditional, whatever. A
+  port wiring that reads some *other* dotenv is a problem, not an `ok`: it is
+  wiring this check did not recognize as reading the right file, and autofix leaves
+  it byte-identical so the manual instructions can name the edit. Otherwise autofix
   strips any static literal export, strips any prior sentinel block, then appends a
-  sentinel-wrapped managed block (`_XCODE_BLOCK`, `wiring.py`): honor a value
-  already set by `run-ios`, else read `splashdown.env`, else fall back to 8083.
+  sentinel-wrapped managed block (`_xcode_block(env_file)`, `wiring.py`): honor a
+  value already set by `run-ios`, else read the configured destination, else fall
+  back to 8083. A reference through an unrecognized shell variable resolves to no
+  path, so it reads as unparsed rather than as wired.
 - **`watchman-root`** (`watchman_watch_root` in `runtime_checks.py`) — when Watchman is installed,
   runs `watchman --no-spawn --no-local watch-list` with a three-second timeout. JSON must contain
   a list of absolute root paths without an error. Resolved roots that are strict ancestors of
@@ -171,7 +214,22 @@ mode applied to hook replacements rather than a follow-up `chmod`.
   `profiles_web.py`) —
   rewrites the `loadEnv` idiom `env.X` to `process.env.X` in `vite.config.{ts,js,mjs}`
   so values loaded into the shell by mise/direnv/devbox reach Vite. The matcher
-  skips already-fixed `process.env.X`.
+  skips already-fixed `process.env.X`. The rewrite is skipped entirely when Vite
+  already loads the configured destination itself. That needs all three of: a
+  destination named `.env`, `.env.local`, `.env.development` or
+  `.env.development.local` directly in the Vite root (the dev server runs in
+  `development` mode, so `.env.production` and friends are never loaded); a
+  `loadEnv` call whose directory argument resolves to that root
+  (`_vite_dir_is_app_root` accepts `process.cwd()`, `__dirname`,
+  `import.meta.dirname`, `"."`, and `path.resolve`/`path.join`/`path.dirname`
+  wrappers around them, and rejects any other directory); and the empty prefix
+  `""`, the one spelling that exposes names without Vite's `VITE_` prefix.
+  Arguments are split by `_js_call_arguments`, which balances nested parentheses,
+  so `loadEnv(mode, process.cwd(), "")` is recognized. A bare identifier is resolved
+  once through its `const`/`let`/`var` binding in the same file; a directory reached
+  any other way is not recognized as the root, so the rewrite proceeds. Any condition failing means
+  the rewrite proceeds, because `loadEnv` from another directory or with the
+  default prefix would leave `env.WEB_DEV_PORT` undefined.
 - **`vite-port-wired`** (`profiles_web.py`) — report-only assertion that Vite names the
   allocated port variable. It accepts bracket access and destructuring, but never invents a
   `server.port` block in arbitrary config.
@@ -221,9 +279,14 @@ still runs the Vite check while user-data isolation stays an opt-in recipe the u
 ### Idempotency: sentinel-wrapped patches
 
 The `ios/.xcode.env` autofix is idempotent by sentinel pair. The managed block is
+rendered per destination by `_xcode_block(env_file)`, so repointing a checkout at a
+new output rewrites the block in place rather than stacking a second one. It is
 bracketed by `# >>> splashdown-managed RCT_METRO_PORT >>>` /
 `# <<< splashdown-managed RCT_METRO_PORT <<<` (`wiring.py`), and
-`_XCODE_BLOCK_RE` (`wiring.py`) is a non-greedy `DOTALL` match across that pair.
+`_XCODE_BLOCK_RE` (`wiring.py`) is a non-greedy `DOTALL` match across that pair,
+falling back to the paragraph starting at the opening sentinel when the closing one
+has been deleted, so a half-removed block is still recognized as splashdown's own
+rather than as foreign wiring that blocks repair.
 Autofix strips any prior block by that regex before re-appending, so re-running
 `--fix` replaces the block's contents in place rather than stacking copies. The
 sentinels also document, in the file itself, which lines are tool-managed versus
@@ -246,11 +309,11 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
 
 ## Key entry points
 
-- `wiring.py` — `WiringCheck`, the RN check registry, concrete detect/autofix helpers, and
-  `_HOOK_WIRING_CHECK`.
+- `wiring.py` — `WiringCheck`, the RN check registry, `rn_wiring_checks`,
+  `wiring_destination`, concrete detect/autofix helpers, and `_HOOK_WIRING_CHECK`.
 - `doctor.py` — `cmd_doctor`, framework/project target resolution, deduplication, and rendering.
 - `hooks.py` — shared hook readiness, exact manager parsing, repair, and manual instructions.
-- `profiles_mobile.py` — Profiles snapshot/reuse the registries via `list(...)` /
+- `profiles_mobile.py` — Profiles reuse the registries via `rn_wiring_checks(env_file)` /
   `[_HOOK_WIRING_CHECK]`.
 - `profiles_web.py` / `profiles_server.py` / `profiles_compose.py` — framework and
   project-specific checks.

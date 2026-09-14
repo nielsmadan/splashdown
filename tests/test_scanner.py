@@ -132,7 +132,9 @@ export default defineConfig(({ mode }) => {
     (tmp_path / "vite.config.ts").symlink_to(outside)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     check = next(
-        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-config-process-env"
     )
 
     with pytest.raises(ValueError, match="symlink"):
@@ -639,7 +641,7 @@ def test_springboot_wiring_check_flags_missing_port_placeholder(tmp_path):
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
     check = next(
         c
-        for c in sd.PROFILES["springboot"].wiring_checks(app)
+        for c in sd.PROFILES["springboot"].wiring_checks(app, "splashdown.env")
         if c.id == "springboot-application-properties"
     )
     status, _ = check.detect(tmp_path)
@@ -655,7 +657,7 @@ def test_springboot_wiring_check_accepts_env_placeholder(tmp_path):
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
     check = next(
         c
-        for c in sd.PROFILES["springboot"].wiring_checks(app)
+        for c in sd.PROFILES["springboot"].wiring_checks(app, "splashdown.env")
         if c.id == "springboot-application-properties"
     )
     status, _ = check.detect(tmp_path)
@@ -719,7 +721,9 @@ def _make_aspnet(tmp_path, launch_settings):
     (tmp_path / "Properties" / "launchSettings.json").write_text(json.dumps(launch_settings))
     app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
     return next(
-        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+        c
+        for c in sd.PROFILES["aspnetcore"].wiring_checks(app, "splashdown.env")
+        if c.id == "aspnet-launch-settings"
     )
 
 
@@ -832,7 +836,9 @@ def test_aspnet_wiring_check_reads_bom_and_crlf_file(tmp_path):
     settings.write_bytes(_real_launch_settings_bytes())
     app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
     check = next(
-        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+        c
+        for c in sd.PROFILES["aspnetcore"].wiring_checks(app, "splashdown.env")
+        if c.id == "aspnet-launch-settings"
     )
     assert check.detect(tmp_path)[0] == "problem"
     assert "http" in check.detect(tmp_path)[1]
@@ -857,7 +863,9 @@ def test_aspnet_wiring_autofix_keeps_lf_file_lf(tmp_path):
     )
     app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
     check = next(
-        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+        c
+        for c in sd.PROFILES["aspnetcore"].wiring_checks(app, "splashdown.env")
+        if c.id == "aspnet-launch-settings"
     )
     check.autofix(tmp_path)
     raw = settings.read_bytes()
@@ -871,7 +879,9 @@ def test_aspnet_wiring_check_reports_malformed_json(tmp_path):
     (tmp_path / "Properties" / "launchSettings.json").write_text("{ not json")
     app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
     check = next(
-        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+        c
+        for c in sd.PROFILES["aspnetcore"].wiring_checks(app, "splashdown.env")
+        if c.id == "aspnet-launch-settings"
     )
     assert check.detect(tmp_path)[0] == "problem"
 
@@ -937,13 +947,15 @@ def test_laravel_claims_both_dev_server_ports(tmp_path):
         "SERVER_PORT": {"type": "port", "range": [8001, 8100]},
         "WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]},
     }
-    assert [c.id for c in sd.PROFILES["laravel"].wiring_checks(app)] == ["vite-port-wired"]
+    assert [c.id for c in sd.PROFILES["laravel"].wiring_checks(app, "splashdown.env")] == [
+        "vite-port-wired"
+    ]
 
 
 def test_laravel_api_only_skips_the_vite_port(tmp_path):
     app = _laravel_app(tmp_path, vite=False)
     assert "WEB_DEV_PORT" not in sd.PROFILES["laravel"].resources(app)
-    assert sd.PROFILES["laravel"].wiring_checks(app) == []
+    assert sd.PROFILES["laravel"].wiring_checks(app, "splashdown.env") == []
 
 
 def test_plain_vite_app_is_not_claimed_by_laravel(tmp_path):
@@ -985,7 +997,9 @@ def test_aspnet_legacy_tfm_never_autofixes(tmp_path):
     settings.write_text(original)
     app = sd.AppInventory(name="api", path=tmp_path, profile="aspnetcore")
     check = next(
-        c for c in sd.PROFILES["aspnetcore"].wiring_checks(app) if c.id == "aspnet-launch-settings"
+        c
+        for c in sd.PROFILES["aspnetcore"].wiring_checks(app, "splashdown.env")
+        if c.id == "aspnet-launch-settings"
     )
     assert check.autofix is None
     status, detail = check.detect(tmp_path)
@@ -998,7 +1012,11 @@ def _angular_app(tmp_path, start_script):
     (tmp_path / "angular.json").write_text('{"projects": {"app": {}}}')
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"start": start_script}}))
     app = sd.AppInventory(name="web", path=tmp_path, profile="angular")
-    check = next(c for c in sd.PROFILES["angular"].wiring_checks(app) if c.id == "angular-pkg-port")
+    check = next(
+        c
+        for c in sd.PROFILES["angular"].wiring_checks(app, "splashdown.env")
+        if c.id == "angular-pkg-port"
+    )
     return check
 
 
@@ -1072,7 +1090,11 @@ def test_angular_autofix_survives_a_package_json_with_no_scripts(tmp_path):
     (tmp_path / "angular.json").write_text("{}")
     (tmp_path / "package.json").write_text("{}")
     app = sd.AppInventory(name="web", path=tmp_path, profile="angular")
-    check = next(c for c in sd.PROFILES["angular"].wiring_checks(app) if c.id == "angular-pkg-port")
+    check = next(
+        c
+        for c in sd.PROFILES["angular"].wiring_checks(app, "splashdown.env")
+        if c.id == "angular-pkg-port"
+    )
     check.autofix(tmp_path)
     assert check.detect(tmp_path)[0] == "problem"
 
@@ -1117,7 +1139,11 @@ def test_nuxt_beats_vite_when_both_configs_present(tmp_path):
 def _deno_app(tmp_path, config, name="deno.json"):
     (tmp_path / name).write_text(config)
     app = sd.AppInventory(name="api", path=tmp_path, profile="deno")
-    return next(c for c in sd.PROFILES["deno"].wiring_checks(app) if c.id == "deno-port-wired")
+    return next(
+        c
+        for c in sd.PROFILES["deno"].wiring_checks(app, "splashdown.env")
+        if c.id == "deno-port-wired"
+    )
 
 
 def test_deno_profile_detects_json_and_jsonc(tmp_path, tmp_path_factory):
@@ -1259,7 +1285,7 @@ def _springboot_check(tmp_path, files):
     app = sd.AppInventory(name="api", path=tmp_path, profile="springboot")
     return next(
         c
-        for c in sd.PROFILES["springboot"].wiring_checks(app)
+        for c in sd.PROFILES["springboot"].wiring_checks(app, "splashdown.env")
         if c.id == "springboot-application-properties"
     )
 

@@ -4,14 +4,14 @@ import sys
 from pathlib import Path
 
 from .catalog import PROFILES
-from .constants import RECIPE_NAME
+from .constants import ENV_FILE_NAME, RECIPE_NAME
 from .errors import DeviceError
 from .inventory import AppInventory
 from .launching import detect_framework, resolve_app_dir
 from .profiles import compose_wiring_checks
 from .recipe import Recipe
 from .runtime_checks import WATCHMAN_CHECK
-from .wiring import _HOOK_WIRING_CHECK, WiringCheck
+from .wiring import _HOOK_WIRING_CHECK, WiringCheck, run_wiring_detect, wiring_destination
 
 
 def _resolve_doctor_framework(cwd: Path, override: str | None) -> str | None:
@@ -30,19 +30,17 @@ def _resolve_doctor_target(cwd: Path, override: str | None) -> tuple[str, Path]:
     return (framework, resolve_app_dir(cwd, recipe, framework))
 
 
-def _run_detect(check: WiringCheck, cwd: Path) -> tuple[str, str]:
-    try:
-        return check.detect(cwd)
-    except Exception as error:  # noqa: BLE001
-        return ("problem", f"check could not run: {error}")
+def _doctor_env_file(cwd: Path) -> str:
+    recipe_path = cwd / RECIPE_NAME
+    return Recipe.load(recipe_path).env_file if recipe_path.exists() else ENV_FILE_NAME
 
 
-def _wiring_checks_for_framework(framework: str, cwd: Path) -> list[WiringCheck]:
+def _wiring_checks_for_framework(framework: str, cwd: Path, env_file: str) -> list[WiringCheck]:
     profile = PROFILES.get(framework)
     if profile is None:
         return []
     app = AppInventory(name="main", path=cwd, profile=framework)
-    return list(profile.wiring_checks(app))
+    return list(profile.wiring_checks(app, env_file))
 
 
 def _project_check_targets(cwd: Path) -> list[tuple[WiringCheck, Path]]:
@@ -65,8 +63,9 @@ def _resolve_check_targets(
         if not project_targets:
             raise
         return (None, cwd, project_targets)
+    destination = wiring_destination(app_dir, cwd, _doctor_env_file(cwd))
     framework_targets = [
-        (check, app_dir) for check in _wiring_checks_for_framework(framework, app_dir)
+        (check, app_dir) for check in _wiring_checks_for_framework(framework, app_dir, destination)
     ]
     if framework in {"react-native", "expo"}:
         project_targets.append((WATCHMAN_CHECK, cwd))
@@ -83,7 +82,7 @@ def _run_doctor_targets(targets: list[tuple[WiringCheck, Path]], *, fix: bool) -
         if not check.applies(check_dir):
             print(f"  -  {check.id}: not applicable", file=sys.stderr)
             continue
-        status, detail = _run_detect(check, check_dir)
+        status, detail = run_wiring_detect(check, check_dir)
         if status == "ok":
             print(f"  ✓  {check.id}: {check.description}", file=sys.stderr)
             continue
@@ -94,7 +93,7 @@ def _run_doctor_targets(targets: list[tuple[WiringCheck, Path]], *, fix: bool) -
                 print(f"  ✗  {check.id}: autofix failed: {error}", file=sys.stderr)
                 bad += 1
                 continue
-            status_after, detail_after = _run_detect(check, check_dir)
+            status_after, detail_after = run_wiring_detect(check, check_dir)
             if status_after == "ok":
                 print(f"  ✓  {check.id}: {check.description} (fixed)", file=sys.stderr)
                 continue

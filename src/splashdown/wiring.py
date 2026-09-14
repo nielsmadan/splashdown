@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import posixpath
 import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from .hooks import (
+    _detect_hook_manager,
     _ensure_post_checkout_hook,
+    _lefthook_config_path,
+    _native_hook_path,
     _nested_project,
     post_checkout_manual_instructions,
     post_checkout_readiness,
@@ -18,6 +23,16 @@ from .safe_files import atomic_write_text, read_editable_text
 # per-framework spec shipped with the tool. Each WiringCheck names
 # a small fact about the project (e.g. "metro.config.js consumes RCT_METRO_PORT")
 # that splashdown can inspect and, where safely mechanical, repair.
+
+
+def _no_wiring_files(cwd: Path) -> tuple[Path, ...]:
+    return ()
+
+
+def wiring_destination(check_dir: Path, project_dir: Path, env_file: str) -> str:
+    """`env_file`, which the recipe states relative to the project, spelled relative
+    to the directory a check inspects."""
+    return os.path.relpath(project_dir / env_file, check_dir).replace(os.sep, "/")
 
 
 class WiringCheck(NamedTuple):
@@ -34,9 +49,22 @@ class WiringCheck(NamedTuple):
     # True when the fix activates the local checkout instead of writing
     # project-owned configuration, so `splash init` skips it.
     activation: bool = False
+    # The project files this check's autofix may rewrite, so a caller can report
+    # what changed without parsing each fix's own message.
+    files: Callable[[Path], tuple[Path, ...]] = _no_wiring_files
 
 
-# RN checks accumulate as helpers are defined; ReactNativeProfile returns a copy after module import completes.
+def run_wiring_detect(check: WiringCheck, cwd: Path) -> tuple[str, str]:
+    """A detect that raises has not parsed the project, so it reports a problem
+    rather than aborting the command that asked."""
+    try:
+        return check.detect(cwd)
+    except Exception as error:  # noqa: BLE001
+        return ("problem", f"check could not run: {error}")
+
+
+# The destination-independent RN checks accumulate as helpers are defined;
+# `rn_wiring_checks` adds the ones bound to the environment output destination.
 _RN_WIRING_CHECKS: list[WiringCheck] = []
 
 
@@ -186,6 +214,18 @@ def _rn_hook_applies(cwd: Path) -> bool:
     return not _nested_project(cwd)
 
 
+def _rn_hook_files(cwd: Path) -> tuple[Path, ...]:
+    manager = _detect_hook_manager(cwd)
+    if manager == "lefthook":
+        return (_lefthook_config_path(cwd),)
+    if manager == "husky":
+        return (cwd / ".husky" / "post-checkout",)
+    if manager == "core-hookspath-other":
+        return ()
+    native = _native_hook_path(cwd)
+    return () if native is None else (native,)
+
+
 _HOOK_WIRING_CHECK = WiringCheck(
     id="hook",
     description="post-checkout forwards Git events to Splashdown",
@@ -194,6 +234,7 @@ _HOOK_WIRING_CHECK = WiringCheck(
     autofix=_autofix_ensure_post_checkout_hook,
     manual_instructions=_rn_hook_manual,
     activation=True,
+    files=_rn_hook_files,
 )
 
 _RN_WIRING_CHECKS.append(_HOOK_WIRING_CHECK)
@@ -213,6 +254,10 @@ _METRO_PORT_LINE = "port: Number(process.env.RCT_METRO_PORT) || 8081,"
 
 def _rn_metro_applies(cwd: Path) -> bool:
     return (cwd / "metro.config.js").exists()
+
+
+def _rn_metro_files(cwd: Path) -> tuple[Path, ...]:
+    return (cwd / "metro.config.js",)
 
 
 def _rn_metro_detect(cwd: Path) -> tuple[str, str]:
@@ -285,6 +330,7 @@ _RN_WIRING_CHECKS.append(
         detect=_rn_metro_detect,
         autofix=_rn_metro_autofix,
         manual_instructions=_rn_metro_manual,
+        files=_rn_metro_files,
     ),
 )
 
@@ -300,6 +346,10 @@ _PKG_RN_START_RE = re.compile(r"\breact-native\s+start\b")
 
 def _rn_pkg_applies(cwd: Path) -> bool:
     return (cwd / "package.json").exists()
+
+
+def _rn_pkg_files(cwd: Path) -> tuple[Path, ...]:
+    return (cwd / "package.json",)
 
 
 def _pkg_scripts_with_port(data: dict[str, Any]) -> list[str]:
@@ -361,6 +411,7 @@ _RN_WIRING_CHECKS.append(
         detect=_rn_pkg_detect,
         autofix=_rn_pkg_autofix,
         manual_instructions=_rn_pkg_manual,
+        files=_rn_pkg_files,
     ),
 )
 
@@ -370,20 +421,30 @@ _RN_WIRING_CHECKS.append(
 # what's tool-managed vs hand-edited.
 _XCODE_BEGIN = "# >>> splashdown-managed RCT_METRO_PORT >>>"
 _XCODE_END = "# <<< splashdown-managed RCT_METRO_PORT <<<"
-_XCODE_BLOCK = f"""{_XCODE_BEGIN}
+
+
+def _xcode_block(env_file: str) -> str:
+    return f"""{_XCODE_BEGIN}
 # splashdown ships this block. RCT_METRO_PORT is baked into the iOS binary via
 # GCC_PREPROCESSOR_DEFINITIONS (RCTBundleURLProvider's defaultPort), so the app
 # must be rebuilt after a port change. Honour a value set by `react-native
-# run-ios`; else read this checkout's splashdown.env; else fall back to 8083.
-if [ -z "${{RCT_METRO_PORT:-}}" ] && [ -f "${{SRCROOT}}/../splashdown.env" ]; then
-  export RCT_METRO_PORT="$(grep '^RCT_METRO_PORT=' "${{SRCROOT}}/../splashdown.env" | cut -d= -f2)"
+# run-ios`; else read this checkout's {env_file}; else fall back to 8083.
+if [ -z "${{RCT_METRO_PORT:-}}" ] && [ -f "${{SRCROOT}}/../{env_file}" ]; then
+  export RCT_METRO_PORT="$(grep '^RCT_METRO_PORT=' "${{SRCROOT}}/../{env_file}" | cut -d= -f2)"
 fi
 export RCT_METRO_PORT="${{RCT_METRO_PORT:-8083}}"
 {_XCODE_END}
 """
 
+
+# A block whose closing sentinel the user deleted still ends at the first blank
+# line: splashdown writes the block as one unbroken paragraph.
 _XCODE_BLOCK_RE = re.compile(
-    re.escape(_XCODE_BEGIN) + r".*?" + re.escape(_XCODE_END) + r"\n?",
+    re.escape(_XCODE_BEGIN)
+    + r"(?:.*?"
+    + re.escape(_XCODE_END)
+    + r"|[^\n]*(?:\n[^\n\S]*\S[^\n]*)*)"
+    + r"\n?",
     re.DOTALL,
 )
 # A *static literal* export — `export RCT_METRO_PORT=8083`, no variable
@@ -393,55 +454,182 @@ _XCODE_LITERAL_EXPORT_RE = re.compile(
     r"^[ \t]*export[ \t]+RCT_METRO_PORT[ \t]*=[ \t]*\d+[ \t]*\n?",
     re.MULTILINE,
 )
+# Every dotenv path the file names, however it is spelled.
+_XCODE_ENV_TOKEN_RE = re.compile(r"[\w$./{}~-]*\.env[\w.-]*")
+# A statement that puts a value into RCT_METRO_PORT. Only such a statement ties a
+# dotenv path to the Metro port; every other mention wires nothing.
+_XCODE_PORT_ASSIGN_RE = re.compile(r"(?:export[ \t]+)?RCT_METRO_PORT[ \t]*=")
+# Xcode build variables that all resolve to the directory holding the project,
+# which for a React Native app is `ios/` — the directory `.xcode.env` sits in.
+_XCODE_SRCROOT_VARS = (
+    "${SRCROOT}",
+    "$SRCROOT",
+    "${PROJECT_DIR}",
+    "$PROJECT_DIR",
+    "${SOURCE_ROOT}",
+    "$SOURCE_ROOT",
+)
 
 
 def _rn_xcode_applies(cwd: Path) -> bool:
     return (cwd / "ios" / ".xcode.env").exists()
 
 
-def _rn_xcode_detect(cwd: Path) -> tuple[str, str]:
-    text = _strip_hash_comments((cwd / "ios" / ".xcode.env").read_text())
-    # A reference to splashdown.env means *somebody* wired it to the per-checkout
-    # env file — sentinel block, hand-written conditional, etc. All fine.
-    if "splashdown.env" in text:
-        return ("ok", "ios/.xcode.env reads RCT_METRO_PORT from splashdown.env")
-    if _XCODE_LITERAL_EXPORT_RE.search(text):
+def _rn_xcode_files(cwd: Path) -> tuple[Path, ...]:
+    return (cwd / "ios" / ".xcode.env",)
+
+
+def _xcode_ref_paths(token: str) -> set[str]:
+    """Every app-relative path a dotenv reference in `ios/.xcode.env` may name.
+    A reference through an unrecognized shell variable names nothing this can
+    compare, so it resolves to no path and the wiring reads as unparsed."""
+    for var in _XCODE_SRCROOT_VARS:
+        if token.startswith(f"{var}/"):
+            return {posixpath.normpath(posixpath.join("ios", token[len(var) + 1 :]))}
+    if token.startswith("$"):
+        return set()
+    return {posixpath.normpath(token), posixpath.normpath(posixpath.join("ios", token))}
+
+
+def _split_unquoted(line: str, sep: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    quote = ""
+    for ch in line:
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == sep:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
+def _xcode_statements(text: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Each shell statement in `ios/.xcode.env` with the conditions guarding it."""
+    statements: list[tuple[str, tuple[str, ...]]] = []
+    guards: list[str] = []
+    for line in text.splitlines():
+        for segment in _split_unquoted(line, ";"):
+            word = segment.strip()
+            while word and word.split()[0] in {"then", "else", "do"}:
+                word = word.split(None, 1)[1] if " " in word else ""
+            if not word:
+                continue
+            head = word.split()[0]
+            if head in {"if", "elif"}:
+                condition = word.split(None, 1)[1] if " " in word else ""
+                if head == "elif" and guards:
+                    guards[-1] = condition
+                else:
+                    guards.append(condition)
+                continue
+            if head in {"fi", "done"}:
+                if guards:
+                    guards.pop()
+                continue
+            statements.append((word, tuple(guards)))
+    return statements
+
+
+def _xcode_guard_applies(condition: str) -> bool:
+    """A guard that names neither RCT_METRO_PORT nor a dotenv path is testing
+    something else — a build configuration, say — so a Debug build may never
+    reach what it wraps."""
+    return "RCT_METRO_PORT" in condition or bool(_XCODE_ENV_TOKEN_RE.search(condition))
+
+
+def _xcode_port_refs(text: str) -> list[str]:
+    """Dotenv paths named by a statement that assigns RCT_METRO_PORT, in file
+    order. A path named for any other purpose wires nothing, so it is not a
+    reference at all."""
+    found: list[str] = []
+    for statement, guards in _xcode_statements(text):
+        if not _XCODE_PORT_ASSIGN_RE.match(statement):
+            continue
+        if not all(_xcode_guard_applies(guard) for guard in guards):
+            continue
+        for token in _XCODE_ENV_TOKEN_RE.findall(" ".join((*guards, statement))):
+            if token not in found:
+                found.append(token)
+    return found
+
+
+def _xcode_reads(text: str, env_file: str) -> bool:
+    wanted = posixpath.normpath(env_file)
+    return any(wanted in _xcode_ref_paths(token) for token in _xcode_port_refs(text))
+
+
+def _xcode_foreign_refs(raw: str) -> list[str]:
+    """Dotenv paths the RCT_METRO_PORT wiring reads outside splashdown's own block,
+    in file order. The block is removed before comments are stripped: its
+    sentinels are comment lines."""
+    return _xcode_port_refs(_strip_hash_comments(_XCODE_BLOCK_RE.sub("", raw)))
+
+
+def _xcode_status(raw: str, env_file: str) -> tuple[str, str]:
+    if _xcode_reads(_strip_hash_comments(raw), env_file):
+        return ("ok", f"ios/.xcode.env reads RCT_METRO_PORT from {env_file}")
+    foreign = _xcode_foreign_refs(raw)
+    if foreign:
+        return (
+            "problem",
+            f"ios/.xcode.env reads {', '.join(foreign)}, not the configured {env_file}",
+        )
+    if _XCODE_LITERAL_EXPORT_RE.search(raw):
         return ("problem", "ios/.xcode.env statically exports a literal RCT_METRO_PORT")
-    return ("problem", "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown")
+    return ("problem", f"ios/.xcode.env doesn't wire RCT_METRO_PORT to {env_file}")
 
 
-def _rn_xcode_autofix(cwd: Path) -> None:
+def _rn_xcode_detect(cwd: Path, env_file: str) -> tuple[str, str]:
+    return _xcode_status((cwd / "ios" / ".xcode.env").read_text(), env_file)
+
+
+def _rn_xcode_autofix(cwd: Path, env_file: str) -> None:
     import sys  # noqa: PLC0415
 
     path = cwd / "ios" / ".xcode.env"
     text = read_editable_text(path, root=cwd)
-    if "splashdown.env" in text:
+    if _xcode_reads(_strip_hash_comments(text), env_file) or _xcode_foreign_refs(text):
         return
-    # Strip any literal-digit export so the file has one source of truth.
     text = _XCODE_LITERAL_EXPORT_RE.sub("", text)
-    # Strip any prior sentinel block (only reachable if sentinels existed but no
-    # splashdown.env reference — defensive).
     text = _XCODE_BLOCK_RE.sub("", text)
     text = text.rstrip() + ("\n\n" if text.strip() else "")
-    text += _XCODE_BLOCK
+    text += _xcode_block(env_file)
     atomic_write_text(path, text, root=cwd)
-    print("rewrote ios/.xcode.env (splashdown-managed RCT_METRO_PORT block)", file=sys.stderr)
+    print(f"rewrote ios/.xcode.env (RCT_METRO_PORT read from {env_file})", file=sys.stderr)
 
 
-def _rn_xcode_manual(cwd: Path) -> str:
+def _rn_xcode_manual(cwd: Path, env_file: str) -> str:
     return (
-        "Edit ios/.xcode.env so RCT_METRO_PORT is honoured-if-set, else read from\n"
-        "splashdown.env, else fall back to 8083. See README ('Framework wiring')."
+        f"Edit ios/.xcode.env so RCT_METRO_PORT is honoured-if-set, else read from\n"
+        f"{env_file}, else fall back to 8083:\n"
+        f'    if [ -z "${{RCT_METRO_PORT:-}}" ] && [ -f "${{SRCROOT}}/../{env_file}" ]; then\n'
+        f"      export RCT_METRO_PORT=\"$(grep '^RCT_METRO_PORT=' "
+        f'"${{SRCROOT}}/../{env_file}" | cut -d= -f2)"\n'
+        f"    fi\n"
+        f'    export RCT_METRO_PORT="${{RCT_METRO_PORT:-8083}}"'
     )
 
 
-_RN_WIRING_CHECKS.append(
-    WiringCheck(
+def _rn_xcode_check(env_file: str) -> WiringCheck:
+    return WiringCheck(
         id="rn-xcode-env",
-        description="ios/.xcode.env wires RCT_METRO_PORT to splashdown.env",
+        description=f"ios/.xcode.env wires RCT_METRO_PORT to {env_file}",
         applies=_rn_xcode_applies,
-        detect=_rn_xcode_detect,
-        autofix=_rn_xcode_autofix,
-        manual_instructions=_rn_xcode_manual,
-    ),
-)
+        detect=lambda cwd: _rn_xcode_detect(cwd, env_file),
+        autofix=lambda cwd: _rn_xcode_autofix(cwd, env_file),
+        manual_instructions=lambda cwd: _rn_xcode_manual(cwd, env_file),
+        files=_rn_xcode_files,
+    )
+
+
+def rn_wiring_checks(env_file: str) -> list[WiringCheck]:
+    """The React Native checks, with the destination-dependent ones bound to the
+    environment output this checkout writes."""
+    return [*_RN_WIRING_CHECKS, _rn_xcode_check(env_file)]

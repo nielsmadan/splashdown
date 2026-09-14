@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import DeviceError
@@ -46,7 +46,7 @@ class AstroProfile(Profile):
         # the default and look wired.
         return {"WEB_DEV_PORT": {"type": "port", "range": [4322, 4400]}}
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         return [_astro_port_check()]
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
@@ -62,6 +62,7 @@ def _astro_port_check() -> WiringCheck:
         detect=_astro_port_detect,
         autofix=_astro_port_autofix,
         manual_instructions=_astro_port_manual,
+        files=lambda cwd: _config_files(_astro_config_path(cwd)),
     )
 
 
@@ -103,9 +104,9 @@ def _astro_port_manual(cwd: Path) -> str:
 
 _VITE_CONFIG_NAMES = ("vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts")
 # Matches `env.VAR_NAME` access (the loadEnv idiom). The wiring autofix rewrites
-# these to `process.env.VAR_NAME` so splashdown.env + mise loading works.
-# Negative lookbehind on `process.` ensures already-fixed `process.env.VAR` is
-# not re-matched.
+# these to `process.env.VAR_NAME` so a loader-delivered environment reaches the
+# config. Negative lookbehind on `process.` ensures already-fixed
+# `process.env.VAR` is not re-matched.
 _VITE_ENV_ACCESS_RE = re.compile(r"(?<!process\.)(?<!\.)env\.([A-Z][A-Z0-9_]*)\b")
 
 
@@ -115,6 +116,10 @@ def _vite_unfixed_env_matches(text: str) -> list[re.Match[str]]:
     rewriting its second term would silently delete the dotenv layer."""
     covered = set(re.findall(r"process\.env\.([A-Z][A-Z0-9_]*)\b", text))
     return [m for m in _VITE_ENV_ACCESS_RE.finditer(text) if m.group(1) not in covered]
+
+
+def _config_files(path: Path | None) -> tuple[Path, ...]:
+    return () if path is None else (path,)
 
 
 def _vite_config_path(app_path: Path) -> Path | None:
@@ -142,9 +147,9 @@ class ViteProfile(Profile):
             out["API_DEV_PORT"] = {"type": "template", "template": "{{ PORT }}"}
         return out
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         ports = [name for name, spec in self.resources(app).items() if spec.get("type") == "port"]
-        return [_vite_process_env_check(), *(_vite_port_wired_check(p) for p in ports)]
+        return [_vite_process_env_check(env_file), *(_vite_port_wired_check(p) for p in ports)]
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
         port = _profile_port(port_names, "WEB_DEV_PORT")
@@ -177,32 +182,147 @@ def _vite_port_wired_check(port_var: str) -> WiringCheck:
     )
 
 
-def _vite_process_env_check() -> WiringCheck:
+# Vite loads `.env`, `.env.local`, `.env.<mode>` and `.env.<mode>.local` from the
+# directory `loadEnv` is given, and `loadEnv(mode, dir, "")` is the one spelling
+# that exposes names without Vite's `VITE_` prefix. Where the destination is one
+# of those names in the app root and the config loads that root with the empty
+# prefix, an `env.X` access already reads the destination and rewriting it to
+# `process.env.X` would break the wiring. `splash run` starts the dev server, so
+# the mode is `development`.
+_VITE_DEV_ENV_NAMES = frozenset(
+    {".env", ".env.local", ".env.development", ".env.development.local"}
+)
+_VITE_LOAD_ENV_RE = re.compile(r"\bloadEnv\s*\(")
+# loadEnv(mode, envDir, prefixes) — the prefixes argument is the third.
+_VITE_LOAD_ENV_ARITY = 3
+_VITE_IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*")
+_VITE_APP_ROOT_EXPRS = frozenset(
+    {"process.cwd()", "__dirname", "import.meta.dirname", '""', "''", '"."', "'.'", '"./"', "'./'"}
+)
+_VITE_CONFIG_FILE_EXPRS = frozenset(
+    {"__filename", "import.meta.filename", "fileURLToPath(import.meta.url)"}
+)
+_VITE_DIR_WRAPPERS = ("path.resolve", "path.normalize", "path.join", "resolve", "normalize", "join")
+
+
+def _js_call_arguments(text: str, open_paren: int) -> list[str] | None:
+    """The top-level arguments of the call whose `(` sits at `open_paren`, or None
+    when the parentheses do not balance."""
+    depth = 0
+    args: list[str] = []
+    current: list[str] = []
+    quote = ""
+    i = open_paren
+    while i < len(text):
+        ch = text[i]
+        if quote and ch == "\\":
+            current.append(text[i : i + 2])
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+            if depth == 1:
+                i += 1
+                continue
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(current))
+                return [a.strip() for a in args]
+        elif ch == "," and depth == 1:
+            args.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    return None
+
+
+def _vite_dir_is_app_root(expr: str) -> bool:
+    expr = expr.strip()
+    if expr in _VITE_APP_ROOT_EXPRS:
+        return True
+    for wrapper in _VITE_DIR_WRAPPERS:
+        if not expr.startswith(f"{wrapper}("):
+            continue
+        args = _js_call_arguments(expr, len(wrapper))
+        if args is None or not expr.endswith(")"):
+            return False
+        return all(_vite_dir_is_app_root(arg) for arg in args if arg)
+    if expr.startswith("path.dirname("):
+        args = _js_call_arguments(expr, len("path.dirname"))
+        return bool(
+            expr.endswith(")") and args and args[0] in _VITE_CONFIG_FILE_EXPRS and len(args) == 1
+        )
+    return False
+
+
+def _vite_loads_destination(env_file: str) -> bool:
+    name = PurePosixPath(env_file).name
+    return env_file == name and name in _VITE_DEV_ENV_NAMES
+
+
+def _vite_binding_value(text: str, name: str) -> str | None:
+    match = re.search(rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*([^;\n]+)", text)
+    return match.group(1).strip().rstrip(",") if match else None
+
+
+def _vite_loads_app_root_without_prefix(text: str) -> bool:
+    for match in _VITE_LOAD_ENV_RE.finditer(text):
+        args = _js_call_arguments(text, match.end() - 1)
+        if args is None or len(args) < _VITE_LOAD_ENV_ARITY or args[2] not in {"''", '""'}:
+            continue
+        directory = args[1]
+        if _vite_dir_is_app_root(directory):
+            return True
+        if _VITE_IDENTIFIER_RE.fullmatch(directory):
+            bound = _vite_binding_value(text, directory)
+            if bound is not None and _vite_dir_is_app_root(bound):
+                return True
+    return False
+
+
+def _vite_reads_destination_itself(text: str, env_file: str) -> bool:
+    return _vite_loads_destination(env_file) and _vite_loads_app_root_without_prefix(text)
+
+
+def _vite_process_env_check(env_file: str) -> WiringCheck:
     return WiringCheck(
         id="vite-config-process-env",
         description="vite.config reads env vars from process.env, not loadEnv",
         applies=lambda cwd: _vite_config_path(cwd) is not None,
-        detect=_vite_process_env_detect,
-        autofix=_vite_process_env_autofix,
+        detect=lambda cwd: _vite_process_env_detect(cwd, env_file),
+        autofix=lambda cwd: _vite_process_env_autofix(cwd, env_file),
         manual_instructions=_vite_process_env_manual,
+        files=lambda cwd: _config_files(_vite_config_path(cwd)),
     )
 
 
-def _vite_process_env_detect(cwd: Path) -> tuple[str, str]:
+def _vite_process_env_detect(cwd: Path, env_file: str) -> tuple[str, str]:
     cfg = _vite_config_path(cwd)
     if cfg is None:
         raise DeviceError("vite.config.* not found")
     text = _strip_js_comments(cfg.read_text())
+    if _vite_reads_destination_itself(text, env_file):
+        return ("ok", f"vite.config loads {env_file} itself through loadEnv")
     if "loadEnv" in text and _vite_unfixed_env_matches(text):
         return ("problem", "vite.config uses loadEnv; should read process.env")
     return ("ok", "vite.config reads process.env")
 
 
-def _vite_process_env_autofix(cwd: Path) -> None:
+def _vite_process_env_autofix(cwd: Path, env_file: str) -> None:
     cfg = _vite_config_path(cwd)
     if cfg is None:
         raise DeviceError("vite.config.* not found")
     text = read_editable_text(cfg, root=cwd)
+    if _vite_reads_destination_itself(_strip_js_comments(text), env_file):
+        return
     # Rewrite every `env.VAR` access to `process.env.VAR`, skipping names already
     # read from process.env elsewhere. Keep loadEnv lines untouched (the user may
     # want them for other purposes) — the new access path just bypasses them.
@@ -245,7 +365,7 @@ class LaravelProfile(Profile):
             out["WEB_DEV_PORT"] = {"type": "port", "range": [5174, 5200]}
         return out
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         # SERVER_PORT needs no patching; the Vite half does. With no vite config
         # the empty list plus env_only gives the green "env-only" verdict.
         if _vite_config_path(app.path) is None:
@@ -300,7 +420,7 @@ class AngularProfile(Profile):
         # Skips Angular's own 4200 so an unwired app can't look wired.
         return {"WEB_DEV_PORT": {"type": "port", "range": [4201, 4300]}}
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         return [_angular_pkg_port_check()]
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
@@ -342,6 +462,7 @@ def _angular_pkg_port_check() -> WiringCheck:
         detect=_angular_pkg_port_detect,
         autofix=_angular_pkg_port_autofix,
         manual_instructions=_angular_pkg_port_manual,
+        files=lambda cwd: (cwd / "package.json",),
     )
 
 
@@ -442,7 +563,7 @@ class DenoProfile(Profile):
         # this is only useful once the wiring check below is satisfied.
         return {"PORT": {"type": "port", "range": [8001, 8100]}}
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         return [_deno_port_check()]
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
@@ -471,6 +592,7 @@ def _deno_port_check() -> WiringCheck:
         detect=_deno_port_detect,
         autofix=_deno_port_autofix,
         manual_instructions=_deno_port_manual,
+        files=lambda cwd: _config_files(_deno_config_path(cwd)),
     )
 
 

@@ -1628,7 +1628,7 @@ export default defineConfig(({ mode }) => {
 });
 """)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    checks = sd.PROFILES["vite"].wiring_checks(app)
+    checks = sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
     check = next(c for c in checks if c.id == "vite-config-process-env")
     status, _ = check.detect(tmp_path)
     assert status == "problem"
@@ -1645,13 +1645,161 @@ export default defineConfig(({ mode }) => {
 """)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     check = next(
-        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-config-process-env"
     )
     check.autofix(tmp_path)
     text = (tmp_path / "vite.config.ts").read_text()
     assert "process.env.WEB_DEV_PORT" in text
     status, _ = check.detect(tmp_path)
     assert status == "ok"
+
+
+_VITE_LOAD_ENV_CONFIG = """\
+import { defineConfig, loadEnv } from "vite";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, import.meta.dirname, "");
+  return { server: { port: Number(env.WEB_DEV_PORT ?? 5173) } };
+});
+"""
+
+
+def _vite_process_env_check(tmp_path, env_file: str):
+    app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
+    return next(
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, env_file)
+        if c.id == "vite-config-process-env"
+    )
+
+
+def test_vite_loadenv_is_left_alone_when_vite_loads_the_destination_itself(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(_VITE_LOAD_ENV_CONFIG)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_text() == _VITE_LOAD_ENV_CONFIG
+
+
+def test_vite_loadenv_is_rewritten_for_a_destination_vite_does_not_load(tmp_path):
+    (tmp_path / "vite.config.ts").write_text(_VITE_LOAD_ENV_CONFIG)
+    check = _vite_process_env_check(tmp_path, "splashdown.env")
+
+    assert check.detect(tmp_path)[0] == "problem"
+
+    check.autofix(tmp_path)
+    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+
+
+def test_vite_loadenv_with_vites_default_prefix_is_still_rewritten(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace(', import.meta.dirname, ""', ", import.meta.dirname")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path)[0] == "problem"
+
+    check.autofix(tmp_path)
+    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+
+
+def test_vite_loadenv_from_process_cwd_loads_the_destination(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "process.cwd()")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_text() == config
+
+
+def test_vite_loadenv_through_path_resolve_loads_the_destination(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "path.resolve(__dirname)")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_text() == config
+
+
+def test_vite_loadenv_through_a_local_binding_loads_the_destination(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace(
+        "export default defineConfig",
+        "const envDir = process.cwd();\nexport default defineConfig",
+    ).replace("loadEnv(mode, import.meta.dirname,", "loadEnv(mode, envDir,")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_text() == config
+
+
+def test_vite_loadenv_through_a_binding_naming_another_directory_is_rewritten(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace(
+        "export default defineConfig",
+        'const envDir = path.resolve(__dirname, "config");\nexport default defineConfig',
+    ).replace("loadEnv(mode, import.meta.dirname,", "loadEnv(mode, envDir,")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path)[0] == "problem"
+
+    check.autofix(tmp_path)
+    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+
+
+def test_vite_loadenv_from_another_directory_is_still_rewritten(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", '"./config"')
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path)[0] == "problem"
+
+    check.autofix(tmp_path)
+    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+
+
+def test_vite_loadenv_from_a_subdirectory_of_the_root_is_still_rewritten(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", 'path.resolve(__dirname, "env")')
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env")
+
+    assert check.detect(tmp_path)[0] == "problem"
+
+    check.autofix(tmp_path)
+    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+
+
+def test_vite_loadenv_does_not_cover_a_mode_specific_destination(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "process.cwd()")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env.production")
+
+    assert check.detect(tmp_path)[0] == "problem"
+
+    check.autofix(tmp_path)
+    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+
+
+def test_vite_loadenv_covers_the_development_mode_destination(tmp_path):
+    config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "process.cwd()")
+    (tmp_path / "vite.config.ts").write_text(config)
+    check = _vite_process_env_check(tmp_path, ".env.development")
+
+    assert check.detect(tmp_path) == (
+        "ok",
+        "vite.config loads .env.development itself through loadEnv",
+    )
+
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_text() == config
 
 
 def test_vite_wiring_check_preserves_process_env_fallback_chain(tmp_path):
@@ -1669,7 +1817,9 @@ export default defineConfig(({ mode }) => {
     (tmp_path / "vite.config.ts").write_text(original)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     check = next(
-        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-config-process-env"
     )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
@@ -1691,7 +1841,9 @@ export default defineConfig(({ mode }) => {
 """)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     check = next(
-        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-config-process-env"
     )
     assert check.detect(tmp_path)[0] == "problem"
     check.autofix(tmp_path)
@@ -1708,7 +1860,11 @@ def test_vite_port_wired_check_flags_config_that_never_names_the_port(tmp_path):
         'import { defineConfig } from "vite";\nexport default defineConfig({ plugins: [] });\n'
     )
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-port-wired")
+    check = next(
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-port-wired"
+    )
     status, detail = check.detect(tmp_path)
     assert status == "problem"
     assert "WEB_DEV_PORT" in detail
@@ -1729,7 +1885,7 @@ def test_vite_checks_pass_on_correctly_wired_configs(tmp_path, body):
     # `doctor --fix` fail permanently on a working project.
     (tmp_path / "vite.config.ts").write_text(body)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    for check in sd.PROFILES["vite"].wiring_checks(app):
+    for check in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env"):
         assert check.detect(tmp_path)[0] == "ok", check.id
     assert sd.cmd_doctor(tmp_path, fix=True, framework_override="vite") == 0
 
@@ -1748,7 +1904,9 @@ export default defineConfig(({ mode }) => {
 """)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     check = next(
-        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-config-process-env"
     )
     check.autofix(tmp_path)
     text = (tmp_path / "vite.config.ts").read_text()
@@ -1762,7 +1920,9 @@ def test_vite_wiring_check_idempotent(tmp_path):
     )
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     check = next(
-        c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-config-process-env"
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-config-process-env"
     )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
@@ -2421,41 +2581,160 @@ def test_deinit_keeps_a_user_authored_integration_init_reused(tmp_path, registry
     assert (co / name).read_text() == existing
 
 
-def test_init_reports_a_wiring_check_that_reads_the_default_destination(tmp_path, capsys):
+def _rn_project_with_xcode_env(tmp_path, content: str) -> None:
     (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
     (tmp_path / "ios").mkdir()
-    (tmp_path / "ios" / ".xcode.env").write_text("export NODE_BINARY=$(command -v node)\n")
+    (tmp_path / "ios" / ".xcode.env").write_text(content)
+
+
+def _working_xcode_wiring(env_file: str) -> str:
+    return (
+        "export NODE_BINARY=node\n"
+        f'if [ -z "${{RCT_METRO_PORT:-}}" ] && [ -f "${{SRCROOT}}/../{env_file}" ]; then\n'
+        "  export RCT_METRO_PORT=\"$(grep '^RCT_METRO_PORT=' "
+        f'"${{SRCROOT}}/../{env_file}" | cut -d= -f2)"\n'
+        "fi\n"
+    )
+
+
+def test_init_wires_the_xcode_env_to_the_configured_destination(tmp_path):
+    _rn_project_with_xcode_env(tmp_path, "export NODE_BINARY=$(command -v node)\n")
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert "export NODE_BINARY=$(command -v node)" in text
+    assert '"${SRCROOT}/../.env"' in text
+    assert "splashdown.env" not in text
+    assert "ios/.xcode.env" in report.changed
+    assert sd._rn_xcode_detect(tmp_path, ".env") == (
+        "ok",
+        "ios/.xcode.env reads RCT_METRO_PORT from .env",
+    )
+
+
+def test_init_leaves_a_working_xcode_integration_byte_identical(tmp_path):
+    content = _working_xcode_wiring(".env")
+    _rn_project_with_xcode_env(tmp_path, content)
+    before = (tmp_path / "ios" / ".xcode.env").read_bytes()
+
+    report = sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
+
+    assert (tmp_path / "ios" / ".xcode.env").read_bytes() == before
+    assert "ios/.xcode.env" not in report.changed
+
+
+def test_init_reports_xcode_wiring_that_names_another_file(tmp_path, capsys):
+    content = _working_xcode_wiring("other.env")
+    _rn_project_with_xcode_env(tmp_path, content)
 
     sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"))
 
     err = capsys.readouterr().err
-    assert (
-        "note: rn-xcode-env wires a fixed splashdown.env path, which this checkout does not "
-        "write; repoint that configuration at .env yourself" in err
+    assert "rn-xcode-env: ios/.xcode.env reads ${SRCROOT}/../other.env" in err
+    assert "not the configured .env" in err
+    assert "Edit ios/.xcode.env" in err
+    assert (tmp_path / "ios" / ".xcode.env").read_text() == content
+
+
+def _stub_init_report():
+    return sd.InitReport(
+        selection=sd.LoaderSelection("none", "unconfigured", ()),
+        loader_status="nothing",
     )
 
 
-def test_the_default_destination_wiring_note_survives_a_reworded_description():
-    ids = {
-        check.id
-        for name, profile in sd.PROFILES.items()
-        for check in profile.wiring_checks(
-            sd.AppInventory(name="app", path=Path("."), profile=name)
-        )
-    }
-    assert ids >= sd.commands._DEFAULT_DESTINATION_WIRING_CHECKS
-
-
-def test_the_default_destination_note_is_keyed_on_the_check_id(capsys):
+def test_init_reports_a_wiring_autofix_that_did_not_resolve_the_problem(tmp_path, capsys):
+    config = tmp_path / "wired.conf"
+    config.write_text("unwired\n")
+    detects = iter([("problem", "not wired"), ("problem", "still not wired")])
     check = sd.WiringCheck(
-        id="rn-xcode-env",
-        description="reworded with no destination filename in it",
-        applies=lambda _path: True,
-        detect=lambda _path: ("ok", ""),
-        autofix=None,
-        manual_instructions=None,
+        id="stubborn",
+        description="a check whose autofix changes nothing",
+        applies=lambda _cwd: True,
+        detect=lambda _cwd: next(detects),
+        autofix=lambda _cwd: None,
+        manual_instructions=lambda _cwd: "Wire it by hand.",
+        files=lambda cwd: (cwd / "wired.conf",),
     )
+    report = _stub_init_report()
 
-    sd.commands._warn_wiring_reads_default_destination(check, ".env")
+    sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
 
-    assert "note: rn-xcode-env wires a fixed splashdown.env path" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "stubborn: still not wired" in err
+    assert "Wire it by hand." in err
+    assert config.read_text() == "unwired\n"
+    assert report.changed == []
+
+
+def test_init_reports_a_wiring_check_whose_detect_raises(tmp_path, capsys):
+    def detect(_cwd):
+        raise sd.DeviceError("vite.config.* not found")
+
+    check = sd.WiringCheck(
+        id="exploding",
+        description="a check that cannot inspect the project",
+        applies=lambda _cwd: True,
+        detect=detect,
+        autofix=None,
+        manual_instructions=lambda _cwd: "Wire it by hand.",
+    )
+    report = _stub_init_report()
+
+    sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
+
+    err = capsys.readouterr().err
+    assert "exploding: check could not run: vite.config.* not found" in err
+    assert "Wire it by hand." in err
+
+
+def test_init_reports_a_wiring_recheck_whose_detect_raises(tmp_path, capsys):
+    results = iter([("problem", "not wired")])
+
+    def detect(_cwd):
+        try:
+            return next(results)
+        except StopIteration:
+            raise sd.DeviceError("vite.config.* disappeared") from None
+
+    check = sd.WiringCheck(
+        id="vanishing",
+        description="a check whose target disappears during the fix",
+        applies=lambda _cwd: True,
+        detect=detect,
+        autofix=lambda _cwd: None,
+        manual_instructions=lambda _cwd: "Wire it by hand.",
+    )
+    report = _stub_init_report()
+
+    sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
+
+    err = capsys.readouterr().err
+    assert "vanishing: check could not run: vite.config.* disappeared" in err
+    assert "Wire it by hand." in err
+
+
+def test_init_reports_the_file_a_failed_wiring_autofix_rewrote(tmp_path, capsys):
+    config = tmp_path / "wired.conf"
+    config.write_text("unwired\n")
+    detects = iter([("problem", "not wired"), ("problem", "still not wired")])
+
+    def autofix(cwd):
+        (cwd / "wired.conf").write_text("half wired\n")
+
+    check = sd.WiringCheck(
+        id="halfway",
+        description="a check whose autofix edits the file without finishing the job",
+        applies=lambda _cwd: True,
+        detect=lambda _cwd: next(detects),
+        autofix=autofix,
+        manual_instructions=lambda _cwd: "Finish it by hand.",
+        files=lambda cwd: (cwd / "wired.conf",),
+    )
+    report = _stub_init_report()
+
+    sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
+
+    assert "halfway: still not wired" in capsys.readouterr().err
+    assert report.changed == ["wired.conf"]

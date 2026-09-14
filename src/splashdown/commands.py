@@ -83,7 +83,7 @@ from .target_commands import cmd_target_prune as cmd_target_prune  # noqa: PLC04
 from .target_commands import cmd_target_refresh as cmd_target_refresh  # noqa: PLC0414
 from .target_commands import cmd_targets_list as cmd_targets_list  # noqa: PLC0414
 from .targets import _load_recipe_or_empty
-from .wiring import WiringCheck
+from .wiring import WiringCheck, run_wiring_detect, wiring_destination
 
 
 def _create_local_skeleton(cwd: Path) -> bool:
@@ -545,45 +545,71 @@ def cmd_init(
             _print_electron_isolation_pointer(inv)
 
             if any(app.profile != "unknown" for app in inv.apps):
-                _apply_init_wiring_checks(inv, env_file)
+                _apply_init_wiring_checks(inv, cwd, env_file, report)
             sync_agent_guidance(cwd, Recipe.load(recipe_path))
         _print_init_next_steps(cwd, worktree_root, env_file)
         return report
 
 
-def _apply_init_wiring_checks(inv: ProjectInventory, env_file: str) -> None:
+def _apply_init_wiring_checks(
+    inv: ProjectInventory, cwd: Path, env_file: str, report: InitReport
+) -> None:
     """Apply the project-configuration wiring checks for every known-profile app
-    found during init. Activation checks belong to `splash trust` and `splash doctor`."""
+    found during init, against the environment output this checkout writes.
+    Activation checks belong to `splash trust` and `splash doctor`."""
     for app in inv.apps:
         if app.profile == "unknown":
             continue
-        checks = PROFILES[app.profile].wiring_checks(app)
-        for check in checks:
+        destination = wiring_destination(app.path, cwd, env_file)
+        for check in PROFILES[app.profile].wiring_checks(app, destination):
             if check.activation or not check.applies(app.path):
                 continue
-            status, _ = check.detect(app.path)
-            if status != "ok" and check.autofix is not None:
-                try:
-                    check.autofix(app.path)
-                except Exception as e:  # noqa: BLE001
-                    print(f"  ✗ {check.id}: autofix failed: {e}", file=sys.stderr)
-            _warn_wiring_reads_default_destination(check, env_file)
+            _apply_init_wiring_check(check, app.path, cwd, report)
 
 
-# Checks whose fix writes a hardcoded `splashdown.env` path; `wiring.py` owns the checks.
-_DEFAULT_DESTINATION_WIRING_CHECKS = frozenset({"rn-xcode-env"})
-
-
-def _warn_wiring_reads_default_destination(check: WiringCheck, env_file: str) -> None:
-    """A framework patch that names `splashdown.env` reads a file this checkout
-    does not write once the destination is configured elsewhere."""
-    if env_file == ENV_FILE_NAME or check.id not in _DEFAULT_DESTINATION_WIRING_CHECKS:
+def _apply_init_wiring_check(
+    check: WiringCheck, app_dir: Path, cwd: Path, report: InitReport
+) -> None:
+    """Detect, fix what is safely mechanical, then detect again. A fix that did not
+    resolve the problem is reported with the edit the user has to make by hand."""
+    status, detail = run_wiring_detect(check, app_dir)
+    if status == "ok":
         return
-    print(
-        f"  note: {check.id} wires a fixed {ENV_FILE_NAME} path, which this checkout does not "
-        f"write; repoint that configuration at {env_file} yourself",
-        file=sys.stderr,
-    )
+    if check.autofix is None:
+        _report_wiring_problem(check, app_dir, detail)
+        return
+    before = {path: _file_bytes(path) for path in check.files(app_dir)}
+    try:
+        check.autofix(app_dir)
+    except Exception as error:  # noqa: BLE001
+        print(f"  ✗ {check.id}: autofix failed: {error}", file=sys.stderr)
+        _print_wiring_instructions(check, app_dir)
+        return
+    for path, original in before.items():
+        if _file_bytes(path) != original:
+            report.changed.append(os.path.relpath(path, cwd))
+    status, detail = run_wiring_detect(check, app_dir)
+    if status != "ok":
+        _report_wiring_problem(check, app_dir, detail)
+
+
+def _file_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _report_wiring_problem(check: WiringCheck, app_dir: Path, detail: str) -> None:
+    print(f"  ✗ {check.id}: {detail}", file=sys.stderr)
+    _print_wiring_instructions(check, app_dir)
+
+
+def _print_wiring_instructions(check: WiringCheck, app_dir: Path) -> None:
+    if check.manual_instructions is None:
+        return
+    for line in check.manual_instructions(app_dir).splitlines():
+        print(f"      {line}", file=sys.stderr)
 
 
 def cmd_deinit(cwd: Path, registry: Registry) -> int:

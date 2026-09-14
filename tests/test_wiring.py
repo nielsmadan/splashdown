@@ -393,6 +393,28 @@ def test_doctor_uses_filesystem_when_no_recipe(tmp_path):
     assert sd.cmd_doctor(tmp_path) == 1
 
 
+def test_hook_wiring_check_names_the_lefthook_config_its_autofix_writes(tmp_path):
+    (tmp_path / "lefthook.yml").write_text("post-checkout:\n  commands:\n")
+
+    assert sd.wiring._HOOK_WIRING_CHECK.files(tmp_path) == (tmp_path / "lefthook.yml",)
+
+
+def test_hook_wiring_check_names_the_husky_hook_its_autofix_writes(tmp_path):
+    (tmp_path / ".husky").mkdir()
+
+    assert sd.wiring._HOOK_WIRING_CHECK.files(tmp_path) == (tmp_path / ".husky" / "post-checkout",)
+
+
+def test_hook_wiring_check_names_the_native_hook_its_autofix_writes(tmp_path):
+    _git_init(tmp_path)
+
+    files = sd.wiring._HOOK_WIRING_CHECK.files(tmp_path)
+
+    assert len(files) == 1
+    assert files[0].name == "post-checkout"
+    assert files[0].parent.name == "hooks"
+
+
 def test_rn_hook_clean_detect_problem(tmp_path):
     status, _ = sd._rn_hook_detect(tmp_path)
     assert status == "problem"
@@ -510,7 +532,7 @@ def test_rn_metro_autofix_replaces_literal(tmp_path):
         (
             Path("ios/.xcode.env"),
             "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n",
-            sd._rn_xcode_autofix,
+            lambda cwd: sd._rn_xcode_autofix(cwd, "splashdown.env"),
         ),
     ],
 )
@@ -536,7 +558,7 @@ def test_rn_xcode_autofix_refuses_symlinked_parent_directory(tmp_path):
     (tmp_path / "ios").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="symlink"):
-        sd._rn_xcode_autofix(tmp_path)
+        sd._rn_xcode_autofix(tmp_path, "splashdown.env")
 
     assert config.read_text() == original
 
@@ -674,19 +696,19 @@ def test_rn_xcode_not_applicable_without_file(tmp_path):
 
 def test_rn_xcode_detect_problem_for_static_export(tmp_path):
     _make_ios(tmp_path, "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n")
-    status, detail = sd._rn_xcode_detect(tmp_path)
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
     assert status == "problem"
     assert "statically" in detail.lower()
 
 
 def test_rn_xcode_detect_problem_when_missing(tmp_path):
     _make_ios(tmp_path, "export NODE_BINARY=node\n")
-    assert sd._rn_xcode_detect(tmp_path)[0] == "problem"
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "problem"
 
 
 def test_rn_xcode_detect_ok_with_block(tmp_path):
-    _make_ios(tmp_path, "export NODE_BINARY=node\n" + sd._XCODE_BLOCK)
-    assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
+    _make_ios(tmp_path, "export NODE_BINARY=node\n" + sd._xcode_block("splashdown.env"))
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "ok"
 
 
 def test_rn_xcode_autofix_replaces_static(tmp_path):
@@ -694,19 +716,19 @@ def test_rn_xcode_autofix_replaces_static(tmp_path):
         tmp_path,
         "# header\nexport NODE_BINARY=node\n\n# Pin Metro port\nexport RCT_METRO_PORT=8083\n",
     )
-    sd._rn_xcode_autofix(tmp_path)
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
     text = (tmp_path / "ios" / ".xcode.env").read_text()
     assert "export RCT_METRO_PORT=8083" not in text
     assert "export NODE_BINARY=node" in text
     assert sd._XCODE_BEGIN in text
     assert sd._XCODE_END in text
     assert "splashdown.env" in text
-    assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "ok"
 
 
 def test_rn_xcode_autofix_appends_when_missing(tmp_path):
     _make_ios(tmp_path, "export NODE_BINARY=node\n")
-    sd._rn_xcode_autofix(tmp_path)
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
     text = (tmp_path / "ios" / ".xcode.env").read_text()
     assert "export NODE_BINARY=node" in text
     assert sd._XCODE_BEGIN in text
@@ -714,9 +736,9 @@ def test_rn_xcode_autofix_appends_when_missing(tmp_path):
 
 def test_rn_xcode_autofix_idempotent(tmp_path):
     _make_ios(tmp_path, "export NODE_BINARY=node\nexport RCT_METRO_PORT=8083\n")
-    sd._rn_xcode_autofix(tmp_path)
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
     once = (tmp_path / "ios" / ".xcode.env").read_text()
-    sd._rn_xcode_autofix(tmp_path)
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
     twice = (tmp_path / "ios" / ".xcode.env").read_text()
     assert once == twice
     assert twice.count(sd._XCODE_BEGIN) == 1
@@ -735,10 +757,244 @@ def test_rn_xcode_detect_ok_for_handwritten_splashdown_wiring(tmp_path):
             'export RCT_METRO_PORT="${RCT_METRO_PORT:-8083}"\n'
         ),
     )
-    assert sd._rn_xcode_detect(tmp_path)[0] == "ok"
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "ok"
 
 
-def test_rn_xcode_autofix_noop_when_already_referencing_splashdown(tmp_path):
+def _xcode_wiring_for(env_file: str) -> str:
+    return (
+        "export NODE_BINARY=node\n"
+        f'if [ -z "${{RCT_METRO_PORT:-}}" ] && [ -f "${{SRCROOT}}/../{env_file}" ]; then\n'
+        "  export RCT_METRO_PORT=\"$(grep '^RCT_METRO_PORT=' "
+        f'"${{SRCROOT}}/../{env_file}" | cut -d= -f2)"\n'
+        "fi\n"
+    )
+
+
+def test_wiring_destination_is_relative_to_the_directory_a_check_inspects(tmp_path):
+    assert sd.wiring_destination(tmp_path, tmp_path, ".env") == ".env"
+    assert (
+        sd.wiring_destination(tmp_path / "apps" / "mobile", tmp_path, "splashdown.env")
+        == "../../splashdown.env"
+    )
+
+
+def test_rn_xcode_autofix_injects_the_configured_destination(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\n")
+
+    sd._rn_xcode_autofix(tmp_path, "config/dev.env")
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert "export NODE_BINARY=node" in text
+    assert '"${SRCROOT}/../config/dev.env"' in text
+    assert "splashdown.env" not in text
+    assert sd._rn_xcode_detect(tmp_path, "config/dev.env")[0] == "ok"
+
+
+def test_rn_xcode_detect_reports_a_block_naming_another_file(tmp_path):
+    _make_ios(tmp_path, sd._xcode_block("splashdown.env"))
+
+    status, detail = sd._rn_xcode_detect(tmp_path, ".env")
+
+    assert status == "problem"
+    assert ".env" in detail
+
+
+def test_rn_xcode_autofix_repoints_its_own_block_at_the_new_destination(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\n\n" + sd._xcode_block("splashdown.env"))
+
+    sd._rn_xcode_autofix(tmp_path, ".env")
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert text.count(sd._XCODE_BEGIN) == 1
+    assert '"${SRCROOT}/../.env"' in text
+    assert "splashdown.env" not in text
+    assert "export NODE_BINARY=node" in text
+
+
+def test_rn_xcode_detect_reports_handwritten_wiring_for_another_file(tmp_path):
+    _make_ios(tmp_path, _xcode_wiring_for("other.env"))
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert "other.env" in detail
+    assert "splashdown.env" in detail
+
+
+def test_rn_xcode_autofix_preserves_handwritten_wiring_it_cannot_repoint(tmp_path):
+    content = _xcode_wiring_for("other.env")
+    _make_ios(tmp_path, content)
+
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
+
+    assert (tmp_path / "ios" / ".xcode.env").read_bytes() == content.encode()
+
+
+def test_rn_xcode_keeps_working_wiring_for_a_custom_destination_byte_identical(tmp_path):
+    content = _xcode_wiring_for("config/dev.env")
+    _make_ios(tmp_path, content)
+    assert sd._rn_xcode_detect(tmp_path, "config/dev.env")[0] == "ok"
+
+    sd._rn_xcode_autofix(tmp_path, "config/dev.env")
+
+    assert (tmp_path / "ios" / ".xcode.env").read_bytes() == content.encode()
+
+
+def test_rn_xcode_detect_reports_a_reference_through_an_unknown_variable(tmp_path):
+    _make_ios(tmp_path, 'export RCT_METRO_PORT="$(cat "$MY_ROOT/splashdown.env")"\n')
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert "$MY_ROOT/splashdown.env" in detail
+
+
+def test_rn_xcode_detect_ignores_a_dotenv_path_that_wires_nothing(tmp_path):
+    _make_ios(tmp_path, 'export NODE_BINARY=node\nsource "${SRCROOT}/../splashdown.env"\n')
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert detail == "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown.env"
+
+
+def test_rn_xcode_detect_ignores_a_dotenv_path_assigned_to_another_variable(tmp_path):
+    _make_ios(tmp_path, 'export SOME_TOOL_ENV="${SRCROOT}/../.env"\n')
+
+    status, detail = sd._rn_xcode_detect(tmp_path, ".env")
+
+    assert status == "problem"
+    assert detail == "ios/.xcode.env doesn't wire RCT_METRO_PORT to .env"
+
+
+def test_rn_xcode_detect_ignores_a_release_only_port_wiring(tmp_path):
+    _make_ios(
+        tmp_path,
+        'if [ "$CONFIGURATION" = Release ]; then\n'
+        "  export RCT_METRO_PORT=\"$(grep '^RCT_METRO_PORT=' "
+        '"${SRCROOT}/../splashdown.env" | cut -d= -f2)"\n'
+        "fi\n",
+    )
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert detail == "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown.env"
+
+
+def test_rn_xcode_detect_ignores_react_native_config_envfile(tmp_path):
+    _make_ios(tmp_path, "export ENVFILE=.env.staging\n")
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert detail == "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown.env"
+
+
+def test_rn_xcode_autofix_wires_a_file_whose_dotenv_paths_wire_nothing(tmp_path):
+    _make_ios(
+        tmp_path,
+        'export ENVFILE=.env.staging\nsource "${SRCROOT}/.xcode.env.local"\n',
+    )
+
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert "export ENVFILE=.env.staging" in text
+    assert 'source "${SRCROOT}/.xcode.env.local"' in text
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "ok"
+
+
+def test_rn_xcode_detect_ignores_a_brace_default_path_outside_the_port_wiring(tmp_path):
+    _make_ios(tmp_path, 'source "${SRCROOT:-.}/../splashdown.env"\n')
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert detail == "ios/.xcode.env doesn't wire RCT_METRO_PORT to splashdown.env"
+
+
+def test_rn_xcode_autofix_wires_past_a_brace_default_path(tmp_path):
+    _make_ios(tmp_path, 'source "${SRCROOT:-.}/../shared.env"\n')
+
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert 'source "${SRCROOT:-.}/../shared.env"' in text
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "ok"
+
+
+def test_rn_xcode_detect_names_only_the_path_the_port_wiring_reads(tmp_path):
+    _make_ios(tmp_path, "export ENVFILE=.env.staging\n" + _xcode_wiring_for("other.env"))
+
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
+
+    assert status == "problem"
+    assert detail == (
+        "ios/.xcode.env reads ${SRCROOT}/../other.env, not the configured splashdown.env"
+    )
+
+
+def test_rn_xcode_autofix_repairs_its_own_block_missing_the_closing_sentinel(tmp_path):
+    truncated = sd._xcode_block("splashdown.env").replace(sd._XCODE_END + "\n", "")
+    _make_ios(tmp_path, "export NODE_BINARY=node\n\n" + truncated)
+
+    sd._rn_xcode_autofix(tmp_path, ".env")
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert "export NODE_BINARY=node" in text
+    assert "splashdown.env" not in text
+    assert text.count(sd._XCODE_BEGIN) == 1
+    assert text.count(sd._XCODE_END) == 1
+    assert sd._rn_xcode_detect(tmp_path, ".env")[0] == "ok"
+
+
+def test_rn_xcode_manual_instructions_name_the_configured_destination(tmp_path):
+    instructions = sd.wiring._rn_xcode_manual(tmp_path, ".env")
+
+    assert '"${SRCROOT}/../.env"' in instructions
+    assert "splashdown.env" not in instructions
+
+
+def test_rn_wiring_checks_bind_the_destination_to_the_xcode_check(tmp_path):
+    _make_ios(tmp_path, "export NODE_BINARY=node\n")
+    check = next(c for c in sd.rn_wiring_checks(".env") if c.id == "rn-xcode-env")
+
+    assert ".env" in check.description
+    assert check.detect(tmp_path)[0] == "problem"
+    check.autofix(tmp_path)
+    assert check.detect(tmp_path)[0] == "ok"
+    assert check.files(tmp_path) == (tmp_path / "ios" / ".xcode.env",)
+
+
+def test_doctor_checks_the_xcode_wiring_against_the_recipe_destination(tmp_path, capsys):
+    (tmp_path / "package.json").write_text(_RN_PACKAGE_JSON)
+    _make_ios(tmp_path, _xcode_wiring_for(".env"))
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "react-native"\nenv_file = ".env"\n'
+    )
+
+    sd.cmd_doctor(tmp_path)
+
+    assert "rn-xcode-env: ios/.xcode.env wires RCT_METRO_PORT to .env" in capsys.readouterr().err
+
+
+def test_doctor_reports_xcode_wiring_that_does_not_name_the_recipe_destination(tmp_path, capsys):
+    (tmp_path / "package.json").write_text(_RN_PACKAGE_JSON)
+    _make_ios(tmp_path, _xcode_wiring_for("splashdown.env"))
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "react-native"\nenv_file = ".env"\n'
+    )
+
+    assert sd.cmd_doctor(tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "rn-xcode-env: ios/.xcode.env reads ${SRCROOT}/../splashdown.env" in err
+    assert "not the configured .env" in err
+
+
+def test_rn_xcode_autofix_exports_the_port_a_bare_sourcing_leaves_unset(tmp_path):
+    # `.` sets RCT_METRO_PORT in the sourcing shell without exporting it, so the
+    # Xcode build never sees the value. Naming the file is not wiring.
     content = (
         "export NODE_BINARY=node\n"
         'if [ -f "${SRCROOT}/../splashdown.env" ]; then\n'
@@ -746,8 +1002,13 @@ def test_rn_xcode_autofix_noop_when_already_referencing_splashdown(tmp_path):
         "fi\n"
     )
     _make_ios(tmp_path, content)
-    sd._rn_xcode_autofix(tmp_path)
-    assert (tmp_path / "ios" / ".xcode.env").read_text() == content
+
+    sd._rn_xcode_autofix(tmp_path, "splashdown.env")
+
+    text = (tmp_path / "ios" / ".xcode.env").read_text()
+    assert content in text
+    assert 'export RCT_METRO_PORT="${RCT_METRO_PORT:-8083}"' in text
+    assert sd._rn_xcode_detect(tmp_path, "splashdown.env")[0] == "ok"
 
 
 def test_cmd_init_scanned_rn_wires_everything(tmp_path):
@@ -1117,7 +1378,7 @@ def test_rn_xcode_detect_ignores_a_commented_out_reference(tmp_path):
     (tmp_path / "ios" / ".xcode.env").write_text(
         "# source ../splashdown.env\nexport RCT_METRO_PORT=8083\n"
     )
-    status, detail = sd._rn_xcode_detect(tmp_path)
+    status, detail = sd._rn_xcode_detect(tmp_path, "splashdown.env")
     assert status == "problem"
     assert "literal" in detail
 
@@ -1127,7 +1388,11 @@ def test_vite_checks_ignore_commented_out_wiring(tmp_path):
         "/* server: { port: Number(process.env.WEB_DEV_PORT) } */\nexport default {};\n"
     )
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-port-wired")
+    check = next(
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-port-wired"
+    )
     assert check.detect(tmp_path)[0] == "problem"
 
 
@@ -1136,7 +1401,11 @@ def test_astro_check_ignores_commented_out_wiring(tmp_path):
         "// port: process.env.WEB_DEV_PORT\nexport default defineConfig({});\n"
     )
     app = sd.AppInventory(name="web", path=tmp_path, profile="astro")
-    check = next(c for c in sd.PROFILES["astro"].wiring_checks(app) if c.id == "astro-config-port")
+    check = next(
+        c
+        for c in sd.PROFILES["astro"].wiring_checks(app, "splashdown.env")
+        if c.id == "astro-config-port"
+    )
     assert check.detect(tmp_path)[0] == "problem"
 
 
@@ -1154,7 +1423,7 @@ def test_doctor_reports_a_raising_check_instead_of_crashing(tmp_path, capsys, mo
         autofix=None,
         manual_instructions=None,
     )
-    monkeypatch.setattr(sd.doctor, "_wiring_checks_for_framework", lambda f, c: [broken])
+    monkeypatch.setattr(sd.doctor, "_wiring_checks_for_framework", lambda f, c, e: [broken])
     rc = sd.cmd_doctor(tmp_path, framework_override="react-native", fix=False)
     err = capsys.readouterr().err
     assert rc != 0
@@ -1189,7 +1458,11 @@ def test_strip_js_comments_keeps_multiline_template_literals(tmp_path):
         "export default { server: { port: Number(process.env.WEB_DEV_PORT) } };\n"
     )
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
-    check = next(c for c in sd.PROFILES["vite"].wiring_checks(app) if c.id == "vite-port-wired")
+    check = next(
+        c
+        for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
+        if c.id == "vite-port-wired"
+    )
     assert check.detect(tmp_path)[0] == "ok"
 
 

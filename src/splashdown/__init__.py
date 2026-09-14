@@ -238,7 +238,6 @@ from .targets import global_target_add, global_target_remove, target_add, target
 from .wiring import (
     _RN_WIRING_CHECKS,
     _XCODE_BEGIN,
-    _XCODE_BLOCK,
     _XCODE_END,
     WiringCheck,
     _rn_hook_detect,
@@ -251,4 +250,7 @@ from .wiring import (
     _rn_xcode_applies,
     _rn_xcode_autofix,
     _rn_xcode_detect,
+    _xcode_block,
+    rn_wiring_checks,
+    wiring_destination,
 )

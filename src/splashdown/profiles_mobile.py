@@ -20,7 +20,7 @@ from .runners import (
     _ios_native_scheme,
     _rn_run,
 )
-from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
+from .wiring import _HOOK_WIRING_CHECK, WiringCheck, rn_wiring_checks
 
 _RN_LAUNCH_SCRIPT_RE = re.compile(
     r"(?:^|[\s;&|])react-native\s+(?:start|run-ios|run-android)(?=$|[\s;&|])"
@@ -117,8 +117,8 @@ class ReactNativeProfile(Profile):
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_MOBILE_TARGETS
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
-        return list(_RN_WIRING_CHECKS)
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
+        return rn_wiring_checks(env_file)
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
         port = _profile_port(port_names, "RCT_METRO_PORT")
@@ -203,7 +203,7 @@ class IosNativeProfile(Profile):
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_SIM_TARGET
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
     def validate_run(self, cwd: Path, recipe: Recipe, kind: str | None) -> None:
@@ -233,7 +233,7 @@ class AndroidNativeProfile(Profile):
     def targets(self, app: AppInventory) -> dict[str, dict[str, dict[str, str]]]:
         return _DEFAULT_EMULATOR_TARGET
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
 
     def run(

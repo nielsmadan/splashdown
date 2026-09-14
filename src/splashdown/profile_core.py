@@ -43,9 +43,12 @@ class Profile:
         profiles override this; non-device profiles return {} (no targets)."""
         return {}
 
-    def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
-        """Return WiringCheck instances for consumer-side config patches. The
-        existing doctor flow runs these."""
+    def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
+        """Return WiringCheck instances for consumer-side config patches, which
+        `splash init` and `splash doctor` run. `env_file` is the environment output
+        destination this checkout writes, spelled relative to `app.path`; a check
+        that patches a consumer of those values must read it rather than assume
+        the default name."""
         return []
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:

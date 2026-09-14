@@ -780,7 +780,12 @@ def test_trust_does_not_edit_tracked_lefthook_configuration(tmp_path, capsys):
     assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
 
     assert path.read_text() == legacy
-    assert "doctor --fix" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "lefthook post-checkout is sync-only" in err
+    assert 'run: /trusted/path/splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true' in err
+    # lefthook templating, not shell positionals: `"$1" "$2" "$3"` expands to nothing there.
+    assert '"$1" "$2" "$3"' not in err
+    assert "`splash doctor --fix` writes that job" in err
     assert sd.is_trusted(sd.git_dirs(tmp_path))
 
 
@@ -796,7 +801,10 @@ def test_trust_does_not_edit_tracked_husky_hook(tmp_path, capsys):
     assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
 
     assert hook.read_text() == sd.LEGACY_POST_CHECKOUT_HOOK
-    assert "doctor --fix" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "husky post-checkout is missing or modified" in err
+    assert '/trusted/path/splash hook post-checkout "$1" "$2" "$3" >&2 || true' in err
+    assert "`splash doctor --fix` writes that hook" in err
 
 
 def test_doctor_fix_migrates_exact_legacy_lefthook_job(tmp_path):

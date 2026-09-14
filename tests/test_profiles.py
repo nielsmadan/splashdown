@@ -1139,7 +1139,11 @@ def test_run_custom_command_none_when_no_run(tmp_path, monkeypatch):
 
 def _astro_check(path):
     app = sd.AppInventory(name="web", path=path, profile="astro")
-    return next(c for c in sd.PROFILES["astro"].wiring_checks(app) if c.id == "astro-config-port")
+    return next(
+        c
+        for c in sd.PROFILES["astro"].wiring_checks(app, "splashdown.env")
+        if c.id == "astro-config-port"
+    )
 
 
 def test_astro_detects_config_file(tmp_path):

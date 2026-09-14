@@ -23,7 +23,8 @@ app's framework, scaffolds the committed `splashdown.toml` (plus a per-checkout
 `splashdown.local.toml` skeleton), writes the detected shell-env loader's configuration
 (mise/direnv/devbox) and the project-owned `post-checkout` hook configuration that coexists
 with an existing hook manager, runs the project-configuration framework wiring checks (the same
-engine as `splash doctor --fix`), and reports the commands that make the checkout ready.
+engine as `splash doctor --fix`, against the configured environment output), and reports the
+commands that make the checkout ready.
 
 Init is configuration-only. It allocates no resources, writes no environment output, records no
 trust, runs no loader approval command, and installs nothing into the local `.git` directory, so
@@ -194,12 +195,23 @@ rather than clobbers:
 `_ensure_post_checkout_hook` is the fused configure-plus-install variant, reached only from
 `doctor --fix` through `_autofix_ensure_post_checkout_hook` (`wiring.py`).
 
-**Wiring checks.** For each known-profile app, `cmd_init` runs the profile's `wiring_checks`,
-and for any check whose `detect` is not `"ok"` it applies the `autofix` if one exists, swallowing
-failures with a printed `✗` line (`commands.py`). This is the same `WiringCheck`
-machinery as `splash doctor` (see UC5 / `wiring.py`), minus the checks marked `activation`:
-`_apply_init_wiring_checks` skips those, so the `hook` check the mobile profiles carry cannot
-install the local hook init just said `splash trust` owns.
+**Wiring checks.** For each known-profile app, `cmd_init` runs the profile's
+`wiring_checks(app, env_file)`, where `env_file` is the configured environment output spelled
+relative to that app's directory (`wiring_destination` in `wiring.py`). For any check whose
+`detect` is not `"ok"` it applies the `autofix` if one exists, then detects again
+(`_apply_init_wiring_check` in `commands.py`): a fix that did not resolve the problem, an autofix
+that raised, and a check with no autofix all print a `✗` line followed by the check's manual
+instructions, so incomplete or unsupported integration is reported rather than assumed. Files
+whose bytes changed around a fix are added to `InitReport.changed`, which is what the `changed:`
+line and the JSON report list.
+
+Integration that already reads the configured destination detects as `ok`, so it is never
+rewritten and stays byte-identical. Ordinary adoption therefore needs no follow-up
+`splash doctor --fix`; doctor keeps its diagnosis and repair role for later drift.
+
+This is the same `WiringCheck` machinery as `splash doctor` (see UC5 / `wiring.py`), minus the
+checks marked `activation`: `_apply_init_wiring_checks` skips those, so the `hook` check the
+mobile profiles carry cannot install the local hook init just said `splash trust` owns.
 
 **Agent guidance.** After the generated recipe validates, every init path parses that recipe
 and derives a sentinel-wrapped Markdown block for port-bearing apps. The block uses each
@@ -229,7 +241,13 @@ records trust, and runs the loader's `approve()` (`mise trust` / `direnv allow`)
 `Loader.owns_config` reports that the loader file holds splashdown's integration and nothing else.
 In a nested project it skips activation and repeats init's nested `splash --cwd PATH sync` note,
 since the wrapper it would install belongs to the worktree root where the nested recipe is
-invisible. The first sync is an ordinary bare `splash` / `splash sync` run, or the post-checkout
+invisible. When lefthook or husky owns the hook, activation writes nothing — that configuration is
+tracked project content — and prints the manager's own manual instruction instead:
+`post_checkout_manual_instructions` (`hooks.py`) gives lefthook a `run:` line using lefthook's
+`{1} {2} {3}` templating, husky and the native hook a shell line using `"$1" "$2" "$3"`, and names
+`splash doctor --fix` for lefthook and husky (which it does repair) and `splash trust` only for
+the native hook (which it does install). A configured `core.hooksPath` is repaired by neither, so
+its instruction promises nothing. The first sync is an ordinary bare `splash` / `splash sync` run, or the post-checkout
 hook on the next worktree.
 
 **Recipe evolution.** Users edit the existing recipe manually or with an agent when apps change.
