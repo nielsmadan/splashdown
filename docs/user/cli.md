@@ -13,7 +13,6 @@ splash sync [--force] [--setup N]   # pick free ports, resolve vars, write the e
 splash status [local|all] [--check] [--verbose]
                                       # resources + targets + health/cleanup details
 splash init [--loader=…] [--env-file=PATH] [--overwrite]
-            [--electron-profile=isolated|shared] [--ios-scheme=NAME]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
 splash trust                        # authorize automatic handling for this clone
 splash untrust                      # revoke clone-wide automatic handling
@@ -112,18 +111,18 @@ as a generic `PORT` for any server that reads one, a per-checkout Postgres datab
 Electron user-data isolation, add the resource yourself. See
 [The recipe](recipe.md) for each pattern.
 
-Plain `splash init` detects Electron in addition to the renderer framework. In an interactive
-terminal, it asks once whether to isolate Electron user data per checkout. The default is No,
-and non-interactive input or EOF also selects No. Automation can make the choice explicit with
-`--electron-profile=isolated|shared`. Choosing isolation adds a stable
-`ELECTRON_PROFILE_ID` and prints the main-process integration to add before
-`requestSingleInstanceLock()`. A project that init does not detect as Electron can opt in by
-hand. See [Electron user-data isolation](recipe.md#electron-user-data-isolation) for that
-snippet and the resource it needs.
+Plain `splash init` detects Electron in addition to the renderer framework. It configures the
+renderer like any other app and asks nothing. Two checkouts of an Electron app still share one
+user-data directory, because separating them needs a change in your main process that Splashdown
+cannot make for you. Init points at
+[Electron user-data isolation](recipe.md#electron-user-data-isolation), which has the resource to
+declare and the code to add. A project init does not detect as Electron opts in the same way.
 
-For a detected native iOS project, init records the sole shared Xcode scheme automatically. If
-several schemes exist, it asks for an exact choice in a terminal. Non-interactive callers must
-pass `--ios-scheme=NAME` when the choice is ambiguous.
+For a native iOS project, init records no Xcode scheme and never runs `xcodebuild`, so it works
+with Xcode missing or broken. `splash run` picks the scheme instead: it uses
+`[project.ios] scheme` when your recipe sets one, and otherwise builds the only shared scheme it
+finds. With no scheme or several, the run stops before touching a simulator and asks you to set
+`[project.ios] scheme`. See [The recipe](recipe.md) for where that goes.
 
 ## Remove splashdown
 

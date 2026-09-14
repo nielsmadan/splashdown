@@ -208,16 +208,15 @@ mode applied to hook replacements rather than a follow-up `chmod`.
 ### Why Electron integration is not a WiringCheck
 
 Electron capability detection can safely identify the package dependency, but it cannot
-identify one stable main-process entrypoint or module shape. Scanner-driven init therefore
-asks whether to add `ELECTRON_PROFILE_ID`, and an accepted overlay prints guarded
-integration code. That code derives a sibling of
-Electron's default `userData` directory, creates it, and sets the path before
-`requestSingleInstanceLock()`. There is no Electron Profile or autofix: rewriting arbitrary
-main-process source would be materially less safe than the mechanical Vite/RN transforms above.
+identify one stable main-process entrypoint or module shape. Scanner-driven init therefore writes
+nothing for it and prints a pointer to the documented opt-in recipe, which carries both the
+`ELECTRON_PROFILE_ID` resource and the guarded main-process code that derives a sibling of
+Electron's default `userData` directory and sets the path before `requestSingleInstanceLock()`.
+There is no Electron Profile or autofix: rewriting arbitrary main-process source would be
+materially less safe than the mechanical Vite/RN transforms above.
 
 This also preserves renderer wiring. An Electron+Vite app stays on `ViteProfile`, so init
-still runs the Vite check while treating Electron user-data isolation as an optional
-resource overlay.
+still runs the Vite check while user-data isolation stays an opt-in recipe the user applies.
 
 ### Idempotency: sentinel-wrapped patches
 

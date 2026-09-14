@@ -254,6 +254,8 @@ This keeps each checkout's profile beside Electron's normal user-data directory 
 
 The profile id isolates user data only. A renderer dev server still needs a port of its own, declared like the `[resources.PORT]` block in the opening example.
 
+A workspace with more than one Electron app needs a distinct identifier and a distinct name for each of them. See [Electron alongside a renderer](monorepos.md#electron-alongside-a-renderer).
+
 ## Validation
 
 Splashdown validates the complete recipe whenever it loads it. Unknown sections or fields, wrong value types, unknown workspace/loader/profile names, malformed targets, and invalid resource definitions are hard errors. `[apps.NAME]` must contain `path`, `profile`, and a unique `resources` list whose entries are declared under `[resources]`.

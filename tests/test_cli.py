@@ -767,184 +767,95 @@ def test_init_gradle_module_runs_from_workspace_root(tmp_path, monkeypatch):
     assert calls[0][1]["cwd"] == tmp_path
 
 
-def test_init_native_ios_explicit_scheme_skips_discovery(tmp_path, monkeypatch):
-    (tmp_path / "Demo.xcodeproj").mkdir()
-
-    def fail(_cwd):
-        raise AssertionError("explicit scheme must not run xcodebuild discovery")
-
-    monkeypatch.setattr(sd.commands, "_ios_native_schemes", fail, raising=False)
-
-    sd.cmd_init(tmp_path, ios_scheme="Demo")
-
-    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
-
-
-def test_init_native_ios_single_discovered_scheme_is_written(tmp_path, monkeypatch):
+def test_init_native_ios_succeeds_without_xcode_discovery(tmp_path, monkeypatch, capsys):
     (tmp_path / "Demo.xcodeproj").mkdir()
     monkeypatch.setattr(
-        sd.commands,
+        sd.runners,
         "_ios_native_schemes",
-        lambda _cwd: ["Demo"],
-        raising=False,
+        lambda _cwd: pytest.fail("init must not discover Xcode schemes"),
+    )
+    monkeypatch.setattr(
+        sd.runners,
+        "run_finite",
+        lambda *_args, **_kwargs: pytest.fail("init must not shell out to xcodebuild"),
     )
 
     sd.cmd_init(tmp_path)
 
-    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
+    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
+    assert recipe.apps["main"]["profile"] == "ios-native"
+    assert "ios" not in recipe.project
+    assert "Select native iOS scheme" not in capsys.readouterr().err
 
 
-def test_init_native_ios_multiple_schemes_prompts_for_exact_name(tmp_path, monkeypatch, capsys):
-    (tmp_path / "Demo.xcodeproj").mkdir()
-    monkeypatch.setattr(
-        sd.commands,
-        "_ios_native_schemes",
-        lambda _cwd: ["Demo", "DemoDev"],
-        raising=False,
-    )
-    monkeypatch.setattr(sys, "stdin", _TTYInput("DemoDev\n"))
-
-    sd.cmd_init(tmp_path)
-
-    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "DemoDev"
-    assert "Select native iOS scheme (Demo, DemoDev)" in capsys.readouterr().err
-
-
-def test_cli_init_native_ios_scheme_option(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "Demo.xcodeproj").mkdir()
-    monkeypatch.setattr(
-        sd.commands,
-        "_ios_native_schemes",
-        lambda _cwd: pytest.fail("explicit scheme must bypass discovery"),
-        raising=False,
-    )
-
-    assert sd.main(["--cwd", str(tmp_path), "init", "--ios-scheme", "Demo"]) == 0
-    assert sd.Recipe.load(tmp_path / "splashdown.toml").project["ios"]["scheme"] == "Demo"
-
-
-def test_init_native_ios_ambiguous_noninteractive_fails_before_writing(tmp_path, monkeypatch):
-    (tmp_path / "Demo.xcodeproj").mkdir()
-    monkeypatch.setattr(
-        sd.commands,
-        "_ios_native_schemes",
-        lambda _cwd: ["Demo", "DemoDev"],
-        raising=False,
-    )
-    monkeypatch.setattr(sys, "stdin", io.StringIO())
-
-    with pytest.raises(sd.DeviceError, match="--ios-scheme NAME"):
-        sd.cmd_init(tmp_path)
-
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("--ios-scheme", "Demo"), ("--electron-profile", "isolated")],
+)
+def test_cli_init_rejects_removed_options(tmp_path, flag, value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        sd.main(["--cwd", str(tmp_path), "init", flag, value])
+    assert exc.value.code == 2
+    assert f"unrecognized arguments: {flag}" in capsys.readouterr().err
     assert not (tmp_path / "splashdown.toml").exists()
 
 
-def test_init_electron_yes_adds_profile_without_replacing_vite(tmp_path, monkeypatch, capsys):
+def test_init_electron_points_at_the_isolation_guide_without_adding_the_resource(
+    tmp_path, monkeypatch, capsys
+):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     (tmp_path / "package.json").write_text('{"devDependencies":{"electron":"40"}}')
     monkeypatch.setattr(sys, "stdin", _TTYInput("y\n"))
+
     sd.cmd_init(tmp_path)
+
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
     assert recipe.apps["main"]["profile"] == "vite"
-    assert recipe.resources["ELECTRON_PROFILE_ID"]["template"] == (
-        "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
-    )
-    assert "WEB_DEV_PORT" in recipe.resources
+    assert set(recipe.resources) == {"WEB_DEV_PORT"}
     err = capsys.readouterr().err
-    assert "Set up an independent Electron profile for this checkout?" in err
-    assert "before requestSingleInstanceLock():" in err
-    assert "const profileId = process.env.ELECTRON_PROFILE_ID" in err
-    assert "mkdirSync(userData, { recursive: true })" in err
+    assert "https://splashdown.dev/recipe/#electron-user-data-isolation" in err
+    assert "requestSingleInstanceLock" not in err
 
 
-def test_init_electron_no_keeps_renderer_resources(tmp_path, monkeypatch, capsys):
+def test_init_electron_asks_nothing_on_a_terminal(tmp_path, monkeypatch):
     (tmp_path / "vite.config.ts").write_text("export default {}")
     (tmp_path / "package.json").write_text('{"dependencies":{"electron":"40"}}')
-    monkeypatch.setattr(sys, "stdin", _TTYInput("n\n"))
-    sd.cmd_init(tmp_path)
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert set(recipe.resources) == {"WEB_DEV_PORT"}
-    assert "Set up an independent Electron profile for this checkout?" in capsys.readouterr().err
-
-
-def test_init_electron_noninteractive_defaults_to_shared_user_data(tmp_path, monkeypatch, capsys):
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"40"}}')
-    stdin = io.StringIO("y\n")
+    stdin = _TTYInput("y\n")
     monkeypatch.setattr(sys, "stdin", stdin)
+
     sd.cmd_init(tmp_path)
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert set(recipe.resources) == {"WEB_DEV_PORT"}
+
     assert stdin.read() == "y\n"
-    assert (
-        "Set up an independent Electron profile for this checkout?" not in capsys.readouterr().err
-    )
 
 
-def test_init_electron_eof_defaults_to_shared_user_data(tmp_path, monkeypatch):
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"40"}}')
-    monkeypatch.setattr(sys, "stdin", _TTYInput())
-    sd.cmd_init(tmp_path)
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert set(recipe.resources) == {"WEB_DEV_PORT"}
-
-
-def test_init_electron_workspace_prompts_once_and_scopes_profile_ids(tmp_path, monkeypatch, capsys):
+def test_init_electron_workspace_points_at_the_guide_once(tmp_path, capsys):
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
     for name in ("desktop.app", "studio-web"):
         app_dir = tmp_path / "apps" / name
         app_dir.mkdir(parents=True)
         (app_dir / "package.json").write_text('{"dependencies":{"electron":"40"}}')
-    stdin = _TTYInput("y\nn\n")
-    monkeypatch.setattr(sys, "stdin", stdin)
+
     sd.cmd_init(tmp_path)
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert recipe.resources["ELECTRON_PROFILE_ID_DESKTOP_APP"]["template"] == (
-        "splashdown-{{ truncate(hash(cwd_abs), 12) }}-desktop-app"
-    )
-    assert recipe.resources["ELECTRON_PROFILE_ID_STUDIO_WEB"]["template"] == (
-        "splashdown-{{ truncate(hash(cwd_abs), 12) }}-studio-web"
-    )
-    assert stdin.read() == "n\n"
+
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").resources == {}
     err = capsys.readouterr().err
-    prompt = "Set up independent Electron profiles for these checkouts (desktop.app, studio-web)?"
-    assert err.count(prompt) == 1
-    assert "process.env.ELECTRON_PROFILE_ID_DESKTOP_APP" in err
-    assert "process.env.ELECTRON_PROFILE_ID_STUDIO_WEB" in err
+    assert err.count("https://splashdown.dev/recipe/#electron-user-data-isolation") == 1
 
 
-def test_init_electron_profile_flag_works_noninteractively(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"43"}}')
-    monkeypatch.setattr(sys, "stdin", io.StringIO())
+def test_init_deferred_monorepo_still_points_at_the_electron_isolation_guide(tmp_path, capsys):
+    (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
+    for name in ("desktop", "studio"):
+        app_dir = tmp_path / "apps" / name
+        app_dir.mkdir(parents=True)
+        (app_dir / "vite.config.ts").write_text("export default {}")
+        (app_dir / "package.json").write_text('{"devDependencies":{"electron":"40"}}')
 
-    assert (
-        sd.main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "init",
-                "--electron-profile",
-                "isolated",
-            ]
-        )
-        == 0
-    )
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert recipe.apps["main"]["resources"] == ["WEB_DEV_PORT", "ELECTRON_PROFILE_ID"]
+    sd.cmd_init(tmp_path)
 
-
-def test_init_electron_shared_flag_skips_profile_noninteractively(tmp_path, monkeypatch):
-    (tmp_path / "vite.config.ts").write_text("export default {}")
-    (tmp_path / "package.json").write_text('{"dependencies":{"electron":"43"}}')
-    monkeypatch.setattr(sys, "stdin", io.StringIO("y\n"))
-
-    sd.cmd_init(tmp_path, electron_profile="shared")
-
-    assert set(sd.Recipe.load(tmp_path / "splashdown.toml").resources) == {"WEB_DEV_PORT"}
+    assert sd.Recipe.load(tmp_path / "splashdown.toml").resources == {}
+    err = capsys.readouterr().err
+    assert "resources not auto-configured" in err
+    assert err.count("https://splashdown.dev/recipe/#electron-user-data-isolation") == 1
 
 
 def test_cli_provision_is_default(tmp_path, monkeypatch):

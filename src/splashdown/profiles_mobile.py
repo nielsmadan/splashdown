@@ -4,12 +4,22 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .capabilities import require_macos
 from .device_types import LaunchDestination
+from .errors import DeviceError
 from .inventory import AppInventory
 from .package_json import package_dependencies, read_package_json
 from .profile_core import Profile, _manual_port_guidance, _profile_port
 from .recipe import Recipe
-from .runners import _android_native_run, _expo_run, _flutter_run, _ios_native_run, _rn_run
+from .runners import (
+    _IOS_NATIVE_DESTINATION_ERROR,
+    _android_native_run,
+    _expo_run,
+    _flutter_run,
+    _ios_native_run,
+    _ios_native_scheme,
+    _rn_run,
+)
 from .wiring import _HOOK_WIRING_CHECK, _RN_WIRING_CHECKS, WiringCheck
 
 _RN_LAUNCH_SCRIPT_RE = re.compile(
@@ -195,6 +205,13 @@ class IosNativeProfile(Profile):
 
     def wiring_checks(self, app: AppInventory) -> list[WiringCheck]:
         return [_HOOK_WIRING_CHECK]
+
+    def validate_run(self, cwd: Path, recipe: Recipe, kind: str | None) -> None:
+        if kind is not None and kind != "ios":
+            raise DeviceError(_IOS_NATIVE_DESTINATION_ERROR)
+        require_macos("native build support")
+        cfg = recipe.project.setdefault("ios", {})
+        cfg["scheme"] = _ios_native_scheme(cwd, cfg)
 
     def run(
         self,

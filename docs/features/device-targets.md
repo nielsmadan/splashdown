@@ -304,7 +304,8 @@ App build/launch is configured under `[project.*]`:
 
 ```toml
 [project.ios]
-scheme = "MyApp"               # required for ios-native run; optional for react-native
+scheme = "MyApp"               # ios-native: required unless exactly one shared scheme exists
+                               # optional for react-native
                                # (-> run-ios --scheme; picks the build env for scheme-driven apps)
 # mode = "Debug"               # react-native run-ios --mode (optional)
 # configuration = "Debug"      # ios-native only
@@ -321,9 +322,22 @@ For `react-native`, `[project.ios] scheme` is **optional** but often necessary: 
 builds the scheme named after the Xcode project (usually Release/prod). If the scheme selects the
 build environment (e.g. a `*Dev` scheme that copies `.env.development`), set it here.
 
-For a detected `ios-native` app, `splash init` queries shared Xcode schemes. It writes the sole
-scheme automatically, prompts for an exact choice on a TTY, or accepts `--ios-scheme=NAME`.
-Ambiguous non-interactive init fails before writing rather than leaving the required field absent.
+### Native iOS scheme resolution
+
+`splash init` neither discovers nor records a scheme, so `[project.ios] scheme` is a hand-written
+setting. `splash run` resolves it in `_ios_native_scheme` (`src/splashdown/runners.py`): the
+configured scheme wins and skips discovery entirely, otherwise `xcodebuild -list -json` runs under
+the discovery timeout and a sole shared scheme is used. No schemes, several schemes, and a failed
+`xcodebuild` each raise a `DeviceError` naming the recipe setting or the tool failure.
+
+Resolution runs in `IosNativeProfile.validate_run`, which `validate_device_run` calls from
+`cmd_run` before ports are allocated, environment output is written, a physical target is claimed,
+or a simulator is created and booted. An unresolvable scheme therefore fails with the machine
+untouched. `validate_run` writes the resolved scheme back into `recipe.project["ios"]["scheme"]`,
+and the build path reads that configured value, so `xcodebuild -list` runs at most once per run
+and the two call sites cannot disagree. A destination that is not an iOS device fails in
+`validate_run` ahead of the macOS check and discovery. Discovery uses the same `[project.ios]
+workspace` or `project` container the build does.
 
 CLI surface:
 
@@ -420,9 +434,9 @@ unchanged.
   `start` just confirms connectivity (`src/splashdown/target_commands.py`). These verbs never
   release a claim. Ownership is persisted in `claims.tsv`, separate from managed lifecycle rows in
   `devices.tsv`.
-- **ios-native needs a scheme.** Scanner-driven init normally writes it, but a hand-authored
-  recipe without `[project.ios] scheme` still errors at run time (`_ios_native_run` in
-  `src/splashdown/runners.py`). For `react-native` the scheme is optional but
+- **ios-native needs a scheme it can resolve.** A recipe without `[project.ios] scheme` runs
+  only while the Xcode project has exactly one shared scheme; anything else fails before the run
+  touches a device. For `react-native` the scheme is optional but
   forwards to `run-ios --scheme` when set. Android reads `application_id` from the selected
   variant's AGP output metadata when unset, then falls back to a Gradle properties query for
   older builds. Set it explicitly only when the build does not emit usable metadata.

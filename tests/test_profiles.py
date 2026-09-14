@@ -31,7 +31,7 @@ def test_ios_native_schemes_reads_detected_workspace(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sd.runners.subprocess, "run", run)
 
-    assert sd.runners._ios_native_schemes(tmp_path) == ["Demo", "DemoDev"]
+    assert sd.runners._ios_native_schemes(tmp_path, {}) == ["Demo", "DemoDev"]
     assert calls == [["xcodebuild", "-workspace", "Demo.xcworkspace", "-list", "-json"]]
 
 
@@ -44,7 +44,62 @@ def test_ios_native_scheme_discovery_timeout_is_device_error(tmp_path, monkeypat
     monkeypatch.setattr(sd.device_tools.subprocess, "run", timeout)
 
     with pytest.raises(sd.DeviceError, match="xcodebuild list schemes timed out after 30s"):
-        sd.runners._ios_native_schemes(tmp_path)
+        sd.runners._ios_native_schemes(tmp_path, {})
+
+
+def test_ios_native_scheme_discovery_without_xcodebuild_names_the_install_step(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+
+    def missing(argv, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "xcodebuild")
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", missing)
+
+    with pytest.raises(sd.CapabilityError) as raised:
+        sd.runners._ios_native_schemes(tmp_path, {})
+
+    assert "xcodebuild is unavailable" in str(raised.value)
+    assert "install Xcode and select it with xcode-select" in str(raised.value)
+
+
+def test_ios_native_scheme_discovery_uses_the_configured_project_over_a_root_workspace(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "Demo.xcworkspace").mkdir()
+    (tmp_path / "Alt.xcodeproj").mkdir()
+    argvs: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        argvs.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps({"project": {"schemes": ["Alt"]}}), ""
+        )
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", run)
+
+    assert sd.runners._ios_native_scheme(tmp_path, {"project": "Alt.xcodeproj"}) == "Alt"
+    assert argvs == [["xcodebuild", "-project", "Alt.xcodeproj", "-list", "-json"]]
+
+
+def test_ios_native_scheme_discovery_accepts_a_configured_project_outside_the_root(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "App").mkdir()
+    (tmp_path / "App" / "Demo.xcodeproj").mkdir()
+    argvs: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        argvs.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps({"project": {"schemes": ["Demo"]}}), ""
+        )
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", run)
+
+    assert sd.runners._ios_native_scheme(tmp_path, {"project": "App/Demo.xcodeproj"}) == "Demo"
+    assert argvs == [["xcodebuild", "-project", "App/Demo.xcodeproj", "-list", "-json"]]
 
 
 def test_flutter_run_builds_argv(tmp_path, monkeypatch):
@@ -609,6 +664,129 @@ def test_ios_native_build_settings_survives_discovery_length_contention(tmp_path
 
     assert sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"}) == 0
     assert settings_timeouts == [sd.device_tools.MUTATION_TIMEOUT]
+
+
+def _ios_native_app(tmp_path):
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+    (tmp_path / "Demo.xcodeproj").mkdir()
+
+
+def _ios_native_subprocess(tmp_path, monkeypatch, schemes):
+    argvs: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        argvs.append(list(argv))
+        if "-list" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps({"project": {"schemes": schemes}}), ""
+            )
+        stdout = json.dumps(
+            [{"buildSettings": {"BUILT_PRODUCTS_DIR": str(tmp_path), "WRAPPER_NAME": "Demo.app"}}]
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(sd.device_tools.subprocess, "run", run)
+    return argvs
+
+
+def test_ios_native_run_builds_the_configured_scheme_without_discovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _ios_native_app(tmp_path)
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Configured", "project": "Demo.xcodeproj"}}},
+        tmp_path / "splashdown.toml",
+    )
+    monkeypatch.setattr(
+        sd.runners,
+        "_ios_native_schemes",
+        lambda _cwd: pytest.fail("a configured scheme must not run discovery"),
+    )
+    _ios_native_subprocess(tmp_path, monkeypatch, [])
+    builds = _capture_profile_calls(monkeypatch)
+
+    assert sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"}) == 0
+    assert builds[0][:5] == ["xcodebuild", "-project", "Demo.xcodeproj", "-scheme", "Configured"]
+
+
+def test_ios_native_run_builds_the_only_discovered_scheme(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _ios_native_app(tmp_path)
+    recipe = sd.Recipe({"project": {"ios": {}}}, tmp_path / "splashdown.toml")
+    _ios_native_subprocess(tmp_path, monkeypatch, ["Discovered"])
+    builds = _capture_profile_calls(monkeypatch)
+
+    assert sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"}) == 0
+    assert builds[0][:5] == ["xcodebuild", "-project", "Demo.xcodeproj", "-scheme", "Discovered"]
+
+
+def test_ios_native_run_without_a_discoverable_scheme_names_the_recipe_setting(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _ios_native_app(tmp_path)
+    recipe = sd.Recipe({"project": {"ios": {}}}, tmp_path / "splashdown.toml")
+    _ios_native_subprocess(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *_args, **_kwargs: pytest.fail("build must not start without a scheme"),
+    )
+
+    with pytest.raises(sd.DeviceError) as raised:
+        sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+
+    assert "no shared Xcode schemes found" in str(raised.value)
+    assert '[project.ios] scheme = "<your-scheme>"' in str(raised.value)
+
+
+def test_ios_native_run_with_several_schemes_names_them_and_the_recipe_setting(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _ios_native_app(tmp_path)
+    recipe = sd.Recipe({"project": {"ios": {}}}, tmp_path / "splashdown.toml")
+    _ios_native_subprocess(tmp_path, monkeypatch, ["Demo", "DemoDev"])
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda *_args, **_kwargs: pytest.fail("build must not start without a scheme"),
+    )
+
+    with pytest.raises(sd.DeviceError) as raised:
+        sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+
+    assert "several shared Xcode schemes found (Demo, DemoDev)" in str(raised.value)
+    assert '[project.ios] scheme = "<your-scheme>"' in str(raised.value)
+
+
+def test_ios_native_scheme_discovery_failure_is_reported_as_a_discovery_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _ios_native_app(tmp_path)
+    recipe = sd.Recipe({"project": {"ios": {}}}, tmp_path / "splashdown.toml")
+
+    monkeypatch.setattr(
+        sd.device_tools.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 74, "", "xcodebuild: no project"),
+    )
+
+    with pytest.raises(sd.DeviceError, match="couldn't list Xcode schemes: xcodebuild: no project"):
+        sd.runners._ios_native_run(tmp_path, recipe, {"kind": "ios", "udid": "SIM-1"})
+
+
+def test_ios_native_validate_run_resolves_the_scheme_before_any_device_work(tmp_path, monkeypatch):
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _ios_native_app(tmp_path)
+    recipe = sd.Recipe({"project": {"framework": "ios-native"}}, tmp_path / "splashdown.toml")
+    _ios_native_subprocess(tmp_path, monkeypatch, ["Demo", "DemoDev"])
+
+    with pytest.raises(sd.DeviceError, match="several shared Xcode schemes found"):
+        sd.validate_device_run(tmp_path, recipe, "ios")
 
 
 def test_android_native_run_uses_launcher_intent(tmp_path, monkeypatch):

@@ -347,6 +347,10 @@ the variant. Each calls `devices.py` for target reconciliation and boot, then
 `launching.py` for framework preflight and final app dispatch. The target subcommand machinery
 iterates registry device rows and reconciles them against live sims/AVDs.
 
+Launcher validation also runs `Profile.validate_run` with the destination kind, which fails a launch
+the recipe cannot configure, such as an `ios-native` app pointed at an emulator or one with no
+resolvable Xcode scheme, before any of the following happens.
+
 Physical `cmd_run` has a claim gate between launcher validation and framework dispatch. It resolves
 the configured physical target, takes one discovery snapshot, and calls `attempt_claim` while the
 checkout operation lock is held. Busy, disconnected, or ambiguous targets raise before any build

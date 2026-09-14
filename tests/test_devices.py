@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import plistlib
 import re
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import splashdown as sd
 from conftest import (
     _IPHONE,
     _PIXEL,
+    _capture_profile_calls,
     _stub_ios_boot_chain,
     _stub_ios_devices,
     _stub_physical,
@@ -2760,6 +2762,105 @@ def test_cli_run_rejects_non_runnable_profile_before_device_mutation(tmp_path, m
     assert sd.main(["--cwd", str(tmp_path), "run", "simulator"]) == 1
     assert "does not support `splash run`" in capsys.readouterr().err
     assert sd.Registry().all_devices() == []
+
+
+def test_cli_run_rejects_an_ambiguous_ios_scheme_before_device_mutation(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "ios-native"\n\n'
+        '[resources.MY_PORT]\ntype = "port"\nrange = [19960, 19970]\n\n'
+        '[targets.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    monkeypatch.setattr(sd.runners, "_ios_native_schemes", lambda _cwd, _cfg: ["Demo", "DemoDev"])
+    monkeypatch.setattr(
+        sd.target_commands,
+        "claim_configured_target",
+        lambda *args, **kwargs: pytest.fail("physical claiming must not start"),
+    )
+    monkeypatch.setattr(
+        sd.target_commands,
+        "ensure_fresh_sim",
+        lambda *args, **kwargs: pytest.fail("device mutation must not start"),
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "run", "simulator"]) == 1
+    assert "several shared Xcode schemes found (Demo, DemoDev)" in capsys.readouterr().err
+    assert sd.Registry().all_devices() == []
+    assert not (tmp_path / sd.ENV_FILE_NAME).exists()
+    assert sd.Registry().all_for(str(tmp_path.resolve())) == {}
+
+
+def test_cli_run_rejects_a_non_ios_destination_before_scheme_discovery(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "ios-native"\n\n'
+        '[targets.emulator.default]\ndevice = "pixel_9"\nimage = "android-34"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sd.runners,
+        "_ios_native_schemes",
+        lambda *_args: pytest.fail("an impossible destination must not run discovery"),
+    )
+    monkeypatch.setattr(
+        sd.target_commands,
+        "ensure_fresh_sim",
+        lambda *args, **kwargs: pytest.fail("device mutation must not start"),
+    )
+
+    assert sd.main(["--cwd", str(tmp_path), "run", "emulator"]) == 1
+    assert "ios-native requires an iOS destination" in capsys.readouterr().err
+
+
+def test_cli_run_resolves_the_ios_scheme_once_per_run(tmp_path, monkeypatch):
+    (tmp_path / "Demo.xcodeproj").mkdir()
+    app = tmp_path / "Demo.app"
+    app.mkdir()
+    with (app / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "com.demo"}, f)
+    (tmp_path / "splashdown.toml").write_text(
+        '[project]\nframework = "ios-native"\n\n[targets.simulator.default]\nmodel = "iPhone 17"\n'
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sd.capabilities.sys, "platform", "darwin")
+    _stub_ios_boot_chain(monkeypatch)
+    discoveries: list[Path] = []
+
+    def _schemes(cwd, *_args):
+        discoveries.append(cwd)
+        return ["Demo"]
+
+    monkeypatch.setattr(sd.runners, "_ios_native_schemes", _schemes)
+    monkeypatch.setattr(
+        sd.device_tools.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(
+                [
+                    {
+                        "buildSettings": {
+                            "BUILT_PRODUCTS_DIR": str(tmp_path),
+                            "WRAPPER_NAME": "Demo.app",
+                        }
+                    }
+                ]
+            ),
+            "",
+        ),
+    )
+    _capture_profile_calls(monkeypatch)
+
+    assert sd.main(["--cwd", str(tmp_path), "run", "simulator"]) == 0
+    assert discoveries == [tmp_path]
 
 
 def test_run_preflight_accepts_custom_command_without_runnable_profile(tmp_path):

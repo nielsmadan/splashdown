@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .inventory import AppInventory
 from .wiring import WiringCheck
+
+if TYPE_CHECKING:
+    from .recipe import Recipe
 
 # Built-in profiles register framework resources and wiring checks in PROFILES; there is no plugin API.
 
@@ -48,6 +51,15 @@ class Profile:
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
         """Return framework-specific Markdown appended to common port guidance."""
         return []
+
+    def validate_run(self, cwd: Path, recipe: Recipe, kind: str | None) -> None:
+        """Raise when this recipe cannot produce a launch on `kind` ("ios",
+        "android", or None when the target declares no platform). `splash run`
+        calls this before it provisions values, claims a target, or boots a
+        device, so a profile that needs more than the recipe states says so while
+        nothing has happened yet. An implementation that resolves a value the
+        launch will need writes it back into `recipe` so the launch does not
+        resolve it a second time."""
 
 
 def _manual_port_guidance(

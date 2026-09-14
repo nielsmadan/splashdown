@@ -35,28 +35,25 @@ The scanner-produced `[project]` and `[apps.*]` sections are already correct.
 ## Electron alongside a renderer
 
 Electron is detected as a secondary capability. An Electron app that uses Vite, Next.js, or
-another renderer keeps that renderer's profile and resources. Plain `splash init` then asks once
-whether to isolate Electron user data per checkout. The default is No. Non-interactive input and
-EOF also select No. Use `--electron-profile=isolated|shared` to make the choice explicit in
-automation.
+another renderer keeps that renderer's profile and resources. Init configures the renderer and
+nothing else, then points at
+[Electron user-data isolation](recipe.md#electron-user-data-isolation). Isolation is opt-in
+because it only works once you change the main process yourself.
 
-Choosing Yes gives each detected Electron app a stable profile identifier:
+In a workspace, give each Electron app its own identifier and its own name:
 
 ```toml
-[resources.ELECTRON_PROFILE_ID]
+[resources.ELECTRON_PROFILE_ID_DESKTOP]
 type = "template"
-template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
-writer = "splashdown-env"
+template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}-desktop"
+
+[resources.ELECTRON_PROFILE_ID_STUDIO]
+type = "template"
+template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}-studio"
 ```
 
-When several Electron apps do not otherwise trigger the structure-only collision fallback, their
-profile resource names are made app-specific, such as `ELECTRON_PROFILE_ID_DESKTOP`, and each
-value also includes the app name. Each `[apps.*]` entry lists its matching resource. If their
-primary Profiles also claim colliding resources, init writes the detected app structure without
-resources and asks you to configure the monorepo explicitly. The identifier takes the project's
-default destination, even when a renderer resource is routed to an app-specific dotenv file.
-
-Init prints the matching main-process integration for each app:
+List each one in its own `[apps.*]` entry so the value reaches that app. Each main process reads
+its own name:
 
 ```js
 import { mkdirSync } from "node:fs"
@@ -70,9 +67,12 @@ if (profileId) {
 ```
 
 Set `userData` before calling `requestSingleInstanceLock()`. The derived directory remains next
-to Electron's normal platform-specific profile rather than in the checkout. If init defers to a
-structure-only recipe because the monorepo is ambiguous, it does not prompt or add these resources.
-Add the template resources manually once you have assigned distinct names.
+to Electron's normal platform-specific profile rather than in the checkout. Each identifier takes
+the project's default destination unless you give it a `writer` of its own.
+
+`splash init` prints that pointer whenever it detects an Electron app, including when it defers to
+a structure-only recipe. It never adds these resources for you, so hand-author them once you have
+assigned distinct names.
 
 ---
 
@@ -271,9 +271,9 @@ device = "pixel_9"
 ```
 
 **What each native app needs in addition.** If you drive an `ios-native` app with
-`splash run simulator`, `[project.ios] scheme` is required. Plain `splash init` records the only
-shared Xcode scheme automatically and asks when several schemes exist. In a non-interactive
-setup, pass `splash init --ios-scheme=MyApp`. The resulting configuration is:
+`splash run simulator`, set `[project.ios] scheme` yourself. `splash init` never records one. A
+run without it builds the only shared Xcode scheme in the project, and stops before touching a
+simulator when there is none or more than one:
 
 ```toml
 [project.ios]

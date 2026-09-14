@@ -27,6 +27,8 @@ class ProjectInventory:
 
 @runtime_checkable
 class RunnableProfile(Protocol):
+    def validate_run(self, cwd: Path, recipe: Recipe, kind: str | None) -> None: ...
+
     def run(
         self,
         cwd: Path,

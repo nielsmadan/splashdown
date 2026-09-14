@@ -21,7 +21,7 @@ git-hook hot path never imports `tomlkit` at all (see [Why](#why)).
   - [merged_targets & resolve_variant](#merged_targets--resolve_variant)
   - [The template engine](#the-template-engine)
   - [Template preflight and dependency ordering](#template-preflight-and-dependency-ordering)
-  - [Scanned Electron overlays](#scanned-electron-overlays)
+  - [Scanned Electron detection](#scanned-electron-detection)
   - [Settings](#settings-load_settings)
   - [_env_quote](#_env_quote)
   - [tomlio: comment-preserving writes](#tomlio-comment-preserving-writes)
@@ -190,28 +190,25 @@ classic **temporary-mark / permanent-mark** scheme:
 as a `ValueError` naming the node), `seen` is the permanent set. The output lists
 referents before referrers, which is exactly the order `provision()` needs.
 
-### Scanned Electron overlays
+### Scanned Electron detection
 
 Every generated recipe comes from the scanner and `render_scanned_recipe`. Intent a scan cannot
 infer safely, such as a generic port, a checkout-specific Postgres database name, or Electron
-user-data isolation for an undetected project, is documented as a hand-editable recipe example in
-`docs/user/recipe.md` rather than generated.
+user-data isolation, is documented as a hand-editable recipe example in `docs/user/recipe.md`
+rather than generated.
 
-Scanner-driven Electron support: `AppInventory.capabilities` records
-Electron alongside the primary Profile, and interactive init may add an
-`ELECTRON_PROFILE_ID` template into that app's normal resource set. The template hashes
-`cwd_abs`, appends an app slug when needed, and explicitly targets `splashdown-env`. The existing merge
-mangles collisions across multiple Electron apps, after which `render_scanned_recipe`
-serializes only apps, primary profiles, and accepted resources. Capabilities are transient
-inventory facts, not recipe schema. An accepted scanner overlay prints guarded code that derives
-a sibling of Electron's platform-standard user-data directory before the single-instance lock. It
-does not create or gitignore a checkout-local profile directory.
+Scanner-driven Electron support: `AppInventory.capabilities` records Electron alongside the
+primary Profile, and that is all it does to the recipe. Init generates no profile-id resource and
+instead points at the documented opt-in in `docs/user/recipe.md`, whose template hashes `cwd_abs`
+and takes the configured default destination like any other resource. Capabilities are transient
+inventory facts, not recipe schema, so `render_scanned_recipe` serializes only apps, primary
+profiles, and accepted resources.
 
-`render_scanned_recipe` also accepts nested project metadata from scanner init. Native iOS
-scheme selection uses that path to persist `[project.ios] scheme` after explicit selection,
-single-scheme discovery, or a TTY prompt. A single Android application in a Gradle workspace
-uses the same path to persist `[project.android] module`; launches then stay at the Gradle root
-so the wrapper and module-qualified tasks resolve together.
+`render_scanned_recipe` also accepts nested project metadata from scanner init. `[project] env_file`
+and, for a single Android application in a Gradle workspace, `[project.android] module` use that
+path; launches then stay at the Gradle root so the wrapper and module-qualified tasks resolve
+together. `[project.ios] scheme` is not written by init: it is a hand-written setting that
+`splash run` reads, falling back to the sole discovered Xcode scheme.
 
 ### _env_quote
 
@@ -263,7 +260,7 @@ file I/O.
 - `_parse_targets_section` / `validate_target_spec` — shared target schema.
 - `recipe.py` — `merged_targets`, `resolve_variant`, `render_template`, `_safe_eval`,
   `_eval_node`, `_make_scope`, `template_refs`, `topo_sort`, and `_env_quote`.
-- `commands.py` — scanner-driven Electron resource overlay.
+- `commands.py` — `_print_electron_isolation_pointer`, the only Electron-aware init step.
 - `tomlio.py` — `render_scanned_recipe`, `target_add_text`, and `target_remove_text`.
 
 ## Gotchas

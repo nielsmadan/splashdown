@@ -243,7 +243,12 @@ there — running either at the workspace root silently does nothing useful.
 
 Runnable profiles structurally implement `RunnableProfile`; web/backend profiles do not expose a
 `run` method. `cmd_run` checks this capability (or a matching custom `[project] run`) before device
-reconciliation or boot. When a recipe exists, it provisions resources and writes configured
+reconciliation or boot, then calls `Profile.validate_run` for the resolved app directory and the
+destination kind. That hook is a no-op by default and is where a profile rejects a launch it cannot
+configure: `IosNativeProfile` rejects a non-iOS destination and resolves its Xcode scheme there, so
+an impossible destination, an absent scheme, or an ambiguous one fails before provisioning,
+claiming, or booting. It writes the resolved scheme back into `recipe.project["ios"]["scheme"]`,
+and `_ios_native_run` reads that configured value, so discovery runs at most once per run. When a recipe exists, it provisions resources and writes configured
 outputs under the checkout operation lock before physical claiming or managed-device creation.
 It overlays resolved resources on a copy of `os.environ` and passes that environment through
 `device_run`, the Profile, and `runners.py` to build, install, and launch subprocesses. Custom

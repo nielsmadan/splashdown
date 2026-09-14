@@ -622,6 +622,19 @@ _RECIPE_DOC = Path(__file__).parent.parent / "docs" / "user" / "recipe.md"
 _DOC_TOML_BLOCK = re.compile(r"^```toml\n(.*?)^```", re.MULTILINE | re.DOTALL)
 
 
+def _documented_anchors() -> set[str]:
+    headings = re.findall(
+        r"^#{2,6}\s+(.*?)\s*$", _RECIPE_DOC.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    return {re.sub(r"[^\w\- ]", "", heading).lower().replace(" ", "-") for heading in headings}
+
+
+def test_recipe_doc_anchors_back_the_urls_the_cli_prints():
+    printed = "https://splashdown.dev/recipe/#electron-user-data-isolation"
+
+    assert printed.rsplit("#", 1)[1] in _documented_anchors()
+
+
 def _documented_recipe_examples() -> list[str]:
     blocks = _DOC_TOML_BLOCK.findall(_RECIPE_DOC.read_text(encoding="utf-8"))
     assert blocks, f"no toml examples found in {_RECIPE_DOC}"

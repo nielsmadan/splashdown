@@ -238,7 +238,9 @@ def test_comp_line_offers_init_flags_and_no_presets(tmp_path):
     out = _argcomplete_completions(parser, "splash init ", tmp_path)
     assert "--loader" in out
     assert "--overwrite" in out
-    assert "--electron-profile" in out
+    assert "--env-file" in out
+    for removed in ("--electron-profile", "--ios-scheme"):
+        assert removed not in out
     for preset in ("minimal", "server", "electron"):
         assert preset not in out
 

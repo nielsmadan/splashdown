@@ -71,6 +71,7 @@ def validate_device_run(cwd: Path, recipe: Recipe, kind: str | None) -> None:
     profile = PROFILES.get(framework)
     if not isinstance(profile, RunnableProfile):
         raise DeviceError(f"framework `{framework}` does not support `splash run`")
+    profile.validate_run(resolve_app_dir(cwd, recipe, framework), recipe, kind)
 
 
 def device_run(

@@ -24,9 +24,8 @@ the inherited environment, causing the server to ignore `splashdown.env` without
 instructions for report-only findings. Scanner-driven init runs the safe fixes after scaffolding so
 a fresh setup lands wired.
 
-Electron user-data isolation is adjacent but not a wiring check. Init can add
-`ELECTRON_PROFILE_ID` and prints the main-process integration, but Splashdown cannot safely locate
-and rewrite an arbitrary Electron entrypoint.
+Electron user-data isolation is adjacent but not a wiring check. Init only points at the opt-in
+recipe, because Splashdown cannot safely locate and rewrite an arbitrary Electron entrypoint.
 
 ## Behavior
 

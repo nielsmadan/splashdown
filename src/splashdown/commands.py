@@ -60,7 +60,6 @@ from .provisioning import (
 from .recipe import (
     LOCAL_SKELETON,
     Recipe,
-    _slug,
     validate_env_file_option,
 )
 from .registry import Registry
@@ -259,6 +258,7 @@ def _write_minimal_monorepo_recipe(
         "see https://splashdown.dev/monorepos/",
         file=sys.stderr,
     )
+    _print_electron_isolation_pointer(inv)
     if _create_local_skeleton(cwd):
         report.changed.append(LOCAL_NAME)
         print(f"wrote {LOCAL_NAME} (skeleton)", file=sys.stderr)
@@ -269,114 +269,14 @@ def _write_minimal_monorepo_recipe(
     _print_init_next_steps(cwd, worktree_root, report.env_file)
 
 
-_ELECTRON_PROFILE_RESOURCE = "ELECTRON_PROFILE_ID"
-
-
-def _add_electron_resources(
-    _cwd: Path,
-    inv: ProjectInventory,
-    res_by_app: dict[str, dict[str, dict[str, Any]]],
-    choice: str | None = None,
-) -> bool:
-    electron_apps = [app for app in inv.apps if "electron" in app.capabilities]
-    if choice not in (None, "isolated", "shared"):
-        raise ValueError("electron profile choice must be `isolated` or `shared`")
-    if not electron_apps:
-        if choice is not None:
-            raise ValueError("--electron-profile requires a scanner-detected Electron app")
-        return False
-    if choice == "shared":
-        return False
-    if choice is None:
-        if not sys.stdin.isatty():
-            return False
-        if len(electron_apps) == 1:
-            prompt = "Set up an independent Electron profile for this checkout?"
-        else:
-            names = ", ".join(app.name for app in electron_apps)
-            prompt = f"Set up independent Electron profiles for these checkouts ({names})?"
-        print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
-        try:
-            answer = input()
-        except EOFError:
-            return False
-        if answer.strip().lower() not in ("y", "yes"):
-            return False
-    multiple = len(electron_apps) > 1
-    for app in electron_apps:
-        template = "splashdown-{{ truncate(hash(cwd_abs), 12) }}"
-        if multiple:
-            template = f"{template}-{_slug(app.name)}"
-        res_by_app[app.name][_ELECTRON_PROFILE_RESOURCE] = {
-            "type": "template",
-            "template": template,
-        }
-    return True
-
-
-def _print_electron_integration(resource_names: list[str]) -> None:
+def _print_electron_isolation_pointer(inv: ProjectInventory) -> None:
+    if not any("electron" in app.capabilities for app in inv.apps):
+        return
     print(
-        "  Electron: in each main process, before requestSingleInstanceLock():",
+        "  Electron: per-checkout user-data isolation is optional and not configured; "
+        "see https://splashdown.dev/recipe/#electron-user-data-isolation",
         file=sys.stderr,
     )
-    print('    import { mkdirSync } from "node:fs"', file=sys.stderr)
-    for resource in resource_names:
-        print(f"    const profileId = process.env.{resource}", file=sys.stderr)
-        print("    if (profileId) {", file=sys.stderr)
-        print('      const userData = `${app.getPath("userData")}-${profileId}`', file=sys.stderr)
-        print("      mkdirSync(userData, { recursive: true })", file=sys.stderr)
-        print('      app.setPath("userData", userData)', file=sys.stderr)
-        print("    }", file=sys.stderr)
-
-
-def _ios_native_schemes(cwd: Path) -> list[str]:
-    from .runners import _ios_native_schemes as discover  # noqa: PLC0415
-
-    return discover(cwd)
-
-
-def _resolve_init_ios_scheme(inv: ProjectInventory, explicit: str | None) -> str | None:
-    ios_apps = [app for app in inv.apps if app.profile == "ios-native"]
-    if not ios_apps:
-        if explicit is not None:
-            raise ValueError("--ios-scheme requires a scanner-detected native iOS app")
-        return None
-    if len(ios_apps) != 1:
-        raise DeviceError("ios-native: select a single app before choosing its Xcode scheme")
-    if explicit is not None:
-        scheme = explicit.strip()
-        if not scheme:
-            raise ValueError("--ios-scheme must not be empty")
-        if scheme.startswith("-"):
-            raise ValueError("--ios-scheme must not start with `-`")
-        return scheme
-
-    schemes = _ios_native_schemes(ios_apps[0].path)
-    if len(schemes) == 1:
-        return schemes[0]
-    if not schemes:
-        raise DeviceError(
-            "ios-native: no shared Xcode schemes found; rerun `splash init --ios-scheme NAME`"
-        )
-
-    choices = ", ".join(schemes)
-    if not sys.stdin.isatty():
-        raise DeviceError(
-            f"ios-native: multiple shared Xcode schemes found ({choices}); "
-            "rerun `splash init --ios-scheme NAME`"
-        )
-    print(f"Select native iOS scheme ({choices}): ", end="", file=sys.stderr, flush=True)
-    try:
-        selected = input().strip()
-    except EOFError as exc:
-        raise DeviceError(
-            "ios-native: no Xcode scheme selected; rerun `splash init --ios-scheme NAME`"
-        ) from exc
-    if selected not in schemes:
-        raise DeviceError(
-            f"ios-native: unknown Xcode scheme `{selected}`; choose one of: {choices}"
-        )
-    return selected
 
 
 def _resolve_init_android_module(inv: ProjectInventory) -> str | None:
@@ -390,13 +290,11 @@ def _resolve_init_android_module(inv: ProjectInventory) -> str | None:
 
 
 def _resolve_init_project_metadata(
-    inv: ProjectInventory, ios_scheme: str | None, env_file: str
+    inv: ProjectInventory, env_file: str
 ) -> dict[str, str | dict[str, str]] | None:
     metadata: dict[str, str | dict[str, str]] = {}
     if persisted := _persisted_env_file(env_file):
         metadata["env_file"] = persisted
-    if resolved_ios_scheme := _resolve_init_ios_scheme(inv, ios_scheme):
-        metadata["ios"] = {"scheme": resolved_ios_scheme}
     if resolved_android_module := _resolve_init_android_module(inv):
         metadata["android"] = {"module": resolved_android_module}
     return metadata or None
@@ -561,8 +459,6 @@ def cmd_init(
     cwd: Path,
     options: InitOptions | None = None,
     loader_override: str | None = None,
-    electron_profile: str | None = None,
-    ios_scheme: str | None = None,
     output_format: str = "text",
 ) -> InitReport:
     """Scaffold splashdown.toml from a project scan."""
@@ -606,7 +502,6 @@ def cmd_init(
                     cwd, inv, worktree_root, wire_plan, report, wire_checkout_hook=not nested
                 )
             return report
-        electron_isolated = _add_electron_resources(cwd, inv, res_by_app, electron_profile)
         merged_resources, app_resource_names = _build_resource_catalog(res_by_app)
         # Compose is project-level infrastructure, so its resources are merged in after
         # the per-app pass rather than claimed by any one app.
@@ -620,7 +515,7 @@ def cmd_init(
                 f"  skipped {name}: template references a resource no app declares", file=sys.stderr
             )
 
-        project_metadata = _resolve_init_project_metadata(inv, ios_scheme, env_file)
+        project_metadata = _resolve_init_project_metadata(inv, env_file)
         report.managed_keys = _default_destination_keys(merged_resources, env_file)
         _print_env_destination(cwd, env_file, report.managed_keys, inv.loader)
 
@@ -647,15 +542,7 @@ def cmd_init(
             _ensure_gitignore(cwd)
             _commit_loader_plan(wire_plan, report)
             _wire_init_checkout_hook(cwd, enabled=not nested)
-            if electron_isolated:
-                resource_names = [
-                    name
-                    for app in inv.apps
-                    if "electron" in app.capabilities
-                    for name in app_resource_names[app.name]
-                    if name.startswith(_ELECTRON_PROFILE_RESOURCE)
-                ]
-                _print_electron_integration(resource_names)
+            _print_electron_isolation_pointer(inv)
 
             if any(app.profile != "unknown" for app in inv.apps):
                 _apply_init_wiring_checks(inv, env_file)

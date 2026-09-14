@@ -1557,16 +1557,6 @@ def test_init_reuses_a_user_directive_that_already_names_the_destination(tmp_pat
     assert "reusing the .envrc directive for .env" in capsys.readouterr().err
 
 
-def test_init_electron_profile_uses_the_default_destination(tmp_path):
-    (tmp_path / "package.json").write_text('{"dependencies":{"next":"16","electron":"43"}}')
-
-    sd.cmd_init(tmp_path, options=sd.InitOptions(env_file=".env"), electron_profile="isolated")
-
-    recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
-    assert "writer" not in recipe.resources["ELECTRON_PROFILE_ID"]
-    assert recipe.env_file == ".env"
-
-
 def test_none_loader_wire_is_noop(tmp_path):
     assert sd.LOADERS["none"].detect(tmp_path) is False
     sd.LOADERS["none"].wire(tmp_path, sd.ENV_FILE_NAME)

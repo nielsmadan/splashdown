@@ -70,7 +70,7 @@ Framework auto-detected for `run`:
 - `pubspec.yaml` → `flutter run -d <id>`
 - `package.json` with `react-native` → `npx react-native run-ios --udid` / `run-android --deviceId`. Optional `[project.ios] scheme`/`mode` and `[project.android] mode` forward `--scheme`/`--mode` to select the Xcode scheme / build variant (e.g. a `*Dev` scheme that copies `.env.development`).
 - `package.json` with `expo` + `app.json` → `npx expo run:ios --device` / `run:android --device`, with explicit `--port` when `RCT_METRO_PORT` is set
-- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). `splash init` records the sole shared scheme automatically, prompts for a choice when interactive, or accepts `--ios-scheme=NAME`.
+- `*.xcodeproj` / `*.xcworkspace` at root (no JS/Flutter signals) → `xcodebuild build` → `xcrun simctl install`/`launch` (or `xcrun devicectl` for a physical device). Set `[project.ios] scheme` in the recipe. Without it, `splash run` builds the only shared scheme in the Xcode project, and stops before touching a simulator when there is none or more than one.
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Conventional modules such as `include(":app")` are detected automatically. After installation, splashdown reads the selected variant's application ID from AGP's build metadata. `[project.android] application_id` is only needed for non-standard builds. `module`, `variant`, and `launch_activity` are also configurable there.
 - Override via `[project] framework = "..."`
 

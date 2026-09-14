@@ -339,6 +339,9 @@ def run_custom_command(
     return subprocess.call(cmd, shell=True, cwd=cwd, env=env)  # noqa: S602 — user-authored run command by design
 
 
+_IOS_NATIVE_DESTINATION_ERROR = "ios-native requires an iOS destination"
+
+
 def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
     """Build the workspace/project flag for xcodebuild — explicit setting wins,
     else first match at repo root."""
@@ -358,9 +361,11 @@ def _ios_xcodebuild_args(cwd: Path, cfg: dict[str, Any]) -> list[str]:
     )
 
 
-def _ios_native_schemes(cwd: Path) -> list[str]:
-    argv = ["xcodebuild", *_ios_xcodebuild_args(cwd, {}), "-list", "-json"]
-    try:
+def _ios_native_schemes(cwd: Path, cfg: dict[str, Any]) -> list[str]:
+    argv = ["xcodebuild", *_ios_xcodebuild_args(cwd, cfg), "-list", "-json"]
+    with translate_tool_errors(
+        "ios", "xcodebuild", "install Xcode and select it with xcode-select"
+    ):
         result = run_finite(
             argv,
             operation="xcodebuild list schemes",
@@ -370,8 +375,6 @@ def _ios_native_schemes(cwd: Path) -> list[str]:
             text=True,
             check=False,
         )
-    except OSError as exc:
-        raise DeviceError(f"ios-native: couldn't list Xcode schemes: {exc}") from exc
     if result.returncode != 0:
         detail = result.stderr.strip() or f"xcodebuild exited {result.returncode}"
         raise DeviceError(f"ios-native: couldn't list Xcode schemes: {detail}")
@@ -394,21 +397,35 @@ def _ios_native_schemes(cwd: Path) -> list[str]:
     return schemes
 
 
+def _ios_native_scheme(cwd: Path, cfg: dict[str, Any]) -> str:
+    """The scheme `xcodebuild` builds: the configured one, else the sole
+    discovered one. Ambiguity and absence both need an explicit recipe choice."""
+    if configured := cfg.get("scheme"):
+        return _no_flag("ios scheme", configured)
+    schemes = _ios_native_schemes(cwd, cfg)
+    if len(schemes) == 1:
+        return schemes[0]
+    if not schemes:
+        raise DeviceError(
+            "ios-native: no shared Xcode schemes found; set "
+            '`[project.ios] scheme = "<your-scheme>"` in splashdown.toml'
+        )
+    raise DeviceError(
+        f"ios-native: several shared Xcode schemes found ({', '.join(schemes)}); set "
+        '`[project.ios] scheme = "<your-scheme>"` in splashdown.toml'
+    )
+
+
 def _ios_native_run(
     cwd: Path, recipe: Recipe, destination: DestinationLike, *, env: dict[str, str] | None = None
 ) -> int:
-    require_macos("native build support")
-    cfg = recipe.project.get("ios") or {}
-    scheme = cfg.get("scheme")
-    if not scheme:
-        raise DeviceError(
-            'ios-native: set `[project.ios] scheme = "<your-scheme>"` in splashdown.toml'
-        )
-    scheme = _no_flag("ios scheme", scheme)
-    configuration = _no_flag("ios configuration", cfg.get("configuration", "Debug"))
     destination = as_launch_destination(destination)
     if not isinstance(destination, IOSDestination):
-        raise DeviceError("ios-native requires an iOS destination")
+        raise DeviceError(_IOS_NATIVE_DESTINATION_ERROR)
+    require_macos("native build support")
+    cfg = recipe.project.get("ios") or {}
+    scheme = _ios_native_scheme(cwd, cfg)
+    configuration = _no_flag("ios configuration", cfg.get("configuration", "Debug"))
     udid = _destination_id(destination)
     derived = cwd / "build" / "splash-derived"
     project_flag = _ios_xcodebuild_args(cwd, cfg)

@@ -134,7 +134,7 @@ and agent guidance. Those consumers share the catalog without importing one anot
 ### Profile modules — the framework extension point
 
 A `Profile` (`profile_core.py`) is the per-framework integration contract. The base class
-defines seven extension points and flags; subclasses override the ones that apply:
+defines eight extension points and flags; subclasses override the ones that apply:
 
 - `detect(app_path)` — filesystem predicate; the Scanner's match key.
 - `resources(app)` — `{resource_name: {type, range, ...}}` to merge
@@ -147,6 +147,13 @@ defines seven extension points and flags; subclasses override the ones that appl
 - `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
   Init supplies the recipe's actual names after collision mangling. Common guidance is
   generated automatically for every app that references a port resource.
+- `validate_run(cwd, recipe, kind)` — raise when the recipe cannot produce a launch on that
+  destination kind (`"ios"`, `"android"`, or `None` when the target declares no platform).
+  `cmd_run` calls it through `validate_device_run` before it provisions values, writes outputs,
+  claims a physical target, or creates and boots a managed device, so the failure lands with the
+  machine untouched. A profile that resolves a value the launch will need writes it back into
+  `recipe` so the launch path does not resolve it a second time. The base implementation is a
+  no-op.
 - `run` — build+install+launch on a device. Only mobile/native profiles implement
   [`RunnableProfile`](../../src/splashdown/inventory.py). Accept its optional `env` keyword
   and forward that environment to every build, settings, install, and launch subprocess so
@@ -237,8 +244,9 @@ positionals passed to these tools go through `_no_flag()` in `runners.py` to rej
 leading-`-` values that argv would otherwise swallow as tool flags.
 
 **Electron** is the boundary case for generation. Init detects it as a secondary capability and
-asks whether to add the optional profile-isolation overlay. A project that init does not detect as
-Electron uses the documented recipe example in `docs/user/recipe.md` instead of a generator.
+generates nothing for it, printing a pointer to the opt-in isolation recipe in
+`docs/user/recipe.md`. Detected and undetected Electron projects therefore follow the same
+hand-edited path, because the resource is inert until the main process applies it.
 
 ### Profile-adjacent modules
 

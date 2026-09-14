@@ -193,15 +193,6 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 â€” flat parser
         help="checkout-relative destination for generated values (default: splashdown.env)",
     )
     p.add_argument("--overwrite", action="store_true", help="replace an existing splashdown.toml")
-    p.add_argument(
-        "--electron-profile",
-        choices=("isolated", "shared"),
-        help="Electron scanner choice (isolated = independent checkout profile)",
-    )
-    p.add_argument(
-        "--ios-scheme",
-        help="native iOS Xcode scheme (auto-detected when there is exactly one)",
-    )
 
     sub.add_parser("deinit", help=argparse.SUPPRESS)
     sub.add_parser("trust", help=argparse.SUPPRESS)
@@ -562,8 +553,6 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
                 cwd,
                 options=InitOptions(overwrite=args.overwrite, env_file=args.env_file),
                 loader_override=args.loader,
-                electron_profile=args.electron_profile,
-                ios_scheme=args.ios_scheme,
                 output_format=args.format or "text",
             )
             return 0

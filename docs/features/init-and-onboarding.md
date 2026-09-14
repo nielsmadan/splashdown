@@ -30,15 +30,12 @@ trust, runs no loader approval command, and installs nothing into the local `.gi
 the user can read and edit the generated recipe before anything reaches the machine. Adoption is
 two commands: `splash init`, then `splash trust` plus a sync (bare `splash`).
 
-Four options reshape that flow:
+Three options reshape that flow:
 
 - `splash init --loader=mise|direnv|devbox|none` — override loader detection, including
   an explicit no-loader setup.
+- `splash init --env-file=PATH` — choose the file that receives generated values.
 - `splash init --overwrite` — replace an existing recipe (init refuses otherwise).
-- `splash init --electron-profile=isolated|shared` — make the scanner-driven Electron
-  profile choice explicit instead of relying on the interactive prompt/default.
-- `splash init --ios-scheme=NAME` — select a native iOS Xcode scheme when discovery is
-  ambiguous or when init is running non-interactively.
 
 ## How it works (current state)
 
@@ -90,13 +87,13 @@ Expo, or Flutter app claims its own native subdirectories, so they do not cause 
 Compose resources are collected only after this decision; a Compose file by itself is not a
 deferral trigger.
 
-**Electron overlay.** Scanner-detected Electron apps can add a stable
-`ELECTRON_PROFILE_ID` through `_add_electron_resources` (`commands.py`). Interactive
-init asks whether to isolate the profile; non-interactive/EOF defaults to shared. The
-`--electron-profile=isolated|shared` flag makes the choice deterministic. Isolation retains
-the app's primary Profile and adds a template resource, with no explicit writer, whose value
-the Electron main process uses to derive a per-checkout `userData` directory. It follows the
-configured default destination like every other generated resource.
+**Electron pointer.** Scanner-detected Electron apps keep their renderer resources and their
+primary Profile. Init asks nothing and generates no profile-id resource; user-data isolation
+needs a main-process change Splashdown cannot make, so `_print_electron_isolation_pointer`
+(`commands.py`) names the opt-in recipe at
+[recipe.md#electron-user-data-isolation](../user/recipe.md#electron-user-data-isolation),
+which carries the template resource and the `app.setPath("userData", ...)` integration it
+depends on.
 
 **Output destination.** `--env-file PATH` selects the file that receives generated values.
 `validate_env_file_option` (`recipe.py`) checks it before anything is written, sharing
@@ -109,11 +106,10 @@ file already assigns (`existing_managed_keys`, values never disclosed), and a wa
 destination is not gitignored. `existing_managed_keys` raises on an ambiguous assignment before
 init writes anything. There is no file-presence-based routing: finding a `.env` never selects it.
 
-**Native iOS scheme.** `_resolve_init_ios_scheme` (`commands.py`) discovers shared
-Xcode schemes for a scanner-detected `ios-native` app. One shared scheme is recorded
-automatically as `[project.ios].scheme`; several produce a TTY prompt, while ambiguous
-non-interactive init errors with a direct `--ios-scheme=NAME` retry. An explicit name is
-validated and recorded without discovery.
+**Native iOS scheme.** Init neither discovers nor records one, and never runs `xcodebuild`, so
+a native iOS project initializes with Xcode missing or broken. `[project.ios] scheme` stays a
+hand-written recipe setting, and `splash run` resolves it: see
+[device-targets.md](device-targets.md#native-ios-scheme-resolution).
 
 **Prune, validate, write + wire.** A Profile emits resources for one app and cannot see its
 siblings, so a cross-app template reference can dangle — Vite emits
@@ -252,7 +248,7 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 ## Key entry points
 
 - `cmd_init` — orchestrator and typed refusal guard: `src/splashdown/commands.py`.
-- `_add_electron_resources` / `_resolve_init_ios_scheme`: `src/splashdown/commands.py`.
+- `_print_electron_isolation_pointer`: `src/splashdown/commands.py`.
 - `cmd_deinit` — surgical teardown: `src/splashdown/commands.py`.
 - `_print_init_next_steps` — the closing report: `src/splashdown/commands.py`.
 - `cmd_trust` / `_print_trust_preamble` / `_splashdown_owned_loader` — activation:
@@ -286,10 +282,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
 - **`--loader mise|direnv|devbox|none`** — override loader selection
   (`none` = write a dotenv file / print instructions, wire nothing).
 - **`--overwrite`** — replace an existing `splashdown.toml` (without it, init exits `2`).
-- **`--electron-profile=isolated|shared`** — scanner-only Electron choice. `isolated` adds a
-  stable process-env profile id; `shared` explicitly declines isolation.
-- **`--ios-scheme=NAME`** — scanner-only native iOS scheme override; required for ambiguous
-  non-interactive discovery.
+- **`--env-file PATH`** — checkout-relative destination for generated values
+  (default `splashdown.env`).
 - **Files touched**: `splashdown.toml` (committed recipe), `splashdown.local.toml`
   (gitignored, skeleton), `.gitignore` (+`splashdown.env`, +`splashdown.local.toml`), the
   loader config (`mise.toml`/`.envrc`/`devbox.json`), the project-owned hook target

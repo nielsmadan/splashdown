@@ -1401,7 +1401,7 @@ def test_scanner_keeps_electron_only_workspace_member(tmp_path):
     ]
 
 
-def test_init_mixed_workspace_associates_electron_only_with_desktop(tmp_path):
+def test_init_mixed_workspace_keeps_renderer_and_server_resources(tmp_path):
     (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n")
     desktop = tmp_path / "apps" / "desktop"
     desktop.mkdir(parents=True)
@@ -1411,11 +1411,11 @@ def test_init_mixed_workspace_associates_electron_only_with_desktop(tmp_path):
     api.mkdir()
     (api / "package.json").write_text('{"dependencies":{"express":"5"}}')
 
-    sd.cmd_init(tmp_path, electron_profile="isolated")
+    sd.cmd_init(tmp_path)
 
     recipe = sd.Recipe.load(tmp_path / "splashdown.toml")
     assert recipe.apps["desktop"]["profile"] == "vite"
-    assert recipe.apps["desktop"]["resources"] == ["WEB_DEV_PORT", "ELECTRON_PROFILE_ID"]
+    assert recipe.apps["desktop"]["resources"] == ["WEB_DEV_PORT"]
     assert recipe.apps["api"]["resources"] == ["PORT"]
 
 
