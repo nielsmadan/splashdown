@@ -622,12 +622,10 @@ def test_cli_destroy_confirms_before_deleting(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(sd.target_commands, "device_destroy_row", destroyed.append)
 
-    # Declining at the prompt aborts without touching the device.
     monkeypatch.setattr("builtins.input", lambda: "n")
     assert sd.main(["--cwd", str(tmp_path), "destroy", "simulator"]) == 1
     assert destroyed == []
 
-    # --yes skips the prompt and destroys.
     assert sd.main(["--cwd", str(tmp_path), "destroy", "simulator", "--yes"]) == 0
     assert [row.identifier for row in destroyed] == ["UDID-STORED"]
 
@@ -1175,7 +1173,7 @@ def test_target_list_marks_global_source(tmp_path, monkeypatch, capsys):
     sd.global_target_add("device", "my-iphone", {"platform": "ios"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
-    assert line.split("\t")[1] == "global"
+    assert "  global  " in line
 
 
 def test_target_list_annotates_shadowed_global(tmp_path, monkeypatch, capsys):
@@ -1306,7 +1304,7 @@ def test_target_list_annotates_local_shadowing_global(tmp_path, monkeypatch, cap
     sd.global_target_add("device", "my-iphone", {"platform": "android"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
-    assert line.split("\t")[1] == "local (shadows global)"
+    assert "  local (shadows global)  " in line
 
 
 def test_target_refresh_keeps_global_sourced_sim(tmp_path, registry, monkeypatch):
@@ -1601,7 +1599,6 @@ def test_profile_registry_exists_and_is_dict_of_str_to_profile():
 
 
 def test_scanner_falls_back_to_unknown_when_no_profile_matches(tmp_path):
-    # A directory with nothing recognizable.
     inv = sd.Scanner().scan(tmp_path)
     assert all(app.profile == "unknown" for app in inv.apps)
 

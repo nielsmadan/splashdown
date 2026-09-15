@@ -466,8 +466,8 @@ notice write, so claims and notices locks never nest.
 `cmd_target_claims` renders `Registry.all_claims()` without device discovery. Text generic
 allocation prints only the selected variant to stdout for shell capture, while a specific claim's
 diagnostic goes to stderr. JSON selection includes source, platform, hardware ID, canonical owner,
-claim time, and claimed/owned status. `render_target_inventory` abbreviates owner paths only in
-text; JSON always retains canonical paths.
+claim time, and claimed/owned status. `render_target_inventory` aligns text columns with spaces and
+abbreviates owner paths below the home directory with `~`; JSON always retains canonical paths.
 
 `target add` validates its CLI field map with the same `validate_target_spec`
 used by recipe, local, and global loads. Flags incompatible with the chosen type

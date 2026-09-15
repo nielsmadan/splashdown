@@ -4,7 +4,6 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .errors import ApplicationError
@@ -90,12 +89,26 @@ def render_target_inventory(rows: Sequence[TargetInventoryRow], fmt: str) -> Non
     if fmt == "json":
         print(json.dumps([asdict(row) for row in rows], indent=2))
         return
-    print("TARGET\tSOURCE\tPLATFORM\tCONNECTION\tCLAIM\tOWNER")
-    for row in rows:
-        owner = Path(row.owner).name if row.owner else ""
-        print(
-            f"{row.variant}\t{row.source}\t{row.platform}\t{row.connection}\t{row.claim}\t{owner}"
+    headers = ("TARGET", "SOURCE", "PLATFORM", "CONNECTION", "CLAIM", "OWNER")
+    rendered = [
+        (
+            row.variant,
+            row.source,
+            row.platform,
+            row.connection,
+            row.claim,
+            _short_path(row.owner) if row.owner else "",
         )
+        for row in rows
+    ]
+    widths = [
+        max(len(headers[index]), *(len(values[index]) for values in rendered))
+        for index in range(len(headers) - 1)
+    ]
+    row_format = "  ".join(f"{{:<{width}}}" for width in widths) + "  {}"
+    print(row_format.format(*headers).rstrip())
+    for values in rendered:
+        print(row_format.format(*values).rstrip())
 
 
 def _summary_string(counts: dict[str, int]) -> str:

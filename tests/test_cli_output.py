@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import splashdown as sd
 
@@ -86,6 +87,16 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
             "claimed",
             "/checkouts/app.feature-pixel",
         ),
+        sd.status.TargetInventoryRow(
+            "simulator",
+            "default",
+            "recipe",
+            "",
+            "ios",
+            "absent",
+            "not-applicable",
+            "",
+        ),
     )
 
     sd.render_target_inventory(rows, "text")
@@ -93,8 +104,9 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
     sd.render_target_inventory(rows, "json")
 
     assert text == (
-        "TARGET\tSOURCE\tPLATFORM\tCONNECTION\tCLAIM\tOWNER\n"
-        "pixel\trecipe\tandroid\tconnected\tclaimed\tapp.feature-pixel\n"
+        "TARGET   SOURCE  PLATFORM  CONNECTION  CLAIM           OWNER\n"
+        "pixel    recipe  android   connected   claimed         /checkouts/app.feature-pixel\n"
+        "default  recipe  ios       absent      not-applicable\n"
     )
     assert json.loads(capsys.readouterr().out) == [
         {
@@ -106,8 +118,38 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
             "connection": "connected",
             "claim": "claimed",
             "owner": "/checkouts/app.feature-pixel",
-        }
+        },
+        {
+            "type": "simulator",
+            "variant": "default",
+            "source": "recipe",
+            "device_name": "",
+            "platform": "ios",
+            "connection": "absent",
+            "claim": "not-applicable",
+            "owner": "",
+        },
     ]
+
+
+def test_render_target_inventory_shortens_home_in_text_owner(capsys):
+    owner = str(Path.home() / "wrksp" / "splashdown" / "dev1")
+    rows = (
+        sd.status.TargetInventoryRow(
+            "device",
+            "iphone",
+            "global",
+            "iPhone",
+            "ios",
+            "connected",
+            "claimed",
+            owner,
+        ),
+    )
+
+    sd.render_target_inventory(rows, "text")
+
+    assert capsys.readouterr().out.endswith("~/wrksp/splashdown/dev1\n")
 
 
 def test_render_claim_notices_names_action_target_actor_and_event(capsys):
