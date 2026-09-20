@@ -11,7 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "argcomplete>=3.7.2",
     "tomlkit>=0.15.1",
-    "flyrail @ git+https://github.com/nielsmadan/flyrail.git@eab75625f00947e75200993f5b32f5426e09208f#subdirectory=python",
+    "pyflyrail>=0.1.0",
 ]
 license = "MIT"
 authors = [{ name = "Niels Madan" }]
@@ -91,9 +91,6 @@ score = false
 python_version = "3.11"
 files = ["src/splashdown"]
 strict = true
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 sources = ["src"]

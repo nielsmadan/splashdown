@@ -23,7 +23,6 @@ class Resource:
     url: str
     sha256: str
     archive: Path
-    subdirectory: str = ""
 
 
 def runtime_packages(root: Path) -> list[dict]:
@@ -55,6 +54,8 @@ def runtime_packages(root: Path) -> list[dict]:
             raise ValueError(f"ambiguous runtime dependency: {name}")
         active.add(name)
         package = by_name[name][0]
+        if set(package["source"]) != {"registry"}:
+            raise ValueError(f"runtime dependency requires a registry source: {name}")
         for child in package.get("dependencies", []):
             visit(child)
         active.remove(name)
@@ -67,33 +68,10 @@ def runtime_packages(root: Path) -> list[dict]:
         if requirement.marker or requirement.extras:
             raise ValueError("conditional project dependencies need an explicit Homebrew policy")
         if requirement.url:
-            url, _ = git_archive(package)
-            parsed = urllib.parse.urlsplit(requirement.url.removeprefix("git+"))
-            base, separator, commit = parsed.path.rpartition("@")
-            expected = f"https://{parsed.netloc}{base.removesuffix('.git')}/archive/{commit}.tar.gz"
-            if not separator or url != expected or parsed.fragment != "subdirectory=python":
-                raise ValueError("project Git dependency disagrees with uv.lock")
-        elif package["version"] not in requirement.specifier:
+            raise ValueError("direct project dependencies need an explicit Homebrew policy")
+        if package["version"] not in requirement.specifier:
             raise ValueError(f"locked version does not satisfy {requirement}")
     return list(ordered.values())
-
-
-def git_archive(package: dict) -> tuple[str, str]:
-    parsed = urllib.parse.urlsplit(package["source"].get("git", ""))
-    query = urllib.parse.parse_qs(parsed.query)
-    commit = parsed.fragment
-    if (
-        package["name"] != "flyrail"
-        or parsed.scheme != "https"
-        or parsed.netloc != "github.com"
-        or parsed.path != "/nielsmadan/flyrail.git"
-        or not re.fullmatch(r"[0-9a-f]{40}", commit)
-        or query != {"subdirectory": ["python"], "rev": [commit]}
-    ):
-        raise ValueError(
-            "Flyrail requires the reviewed immutable public Git pin and python subdirectory"
-        )
-    return f"https://github.com/nielsmadan/flyrail/archive/{commit}.tar.gz", "python"
 
 
 def _download(url: str, destination: Path) -> None:
@@ -109,14 +87,9 @@ def prepare_resources(
     cache.mkdir(parents=True, exist_ok=True)
     resources: list[Resource] = []
     for package in runtime_packages(root):
-        expected = None
-        subdirectory = ""
-        if "git" in package["source"]:
-            url, subdirectory = git_archive(package)
-        else:
-            sdist = package["sdist"]
-            url = sdist["url"]
-            expected = sdist["hash"].removeprefix("sha256:")
+        sdist = package["sdist"]
+        url = sdist["url"]
+        expected = sdist["hash"].removeprefix("sha256:")
         archive = cache / f"{package['name']}.tar.gz"
         if overrides is not None:
             override = overrides[url]
@@ -127,9 +100,9 @@ def prepare_resources(
         else:
             _download(url, archive)
         checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
-        if expected is not None and checksum != expected:
+        if checksum != expected:
             raise ValueError(f"locked source checksum mismatch: {package['name']}")
-        resources.append(Resource(package["name"], url, checksum, archive, subdirectory))
+        resources.append(Resource(package["name"], url, checksum, archive))
     return tuple(resources)
 
 
@@ -142,7 +115,7 @@ def stage_resource(resource: Resource, destination: Path) -> Path:
     roots = list(destination.iterdir())
     if len(roots) != 1 or not roots[0].is_dir():
         raise ValueError(f"source archive needs one project root: {resource.name}")
-    project = roots[0] / resource.subdirectory
+    project = roots[0]
     if not (project / "pyproject.toml").is_file():
         raise ValueError(f"source project is missing pyproject.toml: {resource.name}")
     return project
@@ -181,13 +154,10 @@ def render_formula(version: str, source_sha: str, resources: tuple[Resource, ...
         f'  resource "{item.name}" do\n    url "{item.url}"\n    sha256 "{item.sha256}"\n  end\n'
         for item in resources
     )
-    install_lines = []
-    for item in resources:
-        suffix = '/"' + item.subdirectory + '"' if item.subdirectory else ""
-        install_lines.append(
-            f'    resource("{item.name}").stage {{ venv.pip_install Pathname.pwd{suffix} }}'
-        )
-    installs = "\n".join(install_lines)
+    installs = "\n".join(
+        f'    resource("{item.name}").stage {{ venv.pip_install Pathname.pwd }}'
+        for item in resources
+    )
     return f'''class Splashdown < Formula
   include Language::Python::Virtualenv
 

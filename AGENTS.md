@@ -36,7 +36,7 @@ command. `just install-editable` links it to the checkout so source edits take e
 ## Before declaring done
 
 Run `just check`, not only pytest. For dependency or release changes, also reproduce the release
-test install in a clean virtual environment with `pip install build pytest .`.
+test install in a clean virtual environment with `pip install build pytest pyyaml .`.
 
 Coverage uses the `fail_under = 80` value in `pyproject.toml` and is enforced by CI and the
 pre-push hook. `just check` intentionally stays fast and does not collect coverage.
@@ -121,10 +121,10 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 ## Conventions
 
 - Runtime is Python 3.13; ruff and mypy target 3.11. Strict mypy applies to `src/splashdown`.
-- Runtime dependencies are `argcomplete`, `tomlkit`, and an immutable public Git pin of Flyrail.
+- Runtime dependencies are `argcomplete`, `tomlkit`, and `pyflyrail` from PyPI (imported as `flyrail`).
   Flyrail owns instruction-section lifecycle and shares the existing TOML parser dependency.
-  `scripts/homebrew_resources.py` verifies and stages the locked runtime source graph, including
-  Flyrail’s `python/` subproject. Evaluate supply-chain and Homebrew costs before adding dependencies.
+  `scripts/homebrew_resources.py` verifies and stages the locked runtime source archives.
+  Evaluate supply-chain and Homebrew costs before adding dependencies.
 - Ruff owns lint and formatting. After `ruff check --fix`, run `ruff format`; do not broadly
   disable rules to avoid a local fix.
 - Shelling out to PATH tools such as `xcrun`, `adb`, and `git` is intentional; `S603` and `S607`

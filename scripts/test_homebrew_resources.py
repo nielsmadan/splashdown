@@ -4,6 +4,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import homebrew_resources as brew
 
@@ -15,38 +16,45 @@ class HomebrewResourcesTests(unittest.TestCase):
     def test_runtime_graph_is_dependency_ordered_and_omits_development_packages(self):
         self.assertEqual(
             [item["name"] for item in brew.runtime_packages(self.root)],
-            ["argcomplete", "tomlkit", "flyrail"],
+            ["argcomplete", "tomlkit", "pyflyrail"],
         )
 
-    def test_flyrail_archive_uses_exact_public_lock_pin_and_python_subproject(self):
+    def test_pyflyrail_uses_pypi_source_archive(self):
         package = brew.runtime_packages(self.root)[-1]
-        commit = package["source"]["git"].split("#")[1]
-        self.assertEqual(
-            brew.git_archive(package),
-            (f"https://github.com/nielsmadan/flyrail/archive/{commit}.tar.gz", "python"),
-        )
-        package["source"]["git"] = package["source"]["git"].replace(commit, "main")
-        with self.assertRaises(ValueError):
-            brew.git_archive(package)
+        self.assertEqual(package["source"], {"registry": "https://pypi.org/simple"})
+        self.assertTrue(package["sdist"]["url"].endswith("/pyflyrail-0.1.0.tar.gz"))
+        with tempfile.TemporaryDirectory() as temp:
+            archive = Path(temp) / "wrong.tar.gz"
+            archive.write_bytes(b"wrong source")
+            overrides = {
+                package["sdist"]["url"]: {
+                    "path": str(archive),
+                    "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                }
+            }
+            with (
+                patch.object(brew, "runtime_packages", return_value=[package]),
+                self.assertRaisesRegex(ValueError, "locked source checksum mismatch: pyflyrail"),
+            ):
+                brew.prepare_resources(self.root, Path(temp) / "cache", overrides)
 
-    def test_staging_verifies_bytes_and_selects_actual_python_subproject(self):
+    def test_staging_verifies_bytes_and_selects_source_project_root(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             archive = root / "source.tar.gz"
             with tarfile.open(archive, "w:gz") as stream:
-                content = b'[project]\nname = "flyrail"\nversion = "0.1.0"\n'
-                info = tarfile.TarInfo("flyrail-source/python/pyproject.toml")
+                content = b'[project]\nname = "pyflyrail"\nversion = "0.1.0"\n'
+                info = tarfile.TarInfo("pyflyrail-0.1.0/pyproject.toml")
                 info.size = len(content)
                 stream.addfile(info, io.BytesIO(content))
             resource = brew.Resource(
-                "flyrail",
+                "pyflyrail",
                 "https://example.com/source.tar.gz",
                 hashlib.sha256(archive.read_bytes()).hexdigest(),
                 archive,
-                "python",
             )
             project = brew.stage_resource(resource, root / "staged")
-            self.assertEqual(project, root / "staged/flyrail-source/python")
+            self.assertEqual(project, root / "staged/pyflyrail-0.1.0")
             self.assertEqual((project / "pyproject.toml").read_bytes(), content)
             archive.write_bytes(b"changed transport")
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
@@ -74,12 +82,12 @@ class HomebrewResourcesTests(unittest.TestCase):
                 "tomlkit", "https://example.com/tomlkit.tar.gz", "1" * 64, Path("archive")
             ),
             brew.Resource(
-                "flyrail", "https://example.com/flyrail.tar.gz", "2" * 64, Path("archive"), "python"
+                "pyflyrail", "https://example.com/pyflyrail.tar.gz", "2" * 64, Path("archive")
             ),
         )
         text = brew.render_formula("1.2.3", "3" * 64, resources)
         self.assertIn('resource("tomlkit").stage { venv.pip_install Pathname.pwd }', text)
-        self.assertIn('resource("flyrail").stage { venv.pip_install Pathname.pwd/"python" }', text)
+        self.assertIn('resource("pyflyrail").stage { venv.pip_install Pathname.pwd }', text)
         self.assertIn('sha256 "' + "3" * 64 + '"', text)
         self.assertIn('sha256 "' + "2" * 64 + '"', text)
         self.assertIn("venv.pip_install_and_link buildpath", text)

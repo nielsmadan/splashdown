@@ -174,14 +174,6 @@ wheels = [
 ]
 
 [[package]]
-name = "flyrail"
-version = "0.1.0"
-source = { git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=eab75625f00947e75200993f5b32f5426e09208f#eab75625f00947e75200993f5b32f5426e09208f" }
-dependencies = [
-    { name = "tomlkit" },
-]
-
-[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -424,6 +416,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pyflyrail"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tomlkit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/ce/3470b9374fba3d398c9991c5cf03341ba6c69f6de63bd1cb5fc6d0b529fe/pyflyrail-0.1.0.tar.gz", hash = "sha256:f546da8d8484adc48487087240a46b043a7b48810d75d5ab8161756e54f6af55", size = 282126, upload-time = "2026-09-20T19:45:29.626Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/3a/694df57a3ac331ed0a6425c18a047aebe058b69b674ef9ed6d8c50dc124a/pyflyrail-0.1.0-py3-none-any.whl", hash = "sha256:db439045d06c196252c52a476d6340bed2e231c8f4bde494b21ca6b99a7e005d", size = 111805, upload-time = "2026-09-20T19:45:28.33Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -560,7 +564,7 @@ version = "0.17.0"
 source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
-    { name = "flyrail" },
+    { name = "pyflyrail" },
     { name = "tomlkit" },
 ]
 
@@ -580,7 +584,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "argcomplete", specifier = ">=3.7.2" },
-    { name = "flyrail", git = "https://github.com/nielsmadan/flyrail.git?subdirectory=python&rev=eab75625f00947e75200993f5b32f5426e09208f" },
+    { name = "pyflyrail", specifier = ">=0.1.0" },
     { name = "tomlkit", specifier = ">=0.15.1" },
 ]
 
