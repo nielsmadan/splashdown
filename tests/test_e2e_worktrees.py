@@ -11,13 +11,12 @@ Python + git only — no Node/npm/network, so it runs on CI.
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import splashdown as sd
+from conftest import terminate_process, wait_for_listening
 
 # A stand-in dev server: read PORT from the environment (as mise would export
 # splashdown.env), bind it, and listen. The OS completes handshakes from the
@@ -89,29 +88,6 @@ def _spawn_frontend(checkout: Path, env_vars: dict[str, str]) -> subprocess.Pope
     )
 
 
-def _wait_listening(port: int, proc: subprocess.Popen[str], deadline_s: float = 10.0) -> None:
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        if proc.poll() is not None:
-            err = proc.stderr.read() if proc.stderr else ""
-            raise AssertionError(f"frontend exited early rc={proc.returncode}: {err!r}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise AssertionError(f"nothing listening on port {port} within {deadline_s}s")
-
-
-def _terminate(proc: subprocess.Popen[str]) -> None:
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-
-
 def test_two_worktrees_get_distinct_ports_and_run_concurrently(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
@@ -138,11 +114,11 @@ def test_two_worktrees_get_distinct_ports_and_run_concurrently(tmp_path, monkeyp
     try:
         procs.append(_spawn_frontend(main, _read_env(main)))
         procs.append(_spawn_frontend(wt2, _read_env(wt2)))
-        _wait_listening(port_main, procs[0])
-        _wait_listening(port_wt2, procs[1])
+        wait_for_listening(port_main, procs[0], label="frontend")
+        wait_for_listening(port_wt2, procs[1], label="frontend")
     finally:
         for pr in procs:
-            _terminate(pr)
+            terminate_process(pr)
 
 
 def test_post_checkout_hook_provisions_new_worktree(tmp_path, monkeypatch):

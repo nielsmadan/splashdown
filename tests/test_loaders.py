@@ -386,9 +386,11 @@ def test_direnv_loader_owns_config_false_when_envrc_missing(tmp_path):
         (
             "direnv",
             ".envrc",
-            "# >>> splashdown-managed dotenv >>>\n"
-            "dotenv_if_exists splashdown.env\n"
-            "# <<< splashdown-managed dotenv <<<\n",
+            (
+                "# >>> splashdown-managed dotenv >>>\n"
+                "dotenv_if_exists splashdown.env\n"
+                "# <<< splashdown-managed dotenv <<<\n"
+            ),
         ),
     ],
 )

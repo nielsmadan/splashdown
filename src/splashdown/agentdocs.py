@@ -76,8 +76,10 @@ def render_agent_guidance(cwd: Path, recipe: Recipe) -> str:
                 "",
                 f"### App {_markdown_code(name)} ({_markdown_code(path)})",
                 "",
-                f"Framework: `{profile_name}`. Allocated port variable"
-                f"{'s' if len(port_names) != 1 else ''}: {ports}.",
+                (
+                    f"Framework: `{profile_name}`. Allocated port variable"
+                    f"{'s' if len(port_names) != 1 else ''}: {ports}."
+                ),
             ]
         )
         specific = PROFILES[profile_name].agent_guidance(app, port_names)

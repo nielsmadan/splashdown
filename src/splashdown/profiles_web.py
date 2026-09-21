@@ -709,8 +709,10 @@ def _deno_port_detect(cwd: Path) -> tuple[str, str]:
     if misordered:
         return (
             "problem",
-            f"--port comes after the script argument in: {', '.join(sorted(misordered))}; "
-            "deno passes it to the script, not to itself",
+            (
+                f"--port comes after the script argument in: {', '.join(sorted(misordered))}; "
+                "deno passes it to the script, not to itself"
+            ),
         )
     if _deno_sources_read_port(cwd):
         return ("ok", "server code reads PORT from the environment")

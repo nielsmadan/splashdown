@@ -400,8 +400,10 @@ def test_recipe_env_file_is_normalized(tmp_path, declared, expected):
             "apps.main.resources",
         ),
         (
-            '[apps.main]\npath = "."\nprofile = "unknown"\nresources = ["A", "A"]\n'
-            '\n[resources.A]\ntype = "uuid"\n',
+            (
+                '[apps.main]\npath = "."\nprofile = "unknown"\nresources = ["A", "A"]\n'
+                '\n[resources.A]\ntype = "uuid"\n'
+            ),
             "apps.main.resources",
         ),
         (

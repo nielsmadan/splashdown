@@ -209,7 +209,7 @@ def _render_status_block(checkout: CheckoutStatus, *, show_all: bool, show_value
         print("  " + "\t".join(columns), file=sys.stderr)
     _render_automation(checkout.automation)
     if show_all:
-        print("", file=sys.stderr)
+        print(file=sys.stderr)
 
 
 def _render_status_table(report: StatusReport) -> None:
@@ -329,7 +329,7 @@ def render_status(
             )
     if report.check:
         if report.show_all and not verbose:
-            print("", file=sys.stderr)
+            print(file=sys.stderr)
         _render_check_summary(report.summary)
     elif not report.show_all:
         if report.stale_registry_rows:

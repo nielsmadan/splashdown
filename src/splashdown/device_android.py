@@ -96,7 +96,7 @@ def _android_latest_image() -> str:
             ).decode()
     except subprocess.CalledProcessError:
         out = ""
-    installed = re.findall(r"^\s*(system-images;android-\d+;[^\s|]+)", out, re.M)
+    installed = re.findall(r"^\s*(system-images;android-\d+;[^\s|]+)", out, re.MULTILINE)
     if installed:
 
         def api_level(image: str) -> int:

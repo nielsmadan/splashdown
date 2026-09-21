@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -129,3 +131,38 @@ def _capture_profile_calls(monkeypatch):
 
 def _stub_ios_devices(monkeypatch, devices):
     monkeypatch.setattr(sd.device_ios, "_xcrun_json", lambda args: {"devices": devices})
+
+
+def wait_for_listening(
+    port: int,
+    proc: subprocess.Popen[str],
+    *,
+    label: str = "process",
+    deadline_s: float = 10.0,
+) -> None:
+    """Wait until `proc` is listening on 127.0.0.1:`port`, or raise."""
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if proc.poll() is not None:
+            err = proc.stderr.read() if proc.stderr else ""
+            raise AssertionError(f"{label} exited early rc={proc.returncode}: {err!r}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise AssertionError(f"nothing listening on port {port} within {deadline_s}s")
+
+
+def terminate_process(proc: subprocess.Popen[str]) -> None:
+    """Terminate and wait for `proc`, then close any PIPE streams."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    if proc.stdout is not None:
+        proc.stdout.close()
+    if proc.stderr is not None:
+        proc.stderr.close()

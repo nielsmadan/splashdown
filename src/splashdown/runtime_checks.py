@@ -24,9 +24,11 @@ def loopback_warnings(resolved: dict[str, str]) -> list[str]:
     subject = "Resource" if len(keys) == 1 else "Resources"
     verb = "contains" if len(keys) == 1 else "contain"
     return [
-        f"{subject} {', '.join(keys)} {verb} loopback addresses. On a physical device these refer to "
-        "the device itself. Use the development machine's reachable LAN address for host "
-        "services, or verify that you configured port forwarding."
+        (
+            f"{subject} {', '.join(keys)} {verb} loopback addresses. On a physical device these refer to "
+            "the device itself. Use the development machine's reachable LAN address for host "
+            "services, or verify that you configured port forwarding."
+        )
     ]
 
 
@@ -36,9 +38,11 @@ def _local_network_description(data: object, source: str) -> list[str]:
     description = data.get("NSLocalNetworkUsageDescription")
     if not isinstance(description, str) or not description.strip():
         return [
-            f"{source}: add a nonempty NSLocalNetworkUsageDescription explaining the app's "
-            "connection to Metro and local services, then rebuild and allow Local Network "
-            "access on the iPhone."
+            (
+                f"{source}: add a nonempty NSLocalNetworkUsageDescription explaining the app's "
+                "connection to Metro and local services, then rebuild and allow Local Network "
+                "access on the iPhone."
+            )
         ]
     if "$(" in description or "${" in description:
         return [f"{source}: local-network description uses build variables; verify the built app."]
@@ -72,8 +76,10 @@ def local_network_warnings(app_dir: Path, framework: str) -> list[str]:
     if framework == "expo":
         if any(app_dir.glob("app.config.*")):
             return [
-                "Expo uses dynamic app config; verify ios.infoPlist.NSLocalNetworkUsageDescription "
-                "in the resolved config and generated iOS app."
+                (
+                    "Expo uses dynamic app config; verify ios.infoPlist.NSLocalNetworkUsageDescription "
+                    "in the resolved config and generated iOS app."
+                )
             ]
         try:
             data = json.loads((app_dir / "app.json").read_text())
@@ -84,8 +90,10 @@ def local_network_warnings(app_dir: Path, framework: str) -> list[str]:
             ]
         return _local_network_description(plist, "app.json expo.ios.infoPlist")
     return [
-        "No app Info.plist found under ios/; verify NSLocalNetworkUsageDescription in the "
-        "built iOS app and allow Local Network access on the iPhone."
+        (
+            "No app Info.plist found under ios/; verify NSLocalNetworkUsageDescription in the "
+            "built iOS app and allow Local Network access on the iPhone."
+        )
     ]
 
 
@@ -127,9 +135,11 @@ def watchman_watch_root(cwd: Path) -> tuple[str, str]:
     if ancestors:
         return (
             "problem",
-            f"Watchman watches an ancestor of this checkout: {', '.join(ancestors)}. "
-            "Review that shared watch before removing it with `watchman watch-del PATH`, "
-            "then restart Metro from this checkout.",
+            (
+                f"Watchman watches an ancestor of this checkout: {', '.join(ancestors)}. "
+                "Review that shared watch before removing it with `watchman watch-del PATH`, "
+                "then restart Metro from this checkout."
+            ),
         )
     return ("ok", "Watchman has no ancestor watch for this checkout")
 

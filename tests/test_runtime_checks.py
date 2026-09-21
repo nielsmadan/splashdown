@@ -22,9 +22,11 @@ from splashdown import runtime_checks as checks
 )
 def test_loopback_warning_identifies_resource_without_disclosing_its_value(value):
     assert checks.loopback_warnings({"API_URL": value}) == [
-        "Resource API_URL contains loopback addresses. On a physical device these refer to "
-        "the device itself. Use the development machine's reachable LAN address for host "
-        "services, or verify that you configured port forwarding."
+        (
+            "Resource API_URL contains loopback addresses. On a physical device these refer to "
+            "the device itself. Use the development machine's reachable LAN address for host "
+            "services, or verify that you configured port forwarding."
+        )
     ]
 
 
@@ -119,8 +121,10 @@ def test_expo_local_network_check_reports_dynamic_config_as_unverified(tmp_path)
     (tmp_path / "app.json").write_text('{"expo": {}}')
 
     assert checks.local_network_warnings(tmp_path, "expo") == [
-        "Expo uses dynamic app config; verify ios.infoPlist.NSLocalNetworkUsageDescription "
-        "in the resolved config and generated iOS app."
+        (
+            "Expo uses dynamic app config; verify ios.infoPlist.NSLocalNetworkUsageDescription "
+            "in the resolved config and generated iOS app."
+        )
     ]
 
 

@@ -991,26 +991,26 @@ def test_concurrent_bootstrap_processes_execute_once(tmp_path, monkeypatch):
     assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     env = {**os.environ, "XDG_STATE_HOME": str(state)}
     argv = [sys.executable, "-m", "splashdown", "--cwd", str(tmp_path), "bootstrap"]
-    first = subprocess.Popen(
+    with subprocess.Popen(
         argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-    try:
-        _wait_for(tmp_path / "started")
-        second_ready = tmp_path / "second-ready"
-        second = _instrumented_lifecycle_process(
-            tmp_path,
-            env,
-            second_ready,
-            ["--cwd", str(tmp_path), "bootstrap"],
-        )
-        _wait_for(second_ready)
-        (tmp_path / "release").touch()
-        first_result = first.communicate(timeout=5)
-        second_result = second.communicate(timeout=5)
-    finally:
-        (tmp_path / "release").touch(exist_ok=True)
-        if first.poll() is None:
-            first.kill()
+    ) as first:
+        try:
+            _wait_for(tmp_path / "started")
+            second_ready = tmp_path / "second-ready"
+            second = _instrumented_lifecycle_process(
+                tmp_path,
+                env,
+                second_ready,
+                ["--cwd", str(tmp_path), "bootstrap"],
+            )
+            _wait_for(second_ready)
+            (tmp_path / "release").touch()
+            first_result = first.communicate(timeout=5)
+            second_result = second.communicate(timeout=5)
+        finally:
+            (tmp_path / "release").touch(exist_ok=True)
+            if first.poll() is None:
+                first.kill()
     assert first.returncode == 0, first_result
     assert second.returncode == 0, second_result
     assert (tmp_path / "runs").read_text() == "x"
@@ -1023,22 +1023,22 @@ def test_untrust_waits_for_running_bootstrap_then_revokes(tmp_path, monkeypatch)
     _write_recipe(tmp_path, "touch started; while [ ! -f release ]; do sleep 0.01; done")
     assert sd.main(["--cwd", str(tmp_path), "trust"]) == 0
     env = {**os.environ, "XDG_STATE_HOME": str(state)}
-    bootstrap = subprocess.Popen(
+    with subprocess.Popen(
         [sys.executable, "-m", "splashdown", "--cwd", str(tmp_path), "bootstrap"],
         env=env,
-    )
-    try:
-        _wait_for(tmp_path / "started")
-        untrust_ready = tmp_path / "untrust-ready"
-        untrust = _instrumented_untrust_process(tmp_path, env, untrust_ready)
-        _wait_for(untrust_ready)
-        assert untrust.poll() is None
-        (tmp_path / "release").touch()
-        assert bootstrap.wait(timeout=5) == 0
-        assert untrust.wait(timeout=5) == 0
-    finally:
-        (tmp_path / "release").touch(exist_ok=True)
-        for process in (bootstrap, locals().get("untrust")):
-            if process is not None and process.poll() is None:
-                process.kill()
+    ) as bootstrap:
+        try:
+            _wait_for(tmp_path / "started")
+            untrust_ready = tmp_path / "untrust-ready"
+            untrust = _instrumented_untrust_process(tmp_path, env, untrust_ready)
+            _wait_for(untrust_ready)
+            assert untrust.poll() is None
+            (tmp_path / "release").touch()
+            assert bootstrap.wait(timeout=5) == 0
+            assert untrust.wait(timeout=5) == 0
+        finally:
+            (tmp_path / "release").touch(exist_ok=True)
+            for process in (bootstrap, locals().get("untrust")):
+                if process is not None and process.poll() is None:
+                    process.kill()
     assert not sd.is_trusted(sd.git_dirs(tmp_path))

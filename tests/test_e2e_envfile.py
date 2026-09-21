@@ -8,13 +8,12 @@ read their own `.env`, depend on). Python only — no Node/network.
 
 from __future__ import annotations
 
-import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import splashdown as sd
+from conftest import terminate_process, wait_for_listening
 
 _DOTENV_SERVER_SRC = (
     "import sys, socket, time;"
@@ -56,20 +55,6 @@ def _read_web_env(env_file: Path) -> dict[str, str]:
     return out
 
 
-def _wait_listening(port: int, proc: subprocess.Popen[str], deadline_s: float = 10.0) -> None:
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        if proc.poll() is not None:
-            err = proc.stderr.read() if proc.stderr else ""
-            raise AssertionError(f"consumer exited early rc={proc.returncode}: {err!r}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise AssertionError(f"nothing listening on port {port} within {deadline_s}s")
-
-
 def test_envfile_writer_delivers_to_app_then_deinit_strips(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
@@ -94,14 +79,9 @@ def test_envfile_writer_delivers_to_app_then_deinit_strips(tmp_path, monkeypatch
         text=True,
     )
     try:
-        _wait_listening(port, proc)
+        wait_for_listening(port, proc, label="consumer")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        terminate_process(proc)
 
     assert sd.main(["--cwd", str(root), "deinit"]) == 0
     remaining = env_file.read_text()

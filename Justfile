@@ -39,10 +39,10 @@ doctor:
 # --- Dev ---
 
 test:
-    @uv run pytest tests/ -q
+    @uv run pytest -q
 
 test-verbose:
-    @uv run pytest tests/ -v
+    @uv run pytest -v
 
 # Networked compatibility canary: latest Vite + real init + worktree hook + two servers.
 # Not part of `check`; use SPLASH_SMOKE_KEEP=1 to retain its temporary workspace and logs.
