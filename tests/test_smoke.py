@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,7 @@ def _run_canary(
     markers: tuple[str, ...] = (),
     loader_none: bool = False,
     runner_timeout: float = 20,
+    timeout_after_server_start: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     fake_bin, state = _fake_toolchain(tmp_path)
     for marker in markers:
@@ -300,6 +302,14 @@ def _run_canary(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if timeout_after_server_start:
+        deadline = time.monotonic() + 20
+        while (
+            not (state / "server-pids.log").is_file()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
     try:
         stdout, stderr = process.communicate(timeout=runner_timeout)
     except subprocess.TimeoutExpired:
@@ -443,6 +453,7 @@ def test_test_runner_gracefully_cleans_servers_on_outer_timeout(tmp_path: Path) 
         tmp_path,
         markers=("curl-never-ready", "record-server-pids"),
         runner_timeout=3.0,
+        timeout_after_server_start=True,
     )
 
     assert result.returncode == 124
