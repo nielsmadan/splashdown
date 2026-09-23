@@ -8,7 +8,13 @@ the product serves them. This is the high-level "why / for whom / what's missing
 - [persona.md](persona.md) — **primary: the parallel-agent developer** (many LLM agents, each in
   its own worktree); secondary: mobile and web/backend work flavors. (rev 2, 2026-06-23)
 - [use-cases.md](use-cases.md) — UC1–UC10 (the jobs mapped to the CLI surface) plus an
-  **Adjacent / candidate use cases** section (CA–CM) brainstormed for the agent persona. (rev 3)
+  **Adjacent / candidate use cases** section (CA–CN) brainstormed for the agent persona. (rev 4)
+
+## 1.0 roadmap evaluation
+
+- [Cross-project resource links](use-cases.md#cn--cross-project-resource-links-10-evaluation):
+  evaluate a possible `splash link` workflow before the contract freeze. Inclusion and syntax
+  remain undecided. The candidate covers frontend/backend ports and shared resource references.
 
 ## Reviews (dated snapshots, newest first)
 - [2026-06-23-agent-persona-and-adjacent-use-cases.md](2026-06-23-agent-persona-and-adjacent-use-cases.md)

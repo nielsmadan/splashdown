@@ -1,8 +1,9 @@
 # Use Cases (Jobs-to-be-done)
 
-> Last refined: 2026-08-17 (rev 3) · Persona: see persona.md
+> Last refined: 2026-09-16 (rev 4) · Persona: see persona.md
 >
-> **Changed in rev 3:** UC6 and CE now reflect clone trust and the trusted worktree bootstrap.
+> **Changed in rev 4:** added CN for project-linking evaluation before 1.0. Earlier use-case
+> assessments retain their previous review scope.
 >
 > **Downstream:** each job below is broken into requirements in [`docs/features/`](../features/overview.md)
 > (see its traceability matrix), which link on to the implementation in [`docs/tech/`](../tech/overview.md).
@@ -231,3 +232,24 @@ capabilities are leases (CB), a display-number resource type (CI), and process s
   untangling 8 agents' interleaved scrollback."
 - **Coverage today (latent)**: a per-worktree `LOG_DIR`/log path is just another templated env var
   splashdown can emit — preset + docs. Size S.
+
+## CN — Cross-project resource links (1.0 evaluation)
+
+- **Status**: added to the roadmap on 2026-09-16 for evaluation before the 1.0 contract freeze.
+  Evaluate and explicitly include or defer; this is not a commitment to ship the feature.
+- **Job**: connect a frontend checkout to a chosen backend checkout's allocated port without
+  copying a value that becomes stale. Related cases: API/worker projects sharing a database
+  namespace, a test project consuming several services, and multiple frontends using one backend.
+- **Coverage today**: templates reference resources within one recipe. Separate recipes have
+  no built-in cross-project resource reference; the registry coordinates allocation, not which
+  projects belong together.
+- **Candidate shape**: an explicit alias-to-checkout binding, tentatively `splash link`, with
+  one owner for each resource and consumers refreshing references during preparation. Command
+  syntax, storage, update timing, and ownership semantics remain design questions.
+- **Evaluation**: settle checkout identity and binding location, exported resource references,
+  missing/moved sources, cycles, reset/release/GC behavior, trust boundaries, and inspect/unlink.
+  Bound the first version without assuming background propagation or execution of another
+  project's commands. Test the frontend/backend workflow before deciding 1.0 inclusion.
+- **Related decision**: the 1.0 review accepted removal of type=set and splash env set.
+  Ordinary supplied values can remain in project env/config files. Linking is evaluated
+  independently and is not a prerequisite for removing manual-value storage.

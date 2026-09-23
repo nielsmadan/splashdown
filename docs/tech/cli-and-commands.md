@@ -214,6 +214,10 @@ directories and the legacy mutable lifecycle. Status also uses the read-only sna
 Bare invocation still runs sync. Preparation, trust, hooks, and init retain their legacy
 lifecycle and final-output boundaries.
 
+Exit codes and cancellation behavior are local policy, not a universal CLI standard. In the
+2026-09-11 survey, Git 2.50.1 returned 129 for an unknown root flag, while gh 2.92.0, uv 0.8.10,
+and Docker 29.7.2 used 1, 2, and 125 for their respective failure classes.
+
 #### One shape for a file splashdown declines to edit
 
 Severity says whether the command continued, not which subsystem noticed. A project file
