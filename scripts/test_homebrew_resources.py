@@ -22,7 +22,7 @@ class HomebrewResourcesTests(unittest.TestCase):
     def test_pyflyrail_uses_pypi_source_archive(self):
         package = brew.runtime_packages(self.root)[-1]
         self.assertEqual(package["source"], {"registry": "https://pypi.org/simple"})
-        self.assertTrue(package["sdist"]["url"].endswith("/pyflyrail-0.1.0.tar.gz"))
+        self.assertTrue(package["sdist"]["url"].endswith(f"/pyflyrail-{package['version']}.tar.gz"))
         with tempfile.TemporaryDirectory() as temp:
             archive = Path(temp) / "wrong.tar.gz"
             archive.write_bytes(b"wrong source")
