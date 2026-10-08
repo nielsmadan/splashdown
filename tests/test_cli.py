@@ -31,10 +31,10 @@ def test_cli_prog_name_is_splash():
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (("target", "claims"), {"target_cmd": "claims", "target_format": None}),
+        (("target", "claims"), {"target_cmd": "claims", "format": None}),
         (
             ("target", "claims", "--format", "json"),
-            {"target_cmd": "claims", "target_format": "json"},
+            {"target_cmd": "claims", "format": "json"},
         ),
         (("target", "claim", "pixel"), {"variant": "pixel", "available": None}),
         (
@@ -109,7 +109,6 @@ def test_cli_help_shows_tiers(capsys):
         "output format for sync, status, init, env/target lists, target claims, or ai guidance"
         in normalized
     )
-    assert "include resolved values for sync, status, or bare env" in normalized
     assert "provision" not in out
 
 
@@ -129,7 +128,6 @@ def _pending_claim_notice(checkout, *, action="transfer"):
     ("argv", "handler"),
     [
         (("sync",), "_cmd_provision"),
-        (("status",), "cmd_status"),
         (("run",), "cmd_run"),
         (("target", "claims"), "_target_dispatch"),
         (("trust",), "cmd_trust"),
@@ -301,7 +299,7 @@ def test_cli_nested_help_explains_bare_list(command, capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "Omit ACTION to list" in out
-    assert "[ACTION]" in out.splitlines()[0]
+    assert "[ACTION]" in out.split("\n\n")[0]
 
 
 @pytest.mark.parametrize("command", ["sync", "status", "env"])
@@ -310,9 +308,9 @@ def test_cli_help_points_to_supported_value_output_flags(command, capsys):
         sd.main([command, "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "place before the command" in out
+    assert "at any command level" in out
     assert "--format" in out
-    assert "--show-values" in out
+    assert "Output: --format {text,json}" in out
 
 
 def test_cli_target_help_points_to_supported_format_flag(capsys):
@@ -320,7 +318,7 @@ def test_cli_target_help_points_to_supported_format_flag(capsys):
         sd.main(["target", "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "place before the command" in out
+    assert "at any command level" in out
     assert "--format" in out
 
 
@@ -353,7 +351,6 @@ def test_cli_init_rejects_removed_option(option, existing_recipe, tmp_path, monk
     [
         ["--format", "json", "doctor"],
         ["--show-values", "run"],
-        ["--format", "json", "env", "get", "KEY"],
         ["--show-values", "env", "get", "KEY"],
         ["--format", "json", "target", "refresh"],
         ["--show-values", "target"],
@@ -376,11 +373,20 @@ def test_cli_rejects_output_flags_where_they_are_ignored(argv, tmp_path, monkeyp
     ):
         monkeypatch.setattr(sd.cli, name, unexpected_dispatch)
 
-    with pytest.raises(SystemExit) as exc:
-        sd.main(["--cwd", str(tmp_path), *argv])
-
-    assert exc.value.code == 2
-    assert argv[0] in capsys.readouterr().err
+    if argv[0] == "--format":
+        assert sd.main(["--cwd", str(tmp_path), *argv]) == 2
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert payload["exit_code"] == 2
+        assert payload["error"]["code"] == (
+            "invalid_arguments" if "minimal" in argv else "unsupported_format"
+        )
+        assert "usage: splash" in captured.err
+    else:
+        with pytest.raises(SystemExit) as exc:
+            sd.main(["--cwd", str(tmp_path), *argv])
+        assert exc.value.code == 2
+        assert argv[0] in capsys.readouterr().err
 
 
 def test_cli_target_add_help_explains_type_specific_options(capsys):
@@ -1180,3 +1186,85 @@ def test_init_rejects_several_configured_loaders_before_writing(tmp_path, capsys
     assert sd.main(["--cwd", str(tmp_path), "init"]) == 2
     assert "several loaders are configured here (direnv, mise)" in capsys.readouterr().err
     assert not (tmp_path / "splashdown.toml").exists()
+
+
+@pytest.mark.parametrize("action", [[], ["get", "EMPTY"], ["get", "STALE"], ["get", "stale"]])
+@pytest.mark.parametrize("fmt", ["text", "json"])
+def test_env_snapshot_inspection_is_config_independent_and_read_only(
+    tmp_path, monkeypatch, capsys, action, fmt
+):
+    from splashdown import cli
+    from splashdown.constants import state_directory
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    state = state_directory()
+    state.mkdir(parents=True)
+    (state / "kv.tsv").write_text(f"{tmp_path}\tEMPTY\t\n{tmp_path}\tSTALE\t  value  \n")
+    (state / "claim-notices.tsv").write_bytes(b"\xff")
+    (tmp_path / "splashdown.toml").write_text("invalid = [")
+    (tmp_path / "splashdown.local.toml").write_text("invalid = [")
+    monkeypatch.setattr(cli, "Registry", lambda: pytest.fail("mutable registry initialized"))
+    before = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode)
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+    missing = action == ["get", "stale"]
+    assert cli.main(["--cwd", str(tmp_path), "env", *action, "--format", fmt]) == int(missing)
+    captured = capsys.readouterr()
+    if fmt == "json":
+        payload = json.loads(captured.out)
+        assert payload["status"] == ("error" if missing else "success")
+        assert payload["data"]["checkout"] == str(tmp_path)
+        if missing:
+            assert payload["error"]["code"] == "assignment_missing"
+            assert payload["data"]["key"] == "stale"
+        elif action:
+            assert payload["data"]["value"] == ("" if action[1] == "EMPTY" else "  value  ")
+        else:
+            assert payload["data"]["values"] == {"EMPTY": "", "STALE": "  value  "}
+    else:
+        assert captured.out == (
+            ""
+            if missing
+            else "\n"
+            if action == ["get", "EMPTY"]
+            else "  value  \n"
+            if action
+            else "EMPTY=\nSTALE=  value  \n"
+        )
+        if missing:
+            assert "stale" in captured.err and "splash env" in captured.err
+        else:
+            assert captured.err == ""
+    assert {
+        p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode)
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    } == before
+
+
+def test_env_empty_state_does_not_create_registry(tmp_path, monkeypatch, capsys):
+    from splashdown import cli
+
+    state = tmp_path / "absent"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    assert cli.main(["--cwd", str(tmp_path), "env", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"] == {"checkout": str(tmp_path), "values": {}}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_env_registry_error_prevents_identity_lookup(tmp_path, monkeypatch, capsys):
+    from splashdown import cli
+    from splashdown.constants import state_directory
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    state_directory().mkdir(parents=True)
+    (state_directory() / "kv.tsv").write_bytes(b"\xff")
+    monkeypatch.setattr(
+        cli, "select_project", lambda *_a, **_k: pytest.fail("incomplete identity lookup")
+    )
+    assert cli.main(["--cwd", str(tmp_path), "env", "--format", "json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "registry_read_error"

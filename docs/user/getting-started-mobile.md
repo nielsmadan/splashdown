@@ -242,7 +242,7 @@ cd ../myapp.xiaomi
 splash run device xiaomi
 ```
 
-The post-checkout hook provisions both worktrees when they are created, so the two React Native launches receive distinct Metro ports automatically. Run `splash status` in each worktree to see its assigned values.
+The post-checkout hook provisions both worktrees when they are created, so the two React Native launches receive distinct Metro ports automatically. Run `splash status` in each worktree to inspect resource state, or `splash env` to read assigned values.
 
 For Flutter, each `splash run` stays attached to its own `flutter run` process and receives an independent ephemeral VM-service port. A brief `Waiting for another flutter command to release the startup lock...` message is normal when two commands start together: Flutter serializes startup, then the builds and debug sessions continue independently. Send `r` or `R` in a worktree's terminal to reload only its device, or `d` to detach while leaving that app running.
 

@@ -823,14 +823,6 @@ def test_android_start_uses_registry_state_directory(tmp_path, registry, monkeyp
     assert captured["call"] == ("demo", registry.state_dir)
 
 
-def test_cli_status_hints_unfilled_set_resource(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text('[resources.MODE]\ntype = "set"\n')
-    assert sd.main(["--cwd", str(tmp_path), "status"]) == 0
-    err = capsys.readouterr().err
-    assert "MODE" in err and "splash env set" in err
-
-
 def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
     _write_physical_recipe(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -2224,99 +2216,6 @@ def test_gc_claim_cleanup_counts_dead_claims_and_dead_or_expired_notices(
     remaining = registry.consume_claim_notices(str(live_owner))
     assert [notice.target_label for notice in remaining] == ["tablet"]
     assert "gc: removed 3 registry entries" in capsys.readouterr().err
-
-
-def test_status_claim_summary_includes_checkout_known_only_by_ownership(
-    tmp_path, registry, capsys, monkeypatch
-):
-    registry.attempt_claim(
-        sd.PhysicalClaim(
-            "recipe:/repo:device:pixel",
-            "android",
-            "PXL1234",
-            "pixel",
-            str(tmp_path.resolve()),
-            "2026-08-26T09:00:00+00:00",
-        )
-    )
-
-    monkeypatch.setattr(Path, "home", tmp_path.resolve)
-    assert sd.cmd_status(tmp_path, registry, "text", show_all=True) == 0
-
-    err = capsys.readouterr().err
-    assert err.splitlines()[1].split() == ["~", "1", "claim"]
-
-
-def test_status_all_check_verbose_counts_defunct_physical_claim(tmp_path, registry, capsys):
-    owner = tmp_path / "defunct-owner"
-    owner.mkdir()
-    registry.attempt_claim(
-        sd.PhysicalClaim(
-            "recipe:/repo:device:pixel",
-            "android",
-            "PXL1234",
-            "pixel",
-            str(owner.resolve()),
-            "2026-08-26T09:00:00+00:00",
-        )
-    )
-    owner.rmdir()
-
-    assert (
-        sd.cmd_status(
-            tmp_path,
-            registry,
-            "text",
-            show_all=True,
-            check=True,
-            verbose=True,
-        )
-        == 0
-    )
-
-    err = capsys.readouterr().err
-    assert str(owner.resolve()) in err
-    assert "1 defunct checkout (1 registry row)." in err
-
-
-def test_status_all_check_json_counts_defunct_physical_claim(tmp_path, registry, capsys):
-    owner = tmp_path / "defunct-owner"
-    owner.mkdir()
-    registry.attempt_claim(
-        sd.PhysicalClaim(
-            "recipe:/repo:device:pixel",
-            "android",
-            "PXL1234",
-            "pixel",
-            str(owner.resolve()),
-            "2026-08-26T09:00:00+00:00",
-        )
-    )
-    owner.rmdir()
-
-    assert (
-        sd.cmd_status(
-            tmp_path,
-            registry,
-            "json",
-            show_all=True,
-            check=True,
-        )
-        == 0
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["summary"]["defunct_checkouts"] == 1
-    assert payload["summary"]["defunct_rows"] == 1
-    assert payload["checkouts"] == [
-        {
-            "checkout": str(owner.resolve()),
-            "exists": False,
-            "automation": None,
-            "resources": [],
-            "targets": [],
-        }
-    ]
 
 
 def test_deinit_destroys_simulator_by_udid(tmp_path, registry, monkeypatch):

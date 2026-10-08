@@ -61,10 +61,11 @@ configured, where double quotes would let `$(...)`/backticks execute.
 
 Every `[setup.NAME]` is validated while the recipe loads, whether or not that setup was requested. The table accepts only `run`, containing either a non-empty string or a non-empty array of non-empty strings. This schema validation happens before provisioning. `splash sync --setup NAME` still executes the selected setup after provisioning and writer output; an unknown name or failing command exits nonzero, execution stops at the first failure, and registry/file changes plus earlier successful commands are not rolled back.
 
-Operational sync output is key-only by default. Text change reports already name keys without
-values; JSON returns `resolved_keys`. Add `--show-values` to print every resolved `KEY=VALUE` in
-text, including an up-to-date sync, or to replace the JSON field with
-`resolved`. The explicit `stdout` writer remains value-bearing in either mode.
+Operational sync reports name keys without values; JSON returns `resolved_keys`.
+The explicit `stdout` writer returns values in text and in the JSON `stdout` field.
+Bare `splash env` returns stored values in both text and the shared JSON envelope.
+Env inspection never loads configuration or initializes registry state. See
+[inspection semantics](status-and-inspect.md#environment-commands) for selection and errors.
 
 ## Key entry points
 
@@ -112,10 +113,9 @@ template = "myapp-test-{{ truncate(hash(cwd_abs), 8) }}"
   sync to another file.
 - **Templates forbid attribute access by design.** `{{ x.foo }}` won't work; the evaluator only allows scope names, calls, indexing/slicing, and arithmetic (`src/splashdown/recipe.py`).
 - **TSV has no escaping.** Resolved values containing a tab, or any character some reader treats as a line break (`\n`, `\r`, `\v`, `\f`, the information separators, NEL, `U+2028`, `U+2029`), are rejected at write time to prevent row forgery in the registry (`_tsv_field`, `src/splashdown/registry.py`).
-- **No-op syncs do not rewrite files.** `_rewrite` compares the new text first, so a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through any hook manager on `git pull --rebase` (`src/splashdown/provisioning.py`). An explicit `--show-values` still prints the resolved values before that summary.
-- **Changing to JSON does not opt into secret disclosure.** Sync JSON contains `resolved_keys`,
-  and bare env JSON is a sorted key array. Use `--show-values`, `env get`, or `writer = "stdout"`
-  only when the destination is safe for the value.
+- **No-op syncs do not rewrite files.** `_rewrite` compares the new text first, so a re-sync of an already-provisioned checkout collapses to "up to date" and touches no files — the expected output through any hook manager on `git pull --rebase` (`src/splashdown/provisioning.py`).
+- **Routine reports omit values.** Sync JSON contains `resolved_keys`. Environment inspection
+  and configured `writer = "stdout"` destinations return values explicitly.
 - **Static template failures abort the whole sync before allocation.** Unknown names, disallowed expression syntax, unmatched delimiters, and cyclic resource references are rejected while the recipe loads. Runtime-only helper/value errors can still occur during rendering.
 - **`splash env get NAME` is not a preview of a newly declared resource.** It reads this checkout's
   registry rows, and a resource lands there only when `provision()` runs. A newly declared resource

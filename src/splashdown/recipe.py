@@ -42,7 +42,9 @@ def _slug(s: str) -> str:
     return s or "x"
 
 
-def _make_scope(cwd: Path, branch: str | None, resources: dict[str, str]) -> dict[str, Any]:
+def _make_scope(
+    cwd: Path, branch: str | None, resources: dict[str, str], *, repo_name: str | None = None
+) -> dict[str, Any]:
     cwd_abs = str(cwd.resolve())
     base = cwd.name
     parent = cwd.parent.name
@@ -50,7 +52,7 @@ def _make_scope(cwd: Path, branch: str | None, resources: dict[str, str]) -> dic
         "cwd": base,
         "cwd_abs": cwd_abs,
         "branch": branch or "",
-        "repo": _repo_name(cwd),
+        "repo": _repo_name(cwd) if repo_name is None else repo_name,
         "parent": parent,
         "basename": lambda p: Path(p).name,
         "dirname": lambda p: str(Path(p).parent),

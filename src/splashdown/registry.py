@@ -5,10 +5,11 @@ import fcntl
 import hashlib
 import os
 import socket
+import stat
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypeAlias, cast
@@ -23,6 +24,8 @@ from .device_types import (
     PhysicalClaim,
     SimulatorRecord,
 )
+from .errors import ApplicationError
+from .results import Diagnostic
 
 DeviceRow: TypeAlias = ManagedDevice
 
@@ -164,6 +167,155 @@ def _atomic_write(path: Path, text: str) -> None:
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class RegistrySnapshot:
+    ports: tuple[tuple[int, str, str], ...] = ()
+    values: tuple[tuple[str, str, str], ...] = ()
+    devices: tuple[ManagedDevice, ...] = ()
+    claims: tuple[PhysicalClaim, ...] = ()
+
+    def all_for(self, checkout: str) -> dict[str, str]:
+        return {
+            **{key: str(port) for port, path, key in self.ports if path == checkout},
+            **{key: value for path, key, value in self.values if path == checkout},
+        }
+
+    def all_checkouts(self) -> list[str]:
+        return sorted(
+            {path for _, path, _ in self.ports}
+            | {path for path, _, _ in self.values}
+            | {row.checkout for row in self.devices}
+            | {row.owner_checkout for row in self.claims}
+        )
+
+    def get_device(self, checkout: str, dtype: str, variant: str) -> ManagedDevice | None:
+        return next(
+            (
+                row
+                for row in self.devices
+                if (row.checkout, row.dtype, row.variant) == (checkout, dtype, variant)
+            ),
+            None,
+        )
+
+    def devices_for(self, checkout: str) -> list[ManagedDevice]:
+        return [row for row in self.devices if row.checkout == checkout]
+
+    def summary_for(self, checkout: str) -> dict[str, int]:
+        return {
+            "port": sum(path == checkout for _, path, _ in self.ports),
+            "kv": sum(path == checkout for path, _, _ in self.values),
+            "simulator": sum(
+                row.checkout == checkout and row.dtype == "simulator" for row in self.devices
+            ),
+            "emulator": sum(
+                row.checkout == checkout and row.dtype == "emulator" for row in self.devices
+            ),
+            "claim": sum(row.owner_checkout == checkout for row in self.claims),
+        }
+
+
+class RegistryReadError(ApplicationError):
+    def __init__(self, snapshot: RegistrySnapshot, diagnostics: tuple[Diagnostic, ...]):
+        self.snapshot = snapshot
+        self.diagnostics = diagnostics
+        super().__init__(
+            "; ".join(item.message for item in diagnostics), code="registry_read_error"
+        )
+
+
+def _registry_input_absent(path: Path) -> bool:
+    for candidate in (path, *path.parents):
+        try:
+            mode = candidate.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            candidate.stat()
+        return candidate != path
+    return True
+
+
+def _snapshot_rows(
+    path: Path, size: int, diagnostics: list[Diagnostic]
+) -> Iterator[tuple[int, list[str]]]:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, encoding="utf-8", newline="") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise OSError("registry input is not a regular file")
+            text = source.read()
+    except FileNotFoundError:
+        try:
+            if _registry_input_absent(path):
+                return
+        except OSError:
+            pass
+        diagnostics.append(
+            Diagnostic("registry_read_error", f"Unable to read {path}: unresolved registry entry")
+        )
+        return
+    except (OSError, UnicodeError) as error:
+        diagnostics.append(
+            Diagnostic("registry_read_error", f"Unable to read {path}: {type(error).__name__}")
+        )
+        return
+    for number, line in enumerate(split_lines(text), 1):
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != size or any(char in field for field in fields for char in _TSV_FORBIDDEN):
+            diagnostics.append(
+                Diagnostic("registry_read_error", f"Malformed registry row: {path}:{number}")
+            )
+        else:
+            yield number, fields
+
+
+def read_registry_snapshot(directory: Path | None = None) -> RegistrySnapshot:
+    directory = state_directory() if directory is None else directory
+    diagnostics: list[Diagnostic] = []
+    ports: list[tuple[int, str, str]] = []
+    for number, fields in _snapshot_rows(directory / "ports.tsv", _PORT_ROW_FIELDS, diagnostics):
+        try:
+            port = int(fields[0])
+        except ValueError:
+            diagnostics.append(
+                Diagnostic(
+                    "registry_read_error",
+                    f"Malformed registry row: {directory / 'ports.tsv'}:{number}",
+                )
+            )
+        else:
+            ports.append((port, fields[1], fields[2]))
+    values = tuple(
+        (fields[0], fields[1], fields[2])
+        for _, fields in _snapshot_rows(directory / "kv.tsv", _KV_ROW_FIELDS, diagnostics)
+    )
+    devices: list[ManagedDevice] = []
+    for number, fields in _snapshot_rows(
+        directory / "devices.tsv", _DEVICE_ROW_FIELDS, diagnostics
+    ):
+        row = _decode_device_row(fields)
+        if row is None:
+            diagnostics.append(
+                Diagnostic(
+                    "registry_read_error",
+                    f"Malformed registry row: {directory / 'devices.tsv'}:{number}",
+                )
+            )
+        else:
+            devices.append(row)
+    claims = tuple(
+        _decode_claim_row(fields)
+        for _, fields in _snapshot_rows(directory / "claims.tsv", _CLAIM_ROW_FIELDS, diagnostics)
+    )
+    snapshot = RegistrySnapshot(tuple(ports), values, tuple(devices), claims)
+    if diagnostics:
+        raise RegistryReadError(snapshot, tuple(diagnostics))
+    return snapshot
 
 
 class Registry:

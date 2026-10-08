@@ -338,8 +338,11 @@ bundle version. Missing or invalid recipes leave `desired_current` unknown and u
 `recorded-current` for intact receipts, preserving source-free inspection. Mutation commands use the checkout operation lock and return nonzero
 for unresolved conflicts, missing metadata, or incomplete recovery. `update --replace` explicitly
 allows replacing complete blocks while retaining the first foreign baseline. Malformed blocks
-require manual repair. JSON reports contain per-file summaries and an activation reminder, never
-full instruction documents or stored baseline payloads.
+require manual repair. The handler returns a `CommandResult`; CLI emits it after the operation
+lock is released. Optional per-file callbacks preserve completed records on interruption or an
+OS failure. JSON `data` contains per-file summaries and an activation reminder. For externally
+generated files, detail retains the manual repair instructions and the desired generated block;
+stored baseline payloads and full instruction documents are not included.
 
 **Externally generated files.** `_generated_marker()` recognizes an instruction file another
 tool owns and refuses to edit it, because such an edit is destroyed on that tool's next sync.

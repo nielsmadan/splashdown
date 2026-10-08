@@ -90,9 +90,12 @@ def _rn_android_flags(recipe: Recipe) -> list[str]:
     """`react-native run-android` build variant from `[project.android] mode`
     (RN 0.73+ `--mode`, e.g. `developmentDebug`)."""
     cfg = recipe.project.get("android") or {}
+    flags: list[str] = []
     if mode := cfg.get("mode"):
-        return ["--mode", _no_flag("android mode", mode)]
-    return []
+        flags += ["--mode", _no_flag("android mode", mode)]
+    if not mode or mode.lower().endswith("debug"):
+        flags.append("--active-arch-only")
+    return flags
 
 
 def _warn_if_metro_unavailable(env: dict[str, str] | None = None) -> None:

@@ -20,7 +20,7 @@ Each doc maps to one or more jobs-to-be-done from [`../product/use-cases.md`](..
   framework configs that hardcode the port / override the env var. *(UC5)*
 - [resource-cleanup.md](resource-cleanup.md) — `gc`, lazy GC, `target prune`, `deinit`, and
   `env release`: reclaiming ports/sims/vars for deleted or live checkouts. *(UC7)*
-- [status-and-inspect.md](status-and-inspect.md) — `status` (per-checkout / `all` / json / `--check`)
+- [status-and-inspect.md](status-and-inspect.md) — `status` (per-checkout / `all` / json / verbose)
   and `env` (list/get/set/release); the machine-readable surface. *(UC8)*
 - [per-checkout-overrides.md](per-checkout-overrides.md) — `splashdown.local.toml` add-only target
   variants; `target add`/`remove`. *(UC9)*

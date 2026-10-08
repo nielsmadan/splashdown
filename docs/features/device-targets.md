@@ -51,8 +51,8 @@ the same trailing directories from colliding. The variant lets one checkout host
 avdmanager's `[A-Za-z0-9._-]` (`_resolve_device_name`; `_sanitize_avd_name`).
 
 **Reconcile (the heart of UC2 and UC4).** `device_health` classifies the registry's recorded
-instance as healthy, missing, orphaned, drifted, or undeclared. `ensure_fresh_sim` and
-`splash status --check` consume that same result, so inspection and refresh cannot disagree.
+instance as healthy, missing, orphaned, drifted, or undeclared. `ensure_fresh_sim` consumes that result. `splash status` preserves the successful observation meanings
+with invocation-local discovery snapshots, treating failed probes as unavailable.
 The instance needs reconciliation when its registry row is missing, its underlying sim/AVD no
 longer exists, or its OS image, model, device profile, or emulator name has drifted from the spec.
 For `ios = "latest"` the target OS is resolved live
@@ -71,8 +71,8 @@ launcher, including custom commands. It then calls `ensure_fresh_sim`, boots (`i
 selection/boot share the checkout operation lock; the launcher runs after it is released.
 `cmd_start` reconciles + boots but skips the build/launch. `cmd_stop`
 shuts the registered instance down but preserves it. `cmd_destroy` deletes the registered instance
-and its registry row, gated behind a `[y/N]` prompt (`_confirm`,
-`src/splashdown/target_commands.py`), bypassable with `--yes`. For `type = device`, stop/destroy are
+and its registry row, gated behind a `[y/N]` prompt (`require_confirmation`,
+`src/splashdown/interaction.py`), bypassable with `--yes`. For `type = device`, stop/destroy are
 no-ops with an explanatory message because splashdown owns no hardware. They do not release a
 physical claim. Managed teardown uses the persisted simulator UDID or AVD name; if no registry row
 exists it reports a no-op and never falls back to a recipe-derived name.
@@ -92,7 +92,7 @@ type-prefix matching call `_declared_target_types(cwd, include_global=False)` �
 recipe + local types only — and fall back to the global-inclusive list only when the project declares
 none (`src/splashdown/target_commands.py`; `src/splashdown/cli.py`). Exact explicit variant names are
 the exception described above. Resolution
-(`_resolve_variant_for_cli`, `_gather_targets_declared`) always uses the full merged catalog. Folding
+through `_resolve_variant_for_cli` and status collection always uses the full merged catalog. Folding
 the always-available global `device` type into inference instead would make bare
 `splash run`/`start`/`stop`/`destroy` fail with `multiple target types declared (device, simulator)`
 in *every* mobile repo the moment a user adds one global test phone, break the `splash run d`
@@ -154,7 +154,7 @@ both platforms.
 (`src/splashdown/target_commands.py`) destroys every sim/AVD on the machine that splashdown did *not*
 create — the Xcode default-template pile, hand-made sims — by diffing live sims/AVDs against
 `registry.managed_udids()` (`_discover_foreign_ios:826`, `_discover_foreign_avds:842`). It prints
-the kill list, honors `--dry-run` (preview only) and `--yes` (skip the `_confirm` prompt), and is
+the kill list, honors `--dry-run` (preview only) and `--yes` (skip the `require_confirmation` prompt), and is
 scoped by an optional `ios|android|all` platform argument.
 The default `all` scope skips an unavailable platform with one warning; an explicit `ios` or
 `android` scope propagates the capability error before destructive work on that platform.
@@ -226,7 +226,7 @@ machine-wide catalog and defers instance cleanup to `target refresh`; combining 
 | Latest-OS lookup driving auto-upgrade | `src/splashdown/device_ios.py` (`_ios_latest_runtime_version`); `src/splashdown/device_android.py` (`_android_latest_image`) |
 | `splash run` (reconcile + boot + build + launch) | `src/splashdown/target_commands.py` (`cmd_run`) |
 | `splash start` / `stop` / `destroy` | `src/splashdown/target_commands.py` |
-| Destroy confirmation gate | `src/splashdown/target_commands.py` (`_confirm`) |
+| Destroy confirmation gate | `src/splashdown/interaction.py` (`require_confirmation`) |
 | TYPE / variant inference | `src/splashdown/target_commands.py` (`_infer_dtype`, `_resolve_variant_for_cli`) |
 | Fleet refresh (eager auto-upgrade) | `src/splashdown/target_commands.py` (`cmd_target_refresh`) |
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/target_commands.py` (`cmd_target_prune`) |
@@ -322,6 +322,12 @@ For `react-native`, `[project.ios] scheme` is **optional** but often necessary: 
 builds the scheme named after the Xcode project (usually Release/prod). If the scheme selects the
 build environment (e.g. a `*Dev` scheme that copies `.env.development`), set it here.
 
+The built-in React Native Android launch passes the selected serial to `run-android --deviceId`
+and as `ANDROID_SERIAL`. With no configured mode, or a mode ending in `Debug` regardless of case,
+it also passes `--active-arch-only`. React Native determines the ABI for that selected target.
+Explicit release and unrecognized custom modes retain the project's architecture configuration.
+Custom `[project] run` commands remain unchanged.
+
 ### Native iOS scheme resolution
 
 `splash init` neither discovers nor records a scheme, so `[project.ios] scheme` is a hand-written
@@ -382,12 +388,12 @@ unchanged.
   means `refresh` alone does not make an app appear; you still need `splash run`/`start`.
 - **`target refresh` is machine-wide and unconfirmed.** It reconciles every registered checkout,
   regardless of the invoking `--cwd`, and directly destroys undeclared and dead-checkout
-  instances. Use `status all --check` first when an operator needs a preview.
+  instances. Use `status all` first when an operator needs a preview.
 - **Pinned vs `latest` is the whole UC4/UC10 distinction.** `ios = "latest"` (the default) is
   reconciled on every run and by `refresh`; a pinned `ios = "17.0"` is *deliberately* frozen and is
   skipped by auto-upgrade when its declared version is still present. Forgetting to pin a
   backward-compat variant means it silently rides the latest OS.
-- **`destroy` now prompts.** Interactive `[y/N]` via `_confirm` (`target_commands.py`); scripts/agents must pass
+- **`destroy` now prompts.** Default-No terminal confirmation via `require_confirmation` (`interaction.py`); scripts/agents must pass
   `--yes`. `--yes` exists *only* on `destroy` among the four verbs (`src/splashdown/cli.py`) and
   on `target prune` — not on `stop`/`start`/`run`.
 - **`prune` is machine-wide and aggressive.** It destroys every sim/AVD *not* in splashdown's
@@ -395,8 +401,8 @@ unchanged.
   printed before the prompt.
 - **`target refresh`/`prune` are not `gc`.** `gc` (`cmd_gc`, `target_commands.py`) drops dead-checkout
   instances and rows plus live orphan rows; it does **not** recreate an orphan whose checkout still
-  exists — `target refresh` does. The `status --check` footer routes each issue to the right command
-  (`_print_check_summary`, `commands.py`).
+  exists — `target refresh` does. The `status` findings route each issue to the right command
+  (`render_status_result`, `cli_output.py`).
 - **Unavailable is not broken state.** Status and target catalog views render an unsupported or
   missing platform as `unavailable`, warn once per capability, and do not increment missing,
   stale, or orphan counters. Fleet GC preserves skipped device rows while still removing portable

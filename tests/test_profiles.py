@@ -118,7 +118,7 @@ def test_rn_run_ios_and_android(tmp_path, monkeypatch):
     sd.runners._rn_run(tmp_path, r, {"kind": "android", "serial": "S1"})
     flat = [" ".join(c) for c in calls]
     assert any("run-ios" in c and "--udid U1" in c for c in flat)
-    assert any("run-android" in c and "--deviceId S1" in c for c in flat)
+    assert any("run-android" in c and "--deviceId S1 --active-arch-only" in c for c in flat)
     # Bare recipe forwards no scheme/mode.
     assert not any("--scheme" in c or "--mode" in c for c in flat)
 
@@ -141,6 +141,49 @@ def test_rn_run_scopes_android_tools_to_selected_serial(tmp_path, monkeypatch):
     _, kwargs = calls[0]
     assert kwargs["env"]["ANDROID_SERIAL"] == "S1"
     assert kwargs["env"]["SPLASHDOWN_TEST_SENTINEL"] == "kept"
+
+
+@pytest.mark.parametrize(
+    ("mode", "active_arch_only"),
+    [
+        (None, True),
+        ("debug", True),
+        ("Debug", True),
+        ("DEVELOPMENTdEbUg", True),
+        ("developmentDebug", True),
+        ("release", False),
+        ("developmentRelease", False),
+        ("benchmark", False),
+    ],
+)
+def test_rn_android_arch_flag_follows_build_mode(tmp_path, monkeypatch, mode, active_arch_only):
+    calls = []
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda argv, **kwargs: calls.append((argv, kwargs)) or 17
+    )
+    project = {"android": {"mode": mode}} if mode is not None else {}
+    recipe = sd.Recipe({"project": project}, tmp_path / "x.toml")
+    supplied_env = {"TOKEN": "from recipe", "ANDROID_SERIAL": "other-device"}
+
+    assert (
+        sd.runners._rn_run(
+            tmp_path, recipe, {"kind": "android", "serial": "selected-device"}, env=supplied_env
+        )
+        == 17
+    )
+
+    argv, kwargs = calls[0]
+    expected = ["npx", "react-native", "run-android", "--deviceId", "selected-device"]
+    if mode is not None:
+        expected += ["--mode", mode]
+    if active_arch_only:
+        expected.append("--active-arch-only")
+    assert argv == expected
+    assert kwargs == {
+        "cwd": tmp_path,
+        "env": {"TOKEN": "from recipe", "ANDROID_SERIAL": "selected-device"},
+    }
+    assert supplied_env == {"TOKEN": "from recipe", "ANDROID_SERIAL": "other-device"}
 
 
 @pytest.mark.parametrize(
@@ -225,7 +268,39 @@ def test_rn_run_forwards_scheme_and_mode(tmp_path, monkeypatch):
     assert any(
         "run-ios" in c and "--scheme DreamHackDev" in c and "--mode Debug" in c for c in flat
     )
-    assert any("run-android" in c and "--mode developmentDebug" in c for c in flat)
+    assert any(
+        "run-android" in c and "--mode developmentDebug --active-arch-only" in c for c in flat
+    )
+
+
+def test_rn_ios_command_is_unaffected_by_android_mode(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        sd.runners.subprocess, "call", lambda argv, **kwargs: calls.append((argv, kwargs)) or 17
+    )
+    recipe = sd.Recipe(
+        {"project": {"ios": {"scheme": "Demo", "mode": "Debug"}, "android": {"mode": "debug"}}},
+        tmp_path / "x.toml",
+    )
+    env = {"TOKEN": "from recipe"}
+
+    assert sd.runners._rn_run(tmp_path, recipe, {"kind": "ios", "udid": "U1"}, env=env) == 17
+    assert calls == [
+        (
+            [
+                "npx",
+                "react-native",
+                "run-ios",
+                "--udid",
+                "U1",
+                "--scheme",
+                "Demo",
+                "--mode",
+                "Debug",
+            ],
+            {"cwd": tmp_path, "env": env},
+        )
+    ]
 
 
 def test_rn_run_rejects_flaglike_scheme(tmp_path, monkeypatch):
@@ -1068,6 +1143,32 @@ def test_run_custom_command_executes_with_shell(tmp_path, monkeypatch):
     assert captured["cmd"] == "yarn rn run-ios --udid ABCD"
     assert captured["kwargs"].get("shell") is True
     assert captured["kwargs"].get("cwd") == tmp_path
+
+
+def test_rn_custom_android_run_keeps_project_command(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        sd.runners.subprocess,
+        "call",
+        lambda command, **kwargs: calls.append((command, kwargs)) or 17,
+    )
+    recipe = _recipe(
+        tmp_path,
+        {
+            "framework": "react-native",
+            "android": {"mode": "developmentDebug"},
+            "run": {"android": "yarn react-native run-android --deviceId {device_id}"},
+        },
+    )
+    env = {"TOKEN": "from recipe"}
+
+    assert sd.device_run(tmp_path, recipe, {"kind": "android", "serial": "S1"}, env) == 17
+    assert calls == [
+        (
+            "yarn react-native run-android --deviceId S1",
+            {"cwd": tmp_path, "env": env, "shell": True},
+        )
+    ]
 
 
 @pytest.mark.parametrize(

@@ -2,22 +2,19 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from .errors import ApplicationError
+from .results import CommandResult, OutputFormat, result_payload
 
 if TYPE_CHECKING:
     from .device_claims import PhysicalSelection
     from .device_types import ClaimNotice
     from .provisioning import WriterResult
     from .status import (
-        AutomationStatus,
-        CheckoutStatus,
         ClaimListRow,
-        StatusReport,
-        StatusSummary,
         TargetInventoryRow,
     )
 
@@ -122,241 +119,80 @@ def _summary_string(counts: dict[str, int]) -> str:
     return ", ".join(parts) if parts else "—"
 
 
-def _checkout_payload(checkout: CheckoutStatus, *, show_values: bool) -> dict[str, object]:
-    resources: list[dict[str, object]] = []
-    for resource in checkout.resources:
-        item: dict[str, object] = {
-            "key": resource.key,
-            "port_state": resource.port_state,
-        }
-        if resource.port_state:
-            item["owners"] = (
-                [asdict(owner) for owner in resource.owners]
-                if resource.owners is not None
-                else None
-            )
-        if show_values:
-            item["value"] = resource.value
-        resources.append(item)
-    return {
-        "checkout": checkout.checkout,
-        "exists": checkout.exists,
-        "automation": asdict(checkout.automation) if checkout.automation is not None else None,
-        "resources": resources,
-        "targets": [asdict(target) for target in checkout.targets],
-    }
+def _render_status_rows(section: str, rows: list[object], *, verbose: bool) -> None:
+    print(f"  {section}: {len(rows)}")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if section == "resources":
+            suffix = f" [{row['port_state']}]" if row.get("port_state") else ""
+            print(f"    {row['key']}: {row['state']}{suffix}")
+            owners = row.get("owners")
+            if isinstance(owners, list):
+                for owner in owners:
+                    print(f"      pid {owner['pid']} ({owner['command']})")
+        elif verbose:
+            print(f"    {row['type']}.{row['variant']}: {row['device_name']} ({row['source']})")
 
 
-def _render_automation(automation: AutomationStatus | None) -> None:
-    print("automation:", file=sys.stderr)
-    if automation is None:
-        print("  unavailable (not a live Git checkout)", file=sys.stderr)
+def render_status_result(result: CommandResult, *, verbose: bool = False) -> None:
+    if result.data is None:
         return
-    print(
-        f"  sync trust: {'trusted' if automation.sync_trusted else 'untrusted'}",
-        file=sys.stderr,
-    )
-    print(
-        f"  bootstrap trust: {'trusted' if automation.bootstrap_trusted else 'untrusted'}",
-        file=sys.stderr,
-    )
-    if automation.bootstrap_declared is None:
-        bootstrap_label = "unavailable"
-    else:
-        bootstrap_label = "declared" if automation.bootstrap_declared else "not declared"
-    print(f"  recipe bootstrap: {bootstrap_label}", file=sys.stderr)
-    print(
-        f"  completion: {automation.bootstrap_completion.replace('-', ' ')}",
-        file=sys.stderr,
-    )
-
-
-def _render_status_block(checkout: CheckoutStatus, *, show_all: bool, show_values: bool) -> None:
-    header_tag = "  [defunct]" if not checkout.exists else ""
-    if show_all:
-        print(f"=== {checkout.checkout}{header_tag} ===", file=sys.stderr)
-    else:
-        print(f"checkout: {checkout.checkout}{header_tag}", file=sys.stderr)
-    print("resources:", file=sys.stderr)
-    if not checkout.resources:
-        print("  (none)", file=sys.stderr)
-    for resource in checkout.resources:
-        suffix = f"  [{resource.port_state}]" if resource.port_state else ""
-        if resource.owners:
-            suffix += " " + ", ".join(
-                f"pid {owner.pid} ({owner.command})" for owner in resource.owners
-            )
-        elif resource.port_state == "in use":
-            suffix += " (owner unavailable)"
-        label = f"{resource.key}={resource.value}" if show_values else resource.key
-        print(f"  {label}{suffix}", file=sys.stderr)
-    print("targets:", file=sys.stderr)
-    if not checkout.targets:
-        print("  (none)", file=sys.stderr)
-    for target in checkout.targets:
-        columns = [f"{target.type}.{target.variant}"]
-        if target.source:
-            columns.append(target.source)
-        columns.extend((target.device_name, target.status))
-        if target.orphan:
-            columns.append("[orphan]")
-        elif target.stale:
-            columns.append("[stale]")
-        elif target.undeclared:
-            columns.append("[undeclared]")
-        elif target.missing:
-            columns.append("[missing]")
-        print("  " + "\t".join(columns), file=sys.stderr)
-    _render_automation(checkout.automation)
-    if show_all:
-        print(file=sys.stderr)
-
-
-def _render_status_table(report: StatusReport) -> None:
-    rendered = [
-        (_short_path(row.checkout), _summary_string(row.counts), row.status) for row in report.rows
-    ]
-    path_width = max((len(path) for path, _summary, _status in rendered), default=4)
-    path_width = max(path_width, len("PATH"))
-    summary_width = max((len(summary) for _path, summary, _status in rendered), default=7)
-    summary_width = max(summary_width, len("SUMMARY"))
-    if any(status for _path, _summary, status in rendered):
-        row_format = f"{{:<{path_width}}}  {{:<{summary_width}}}  {{}}"
-        print(row_format.format("PATH", "SUMMARY", "ISSUE").rstrip(), file=sys.stderr)
-        for path, summary, status in rendered:
-            print(row_format.format(path, summary, status).rstrip(), file=sys.stderr)
-    else:
-        row_format = f"{{:<{path_width}}}  {{}}"
-        print(row_format.format("PATH", "SUMMARY").rstrip(), file=sys.stderr)
-        for path, summary, _status in rendered:
-            print(row_format.format(path, summary).rstrip(), file=sys.stderr)
-
-
-def _render_check_summary(summary: StatusSummary) -> None:
-    if not any(
-        (
-            summary.defunct_checkouts,
-            summary.orphan_devices,
-            summary.stale_devices,
-            summary.undeclared_devices,
-            summary.missing_devices,
-            summary.missing_hardware,
-        )
-    ):
-        print("Summary: all entries verified.", file=sys.stderr)
+    checkouts = result.data.get("checkouts")
+    if not isinstance(checkouts, list):
         return
-    print("Summary:", file=sys.stderr)
-    if summary.defunct_checkouts:
-        count = summary.defunct_checkouts
-        rows = summary.defunct_rows
-        print(
-            f"  {count} defunct checkout{'s' if count != 1 else ''} "
-            f"({rows} registry row{'s' if rows != 1 else ''}).",
-            file=sys.stderr,
-        )
-    if summary.orphan_devices:
-        count = summary.orphan_devices
-        print(
-            f"  {count} orphan device{'s' if count != 1 else ''} (underlying sim/AVD deleted).",
-            file=sys.stderr,
-        )
-    if summary.stale_devices:
-        count = summary.stale_devices
-        print(
-            f"  {count} stale device{'s' if count != 1 else ''} (declared target drifted).",
-            file=sys.stderr,
-        )
-    if summary.undeclared_devices:
-        count = summary.undeclared_devices
-        print(
-            f"  {count} undeclared device row{'s' if count != 1 else ''}.",
-            file=sys.stderr,
-        )
-    if summary.missing_devices:
-        count = summary.missing_devices
-        print(
-            f"  {count} missing device{'s' if count != 1 else ''} (declared but not yet created).",
-            file=sys.stderr,
-        )
-    if summary.missing_hardware:
-        count = summary.missing_hardware
-        print(
-            f"  {count} unplugged physical device{'s' if count != 1 else ''} "
-            "(declared but not connected).",
-            file=sys.stderr,
-        )
-    if summary.defunct_checkouts:
-        print("  Run `splash gc` to drop dead checkouts.", file=sys.stderr)
-    if summary.orphan_devices or summary.stale_devices or summary.undeclared_devices:
-        print("  Run `splash target refresh` to reconcile.", file=sys.stderr)
-    if summary.missing_devices:
-        print("  Run `splash run` to provision.", file=sys.stderr)
-    if summary.missing_hardware:
-        print(
-            "  Connect the device (check pairing/USB) — splashdown can't create hardware.",
-            file=sys.stderr,
-        )
+    if not checkouts:
+        print("No tracked checkouts.")
+    for checkout in checkouts:
+        if not isinstance(checkout, dict):
+            continue
+        print(f"checkout: {checkout['checkout']}")
+        counts = checkout.get("counts")
+        if isinstance(counts, dict):
+            print("  registry: " + ", ".join(f"{key}={value}" for key, value in counts.items()))
+        for section in ("resources", "targets"):
+            rows = checkout.get(section)
+            if isinstance(rows, list):
+                _render_status_rows(section, list(rows), verbose=verbose)
+        checks = checkout.get("checks")
+        if not isinstance(checks, list):
+            continue
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            print(f"  {check['state']}: {check['message']}")
+            if verbose and check.get("path"):
+                print(f"    {check['path']}")
+            steps = check.get("next_steps")
+            if isinstance(steps, list):
+                for step in steps:
+                    print(f"    {step}")
 
 
-def render_status(
-    report: StatusReport,
-    fmt: str,
-    *,
-    verbose: bool = False,
-    show_values: bool = False,
-) -> None:
-    for warning in report.warnings:
-        print(warning, file=sys.stderr)
+def render_env_result(result: CommandResult) -> None:
+    if result.status != "success" or result.data is None:
+        return
+    if result.command == "env get":
+        print(result.data["value"])
+    else:
+        values = result.data["values"]
+        if isinstance(values, dict):
+            render_env_list(
+                {key: str(value) for key, value in values.items()},
+                str(result.data["checkout"]),
+                "text",
+            )
+
+
+def render_env_list(values: dict[str, str], target: str, fmt: str) -> None:
     if fmt == "json":
-        checkout_payloads = [
-            _checkout_payload(checkout, show_values=show_values) for checkout in report.checkouts
-        ]
-        payload: dict[str, object] = (
-            {"checkouts": checkout_payloads} if report.show_all else checkout_payloads[0]
-        )
-        if report.check:
-            payload["summary"] = asdict(report.summary)
-        print(json.dumps(payload, indent=2))
-        return
-    if report.show_all and not verbose and not show_values:
-        _render_status_table(report)
-    else:
-        for checkout in report.checkouts:
-            _render_status_block(
-                checkout,
-                show_all=report.show_all,
-                show_values=show_values,
-            )
-    if report.check:
-        if report.show_all and not verbose:
-            print(file=sys.stderr)
-        _render_check_summary(report.summary)
-    elif not report.show_all:
-        if report.stale_registry_rows:
-            print(
-                f"stale registry rows: {report.stale_registry_rows} (run `splash gc` to clean)",
-                file=sys.stderr,
-            )
-        if report.unfilled_resources:
-            names = ", ".join(report.unfilled_resources)
-            print(
-                f"{len(report.unfilled_resources)} resource(s) need a value ({names}): "
-                "run `splash env set NAME=VALUE`",
-                file=sys.stderr,
-            )
-
-
-def render_env_list(
-    values: dict[str, str], target: str, fmt: str, *, show_values: bool = False
-) -> None:
-    if fmt == "json":
-        payload: object = values if show_values else sorted(values)
+        payload: object = values
         print(json.dumps(payload, indent=2))
         return
     if not values:
-        print(f"(empty) {target}", file=sys.stderr)
+        print(f"(empty) {target}")
     for key, value in sorted(values.items()):
-        print(f"{key}={value}" if show_values else key)
+        print(f"{key}={value}")
 
 
 def render_sync(
@@ -365,8 +201,6 @@ def render_sync(
     setup_messages: list[str],
     changed_keys: list[str],
     fmt: str,
-    *,
-    show_values: bool = False,
 ) -> None:
     changed = (
         bool(changed_keys)
@@ -384,20 +218,12 @@ def render_sync(
             "changed": changed,
             "changed_keys": sorted(changed_keys),
         }
-        if show_values:
-            payload["resolved"] = resolved
-        else:
-            payload["resolved_keys"] = sorted(resolved)
+        payload["resolved_keys"] = sorted(resolved)
         print(json.dumps(payload, indent=2))
         return
 
     for key, value in stdout_values.items():
         print(f"{key}={value}")
-    if show_values:
-        changed_set = set(changed_keys)
-        for key, value in sorted(resolved.items()):
-            suffix = " (changed)" if key in changed_set else ""
-            print(f"  {key}={value}{suffix}", file=sys.stderr)
     if not changed:
         files = sum(1 for result in writer_results if result.writer not in ("stdout", "none"))
         print(
@@ -405,9 +231,8 @@ def render_sync(
             file=sys.stderr,
         )
         return
-    if not show_values:
-        for key in changed_keys:
-            print(f"  {key} (changed)", file=sys.stderr)
+    for key in changed_keys:
+        print(f"  {key} (changed)", file=sys.stderr)
     for result in writer_results:
         if result.changed:
             print(f"  -> {result.message} (changed)", file=sys.stderr)
@@ -418,9 +243,52 @@ def render_sync(
 def render_application_error(error: ApplicationError) -> int:
     prefix = "error: " if error.is_error else ""
     print(f"{prefix}{error}", file=sys.stderr)
+    for warning in dict.fromkeys(error.warnings):
+        print(f"warning: {warning.message}", file=sys.stderr)
+    for step in dict.fromkeys(error.next_steps):
+        print(step, file=sys.stderr)
     return error.exit_code
 
 
 def render_untyped_error(error: Exception) -> int:
     print(f"error: {error}", file=sys.stderr)
     return 1
+
+
+def emit_result(
+    result: CommandResult,
+    fmt: OutputFormat,
+    *,
+    render_text: Callable[[CommandResult], None] | None = None,
+) -> int:
+    payload = result_payload(result)
+    if fmt == "json":
+        print(json.dumps(payload))
+    else:
+        if render_text is not None:
+            render_text(result)
+        for warning in dict.fromkeys(result.warnings):
+            print(f"warning: {warning.message}", file=sys.stderr)
+        if result.error is not None:
+            print(f"error: {result.error.message}", file=sys.stderr)
+        for step in dict.fromkeys(result.next_steps):
+            print(step, file=sys.stderr)
+    return result.exit_code
+
+
+def render_ai_result(result: CommandResult) -> None:
+    if result.data is None:
+        return
+    files = result.data.get("files")
+    if isinstance(files, list):
+        for row in files:
+            if isinstance(row, dict):
+                detail = (
+                    f"; {row['detail']}"
+                    if row.get("detail") and row["status"] != "generated"
+                    else ""
+                )
+                print(f"{row['file']}: {row['status']}{detail}")
+    activation = result.data.get("activation")
+    if activation:
+        print(activation)

@@ -147,7 +147,7 @@ until a launch-time tunnel) and excludes `unavailable` tunnels, returning
 `adb devices -l`, skipping `emulator-*` serials (those are the `emulator` dtype), returning
 `{id (serial), name, platform: "android"}`.
 
-`physical_discover` in `devices.py` merges both for legacy resolution and status, and is forgiving
+`physical_discover` in `devices.py` merges both for legacy resolution, and is forgiving
 by design: with `platform=None` a capability
 failure for one platform produces one warning and the other discovery path still runs. An
 *explicitly requested* platform re-raises its capability error. The optional shared `warned` set
@@ -156,7 +156,7 @@ deduplicates warnings across several target variants. `_physical_match` filters 
 zero raises a setup hint from `_physical_no_match_msg`, two-or-more raises an
 "narrow with id/name/platform" error — and returns an `IOSDestination` or
 `AndroidDestination` with `owned=False`. `physical_status` maps the same match to
-`connected`/`absent`/`ambiguous` for operational `splash status` checks.
+`connected`/`absent`/`ambiguous` for legacy physical-target observations.
 
 Bare `splash target` uses the claim-aware inventory path instead. It runs one concurrent iOS and
 Android snapshot under the shared interactive deadline, matches every configured physical target
@@ -187,8 +187,9 @@ phone and recipe targets collide across linked worktrees.
 ### ensure_fresh_sim: reconcile-on-drift
 
 `device_health` is the shared, read-only reconciliation query. It returns `healthy`, `missing`,
-`orphan`, `drifted`, or `undeclared`, and is consumed by both `status --check` and the actuator so
-inspection cannot diverge from refresh. `ensure_fresh_sim` is the mutation entry point and
+`orphan`, `drifted`, or `undeclared`, and is consumed by the actuator. Status uses
+`status_targets.TargetObservations` to preserve successful observation meanings while distinguishing
+failed discovery from confirmed absence. Its inventories and failed probes are invocation-local. `ensure_fresh_sim` is the mutation entry point and
 dispatches on `dtype`:
 
 - `device` → delegates to `ensure_physical` (no managed-device row and no reconcile). Physical
@@ -276,6 +277,9 @@ and line continuations belong in a separate script that receives those arguments
 Expo adds `--port` from the launch environment's `RCT_METRO_PORT` for both iOS and Android.
 React Native's post-launch Metro warning also reads that environment, so a stale ambient port
 cannot redirect the probe.
+The built-in React Native Android launcher passes `--active-arch-only` for the default or a
+case-insensitive `*Debug` mode, alongside `--deviceId` for the selected serial. React Native
+detects that target's ABI. Explicit release and other unrecognized custom modes omit the flag.
 
 `device_run_preflight` in `launching.py` calls the advisory parsers in `runtime_checks.py` only
 for physical destinations. Loopback detection scans resolved resource values and emits variable

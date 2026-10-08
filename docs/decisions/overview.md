@@ -13,3 +13,4 @@ history. Current behavior remains canonical in `docs/features/` and `docs/tech/`
 - [0007: Bound device-run diagnostics to established facts](0007-bound-device-run-diagnostics.md)
 - [0008: Make the env destination configurable and key-scoped](0008-make-the-env-destination-configurable-and-key-scoped.md)
 - [0009: Generate every recipe from the scanner and opt into capabilities in the recipe](0009-generate-every-recipe-from-the-scanner.md)
+- [0010: Separate inspection from lifecycle effects](0010-separate-inspection-from-lifecycle-effects.md)

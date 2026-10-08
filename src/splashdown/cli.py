@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NoReturn, cast
 
 from .catalog import PROFILES
 from .cli_output import render_application_error, render_claim_notices, render_untyped_error
@@ -24,9 +26,11 @@ from .commands import (
 from .constants import TARGET_TYPES
 from .devices import DeviceError
 from .doctor import cmd_doctor
-from .errors import ApplicationError
+from .errors import ApplicationError, UsageError
+from .project_selection import ProjectSelection, resolve_start_directory, select_project
 from .recipe import load_settings
 from .registry import Registry
+from .results import OutputFormat
 from .target_commands import (
     _declared_target_types,
     _target_dispatch,
@@ -37,6 +41,108 @@ from .target_commands import (
     cmd_stop,
 )
 from .targets import _match_target_type_prefix
+
+
+@dataclass
+class ParseState:
+    format: OutputFormat = "text"
+    command: str | None = None
+    formats: list[OutputFormat] = field(default_factory=list)
+    cwd_values: list[str] = field(default_factory=list)
+    parser: _Parser | None = None
+
+
+class _ParserUsageError(UsageError):
+    def __init__(self, message: str, parser: _Parser) -> None:
+        super().__init__(message)
+        self.parser = parser
+
+
+class _Parser(argparse.ArgumentParser):
+    state: ParseState
+    command: str | None
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    def parse_known_args(  # type: ignore[override]
+        self, args: Iterable[str] | None = None, namespace: argparse.Namespace | None = None
+    ) -> tuple[argparse.Namespace, list[str]]:
+        self.state.command = self.command
+        self.state.parser = self
+        return super().parse_known_args(args, namespace)
+
+    def error(self, message: str) -> NoReturn:
+        raise _ParserUsageError(message, self.state.parser or self)
+
+
+class _GlobalAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        parser = cast(_Parser, parser)
+        values = cast(str, values)
+        if self.dest == "format":
+            parser.state.format = "json" if values == "json" else "text"
+            parser.state.formats.append(parser.state.format)
+        else:
+            parser.state.cwd_values.append(values)
+        setattr(namespace, self.dest, values)
+
+
+def _register_global_options(parser: _Parser, *, root: bool, state: ParseState) -> None:
+    parser.state = state
+    default = None if root else argparse.SUPPRESS
+    parser.add_argument(
+        "--cwd",
+        default=default,
+        action=_GlobalAction,
+        help="working directory (default: $PWD)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default=default,
+        action=_GlobalAction,
+        help="output format for sync, status, init, env/target lists, target claims, or ai guidance",
+    )
+
+
+def _child_parsers(parser: argparse.ArgumentParser) -> dict[str, _Parser]:
+    return {
+        name: child
+        for action in parser._actions  # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction)  # noqa: SLF001
+        for name, child in action.choices.items()
+    }
+
+
+def _configure_parser_tree(parser: _Parser, state: ParseState, command: str = "") -> None:
+    pending = [(parser, command)]
+    while pending:
+        current, current_command = pending.pop()
+        current.command = current_command or None
+        _register_global_options(current, root=not current_command, state=state)
+        pending.extend(
+            (child, f"{current_command} {name}".strip())
+            for name, child in reversed(list(_child_parsers(current).items()))
+        )
+
+
+def _command_help(parser: _Parser, path: list[str]) -> None:
+    for name in path:
+        child = _child_parsers(parser).get(name)
+        if child is None:
+            parser.state.parser = parser
+            parser.state.command = parser.command
+            parser.error(f"unknown help command: {name}")
+        parser = child
+    parser.print_help()
 
 
 class _EpilogOnlyFormatter(argparse.RawDescriptionHelpFormatter):
@@ -100,12 +206,11 @@ More
   env      …                 inspect resolved values           (splash env --help)
   gc                         drop dead-checkout entries (ports, vars, sims)
   completion [shell]         print shell completion setup
+  help [COMMAND ...]         show help for an exact command path
 """
 
-_VALUE_OUTPUT_HELP = (
-    "Global output options (place before the command): --format {text,json}; --show-values."
-)
-_FORMAT_OUTPUT_HELP = "Global output option (place before the command): --format {text,json}."
+_VALUE_OUTPUT_HELP = "Output: --format {text,json} at any command level."
+_FORMAT_OUTPUT_HELP = "Output: --format {text,json} at any command level."
 
 KNOWN_CMDS = {
     "sync",
@@ -126,10 +231,11 @@ KNOWN_CMDS = {
     "target",
     "completion",
     "ai",
+    "help",
 }
 
 
-def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser; one block per subcommand
+def _build_parser(state: ParseState | None = None) -> _Parser:  # noqa: PLR0915 — flat parser; one block per subcommand
     from .completion import (  # noqa: PLC0415
         available_platform_completer,
         device_arg_completer,
@@ -137,45 +243,39 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         variant_completer,
     )
 
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="splash",
         description="splash — keeps each git checkout's ports, env vars & device targets in sync",
         epilog=_HELP_EPILOG,
         formatter_class=_EpilogOnlyFormatter,
     )
-    parser.add_argument("--cwd", default=None, help="working directory (default: $PWD)")
-    parser.add_argument(
-        "--format",
-        choices=["text", "json"],
-        default=None,
-        help="output format for sync, status, init, env/target lists, target claims, or ai guidance",
-    )
-    parser.add_argument(
-        "--show-values",
-        action="store_true",
-        help="include resolved values for sync, status, or bare env",
-    )
     parser.add_argument("--version", action=_VersionAction)
+    parser.add_argument(
+        "--force", dest="default_force", action="store_true", help="force default sync"
+    )
+    parser.add_argument(
+        "--setup", dest="default_setup", metavar="SETUP", help="run a setup block with default sync"
+    )
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
     p = sub.add_parser("sync", help=argparse.SUPPRESS, epilog=_VALUE_OUTPUT_HELP)
     p.add_argument(
         "--force",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="re-allocate everything from scratch (regenerates uuids etc.)",
     )
-    p.add_argument("--setup", help="also run a [setup.NAME] block from the recipe")
+    p.add_argument(
+        "--setup", default=argparse.SUPPRESS, help="also run a [setup.NAME] block from the recipe"
+    )
 
     p = sub.add_parser("status", help=argparse.SUPPRESS, epilog=_VALUE_OUTPUT_HELP)
     p.add_argument(
         "scope",
         nargs="?",
-        choices=("local", "all"),
-        default="local",
-        help="local (default): this checkout only. all: every tracked checkout.",
-    )
-    p.add_argument(
-        "--check", action="store_true", help="revalidate liveness and print a cleanup hint"
+        choices=("all",),
+        default=None,
+        help="all: every tracked checkout; omitted: the selected project.",
     )
     p.add_argument(
         "--verbose",
@@ -223,7 +323,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     )
 
     hook = sub.add_parser("hook", help=argparse.SUPPRESS)
-    hook_sub = hook.add_subparsers(dest="hook_cmd", metavar="EVENT")
+    hook_sub = hook.add_subparsers(dest="hook_cmd", required=True, metavar="EVENT")
     post_checkout = hook_sub.add_parser("post-checkout", help=argparse.SUPPRESS)
     post_checkout.add_argument("old")
     post_checkout.add_argument("new")
@@ -232,36 +332,16 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     env = sub.add_parser(
         "env",
         help=argparse.SUPPRESS,
-        description="Omit ACTION to list this checkout's resolved environment.",
+        description="Omit ACTION to list this checkout's stored assignments without changing state.",
         epilog=_VALUE_OUTPUT_HELP,
     )
-    env.add_argument(
-        "--checkout",
-        default=None,
-        help="inspect or change another checkout instead of --cwd",
-    )
     envsub = env.add_subparsers(dest="env_cmd", metavar="[ACTION]")
-    eg = envsub.add_parser("get", help="print one resolved value")
+    eg = envsub.add_parser("get", help="print one stored value")
     eg.add_argument("key")
-    eg.add_argument(
-        "--checkout",
-        default=argparse.SUPPRESS,
-        help="inspect another checkout instead of --cwd",
-    )
     es = envsub.add_parser("set", help='set a manual value (for type="set" resources)')
     es.add_argument("assignment", metavar="KEY=VALUE")
-    es.add_argument(
-        "--checkout",
-        default=argparse.SUPPRESS,
-        help="change another checkout instead of --cwd",
-    )
     er = envsub.add_parser("release", help="free this checkout's allocations (all, or one KEY)")
     er.add_argument("key", nargs="?")
-    er.add_argument(
-        "--checkout",
-        default=argparse.SUPPRESS,
-        help="release another checkout instead of --cwd",
-    )
 
     sub.add_parser("gc", help=argparse.SUPPRESS)
 
@@ -404,8 +484,7 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
         help="remove from the machine-wide config instead of splashdown.local.toml",
     )
 
-    claims = devsub.add_parser("claims", help="list machine-wide physical-device claims")
-    claims.add_argument("--format", choices=("text", "json"), dest="target_format")
+    devsub.add_parser("claims", help="list machine-wide physical-device claims")
 
     claim = devsub.add_parser("claim", help="claim a configured physical device")
     claim_variant = claim.add_argument("variant", nargs="?")
@@ -413,7 +492,6 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     available = claim.add_argument("--available", choices=("ios", "android", "any"))
     available.completer = available_platform_completer  # type: ignore[attr-defined]
     claim.add_argument("--force", action="store_true")
-    claim.add_argument("--format", choices=("text", "json"), dest="target_format")
 
     release = devsub.add_parser("release", help="release a configured physical-device claim")
     release_variant = release.add_argument("variant", nargs="?")
@@ -421,12 +499,17 @@ def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 — flat parser
     release.add_argument("--all", action="store_true", dest="all_owned")
     release.add_argument("--force", action="store_true")
 
+    help_parser = sub.add_parser("help", help=argparse.SUPPRESS)
+    help_parser.add_argument("command_path", nargs="*", metavar="COMMAND")
+    _configure_parser_tree(parser, state if state is not None else ParseState())
     return parser
 
 
 def _resolve_cwd(args: object) -> Path:
-    cwd = getattr(args, "cwd", None)
-    return Path(cwd).resolve() if cwd else Path(os.getcwd()).resolve()
+    selection = getattr(args, "selection", None)
+    if isinstance(selection, ProjectSelection):
+        return selection.directory
+    return resolve_start_directory(getattr(args, "cwd", None))
 
 
 def _normalize_device_args(args: argparse.Namespace) -> None:
@@ -461,34 +544,6 @@ def _normalize_device_args(args: argparse.Namespace) -> None:
         )
 
 
-_TOP_LEVEL_VALUE_FLAGS = {"--cwd", "--format"}
-_TOP_LEVEL_BOOL_FLAGS = {"--show-values"}
-
-
-def _ensure_subcommand(argv: list[str]) -> list[str]:
-    """Bare `splash …` (no subcommand) defaults to `sync`. Inserts the
-    `sync` token at the right slot — after any leading top-level flags
-    (`--cwd PATH`, `--format json`, …) so they parse at the root level."""
-    if any(a in ("-h", "--help", "--version") for a in argv):
-        return argv
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a in KNOWN_CMDS:
-            return argv
-        if a in _TOP_LEVEL_VALUE_FLAGS:
-            i += 2
-            continue
-        if a in _TOP_LEVEL_BOOL_FLAGS:
-            i += 1
-            continue
-        if a.startswith("--") and "=" in a:
-            i += 1
-            continue
-        break
-    return [*argv[:i], "sync", *argv[i:]]
-
-
 def _resolve_format(args: object) -> str:
     return getattr(args, "format", None) or "text"
 
@@ -502,7 +557,7 @@ def _consume_claim_notices(cwd: Path, registry: Registry) -> None:
     render_claim_notices(notices)
 
 
-def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+def _validate_parsed_args(parser: _Parser, args: argparse.Namespace) -> None:
     if (
         args.cmd == "target"
         and args.target_cmd == "remove"
@@ -520,18 +575,18 @@ def _validate_parsed_args(parser: argparse.ArgumentParser, args: argparse.Namesp
 
     supports_format = (
         args.cmd in {"sync", "status", "init", "ai"}
-        or (args.cmd == "env" and args.env_cmd is None)
+        or (args.cmd == "completion" and args.format == "text")
+        or (args.cmd == "env" and args.env_cmd in {None, "get"})
         or (args.cmd == "target" and args.target_cmd in {None, "claim", "claims"})
     )
     if args.format is not None and not supports_format:
-        parser.error(
-            "--format is only supported by sync, status, init, bare env, target lists, "
-            "target claims, and ai"
+        error = _ParserUsageError(
+            "--format is only supported by sync, status, init, env/env get, target lists, "
+            "target claims, and ai",
+            parser.state.parser or parser,
         )
-
-    supports_values = args.cmd in {"sync", "status"} or (args.cmd == "env" and args.env_cmd is None)
-    if args.show_values and not supports_values:
-        parser.error("--show-values is only supported by sync, status, and bare env")
+        error.code = "unsupported_format"
+        raise error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -541,31 +596,212 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
+def _select_default_command(parser: _Parser, args: argparse.Namespace) -> None:
+    if args.cmd is None:
+        args.cmd = "sync"
+        parser.state.command = "sync"
+        parser.state.parser = _child_parsers(parser)["sync"]
+    if args.cmd == "sync":
+        args.force = getattr(args, "force", False) or args.default_force
+        args.setup = getattr(args, "setup", args.default_setup)
+    elif args.default_force or args.default_setup is not None:
+        parser.error("root --force and --setup require sync")
+
+
+def _render_usage_error(state: ParseState, error: _ParserUsageError) -> int:
+    error.parser.print_usage(sys.stderr)
+    if state.format == "text":
+        error.parser.exit(
+            2, f"{error.parser.prog}: error: {error}\nRun `{error.parser.prog} --help` for usage.\n"
+        )
+    from .cli_output import emit_result  # noqa: PLC0415
+    from .results import CommandResult, Diagnostic  # noqa: PLC0415
+
+    return emit_result(
+        CommandResult(
+            state.command,
+            "error",
+            2,
+            error=Diagnostic(error.code, str(error)),
+            next_steps=(f"Run `{error.parser.prog} --help` for usage.",),
+        ),
+        "json",
+    )
+
+
+def _render_pre_dispatch_error(
+    state: ParseState, error: ApplicationError | OSError | KeyboardInterrupt
+) -> int:
+    from .cli_output import emit_result  # noqa: PLC0415
+    from .results import CommandResult, Diagnostic  # noqa: PLC0415
+
+    return emit_result(
+        CommandResult(
+            state.command,
+            "error",
+            130 if isinstance(error, KeyboardInterrupt) else 1,
+            error=Diagnostic(
+                "interrupted"
+                if isinstance(error, KeyboardInterrupt)
+                else error.code
+                if isinstance(error, ApplicationError)
+                else "io_error",
+                "Operation interrupted." if isinstance(error, KeyboardInterrupt) else str(error),
+            ),
+        ),
+        state.format,
+    )
+
+
+def _select_command_directory(args: argparse.Namespace, state: ParseState) -> Path:
+    for value in state.cwd_values:
+        resolve_start_directory(value)
+    start = resolve_start_directory(args.cwd)
+    exact = (
+        args.cmd in {"init", "hook", "gc"}
+        or (args.cmd == "status" and args.scope == "all")
+        or (args.cmd == "env" and args.env_cmd in {"set", "release"})
+        or (
+            args.cmd == "target"
+            and (
+                args.target_cmd in {"refresh", "prune", "available", "claims"}
+                or getattr(args, "global_scope", False)
+            )
+        )
+    )
+    args.selection = (
+        ProjectSelection(start, start, None, None)
+        if exact and args.cmd != "init"
+        else select_project(start, exact=exact)
+    )
+    return cast(ProjectSelection, args.selection).directory
+
+
+def _dispatch_env_inspection(args: argparse.Namespace, state: ParseState) -> int:
+    from .cli_output import emit_result, render_env_result  # noqa: PLC0415
+    from .commands import inspect_env  # noqa: PLC0415
+    from .registry import read_registry_snapshot  # noqa: PLC0415
+
+    try:
+        snapshot = read_registry_snapshot()
+        known = snapshot.all_checkouts()
+        for value in state.cwd_values:
+            resolve_start_directory(value, known_checkouts=known)
+        start = resolve_start_directory(args.cwd, known_checkouts=known)
+        selection = select_project(start, known_checkouts=known)
+        result = inspect_env(selection.directory, snapshot, getattr(args, "key", None))
+    except (ApplicationError, OSError, KeyboardInterrupt) as error:
+        return _render_pre_dispatch_error(state, error)
+    return emit_result(result, state.format, render_text=render_env_result)
+
+
+def _dispatch_ai(args: argparse.Namespace) -> int:
+    from .ai_commands import cmd_ai  # noqa: PLC0415
+    from .cli_output import emit_result, render_ai_result  # noqa: PLC0415
+    from .errors import CapabilityError  # noqa: PLC0415
+    from .results import CommandResult, Diagnostic  # noqa: PLC0415
+
+    try:
+        result = cmd_ai(_resolve_cwd(args), args.ai_cmd, replace=getattr(args, "replace", False))
+    except ApplicationError as error:
+        result = CommandResult(
+            command=f"ai {args.ai_cmd}",
+            status="partial" if error.partial else "error",
+            exit_code=error.exit_code,
+            data=error.data,
+            error=Diagnostic(error.code, str(error)),
+            warnings=error.warnings,
+            next_steps=error.next_steps,
+        )
+    except (OSError, DeviceError) as error:
+        code = (
+            "capability_unavailable"
+            if isinstance(error, CapabilityError)
+            else "device_error"
+            if isinstance(error, DeviceError)
+            else "io_error"
+        )
+        result = CommandResult(
+            f"ai {args.ai_cmd}",
+            "error",
+            1,
+            error=Diagnostic(code, str(error)),
+        )
+    except KeyboardInterrupt:
+        result = CommandResult(
+            f"ai {args.ai_cmd}",
+            "error",
+            130,
+            error=Diagnostic("interrupted", "Guidance operation interrupted."),
+        )
+    return emit_result(
+        result,
+        "json" if _resolve_format(args) == "json" else "text",
+        render_text=render_ai_result,
+    )
+
+
+def _dispatch_status(args: argparse.Namespace, state: ParseState, cwd: Path) -> int:
+    from .registry import RegistryReadError, read_registry_snapshot  # noqa: PLC0415
+
+    try:
+        from .results import Diagnostic  # noqa: PLC0415
+
+        diagnostics: tuple[Diagnostic, ...] = ()
+        try:
+            snapshot = read_registry_snapshot()
+        except RegistryReadError as error:
+            snapshot = error.snapshot
+            diagnostics = error.diagnostics
+        return cmd_status(
+            cwd,
+            snapshot,
+            _resolve_format(args),
+            show_all=args.scope == "all",
+            verbose=args.verbose,
+            diagnostics=diagnostics,
+        )
+    except (ApplicationError, OSError, KeyboardInterrupt) as error:
+        return _render_pre_dispatch_error(state, error)
+
+
 def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 — one return/branch per subcommand; this is the dispatch table
     if argv is None:
         argv = sys.argv[1:]
-    argv = _ensure_subcommand(list(argv))
-
-    parser = _build_parser()
+    state = ParseState()
+    parser = _build_parser(state)
     # Must stay immediately before parse_args: during an active completion,
     # autocomplete() parses COMP_LINE itself and exits before parse_args runs.
     from .completion import install as _install_completion  # noqa: PLC0415
 
     _install_completion(parser)
-    args = parser.parse_args(argv)
-    _validate_parsed_args(parser, args)
+    try:
+        args = parser.parse_args(argv)
+        if args.cmd == "help":
+            _command_help(parser, args.command_path)
+            return 0
+        _select_default_command(parser, args)
+        _validate_parsed_args(parser, args)
+    except _ParserUsageError as error:
+        return _render_usage_error(state, error)
 
     # Needs no checkout or registry — dispatch before touching either.
     if args.cmd == "completion":
         return cmd_completion(args.shell)
 
-    cwd = _resolve_cwd(args)
-    if args.cmd == "ai":
-        from .ai_commands import cmd_ai  # noqa: PLC0415
+    if args.cmd == "env" and args.env_cmd in {None, "get"}:
+        return _dispatch_env_inspection(args, state)
 
-        return cmd_ai(
-            cwd, args.ai_cmd, _resolve_format(args), replace=getattr(args, "replace", False)
-        )
+    try:
+        cwd = _select_command_directory(args, state)
+    except (ApplicationError, OSError, KeyboardInterrupt) as error:
+        return _render_pre_dispatch_error(state, error)
+
+    if args.cmd == "status":
+        return _dispatch_status(args, state, cwd)
+
+    if args.cmd == "ai":
+        return _dispatch_ai(args)
     if args.cmd == "hook":
         if args.hook_cmd != "post-checkout":
             parser.error("hook requires an event")
@@ -585,7 +821,10 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 �
         except (DeviceError, OSError, ValueError) as error:
             return render_untyped_error(error)
 
-    registry = Registry()
+    try:
+        registry = Registry()
+    except (ApplicationError, OSError, KeyboardInterrupt) as error:
+        return _render_pre_dispatch_error(state, error)
     _consume_claim_notices(cwd, registry)
 
     if args.cmd == "trust":
@@ -619,17 +858,6 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 �
 
         if args.cmd == "destroy":
             return cmd_destroy(cwd, registry, args.dtype, args.variant, yes=args.yes)
-
-        if args.cmd == "status":
-            return cmd_status(
-                cwd,
-                registry,
-                _resolve_format(args),
-                show_all=(args.scope == "all"),
-                check=args.check,
-                verbose=args.verbose,
-                show_values=args.show_values,
-            )
 
         if args.cmd == "env":
             return _env_dispatch(args, cwd, registry)

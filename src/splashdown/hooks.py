@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -82,6 +83,12 @@ _LEFTHOOK_RUN = (
     f'\'{SPLASH_GUARD}"$SPLASH" hook post-checkout "{{1}}" "{{2}}" "{{3}}" >&2 || true\''
 )
 _OWNED_HOOKS = {LEGACY_POST_CHECKOUT_HOOK, POST_CHECKOUT_HOOK}
+
+
+@dataclass(frozen=True)
+class HookInspection:
+    common_dir: Path
+    configured_path: str
 
 
 @dataclass(frozen=True)
@@ -478,45 +485,61 @@ _EVIDENCE_REASON = {
 }
 
 
-def _configured_hooks_path(cwd: Path) -> str:
+def _configured_hooks_path(cwd: Path, *, strict: bool | HookInspection = False) -> str:
+    if isinstance(strict, HookInspection):
+        return strict.configured_path
     try:
         return (
             subprocess.check_output(
                 ["git", "config", "--get", "core.hooksPath"],
                 cwd=cwd,
                 stderr=subprocess.DEVNULL,
+                timeout=5 if strict else None,
             )
             .decode()
             .strip()
         )
-    except (subprocess.CalledProcessError, OSError):
+    except subprocess.CalledProcessError as error:
+        if strict and error.returncode != 1:
+            raise
+        return ""
+    except OSError:
+        if strict:
+            raise
         return ""
 
 
-def _git_common_dir(cwd: Path) -> Path | None:
+def _git_common_dir(cwd: Path, *, strict: bool | HookInspection = False) -> Path | None:
+    if isinstance(strict, HookInspection):
+        return strict.common_dir
     try:
         raw = (
             subprocess.check_output(
                 ["git", "rev-parse", "--git-common-dir"],
                 cwd=cwd,
                 stderr=subprocess.DEVNULL,
+                timeout=5 if strict else None,
             )
             .decode()
             .strip()
         )
     except (subprocess.CalledProcessError, OSError):
+        if strict:
+            raise
         return None
     common_dir = Path(raw)
     return common_dir if common_dir.is_absolute() else cwd / common_dir
 
 
-def _effective_hooks_dir(cwd: Path) -> Path | None:
+def _effective_hooks_dir(cwd: Path, *, strict: bool | HookInspection = False) -> Path | None:
     """The directory Git actually runs hooks from, honoring `core.hooksPath`."""
-    configured = _configured_hooks_path(cwd)
+    configured = (
+        _configured_hooks_path(cwd, strict=strict) if strict else _configured_hooks_path(cwd)
+    )
     if configured:
         path = Path(configured)
         return path if path.is_absolute() else cwd / path
-    common_dir = _git_common_dir(cwd)
+    common_dir = _git_common_dir(cwd, strict=strict) if strict else _git_common_dir(cwd)
     return None if common_dir is None else common_dir / "hooks"
 
 
@@ -536,9 +559,11 @@ def _hook_signature(path: Path) -> str | None:
     )
 
 
-def _installed_hook_evidence(cwd: Path) -> tuple[set[str], set[str]]:
+def _installed_hook_evidence(
+    cwd: Path, *, strict: bool | HookInspection = False
+) -> tuple[set[str], set[str]]:
     """`(managers owning post-checkout, managers owning any other hook)`."""
-    directory = _effective_hooks_dir(cwd)
+    directory = _effective_hooks_dir(cwd, strict=strict) if strict else _effective_hooks_dir(cwd)
     if directory is None or not directory.is_dir():
         return set(), set()
     owns_event: set[str] = set()
@@ -567,8 +592,10 @@ def _declared_managers(cwd: Path) -> set[str]:
     return declared
 
 
-def _hook_evidence(cwd: Path) -> dict[int, set[str]]:
-    owns_event, owns_other = _installed_hook_evidence(cwd)
+def _hook_evidence(cwd: Path, *, strict: bool | HookInspection = False) -> dict[int, set[str]]:
+    owns_event, owns_other = (
+        _installed_hook_evidence(cwd, strict=strict) if strict else _installed_hook_evidence(cwd)
+    )
     configured = {
         manager
         for manager, names in _MANAGER_CONFIG_NAMES.items()
@@ -576,7 +603,12 @@ def _hook_evidence(cwd: Path) -> dict[int, set[str]]:
     }
     if (cwd / ".husky").is_dir():
         configured.add("husky")
-    return {4: owns_event, 3: owns_other, 2: configured, 1: _declared_managers(cwd)}
+    return {
+        4: owns_event,
+        3: owns_other,
+        2: configured,
+        1: set() if isinstance(strict, HookInspection) else _declared_managers(cwd),
+    }
 
 
 def _husky_hooks_dir(cwd: Path, directory: Path) -> bool:
@@ -584,7 +616,7 @@ def _husky_hooks_dir(cwd: Path, directory: Path) -> bool:
     return directory == husky or husky in directory.parents
 
 
-def detect_hook_configuration(cwd: Path) -> HookDetection:
+def detect_hook_configuration(cwd: Path, *, strict: bool | HookInspection = False) -> HookDetection:
     """Identify who owns this checkout's post-checkout event so we coexist instead
     of clobber.
 
@@ -594,16 +626,24 @@ def detect_hook_configuration(cwd: Path) -> HookDetection:
     configuration file, then a package.json declaration. Ties inside one level are
     reported as a conflict rather than resolved by guessing.
     """
-    configured_path = _configured_hooks_path(cwd)
+    configured_path = (
+        _configured_hooks_path(cwd, strict=strict) if strict else _configured_hooks_path(cwd)
+    )
     if configured_path:
         path = Path(configured_path)
         directory = path if path.is_absolute() else cwd / path
         if _husky_hooks_dir(cwd, directory):
             return HookDetection("husky", f"core.hooksPath is `{configured_path}`", ("husky",))
         return HookDetection("core-hookspath-other", f"core.hooksPath is `{configured_path}`")
-    evidence = _hook_evidence(cwd)
+    evidence = _hook_evidence(cwd, strict=strict) if strict else _hook_evidence(cwd)
     for level in (4, 3, 2, 1):
-        found = tuple(sorted(evidence[level]))
+        if level == 1 and isinstance(strict, HookInspection):
+            text = read_optional_editable_text(cwd / "package.json", root=cwd)
+            if text is not None and not isinstance(json.loads(text), dict):
+                raise ValueError("expected package JSON object")
+            found = tuple(sorted(_declared_managers(cwd)))
+        else:
+            found = tuple(sorted(evidence[level]))
         if not found:
             continue
         if len(found) == 1:
@@ -836,8 +876,8 @@ def _wire_post_checkout_husky(cwd: Path) -> bool:
     return True
 
 
-def _native_hook_path(cwd: Path) -> Path | None:
-    common_dir = _git_common_dir(cwd)
+def _native_hook_path(cwd: Path, *, strict: bool | HookInspection = False) -> Path | None:
+    common_dir = _git_common_dir(cwd, strict=strict) if strict else _git_common_dir(cwd)
     return None if common_dir is None else common_dir.resolve() / "hooks" / "post-checkout"
 
 
@@ -1038,8 +1078,10 @@ _STATE_DETAIL = {
 }
 
 
-def _manager_hook_installed(cwd: Path, manager: str) -> bool:
-    directory = _effective_hooks_dir(cwd)
+def _manager_hook_installed(
+    cwd: Path, manager: str, *, strict: bool | HookInspection = False
+) -> bool:
+    directory = _effective_hooks_dir(cwd, strict=strict) if strict else _effective_hooks_dir(cwd)
     if directory is None:
         return False
     hook = directory / "post-checkout"
@@ -1048,7 +1090,9 @@ def _manager_hook_installed(cwd: Path, manager: str) -> bool:
     return True if manager == "husky" else _hook_signature(hook) == manager
 
 
-def _unmanaged_readiness(cwd: Path, detection: HookDetection) -> HookReadiness:
+def _unmanaged_readiness(
+    cwd: Path, detection: HookDetection, *, strict: bool | HookInspection = False
+) -> HookReadiness:
     if detection.manager == "conflict":
         names = ", ".join(detection.candidates)
         return HookReadiness(
@@ -1058,7 +1102,7 @@ def _unmanaged_readiness(cwd: Path, detection: HookDetection) -> HookReadiness:
         return HookReadiness(detection.manager, False, detection.reason)
     if detection.manager == "overcommit":
         return HookReadiness(detection.manager, False, "overcommit owns this repository's hooks")
-    native_hook = _native_hook_path(cwd)
+    native_hook = _native_hook_path(cwd, strict=strict) if strict else _native_hook_path(cwd)
     active = (
         native_hook is not None
         and native_hook.exists()
@@ -1073,16 +1117,26 @@ def _unmanaged_readiness(cwd: Path, detection: HookDetection) -> HookReadiness:
     return HookReadiness(detection.manager, active, detail, active)
 
 
-def post_checkout_readiness(cwd: Path) -> HookReadiness:
+def post_checkout_readiness(cwd: Path, *, strict: bool | HookInspection = False) -> HookReadiness:
     """Whether splashdown's own entry is in place for whoever owns this checkout's
     post-checkout event. `ready` covers the project-owned configuration; `active`
     covers whether that manager's hook is installed locally too."""
-    detection = detect_hook_configuration(cwd)
+    detection = (
+        detect_hook_configuration(cwd, strict=strict) if strict else detect_hook_configuration(cwd)
+    )
     adapter = _ADAPTERS.get(detection.manager)
     if adapter is None:
-        return _unmanaged_readiness(cwd, detection)
+        return (
+            _unmanaged_readiness(cwd, detection, strict=strict)
+            if strict
+            else _unmanaged_readiness(cwd, detection)
+        )
     state = adapter.state(cwd)
-    active = _manager_hook_installed(cwd, adapter.manager)
+    active = (
+        _manager_hook_installed(cwd, adapter.manager, strict=strict)
+        if strict
+        else _manager_hook_installed(cwd, adapter.manager)
+    )
     if state == "ok":
         detail = (
             f"{adapter.manager} forwards post-checkout events"

@@ -100,14 +100,20 @@ def _default_sim_name(cwd: Path, variant: str) -> str:
 
 
 def _resolve_device_name(
-    spec: dict[str, Any], cwd: Path, variant: str, dtype: str | None = None
+    spec: dict[str, Any],
+    cwd: Path,
+    variant: str,
+    dtype: str | None = None,
+    *,
+    scope: dict[str, Any] | None = None,
 ) -> str:
     """Resolve an explicit or path-derived name, sanitizing emulator names."""
     raw = spec.get("name")
     if not raw:
         name = _default_sim_name(cwd, variant)
     elif isinstance(raw, str) and "{{" in raw:
-        scope = _make_scope(cwd, _current_branch(cwd), {})
+        if scope is None:
+            scope = _make_scope(cwd, _current_branch(cwd), {})
         name = render_template(raw, scope)
     else:
         name = str(raw)

@@ -28,6 +28,18 @@ Splashdown solves them. Pin system resources to your checkouts, keep track of th
 
 📖 **Full documentation: [splashdown.dev](https://splashdown.dev)**
 
+## Inspecting checkout state
+
+Run `splash status` for resource names, output consistency, saved trust, integrations, and targets.
+`status all` inspects the tracked fleet, including deleted checkout rows. `--verbose` expands text,
+and `--format json` returns the complete shared result without resource values. Findings and
+unavailable optional probes return 0. Unreadable required inputs return 1 with partial results.
+Inspection creates no state and runs no preparation commands. Use `splash env` to read values.
+
+`splash env` lists stored assignments without changing state or requiring a valid recipe.
+`splash env get KEY` prints one exact stored value. Both support `--format json` with the shared
+result envelope. See [environment commands](https://splashdown.dev/cli/) for selection and errors.
+
 ## Status
 
 splashdown is **alpha** (pre-1.0). It is actively used and works well, but the CLI surface and the `splashdown.toml` schema may still shift between minor releases while the design settles. Expect incremental changes, nothing drastic. Any breaking change is called out in the [changelog](CHANGELOG.md), and while on `0.x` it can land in a minor version, so pin a version if you need strict stability.
@@ -108,7 +120,10 @@ guidance. Reload agent sessions after changing instructions. See the
 [CLI reference](https://splashdown.dev/cli/#agent-guidance) for legacy adoption and conflict
 handling.
 
-Init creates a project in the current directory, or the directory selected by top-level
+Use `splash help ai update` for command-specific help. `--cwd` and supported `--format` options
+work before or after a command or nested action. Long options require their full spelling.
+
+Init creates a project in the current directory, or the directory selected by
 `--cwd PATH`, including subdirectories of a Git worktree. Replacing an existing recipe requires
 `--overwrite`. Nested init leaves the worktree-root post-checkout hook untouched because Git
 runs that hook from the root. It prints the explicit `splash --cwd PATH sync` command to run

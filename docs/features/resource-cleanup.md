@@ -134,8 +134,8 @@ device on the machine **not** in that set:
 - `_discover_foreign_avds` (`src/splashdown/target_commands.py`) lists AVDs via `avdmanager
   list avd -c`, excluding managed names.
 
-It prints the kill list, then gates on `_confirm` (`src/splashdown/target_commands.py`, an
-interactive `[y/N]` prompt). `--dry-run` lists and exits without destroying; `--yes` skips
+It prints the kill list, then gates on `require_confirmation` (`src/splashdown/interaction.py`, a
+default-No terminal prompt). `--dry-run` lists and exits without destroying; `--yes` skips
 the prompt. The platform arg (`ios` | `android` | `all`, default `all`) scopes which
 discovery runs. Splashdown-managed devices in the registry are always preserved — this is
 the command that clears the Xcode default-template pile (UC4). When the default `all` scope
@@ -146,7 +146,7 @@ instead (`src/splashdown/commands.py`).
 ### `splash env release [KEY]` (this checkout's own allocations)
 
 Handled in `_env_dispatch` (`src/splashdown/commands.py`). The target checkout is
-`str(cwd.resolve())` by default, or `--checkout` to point at another checkout's entries —
+`str(cwd.resolve())` by default, or `--cwd` to point at another checkout's entries —
 normalized the same way `provision()` keys the registry, so symlinked/relative invocations
 don't silently miss.
 
@@ -178,7 +178,7 @@ checkout's sync/output commit.
 | `splash gc` orchestration | `src/splashdown/target_commands.py` (`cmd_gc`, `cmd_target_gc`) |
 | `splash target prune` | `src/splashdown/target_commands.py` (`cmd_target_prune`) |
 | Foreign-device discovery | `src/splashdown/target_commands.py` (`_discover_foreign_ios`, `_discover_foreign_avds`) |
-| Confirmation prompt | `src/splashdown/target_commands.py` (`_confirm`) |
+| Confirmation prompt | `src/splashdown/interaction.py` (`require_confirmation`) |
 | `splash env release` dispatch | `src/splashdown/commands.py` |
 | Orphan-device test | `src/splashdown/devices.py` (`_is_orphan_device`) |
 | CLI parsers (`gc`, `target prune`, `env release`) | `src/splashdown/cli.py` |
@@ -190,7 +190,7 @@ are command flags:
 
 - `splash target prune [ios|android|all]` — `--dry-run` (preview, no destroy), `--yes`
   (skip the confirm prompt). Parser: `src/splashdown/cli.py`.
-- `splash env release [KEY]` — optional positional `KEY`; `--checkout PATH` to target a
+- `splash env release [KEY]` — optional positional `KEY`; `--cwd PATH` to target a
   different checkout. Parser: `src/splashdown/cli.py`.
 - `splash gc` takes no flags. Parser: `src/splashdown/cli.py`.
 
@@ -220,7 +220,7 @@ passes it to Android boot logging, keeping cleanup state and emulator logs under
   a checkout with a broken recipe; that's intentional, not a bug.
 - **`target prune` is destructive and machine-wide.** It deletes *every* sim/AVD splashdown
   didn't create, across all projects — not just this checkout's. Always `--dry-run` first;
-  the `_confirm` gate is the only safety net when `--yes` is absent.
+  the `require_confirmation` gate requires a terminal and an affirmative answer when `--yes` is absent.
 - **Unscoped platform cleanup is best-effort; explicit cleanup is strict.** Bare
   `target prune`/`target refresh` warn and skip an unavailable iOS or Android toolchain so the
   other platform can still be processed. An explicit platform argument propagates the

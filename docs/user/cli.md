@@ -8,9 +8,9 @@ description: Reference for every splash command, option, target action, and envi
 ```
 splash                              # sync this checkout explicitly
 splash --version
-splash [--cwd PATH] [--format text|json] [--show-values] …  # root options precede the command
+splash [--cwd PATH] [--format text|json] …  # --cwd and --format work at every command level
 splash sync [--force] [--setup N]   # pick free ports, resolve vars, write the env file
-splash status [local|all] [--check] [--verbose]
+splash status [all] [--verbose]
                                       # resources + targets + health/cleanup details
 splash init [--loader=…] [--env-file=PATH] [--overwrite]
 splash deinit                       # remove checkout-local state, keep shared hook and trust
@@ -43,33 +43,49 @@ splash target claim --available ios|android|any [--format text|json]
 splash target release VARIANT [--force]
 splash target release --all
 
-splash env [--checkout PATH]        # list a checkout's resolved keys
-splash env get KEY [--checkout PATH]
-splash env set KEY=VALUE [--checkout PATH]
-splash env release [KEY] [--checkout PATH]
+splash env [--cwd PATH]        # list a checkout's stored values
+splash env get KEY [--cwd PATH]
+splash env set KEY=VALUE [--cwd PATH]
+splash env release [KEY] [--cwd PATH]
 
 splash gc                           # drop dead-checkout entries (ports, vars, sims)
 
 splash completion [bash|zsh]        # print shell-completion script (eval it in your rc)
 ```
 
-`splash status` answers "what's the state of this checkout?": resource keys (with `[in use]` /
-`[free]` for ports), declared device variants and whether each is booted, automatic sync and
-bootstrap trust, bootstrap completion, and stale registry rows.
-For a bound port, detailed status also shows listener PIDs and command names when `lsof` can
-identify them. JSON port records include `owners`, a list of `{pid, command}` objects, an empty
-list for a free port, or `null` when the owner is unavailable. Process arguments are not collected.
-Routine status, env-list, and sync JSON output hides resolved values. Add the root-level
-`--show-values` flag when you intentionally need them. `splash env get KEY` remains the explicit
-single-value read. `splash sync --force` reallocates ports. `splash init` scans the project and
-writes the project files. It allocates nothing, so run `splash trust` and then bare `splash`
-after it.
-Root output options go before the command. `--format` applies to sync, status, init, bare `env`,
-bare `target`, `target claims`, `target claim`, and `ai` commands. `--show-values` applies to sync,
-status, and bare `env`. Other combinations are usage errors instead of accepted no-ops.
-In text mode, explicit `--show-values` prints resolved `KEY=VALUE` lines for sync. With
-`status all`, it selects detailed checkout blocks so those values have a place to appear instead
-of silently remaining in the compact table.
+`splash status` reports resource names and port state, output consistency, saved trust,
+loader/hook readiness, and declared or registered targets. Every normal report includes actionable
+findings and unavailable checks. `--verbose` expands text detail. JSON includes the full report
+under the shared result envelope's `data.checkouts`, unchanged by verbosity. Resource values stay
+hidden. `splash env` returns assigned values and `splash env get KEY` prints one raw value.
+
+`status all` lists only existing registry identities, including deleted checkouts with cleanup
+hints. An empty registry gives an empty fleet. Inspection does not initialize state or require
+trust. A valid project with no allocations is inspectable. Missing/invalid recipes and unreadable
+required inputs return 1 with available partial results. Findings and unavailable optional tools
+return 0, so use check fields rather than the exit code to decide readiness. Status never claims
+that arbitrary preparation commands previously succeeded. Free ports, stopped devices, and lazy
+targets that have not been created are ordinary states.
+
+Port records include `owners`, a list of `{pid, command}`, an empty list for free ports, or null
+when ownership is unavailable. Process arguments are not collected. Use `splash sync` to reconcile
+resource/output findings and `splash doctor` for deeper tool/framework diagnostics.
+For an unassigned `set` resource without a default, supply its value with
+`splash env set KEY=VALUE` before syncing.
+
+`--cwd` and `--format` may appear before or after a command or nested action. The last
+supplied value wins, and every supplied format must be valid. Long options require their exact
+spelling. Use `splash help target add` for contextual help. Help and version always print text.
+Completion prints shell code and rejects JSON. `--format` applies to sync, status, init,
+`env`, `env get`, bare `target`, `target claims`, `target claim`, and `ai` commands.
+Other combinations are usage errors. Status reports and environment values go to stdout.
+Diagnostics go to stderr.
+
+Existing project commands find the nearest recipe from the starting directory up to the Git
+worktree root. An invalid recipe still selects that directory. Outside Git, selection stays
+at the starting directory. Except for the env inspection exception below, every supplied `--cwd` must name an existing readable directory,
+even when a later occurrence overrides it. Env set/release act on that exact directory.
+Machine-wide commands skip upward project discovery.
 
 Init creates a project in the current directory, or the directory selected by `--cwd`, whether
 at a Git worktree root, inside it, or outside Git. Replacing an existing recipe requires
@@ -141,6 +157,12 @@ also matches the current generated content and `outdated` means an update is ava
 recipe is missing or invalid, `recorded-current` confirms receipt integrity with no latest-content
 comparison. `splash --format json ai status` exposes `content_current` for recorded integrity and
 `desired_current` for the available recipe comparison, or `null` when that comparison is unknown.
+AI JSON output is one object with `command`, `status`, `exit_code`, `data`, `error`, `warnings`,
+and `next_steps`. Per-file records live under `data.files`, with an activation reminder under
+`data.activation`. Status is `success`, `error`, or `partial`. Partial failures retain completed
+file results. Ctrl+C returns exit 130 and includes any file results already available. Check
+`splash ai status` before retrying an interrupted operation.
+
 Run `splash ai update` to render changes in the recipe or in Splashdown's guidance. Reload agent
 sessions after updates.
 
@@ -192,10 +214,24 @@ the commands once, and `--rerun` repeats a completed bootstrap. `splash untrust`
 capabilities without needing a valid recipe. See
 [Trusted worktree bootstrap](bootstrap.md) for the security and retry contract.
 
+`splash env` and `splash env get KEY` read only stored assignments. They do not parse recipes
+or local overrides, require trust, allocate resources, or create registry state. Stale assignments
+remain visible. Keys match exactly, including case. An empty listing succeeds, and an assigned
+empty string prints a blank line. A missing key exits 1 with an error and a `splash env` hint.
+JSON uses the shared result envelope: listing data contains `checkout` and `values`, while get
+data contains `checkout`, `key`, and `value`. Missing keys use `assignment_missing` and retain
+`checkout` and `key`. Unreadable or malformed registry inputs fail instead of appearing empty.
+
+Inside Git, these two read commands select the nearest recipe entry or registry-known checkout,
+without walking beyond the worktree root. Outside Git, they use the exact starting directory.
+If neither marker exists, they query that starting directory. An explicit deleted `--cwd` is
+accepted only when its canonical path exactly matches a registry identity. Every supplied cwd
+is validated, including overridden ones. Set/release still require an existing exact directory.
+
 `splash env set KEY=VALUE` only accepts keys declared with `type = "set"` in the target checkout's recipe. It rejects invalid assignments, missing or malformed recipes, undeclared keys, and generated or allocated resources with exit 2.
 
-For nested environment actions, `--checkout PATH` may appear either immediately after `env` or
-after the action arguments. It takes precedence over root `--cwd` in both forms.
+For nested environment actions, `--cwd PATH` may appear either immediately after `env` or
+after the action arguments. The last supplied value wins. Set and release use that exact directory.
 
 Commands that load configuration validate the complete document before provisioning or project-file mutation. Unknown sections and fields, wrong types, invalid templates, and malformed target definitions exit 1 with a qualified error and no traceback.
 

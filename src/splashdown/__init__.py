@@ -67,7 +67,7 @@ from .bootstrap import (
     trust_state,
 )
 from .catalog import PROFILES
-from .cli import KNOWN_CMDS, _build_parser, _ensure_subcommand, main
+from .cli import KNOWN_CMDS, _build_parser, main
 from .cli_output import (
     _short_path,
     _summary_string,

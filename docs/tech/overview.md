@@ -23,8 +23,9 @@ is the canonical contributor summary; `CLAUDE.md` imports it. These docs go deep
   hook-configuration editors use; `jsontext.py`: the byte-preserving JSON member splicer they and
   the loader wiring share; `doctor.py` owns check selection, execution, and rendering.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
-  `cli_output.py` + `hooks.py` + `hook_configs.py` + `completion.py`: entry, parse, dispatch,
-  typed status reports, output/error rendering, command handlers, and git-hook installation.
+  `cli_output.py` + `results.py` + `interaction.py` + `project_selection.py`: parser/dispatch,
+  shared result and confirmation boundaries, recipe-free selection, and legacy output ownership.
+  The same guide covers `hooks.py`, `hook_configs.py`, and quiet `completion.py` integration.
   Port-owner snapshots live in `port_inspection.py`; bounded Watchman and device-network checks
   live in `runtime_checks.py` and are composed by doctor and launch orchestration.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
@@ -48,8 +49,10 @@ and mise-directive wiring, and is consumed directly
 by `loaders.py`, `wiring.py`, and `commands.py`; `hook_configs.py` sits below it and holds the
 per-manager post-checkout configuration editors. `cli.py`/`commands.py` are the entry + orchestration.
 `bootstrap.py` owns Git-scoped trust/completion state and coordinates its lifecycle locks.
-`status.py` gathers typed reports and `cli_output.py` renders ordinary registry-backed command
-output; trust/bootstrap and the hidden hook keep their early, command-specific boundary.
+`results.py` validates shared outcomes, `interaction.py` enforces terminal confirmation, and
+`project_selection.py` selects identity without parsing recipes. `status.py` gathers shared command results, `status_targets.py` caches read-only target observations,
+and `cli_output.py` renders command output. AI, env inspection, and status use the shared result boundary; trust/bootstrap
+and the hidden hook keep their early, command-specific boundary.
 `src/splashdown/__init__.py` is the seam that ties them together.
 
 ## Cross-cutting patterns (read before editing any module)

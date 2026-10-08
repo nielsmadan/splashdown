@@ -148,8 +148,8 @@ See [How it works](how-it-works.md) for the full model.
 Open a new shell in the project (so the loader re-reads its config), then check the value is present:
 
 ```sh
-splash status         # resource keys and port state (values stay hidden)
-splash --show-values status  # include values when you need to inspect them
+splash status         # resources, outputs, trust, integrations, and target readiness
+splash env                  # inspect the stored values
 echo $PORT            # e.g. 9081, loaded by your env loader
 ```
 
@@ -162,7 +162,7 @@ Add a second checkout and the post-checkout hook provisions it automatically, wi
 ```sh
 git worktree add ../myapp.feature feature
 cd ../myapp.feature
-splash --show-values status  # PORT is 9082 here, not 9081
+splash env                  # PORT is 9082 here, not 9081
 ```
 
 Both checkouts can run their dev servers at once without a port clash. The machine-wide registry guarantees it, even across unrelated repos.

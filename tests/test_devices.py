@@ -20,7 +20,6 @@ from conftest import (
     _stub_ios_boot_chain,
     _stub_ios_devices,
     _stub_physical,
-    _write_physical_recipe,
 )
 
 
@@ -245,6 +244,7 @@ def test_global_android_variant_scopes_react_native_launch(tmp_path, registry, m
         "run-android",
         "--deviceId",
         "192.0.2.10:42137",
+        "--active-arch-only",
     ]
     assert kwargs["env"]["ANDROID_SERIAL"] == "192.0.2.10:42137"
 
@@ -282,7 +282,14 @@ def test_react_native_with_expo_modules_launches_claimed_wireless_device(
     assert sd.cmd_run(tmp_path, registry, None, "pixel") == 0
 
     argv, kwargs = calls[0]
-    assert argv == ["npx", "react-native", "run-android", "--deviceId", serial]
+    assert argv == [
+        "npx",
+        "react-native",
+        "run-android",
+        "--deviceId",
+        serial,
+        "--active-arch-only",
+    ]
     assert kwargs["env"]["ANDROID_SERIAL"] == serial
     assert registry.all_claims()[0].hardware_id == serial
 
@@ -679,99 +686,6 @@ framework = "react-native"
     assert captured["info"]["kind"] == "ios"
 
 
-def test_cli_status_reports_resources_and_port_state(tmp_path, monkeypatch, capsys):
-    (tmp_path / "splashdown.toml").write_text("""
-[resources.MY_PORT]
-type  = "port"
-    range = [19000, 19010]
-""")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    rc = sd.main(["--cwd", str(tmp_path)])
-    assert rc == 0
-    capsys.readouterr()  # discard provision output
-    rc = sd.main(["--cwd", str(tmp_path), "status"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "MY_PORT  [" in err
-    # The state tag must be one of `[in use]` or `[free]` (port-typed resource).
-    assert "[free]" in err or "[in use]" in err
-
-    assert sd.main(["--cwd", str(tmp_path), "--show-values", "status"]) == 0
-    assert "MY_PORT=" in capsys.readouterr().err
-
-
-def test_cli_status_local_positional_matches_bare(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text(
-        '[resources.MY_PORT]\ntype = "port"\nrange = [19030, 19040]\n'
-    )
-    assert sd.main(["--cwd", str(tmp_path)]) == 0
-    capsys.readouterr()
-    assert sd.main(["--cwd", str(tmp_path), "status"]) == 0
-    bare = capsys.readouterr().err
-    assert sd.main(["--cwd", str(tmp_path), "status", "local"]) == 0
-    explicit = capsys.readouterr().err
-    assert bare == explicit
-
-
-def test_cli_status_local_json_shape(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text(
-        '[resources.J_PORT]\ntype = "port"\nrange = [19050, 19060]\n'
-    )
-    assert sd.main(["--cwd", str(tmp_path)]) == 0
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "local"])
-    assert rc == 0
-    data = json.loads(capsys.readouterr().out)
-    # Local mode emits a flat per-checkout object (not the `checkouts` list).
-    assert data["checkout"] == str(tmp_path.resolve())
-    resource = next(resource for resource in data["resources"] if resource["key"] == "J_PORT")
-    assert "value" not in resource
-    assert "targets" in data
-
-    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "--show-values", "status"]) == 0
-    shown = json.loads(capsys.readouterr().out)
-    assert next(resource for resource in shown["resources"] if resource["key"] == "J_PORT")[
-        "value"
-    ].isdigit()
-
-
-def test_cli_status_physical_device_shows_connection_state(tmp_path, monkeypatch, capsys):
-    """Regression: physical `device` targets must report connected/absent via
-    physical_status, not `error: unknown target type` (which `device_status` raises)."""
-    _write_physical_recipe(tmp_path)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    _stub_physical(monkeypatch, ios=[_IPHONE])
-    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "local"])
-    assert rc == 0
-    data = json.loads(capsys.readouterr().out)
-    device_entries = [t for t in data["targets"] if t["type"] == "device"]
-    assert device_entries, "expected a device target in status output"
-    assert device_entries[0]["status"] == "connected"
-
-
-def test_cli_status_check_physical_device_absent_marks_missing(tmp_path, monkeypatch, capsys):
-    _write_physical_recipe(tmp_path)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    _stub_physical(monkeypatch)
-    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "local", "--check"])
-    assert rc == 0
-    data = json.loads(capsys.readouterr().out)
-    device_entries = [t for t in data["targets"] if t["type"] == "device"]
-    assert device_entries[0]["status"] == "absent"
-    assert device_entries[0]["missing"] is True
-
-
-def test_cli_status_all_on_empty_registry_renders_only_cwd(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    rc = sd.main(["--cwd", str(tmp_path), "status", "all"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "PATH" in err
-    assert "SUMMARY" in err
-
-
 def test_cli_init_loader_override_writes_devbox_wiring(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     rc = sd.main(["--cwd", str(tmp_path), "init", "--loader=devbox"])
@@ -795,197 +709,6 @@ def test_cli_device_prune_rejects_invalid_platform(tmp_path, monkeypatch, capsys
     assert called["prune"] is False
     err = capsys.readouterr().err
     assert "invalid choice" in err
-
-
-def test_cli_status_all_emits_compact_table(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    a = tmp_path / "co-a"
-    a.mkdir()
-    b = tmp_path / "co-b"
-    b.mkdir()
-    (a / "splashdown.toml").write_text('[resources.P_A]\ntype = "port"\nrange = [19100, 19110]\n')
-    (b / "splashdown.toml").write_text('[resources.P_B]\ntype = "port"\nrange = [19200, 19210]\n')
-    assert sd.main(["--cwd", str(a)]) == 0
-    assert sd.main(["--cwd", str(b)]) == 0
-    capsys.readouterr()
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    rc = sd.main(["--cwd", str(a), "status", "all"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    # Header columns present (ISSUE only appears when at least one row has one).
-    assert "PATH" in err
-    assert "SUMMARY" in err
-    assert "ISSUE" not in err  # healthy registry: column dropped
-    # Both paths appear; resource counts (not names) appear.
-    assert [line.split() for line in err.splitlines()[1:]] == [
-        ["~/co-a", "1", "port"],
-        ["~/co-b", "1", "port"],
-    ]
-    assert "1 port" in err
-    # Resource names from the recipe must NOT appear in compact mode.
-    assert "P_A=" not in err
-    assert "P_B=" not in err
-
-
-def test_cli_status_all_shows_issue_column_when_a_row_has_one(tmp_path, monkeypatch, capsys):
-    """ISSUE column appears the moment any row needs to flag something.
-    Without --check we already detect defunct paths; that's enough."""
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    alive = tmp_path / "alive"
-    alive.mkdir()
-    dead = tmp_path / "dead"
-    dead.mkdir()
-    (alive / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19340, 19350]\n')
-    (dead / "splashdown.toml").write_text('[resources.Q]\ntype = "port"\nrange = [19440, 19450]\n')
-    assert sd.main(["--cwd", str(alive)]) == 0
-    assert sd.main(["--cwd", str(dead)]) == 0
-    capsys.readouterr()
-    (dead / "splashdown.toml").unlink()
-    (dead / "splashdown.env").unlink()
-    (dead / "splashdown.local.toml").unlink()
-    dead.rmdir()
-    rc = sd.main(["--cwd", str(alive), "status", "all"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "ISSUE" in err
-    assert "defunct" in err
-
-
-def test_cli_status_all_rows_sorted_alphabetically(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    # Provision in non-alphabetical order on purpose.
-    z = tmp_path / "zeta"
-    z.mkdir()
-    a = tmp_path / "alpha"
-    a.mkdir()
-    m = tmp_path / "mike"
-    m.mkdir()
-    for d in (z, a, m):
-        (d / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19800, 19810]\n')
-        assert sd.main(["--cwd", str(d)]) == 0
-    capsys.readouterr()
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert sd.main(["--cwd", str(a), "status", "all"]) == 0
-    err = capsys.readouterr().err
-    # Strip header line; verify the path-bearing rows appear in alpha order.
-    body = err.split("\n", 1)[1]
-    assert [line.split()[0] for line in body.splitlines()] == ["~/alpha", "~/mike", "~/zeta"]
-
-
-def test_cli_status_all_verbose_uses_block_view(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text(
-        '[resources.P_VERBOSE]\ntype = "port"\nrange = [19900, 19910]\n'
-    )
-    assert sd.main(["--cwd", str(tmp_path)]) == 0
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "status", "all", "--verbose"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    # Verbose mode brings back resource names + the === path === block header.
-    assert "P_VERBOSE  [" in err
-    assert "===" in err
-
-
-def test_cli_status_check_table_status_column_flags_defunct(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    alive = tmp_path / "alive"
-    alive.mkdir()
-    dead = tmp_path / "dead"
-    dead.mkdir()
-    (alive / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19300, 19310]\n')
-    (dead / "splashdown.toml").write_text('[resources.Q]\ntype = "port"\nrange = [19400, 19410]\n')
-    assert sd.main(["--cwd", str(alive)]) == 0
-    assert sd.main(["--cwd", str(dead)]) == 0
-    capsys.readouterr()
-    (dead / "splashdown.toml").unlink()
-    (dead / "splashdown.env").unlink()
-    (dead / "splashdown.local.toml").unlink()
-    dead.rmdir()
-    rc = sd.main(["--cwd", str(alive), "status", "all", "--check"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "defunct" in err
-    assert "defunct checkout" in err
-    assert "`splash gc`" in err
-
-
-def test_cli_status_check_verbose_keeps_bracket_tag(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    alive = tmp_path / "alive"
-    alive.mkdir()
-    dead = tmp_path / "dead"
-    dead.mkdir()
-    (alive / "splashdown.toml").write_text('[resources.P]\ntype = "port"\nrange = [19320, 19330]\n')
-    (dead / "splashdown.toml").write_text('[resources.Q]\ntype = "port"\nrange = [19420, 19430]\n')
-    assert sd.main(["--cwd", str(alive)]) == 0
-    assert sd.main(["--cwd", str(dead)]) == 0
-    capsys.readouterr()
-    (dead / "splashdown.toml").unlink()
-    (dead / "splashdown.env").unlink()
-    (dead / "splashdown.local.toml").unlink()
-    dead.rmdir()
-    rc = sd.main(["--cwd", str(alive), "status", "all", "--check", "--verbose"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "[defunct]" in err
-
-
-def test_cli_status_check_table_status_column_flags_orphan(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    a = tmp_path / "co"
-    a.mkdir()
-    (a / "splashdown.toml").write_text("")
-    assert sd.main(["--cwd", str(a)]) == 0
-    state_home = tmp_path / "state"
-    reg = sd.Registry(
-        port_file=state_home / "splashdown" / "ports.tsv",
-        kv_file=state_home / "splashdown" / "kv.tsv",
-        device_file=state_home / "splashdown" / "devices.tsv",
-    )
-    reg.set_device(str(a), "simulator", "default", "UDID-GHOST", "iPhone 17", "18.5")
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: False)
-    monkeypatch.setattr(sd.devices, "device_status", lambda dt, name: "absent")
-    monkeypatch.setattr(sd.status, "device_status", lambda dt, name: "absent")
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(a), "status", "all", "--check"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "orphan" in err
-    assert "orphan device" in err
-    # Orphans require `splash target refresh`; `gc` leaves rows for live checkouts untouched.
-    assert "`splash target refresh`" in err
-
-
-def test_cli_status_check_says_clean_when_nothing_stale(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text(
-        '[resources.P]\ntype = "port"\nrange = [19500, 19510]\n'
-    )
-    assert sd.main(["--cwd", str(tmp_path)]) == 0
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "status", "all", "--check"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "all entries verified" in err
-
-
-def test_cli_status_all_json_shape(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text(
-        '[resources.P]\ntype = "port"\nrange = [19600, 19610]\n'
-    )
-    assert sd.main(["--cwd", str(tmp_path)]) == 0
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(tmp_path), "--format", "json", "status", "all", "--check"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    data = json.loads(out)
-    assert "checkouts" in data
-    assert len(data["checkouts"]) == 1
-    assert data["checkouts"][0]["checkout"] == str(tmp_path.resolve())
-    assert "summary" in data
-    assert data["summary"]["defunct_checkouts"] == 0
 
 
 def test_cli_sync_keeps_pinned_port_when_bound(tmp_path, monkeypatch, capsys):
@@ -1058,15 +781,19 @@ def test_cli_env_list_and_get(tmp_path, monkeypatch, capsys):
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "PORT"]) == 0
     assert capsys.readouterr().out.strip().isdigit()
     assert sd.main(["--cwd", str(tmp_path), "env"]) == 0
-    assert capsys.readouterr().out.strip() == "PORT"
-    assert sd.main(["--cwd", str(tmp_path), "--show-values", "env"]) == 0
-    assert "PORT=" in capsys.readouterr().out
+    listed = capsys.readouterr().out.strip()
+    assert listed.startswith("PORT=")
+    assert listed.removeprefix("PORT=").isdigit()
     assert sd.main(["--cwd", str(tmp_path), "--format", "json", "env"]) == 0
-    assert json.loads(capsys.readouterr().out) == ["PORT"]
-    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "--show-values", "env"]) == 0
-    shown = json.loads(capsys.readouterr().out)
-    assert list(shown) == ["PORT"]
-    assert shown["PORT"].isdigit()
+    assert json.loads(capsys.readouterr().out) == {
+        "command": "env",
+        "status": "success",
+        "exit_code": 0,
+        "data": {"checkout": str(tmp_path), "values": {"PORT": listed.removeprefix("PORT=")}},
+        "error": None,
+        "warnings": [],
+        "next_steps": [],
+    }
 
 
 def test_cli_env_set(tmp_path, monkeypatch, capsys):
@@ -1113,22 +840,22 @@ def test_cli_env_set_requires_recipe(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("selector_before_action", [True, False])
-def test_cli_env_set_release_honor_checkout(tmp_path, monkeypatch, capsys, selector_before_action):
+def test_cli_env_set_release_honor_cwd(tmp_path, monkeypatch, capsys, selector_before_action):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     other = tmp_path / "other"
     other.mkdir()
     (other / sd.RECIPE_NAME).write_text('[resources.K]\ntype = "set"\n')
 
     def env_args(action, *values):
-        selector = ["--checkout", str(other)]
+        selector = ["--cwd", str(other)]
         nested = [action, *values]
         nested = [*selector, *nested] if selector_before_action else [*nested, *selector]
         return ["--cwd", str(tmp_path), "env", *nested]
 
     assert sd.main(env_args("set", "K=v1")) == 0
     capsys.readouterr()
-    assert sd.main(["--cwd", str(tmp_path), "env", "--checkout", str(other)]) == 0
-    assert capsys.readouterr().out.strip() == "K"
+    assert sd.main(["--cwd", str(tmp_path), "env", "--cwd", str(other)]) == 0
+    assert capsys.readouterr().out.strip() == "K=v1"
     assert sd.main(env_args("get", "K")) == 0
     assert capsys.readouterr().out.strip() == "v1"
     assert sd.main(["--cwd", str(tmp_path), "env", "get", "K"]) == 1
@@ -1971,117 +1698,8 @@ def test_cli_target_refresh_uses_composition_root_registry(tmp_path, monkeypatch
     }
 
 
-def test_cli_status_check_flags_stale_device(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    co = tmp_path / "co"
-    co.mkdir()
-    (co / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
-    state_home = tmp_path / "state"
-    reg = sd.Registry(
-        port_file=state_home / "splashdown" / "ports.tsv",
-        kv_file=state_home / "splashdown" / "kv.tsv",
-        device_file=state_home / "splashdown" / "devices.tsv",
-    )
-    reg.set_device(str(co.resolve()), "simulator", "default", "UDID-OLD", "iPhone 17", "17.5")
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda u: True)
-    monkeypatch.setattr(sd.devices, "_ios_latest_runtime_version", lambda: "18.5")
-    monkeypatch.setattr(sd.status, "device_status", lambda dt, name: "shutdown")
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(co), "status", "--check"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "[stale]" in err
-    assert "stale device" in err
-    assert "`splash target refresh`" in err
-
-
-def test_cli_status_check_flags_model_drift(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    co = tmp_path / "co"
-    co.mkdir()
-    (co / "splashdown.toml").write_text(
-        '[targets.simulator.default]\nmodel = "iPhone 18"\nios = "18.5"\n'
-    )
-    reg = sd.Registry()
-    reg.set_device(str(co.resolve()), "simulator", "default", "UDID", "iPhone 17", "18.5")
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
-    monkeypatch.setattr(sd.status, "device_status", lambda dtype, name: "shutdown")
-
-    assert sd.main(["--cwd", str(co), "status", "--check"]) == 0
-
-    err = capsys.readouterr().err
-    assert "[stale]" in err
-    assert "declared target drifted" in err
-
-
-def test_cli_status_all_check_flags_undeclared_device_row(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    co = tmp_path / "co"
-    co.mkdir()
-    (co / "splashdown.toml").write_text("")
-    reg = sd.Registry()
-    reg.set_device(str(co.resolve()), "simulator", "old", "UDID", "iPhone 17", "18.5")
-    monkeypatch.setattr(sd.devices, "_ios_udid_exists", lambda udid: True)
-    monkeypatch.setattr(sd.status, "_device_status_for_row", lambda row: "shutdown")
-
-    assert sd.main(["--cwd", str(co), "status", "all", "--check"]) == 0
-
-    err = capsys.readouterr().err
-    assert "undeclared" in err
-    assert "`splash target refresh`" in err
-
-
-def test_cli_status_check_flags_missing_device(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    co = tmp_path / "co"
-    co.mkdir()
-    (co / "splashdown.toml").write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
-    # Declared but never provisioned: no registry row, sim absent.
-    monkeypatch.setattr(sd.status, "device_status", lambda dt, name: "absent")
-    capsys.readouterr()
-    rc = sd.main(["--cwd", str(co), "status", "--check"])
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "[missing]" in err
-    assert "missing device" in err
-    assert "`splash run`" in err
-
-
-def test_status_unavailable_does_not_increment_repair_counters(
-    registry, checkout, monkeypatch, capsys
-):
-    (checkout / sd.RECIPE_NAME).write_text(
-        '[targets.simulator.a]\nmodel = "iPhone 17"\n[targets.simulator.b]\nmodel = "iPhone 17"\n'
-    )
-
-    def unavailable(*args, **kwargs):
-        raise sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
-
-    monkeypatch.setattr(sd.status, "device_status", unavailable)
-    monkeypatch.setattr(sd.status, "device_health", unavailable)
-
-    assert sd.cmd_status(checkout, registry, "json", check=True) == 0
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert [row["status"] for row in payload["targets"]] == [
-        "unavailable",
-        "unavailable",
-    ]
-    assert payload["summary"]["orphan_devices"] == 0
-    assert payload["summary"]["stale_devices"] == 0
-    assert payload["summary"]["missing_devices"] == 0
-    assert captured.err.count("warning: skipping iOS") == 1
-
-
-def test_status_text_and_target_list_render_unavailable(registry, checkout, monkeypatch, capsys):
+def test_target_list_renders_unavailable(registry, checkout, monkeypatch, capsys):
     (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
-    monkeypatch.setattr(
-        sd.status,
-        "device_status",
-        lambda *args: (_ for _ in ()).throw(
-            sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
-        ),
-    )
     monkeypatch.setattr(
         sd.target_commands,
         "device_status",
@@ -2089,11 +1707,6 @@ def test_status_text_and_target_list_render_unavailable(registry, checkout, monk
             sd.CapabilityError("ios", "iOS simulator support requires macOS and Xcode")
         ),
     )
-
-    assert sd.cmd_status(checkout, registry, "text") == 0
-    captured = capsys.readouterr()
-    assert "simulator.default" in captured.err
-    assert "unavailable" in captured.err
 
     assert sd.cmd_targets_list(checkout, registry, "json") == 0
     assert json.loads(capsys.readouterr().out)[0]["connection"] == "unavailable"
@@ -2838,6 +2451,7 @@ def test_cli_run_resolves_the_ios_scheme_once_per_run(tmp_path, monkeypatch):
         return ["Demo"]
 
     monkeypatch.setattr(sd.runners, "_ios_native_schemes", _schemes)
+    monkeypatch.setattr("splashdown.project_selection._worktree_root", lambda _cwd: None)
     monkeypatch.setattr(
         sd.device_tools.subprocess,
         "run",

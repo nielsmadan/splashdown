@@ -1036,3 +1036,102 @@ def test_reconcile_with_recipes_drops_stale_key(registry, tmp_path):
     registry.reconcile_with_recipes()
     keys = set(registry.all_for(str(a)))
     assert "PORT" in keys and "STALE" not in keys
+
+
+def test_snapshot_absent_state_is_empty_without_creation(tmp_path):
+    from splashdown.registry import RegistrySnapshot, read_registry_snapshot
+
+    missing = tmp_path / "absent"
+    assert read_registry_snapshot(missing) == RegistrySnapshot()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_snapshot_preserves_values_and_identity_union(tmp_path):
+    from dataclasses import FrozenInstanceError
+
+    from splashdown.registry import read_registry_snapshot
+
+    (tmp_path / "ports.tsv").write_text("4321\t/port\tPORT\n")
+    (tmp_path / "kv.tsv").write_text("/value\tEMPTY\t\n/value\tVALUE\t  literal  \n")
+    (tmp_path / "devices.tsv").write_text("/device\tsimulator\tphone\tid\tmodel\truntime\ttime\n")
+    (tmp_path / "claims.tsv").write_text("catalog\tandroid\tserial\tphone\t/claim\ttime\n")
+    (tmp_path / "claim-notices.tsv").write_bytes(b"\xff")
+    before = {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in tmp_path.iterdir()
+    }
+    snapshot = read_registry_snapshot(tmp_path)
+    assert snapshot.all_checkouts() == ["/claim", "/device", "/port", "/value"]
+    assert snapshot.all_for("/value") == {"EMPTY": "", "VALUE": "  literal  "}
+    assert snapshot.all_for("/port") == {"PORT": "4321"}
+    assert snapshot.get_device("/device", "simulator", "phone") == snapshot.devices[0]
+    assert snapshot.devices_for("/device") == list(snapshot.devices)
+    assert snapshot.summary_for("/claim") == {
+        "port": 0,
+        "kv": 0,
+        "simulator": 0,
+        "emulator": 0,
+        "claim": 1,
+    }
+    snapshot.all_for("/value").clear()
+    assert snapshot.all_for("/value")["VALUE"] == "  literal  "
+    with pytest.raises(FrozenInstanceError):
+        snapshot.ports = ()
+    assert {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in tmp_path.iterdir()
+    } == before
+
+
+def test_snapshot_errors_preserve_independent_rows_without_value_leaks(tmp_path):
+    from splashdown.registry import RegistryReadError, read_registry_snapshot
+
+    (tmp_path / "ports.tsv").write_text("secret\t/port\tPORT\n4321\t/valid\tPORT\n")
+    (tmp_path / "kv.tsv").write_text("/value\tEMPTY\t\nsecret\tbad\n")
+    (tmp_path / "devices.tsv").write_bytes(b"\xff")
+    (tmp_path / "claims.tsv").write_text("catalog\tandroid\tserial\tphone\t/claim\ttime\n")
+    with pytest.raises(RegistryReadError) as caught:
+        read_registry_snapshot(tmp_path)
+    error = caught.value
+    assert error.snapshot.all_checkouts() == ["/claim", "/valid", "/value"]
+    assert len(error.diagnostics) == 3
+    assert all(item.code == "registry_read_error" for item in error.diagnostics)
+    assert "ports.tsv:1" in str(error)
+    assert "kv.tsv:2" in str(error)
+    assert "devices.tsv" in str(error)
+    assert "secret" not in str(error)
+
+
+@pytest.mark.parametrize("kind", ["directory", "permission", "parent_file"])
+def test_snapshot_required_read_failures_are_errors(tmp_path, monkeypatch, kind):
+    from splashdown import registry as module
+
+    if kind == "directory":
+        (tmp_path / "kv.tsv").mkdir()
+    elif kind == "parent_file":
+        tmp_path = tmp_path / "state"
+        tmp_path.write_text("")
+    else:
+
+        def denied(*args, **kwargs):
+            raise PermissionError("secret error contents")
+
+        monkeypatch.setattr(module.os, "open", denied)
+    with pytest.raises(module.RegistryReadError) as caught:
+        module.read_registry_snapshot(tmp_path)
+    assert caught.value.snapshot == module.RegistrySnapshot()
+    assert "secret error contents" not in str(caught.value)
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_snapshot_dangling_registry_entry_is_not_absent(tmp_path, kind):
+    from splashdown.registry import RegistryReadError, read_registry_snapshot
+
+    directory = tmp_path
+    if kind == "directory":
+        directory = tmp_path / "state"
+        directory.symlink_to(tmp_path / "missing")
+    else:
+        (directory / "kv.tsv").symlink_to(tmp_path / "missing")
+    with pytest.raises(RegistryReadError) as caught:
+        read_registry_snapshot(directory)
+    assert caught.value.code == "registry_read_error"
+    assert caught.value.snapshot.all_checkouts() == []

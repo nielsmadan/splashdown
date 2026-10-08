@@ -28,7 +28,7 @@ from .bootstrap import (
     trusted_execution,
 )
 from .catalog import PROFILES
-from .cli_output import render_env_list, render_status, render_sync
+from .cli_output import emit_result, render_status_result, render_sync
 from .constants import ENV_FILE_NAME, ENV_NAME_RE, LOCAL_NAME, RECIPE_NAME
 from .device_claims import claim_available_target
 from .devices import DeviceError, device_destroy_row
@@ -67,7 +67,8 @@ from .recipe import (
     Recipe,
     validate_env_file_option,
 )
-from .registry import Registry
+from .registry import Registry, RegistrySnapshot
+from .results import CommandResult, Diagnostic
 from .safe_files import atomic_write_text
 from .scanner import (
     LoaderSelection,
@@ -135,26 +136,21 @@ def _create_local_skeleton(cwd: Path) -> bool:
     raise ValueError(f"could not safely create `{path}` because it changed during inspection")
 
 
-def cmd_status(  # noqa: PLR0913 — compatibility wrapper mirrors CLI status options
+def cmd_status(
     cwd: Path,
-    registry: Registry,
+    registry: RegistrySnapshot,
     fmt: str,
     *,
     show_all: bool = False,
-    check: bool = False,
     verbose: bool = False,
-    show_values: bool = False,
+    diagnostics: tuple[Diagnostic, ...] = (),
 ) -> int:
-    detailed = fmt == "json" or show_values or not (show_all and not verbose)
-    report = build_status_report(
-        cwd,
-        registry,
-        show_all=show_all,
-        check=check,
-        detailed=detailed,
+    report = build_status_report(cwd, registry, show_all=show_all, diagnostics=diagnostics)
+    return emit_result(
+        report,
+        "json" if fmt == "json" else "text",
+        render_text=lambda result: render_status_result(result, verbose=verbose),
     )
-    render_status(report, fmt, verbose=verbose, show_values=show_values)
-    return 0
 
 
 _COMPLETION_SHELLS = ("bash", "zsh")
@@ -751,7 +747,6 @@ def _cmd_provision(args: Any, cwd: Path, registry: Registry) -> int:
         reprovision=args.force,
         setup=args.setup,
         fmt=_resolve_format_arg(args),
-        show_values=getattr(args, "show_values", False),
     )
 
 
@@ -821,7 +816,6 @@ def _emit_provision(
     result: _ProvisionResult,
     *,
     fmt: str,
-    show_values: bool = False,
 ) -> None:
     render_sync(
         result.resolved,
@@ -829,7 +823,6 @@ def _emit_provision(
         result.setup,
         list(result.changed),
         fmt,
-        show_values=show_values,
     )
 
 
@@ -840,7 +833,6 @@ def _cmd_provision_inner(
     reprovision: bool = False,
     setup: str | None = None,
     fmt: str = "text",
-    show_values: bool = False,
 ) -> int:
     if _reject_nested_lifecycle():
         return 1
@@ -856,7 +848,7 @@ def _cmd_provision_inner(
             )
     except FileNotFoundError as error:
         raise MissingRecipeError(str(error)) from error
-    _emit_provision(result, fmt=fmt, show_values=show_values)
+    _emit_provision(result, fmt=fmt)
     return 0
 
 
@@ -1145,24 +1137,28 @@ def _env_set(assignment: str, target: str, registry: Registry) -> int:
     return 0
 
 
+def inspect_env(cwd: Path, snapshot: RegistrySnapshot, key: str | None = None) -> CommandResult:
+    checkout = str(cwd)
+    values = snapshot.all_for(checkout)
+    if key is None:
+        return CommandResult("env", "success", 0, {"checkout": checkout, "values": dict(values)})
+    if key not in values:
+        return CommandResult(
+            "env get",
+            "error",
+            1,
+            {"checkout": checkout, "key": key},
+            error=Diagnostic("assignment_missing", f"No assignment for {key!r} in {checkout}."),
+            next_steps=("Run `splash env` to list assigned keys.",),
+        )
+    return CommandResult(
+        "env get", "success", 0, {"checkout": checkout, "key": key, "value": values[key]}
+    )
+
+
 def _env_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     """`splash env …` — this checkout's resolved values. Bare = list."""
-    fmt = _resolve_format_arg(args)
-    if args.env_cmd is None:
-        target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd)
-        data = registry.all_for(target)
-        render_env_list(data, target, fmt, show_values=getattr(args, "show_values", False))
-        return 0
-    # Normalize the same way provision() keys the registry (str(cwd.resolve())),
-    # or get/set/release silently miss each other on symlinked/relative invocations.
-    # --checkout targets another checkout's entries (default: this one).
-    target = str(Path(args.checkout).resolve()) if args.checkout else str(cwd.resolve())
-    if args.env_cmd == "get":
-        value = registry.all_for(target).get(args.key)
-        if value is None:
-            return 1
-        print(value)
-        return 0
+    target = str(cwd)
     if args.env_cmd == "set":
         with registry.operation_lock(target):
             return _env_set(args.assignment, target, registry)

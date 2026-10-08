@@ -5,10 +5,16 @@ checkout orchestration (`commands.py`), target orchestration (`target_commands.p
 edits (`targets.py`), physical allocation (`device_claims.py`), post-checkout integration
 (`hooks.py`), and fail-silent shell completion
 (`completion.py`). Framework launch dispatch lives in `launching.py`; `doctor.py` orchestrates
-checks defined in `wiring.py`. Typed status gathering lives in `status.py`, while
+checks defined in `wiring.py`. Shared-result status gathering lives in `status.py`, while
 `cli_output.py` owns operational text, JSON, and application-error rendering.
 
-For the *user-facing* contract of each command, see the PRD docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
+`results.py` defines dependency-free `CommandResult`, `Diagnostic`, JSON types, and the
+validating `result_payload` serializer. `ApplicationError` carries a stable code, optional data,
+partial state, warnings and next steps. `emit_result` is the final output boundary: JSON gets one
+seven-key envelope, while text invokes a data renderer before stderr diagnostics. AI, env inspection, and status are
+migrated consumers. Other handlers retain their existing output ownership until migrated.
+
+For the *user-facing* contract of each command, see the feature docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
 
 ## Contents
 
@@ -16,7 +22,7 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 - [How it works (current state)](#how-it-works-current-state)
   - [`cli.py` — parse and dispatch](#clipy--parse-and-dispatch)
     - [`main()` flow](#main-flow)
-    - [`_ensure_subcommand` — bare `splash` defaults to `sync`](#_ensure_subcommand--bare-splash-defaults-to-sync)
+    - [Default command and shared globals](#default-command-and-shared-globals)
     - [`KNOWN_CMDS` and the parser](#known_cmds-and-the-parser)
     - [Parsed-argument validation](#parsed-argument-validation)
     - [Tiered `--help`: `_EpilogOnlyFormatter`](#tiered---help-_epilogonlyformatter)
@@ -29,8 +35,8 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
     - [`deinit` teardown](#deinit-teardown)
     - [Git post-checkout hook installation](#git-post-checkout-hook-installation)
     - [Status reporting](#status-reporting)
-    - [The no-loader delivery fallback](#the-no-loader-delivery-fallback)
-    - [`_confirm` and typed usage failures](#_confirm-and-typed-usage-failures)
+    - [The env output destination](#the-env-output-destination)
+    - [`require_confirmation` and typed usage failures](#require_confirmation-and-typed-usage-failures)
     - [Device lifecycle handlers](#device-lifecycle-handlers)
     - [`target` and `env` dispatchers](#target-and-env-dispatchers)
   - [`completion.py` — fail-silent completers](#completionpy--fail-silent-completers)
@@ -41,8 +47,8 @@ For the *user-facing* contract of each command, see the PRD docs cross-linked un
 
 ## Purpose
 
-`cli.py` is the entry point: it builds a single flat argparse parser, defaults a bare invocation to
-`sync` (so the git hook can call `splash` with no arguments), and dispatches each subcommand to a
+`cli.py` is the entry point: it builds an argparse subcommand tree, defaults a bare invocation to
+`sync` (the hidden hook has its own event command), and dispatches each subcommand to a
 handler. `commands.py` owns trust/bootstrap, init, sync, deinit, and env orchestration. `status.py`
 owns status report construction and `cli_output.py` owns rendering. `target_commands.py`
 owns run/start/stop/destroy, fleet maintenance, and the nested target dispatcher; `ai_commands.py`
@@ -65,21 +71,22 @@ submodule imports inside handlers.
 
 `main()` (`cli.py`) is the whole control flow:
 
-1. Default `argv` to `sys.argv[1:]`, then run it through `_ensure_subcommand` (`cli.py`) to inject a `sync` token if no subcommand is present.
+1. Default `argv` to `sys.argv[1:]` without rewriting tokens.
 2. Build the parser (`_build_parser`, `cli.py`).
 3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
-4. `parse_args`, validate cross-option contracts, dispatch completion before checkout resolution,
-   then resolve `cwd` (`_resolve_cwd`, honours `--cwd`, else `$PWD`, always `.resolve()`d).
-5. Dispatch `ai` before Registry construction; its status is read-only, while mutations acquire
+4. `parse_args`, select sync when no command was supplied, validate cross-option contracts, dispatch help and completion before checkout resolution,
+   then validate all supplied cwd values and store the project selection for `_resolve_cwd`.
+5. Dispatch env inspection and status through their read-only snapshot and result boundaries before
+   Registry construction or notices. Dispatch `ai` before Registry construction; its status is read-only, while mutations acquire
    the checkout operation lock. Dispatch the hidden hook event before constructing a Registry.
-   Handle `init` inside the ordinary error renderer but before Registry construction, so no init
-   path touches machine-wide registry state or output writers.
+   Handle `init` inside the ordinary error renderer but before Registry construction, so its early refusals
+   do not initialize machine-wide state.
 6. Every other checkout command constructs the Registry
    and consumes notices before dispatching trust, untrust, bootstrap, or the ordinary flat command
    table. The final fall-through is `sync` (the default), so both bare `splash` and explicit
    `splash sync` land on `_cmd_provision`.
 
-Completion generation, help, version, active argcomplete, hidden hook plumbing, and init paths that
+Env inspection, status, completion generation, help, version, active argcomplete, hidden hook plumbing, and init paths that
 do not sync all exit before Registry construction and therefore do not consume pending claim
 notices. Other checkout-scoped commands consume notices before their handler runs, even when that
 handler later fails. `render_claim_notices` in `cli_output.py` names the target, transfer or
@@ -88,30 +95,35 @@ forced-release action, actor checkout, and event time.
 The handler signature shows the orchestration boundary: `main()` resolves `cwd`, creates a Registry
 only when needed, and threads dependencies into handlers. Each branch returns the process exit code.
 
-#### `_ensure_subcommand` — bare `splash` defaults to `sync`
+#### Default command and shared globals
 
-`_ensure_subcommand` (`cli.py`) makes `splash` (no subcommand) behave as `splash sync`. The
-post-checkout hook uses the explicit hidden event command instead. The helper cannot just prepend
-`sync`, because top-level flags must still parse at the root parser level — `splash --cwd /path`
-has to become `splash --cwd /path sync`, not `splash sync --cwd /path` (which would fail, since
-`sync` has no `--cwd`).
+`_select_default_command` selects sync only after argparse succeeds without a command.
+Root `--force` and `--setup` support bare sync. Unknown commands remain usage errors.
+There is no argv scanner or token insertion, including for help, version, or JSON detection.
 
-The walk bails early for help/version, then skips root flags before deciding where to inject
-`sync`. `--cwd`/`--format` consume a value; `--show-values` is the root boolean flag. Keeping both
-sets explicit makes bare `splash --show-values` parse as a sync rather than as a sync-subparser
-option.
+`_register_global_options` registers `--cwd` and `--format` on every parser. Subordinate
+`SUPPRESS` defaults preserve earlier values. Every occurrence validates through argparse;
+the last supplied scalar wins. `ParseState` records validated formats, all cwd occurrences,
+and the canonical command path from parser entry. Directory usability is deferred to command
+selection, allowing env inspection to accept explicitly selected registered deleted identities.
+
+The `_Parser` subclass disables long-option abbreviation at every level. Explicit short options
+and target type/variant prefix resolution retain their separate semantics. Parser errors carry
+the active parser's usage context. Once a validated JSON option is effective, pre-dispatch
+errors emit the shared envelope on stdout and relevant usage on stderr. Invalid formats before
+JSON recognition retain native text errors. A later validated text option restores text errors.
+Argparse may recognize known options before rejecting unknown ones; no raw-token lookahead
+changes that ordering.
 
 #### `KNOWN_CMDS` and the parser
 
-`KNOWN_CMDS` (`cli.py`) is the hand-maintained set of subcommand names. It exists only so
-`_ensure_subcommand` can decide whether a subcommand is already present *before* argparse runs. It
-is a second source of truth alongside the `sub.add_parser(...)` calls, guarded by an exact
-parser-choice invariant. The root-help contract separately requires every public command except
-the internal `hook` event to appear in the curated map.
-
-`_build_parser` (`cli.py`) is a single flat parser with one block per subcommand. Every subparser is hidden
-from argparse's generated list because the curated epilog carries the task-oriented overview.
-Root flags are `--cwd`, `--format`, `--show-values`, and `--version`.
+`KNOWN_CMDS` is a test-checked inventory, not a dispatch scanner. `_build_parser` constructs
+the command tree and configures shared globals through an iterative tree walk. New commands must be added before the final `_configure_parser_tree` call, which installs
+globals and canonical command metadata exactly once. Its registration helper requires `_Parser`.
+Root-only options are `--version` and the default sync flags. `help [COMMAND ...]` resolves an
+exact path in this tree and prints that parser's help without directory or state access.
+Help and version use native text even after JSON recognition. Completion emits native shell
+code and rejects explicit JSON with `unsupported_format` before calling its handler.
 
 #### Parsed-argument validation
 
@@ -120,13 +132,20 @@ construction, or command dispatch. It owns constraints argparse cannot express c
 parser levels: the root output-option support matrix and the redundant
 `target remove --global --keep-instance` pair. It also rejects
 `target remove device --keep-instance`, because physical devices have no owned instance. `--format`
-is valid for sync, status, bare env, bare target, target claims, target claim, and ai commands. `--show-values`
-is valid for sync, status, normal init, and bare env. Rejected combinations use `parser.error`,
-preserving argparse's usage output and exit 2.
+is valid for sync, status, init, env/env get, bare target, target claims, target claim, and ai commands. Unsupported formats use `unsupported_format`;
+other rejected combinations use `invalid_arguments`, both exit 2. This registration does not
+migrate legacy operational JSON output. AI, env inspection, and status are complete envelope consumers.
 
-The env parent and action parsers intentionally accept `--checkout`. Action defaults use
-`argparse.SUPPRESS`, so omitting the after-action form does not overwrite a selector already parsed
-before the action. When both root `--cwd` and env `--checkout` are present, the env selector wins.
+Environment commands use shared `--cwd`. Set/release retain exact-directory mutation selection.
+Env inspection uses RegistrySnapshot and nearest recipe-or-registered identity selection.
+
+`project_selection.py` resolves canonical existing starting directories and selects the nearest
+recipe entry inside the current Git worktree. It uses a bounded read-only Git query, never parses
+recipes, and treats invalid entries as markers. Outside Git and for init, selection is exact.
+All supplied cwd values are validated before effects. CLI stores `ProjectSelection` for target
+normalization; completion uses the same selector and quietly suppresses read failures.
+Machine-wide commands skip project discovery. The hidden hook retains its exact early boundary.
+Selection and registry-construction failures use the common envelope before legacy handlers start.
 
 #### Tiered `--help`: `_EpilogOnlyFormatter`
 
@@ -155,12 +174,45 @@ The four device verbs share one parser shape, built in a loop in `cli.py`:
 
 #### Top-level exception handler
 
-Ordinary dispatch has one application-error renderer. `ApplicationError` carries
-an exit code and whether the message receives an `error:` prefix; `UsageError`,
-`MissingRecipeError`, and `SetupError` model exit-2 usage failures, the hook-compatible exit-0
-missing-recipe notice, and setup failures. `DeviceError` and configuration `ValueError` enter the
-same renderer as exit-1 failures. These handlers raise rather than terminating the process, so
-direct callers can handle failures and CLI output is emitted exactly once.
+Final output ownership is per dispatch path. See
+[`_dispatch_ai`](../../src/splashdown/cli.py),
+[`emit_result`](../../src/splashdown/cli_output.py), and
+[`result_payload`](../../src/splashdown/results.py).
+AI handlers return typed outcomes and never print final results. The CLI converts expected
+ApplicationError, DeviceError, CapabilityError, OSError and interruption, then emits once after
+mutation locks unwind. Recipe parsing errors are classified at the required-input boundary;
+unexpected programming exceptions are not silently turned into configuration errors.
+
+JSON always has `command`, `status`, `exit_code`, `data`, `error`, `warnings`, and `next_steps`.
+Success requires exit 0 and no error. Failure requires nonzero exit and an error, and partial
+requires non-null data. Data must be a JSON-native object with finite numbers. Serialization
+preserves ordered unique warnings and next steps. Text renders data to stdout and diagnostics
+to stderr. A data object alone does not establish partial completion.
+
+Parser and pre-dispatch errors can use this envelope before a legacy handler starts. Selection
+and Registry-construction failures therefore remain structured even on a supported legacy JSON
+path. Legacy handler errors retain their older renderer and shape. In particular, init already
+emits `InitReport` on some failure paths: migrating it requires removing its internal emission
+and adding the outer result adapter atomically, or JSON can be emitted twice. Never capture
+legacy stdout as result data.
+
+The legacy exit-0 `MissingRecipeError` remains for the existing sync/hook lifecycle. AI update
+uses exit-1 `recipe_missing`. Other stable boundary codes include `invalid_arguments` and
+`unsupported_format` (2), `invalid_directory`, `invalid_configuration`, `guidance_failed`,
+`io_error`, `device_error`, `capability_unavailable`, and `operation_failed` (1), plus
+`interrupted` (130). Generated guidance details use warning code `guidance_generated`.
+
+AI, env inspection, and status are complete envelope consumers. `_dispatch_env_inspection` reads
+`read_registry_snapshot` before normal Registry construction and notice consumption. It validates
+every cwd with `known_checkouts`, uses `select_project(..., known_checkouts=...)`, calls pure
+`commands.inspect_env(cwd, snapshot, key=None) -> CommandResult`, and emits once through
+`emit_result(..., render_text=render_env_result)`. Listing data is `{checkout, values}`;
+get data is `{checkout, key, value}`. Missing assignments use `assignment_missing`, exit 1,
+and `{checkout, key}`. Registry failures use `registry_read_error` and never expose partial values.
+Only explicit registry-known deleted env starts are admitted. Set/release use exact existing
+directories and the legacy mutable lifecycle. Status also uses the read-only snapshot and shared result boundary.
+Bare invocation still runs sync. Preparation, trust, hooks, and init retain their legacy
+lifecycle and final-output boundaries.
 
 #### One shape for a file splashdown declines to edit
 
@@ -212,10 +264,8 @@ syntax/references, and dependency cycles therefore become `error:` + exit 1
 without partial provisioning. Setup *execution* remains later: an unknown
 requested setup name or a failing command can occur after registry and writer
 changes and is not transactional. The renderer chooses the no-op or per-line report. JSON exposes
-`resolved_keys` by default; `--show-values` opts into `resolved`. Explicit stdout-writer values are
-always placed in the JSON `stdout` object. In text mode, `--show-values` prints every sorted
-resolved `KEY=VALUE` line, annotating changed keys. This applies equally to normal sync and an
-up-to-date no-op sync.
+`resolved_keys`. Explicit stdout-writer values are placed in the JSON `stdout` object or
+printed as raw `KEY=VALUE` text. Routine sync reports remain on stderr to preserve that raw stream.
 
 `cmd_init` applies the same contract to generated TOML. Scanner recipes and
 minimal-monorepo recipes go through `Recipe.parse` before
@@ -366,28 +416,28 @@ tools fall back to detection results or a setup note rather than escaping as Pyt
 
 #### Status reporting
 
-`cmd_status` is a thin compatibility wrapper around `status.build_status_report` and
-`cli_output.render_status`. The typed report builder owns registry/config/device reads, health
-counters, latest-OS caching, and deduplicated capability warnings. The renderer owns compact tables,
-detailed text blocks, JSON shaping, cleanup hints, and value redaction. Resource values are omitted
-unless `--show-values` is set; JSON format alone is never a disclosure opt-in.
+Status dispatch precedes mutable Registry construction and claim-notice consumption. It uses
+`read_registry_snapshot`, retains the incomplete snapshot from `RegistryReadError`, and passes
+ordered diagnostics into `build_status_report(cwd, snapshot, show_all=False, diagnostics=())`.
+The builder returns `CommandResult` with `data.checkouts` for both scopes. `cmd_status` emits it
+exactly once through `emit_result`; `render_status_result` only presents text.
 
-`port_inspection.listening_processes` supplies one optional, three-second `lsof` snapshot for
-bound ports across a detailed report. Records carry PID/command pairs; a failed or incomplete
-snapshot leaves owners unknown. Compact fleet output and reports without bound ports avoid this
-query. The renderer adds `owners` only to JSON port records and keeps the existing port-state
-strings separate from owner details.
+The canonical field and check inventory is in [status-and-inspect](../features/status-and-inspect.md).
+No format or verbosity flag reaches collection. Findings and unavailable probes return 0; required
+registry, recipe, output, trust, or applicable configuration read/parse failures return partial 1.
+A known deleted fleet identity is a cleanup finding. Interrupted fleets retain completed rows at
+exit 130. Values remain internal to resource/output comparison and never enter public reports.
 
-Detailed checkout records also carry an `AutomationStatus`. For live Git checkouts,
-`bootstrap.git_dirs` locates clone-wide trust and checkout-local completion state; the current
-recipe supplies bootstrap declaration. Completion is modeled as `not-declared`, `pending`,
-`complete`, or `invalid`, so a corrupt marker is visible without turning status into a bootstrap
-attempt. If one live recipe cannot be read, that checkout retains trust data but uses a nullable
-bootstrap declaration plus `unavailable` completion, and gathering warns without aborting the
-remaining detailed records. Non-Git and defunct records use `None`, rendered as JSON `null`.
-Compact text `status all` returns from the table-row path before automation gathering, preserving
-its no-extra-Git-probe contract. JSON, `status all --verbose`, and `status all` with
-`--show-values` use detailed records and include automation state.
+`TargetObservations` caches platform inventories and probe failures per invocation. Device discovery
+uses finite 30-second adapter deadlines, emulator-name probes use two seconds, and lsof runs at
+most once with a three-second deadline when allocated ports are bound. Git trust/hook inspection
+uses five-second deadlines. `HookInspection` carries the already observed Git common directory and configured hooks path
+through `post_checkout_readiness(strict=inputs)`, avoiding duplicate Git discovery;
+the default retains existing lifecycle behavior. Loader plans are read-only, and loader ownership
+never implies authorization. No completion marker, arbitrary project command, repair, or allocation
+is used to infer readiness. Target-name templates reuse `_resolve_device_name(scope=...)` and
+`_make_scope(repo_name=...)`; status supplies a cached scope from bounded Git root/branch reads,
+while other callers retain their existing defaults.
 
 #### The env output destination
 
@@ -405,10 +455,14 @@ source the file or which loader to add. Ignore coverage is not warned about here
 covers the configured destination itself and reports what Git says about it, and every later sync
 re-reports a destination that stays visible when it writes to one.
 
-#### `_confirm` and typed usage failures
+#### `require_confirmation` and typed usage failures
 
-`_confirm` in `target_commands.py` is the shared interactive `[y/N]` gate for `cmd_destroy` and
-`cmd_target_prune`. `yes=True` (from `--yes`) skips the prompt and returns `True`.
+`require_confirmation` in `interaction.py` is the shared `[y/N]` gate for `cmd_destroy` and
+`cmd_target_prune`. `yes=True` (from `--yes`) returns without reading. Otherwise only text mode
+with terminal stdin can prompt, on stderr. A pipe or JSON requires explicit confirmation and
+raises exit-1 `confirmation_required`. Enter, No, or EOF raises `confirmation_declined` with
+exit 1. Ctrl+C reaches the CLI interruption boundary and returns 130. Existing callers retain
+their legacy output boundary and existing confirmation requirements.
 
 Init refusal and invalid `env set` inputs raise `UsageError`. The CLI's shared
 renderer prints the message and returns exit 2; no application handler calls `sys.exit`.
@@ -452,8 +506,9 @@ work that could not be attempted.
 The `target` and `env` subcommands have their own nested subparser actions, so
 they get sub-dispatchers rather than a single handler: `_target_dispatch` and
 `_env_dispatch`. The target dispatcher lives in `target_commands.py`; env dispatch remains in
-`commands.py`. Both treat a bare invocation (`splash target` / `splash env`)
-as "list" (mirroring bare `splash` → sync). `_target_dispatch` routes to focused
+`commands.py` for mutations. Env reads use the early `_dispatch_env_inspection` boundary and
+`inspect_env` result service. Bare target and env invocations list records.
+`_target_dispatch` routes to focused
 add/remove/refresh/prune/claim/claims/release handlers and receives the registry constructed by
 `main()`, so every registry-using target handler shares the composition-root dependency.
 
@@ -486,7 +541,8 @@ The completers run on every `<Tab>`, so the module's contract is: **never raise,
 - `device_arg_completer` (`completion.py`) offers declared type names *plus* variant names when exactly one type is declared (slot 1), so `splash run <TAB>` suggests variants in the common single-type case.
 - `physical_variant_completer` offers configured physical variants without discovery or registry
   reads, and `available_platform_completer` offers the fixed `ios`, `android`, and `any` filters.
-- Both share `_catalog` (`completion.py`), which mirrors `cli._resolve_cwd` (honour an already-typed `--cwd`, else `$PWD`, then `.resolve()`).
+- The catalog completers share `_catalog` (`completion.py`), which resolves the supplied cwd
+  and selects the same nearest project as the CLI. Selection failures return no suggestions.
 
 Completion reads declared recipe/local/global variants, not registry instances. `stop` and
 `destroy` can therefore suggest a declared variant that has not been provisioned yet. Slot-one
@@ -498,7 +554,7 @@ device does not hide simulator variants in a simulator-only project.
 ## Key entry points
 
 - `main()` — process entry / dispatch table — `cli.py`
-- `_ensure_subcommand` — bare-`splash`-defaults-to-`sync` rewrite — `cli.py`
+- `_select_default_command` — post-parse bare invocation selection — `cli.py`
 - `_build_parser` — the single flat parser — `cli.py`
 - `_EpilogOnlyFormatter` / `_VersionAction` — help and lazy version presentation — `cli.py`
 - `_normalize_device_args` — re-interpret the choice-less `dtype` slot — `cli.py`
@@ -508,12 +564,12 @@ device does not hide simulator variants in a simulator-only project.
 - `_configure_post_checkout_hook` / `_ensure_post_checkout_hook` / `_detect_hook_manager` — hook coexistence — `hooks.py`
 - `_git_worktree_root` / `_nested_worktree` / `_nested_project` — nesting detection shared by init, trust, and the hook check — `hooks.py`
 - `POST_CHECKOUT_HOOK` — the shared hook script body — `hooks.py`
-- `render_sync` / `render_status` / `render_application_error` — `cli_output.py`
-- `build_status_report` and typed report records — `status.py`
+- `render_sync` / `render_status_result` / `emit_result` / `render_application_error` — `cli_output.py`
+- `build_status_report` and shared inspection data — `status.py`
 - `ApplicationError` / `UsageError` / `MissingRecipeError` / `SetupError` — `errors.py`
-- `cmd_status` — status compatibility wrapper — `commands.py`
+- `cmd_status` — status result/output adapter — `commands.py`
 - `_print_env_destination` / `_persisted_env_file` / `_default_destination_keys` — env output destination — `commands.py`
-- `_confirm` — shared target `[y/N]` gate — `target_commands.py`
+- `require_confirmation` — shared terminal `[y/N]` gate — `interaction.py`
 - `_target_dispatch` / `_env_dispatch` — nested-subcommand dispatchers — `target_commands.py` / `commands.py`
 - `claim_configured_target` / `claim_available_target` — physical pre-run and generic allocation
   — `device_claims.py`
@@ -530,11 +586,11 @@ device does not hide simulator variants in a simulator-only project.
 - **Circular imports are a CI invariant.** Shared constants, catalogs, and inventory types live in
   dependency-free modules; Pylint's `cyclic-import` checker analyzes the whole package and reports
   the concrete path when a cycle is introduced.
-- **Argparse may still raise `SystemExit`.** Help, version, and parser-level invalid choices keep
-  argparse's normal behavior. Application handlers raise typed errors and never terminate the
+- **Argparse may still raise `SystemExit`.** Help/version and text usage failures keep
+  argparse's exit behavior. Recognized JSON usage failures return through the result boundary. Application handlers raise typed errors and never terminate the
   process themselves.
 - **`KNOWN_CMDS` is a guarded second source of truth.** It is maintained by hand alongside the
-  `add_parser` calls so `_ensure_subcommand` can pre-classify argv. The exact-choice and public-help
+  `add_parser` calls as a checked inventory. The exact-choice and public-help
   tests fail if a new command is added to only one surface.
 - **A variant named like a type needs both positionals.** Because run/start/stop/destroy drop
   argparse `choices` on the `dtype` slot, `_normalize_device_args` resolves a lone
@@ -552,7 +608,7 @@ device does not hide simulator variants in a simulator-only project.
 ## Related
 
 - [init-and-onboarding.md](../features/init-and-onboarding.md) — user-facing `splash init` behavior, the loader/hook wiring, and the onboarding promise.
-- [status-and-inspect.md](../features/status-and-inspect.md) — what `splash status` (and `--all`/`--check`/`--verbose`) reports.
+- [status-and-inspect.md](../features/status-and-inspect.md) — what `splash status` (and `all`/`--verbose`) reports.
 - [device-targets.md](../features/device-targets.md) — the device-target model behind `run`/`start`/`stop`/`destroy`/`target`.
 - [platform-capabilities.md](platform-capabilities.md) — subprocess classification and host/tool
   failure semantics.

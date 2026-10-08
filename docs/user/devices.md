@@ -74,6 +74,12 @@ Framework auto-detected for `run`:
 - `build.gradle*` + `settings.gradle*` at root (no JS/Flutter signals) → `./gradlew :module:installVariant` → `adb shell am start`. Conventional modules such as `include(":app")` are detected automatically. After installation, splashdown reads the selected variant's application ID from AGP's build metadata. `[project.android] application_id` is only needed for non-standard builds. `module`, `variant`, and `launch_activity` are also configurable there.
 - Override via `[project] framework = "..."`
 
+For the built-in React Native Android launcher, `splash run` passes `--active-arch-only` when
+`[project.android] mode` is omitted or ends in `Debug` (case-insensitive). The React Native CLI
+uses the selected device's architecture for these development builds. Explicit release modes
+and other custom modes keep their configured architecture set. A custom `[project] run` command
+is used as written.
+
 React Native apps can use Expo modules without using Expo's launcher. When the `start`, `ios`,
 or `android` package scripts invoke the React Native CLI, Splashdown selects React Native even
 with `expo` installed and an `app.json` present.
@@ -137,7 +143,7 @@ splash target prune [ios|android]   # destroys every sim/AVD splashdown did NOT 
 ```
 
 `target refresh` checks all registered checkouts, not only the current one. It removes undeclared
-and dead-checkout instances without confirmation. Use `status all --check` first when you want a
+and dead-checkout instances without confirmation. Use `status all` first when you want a
 fleet preview.
 
 ## iOS sim management

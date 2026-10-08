@@ -15,6 +15,7 @@ through their external side effects.
   - [On-disk layout](#on-disk-layout)
   - [Locking: the sidecar `.lock`](#locking-the-sidecar-lock)
   - [Read/write helpers](#readwrite-helpers)
+  - [Read-only inspection snapshot](#read-only-inspection-snapshot)
   - [`_tsv_field` and row forgery](#_tsv_field-and-row-forgery)
   - [Port allocation](#port-allocation)
   - [KV and managed devices](#kv-and-managed-devices)
@@ -75,6 +76,24 @@ rows also reject unknown actions and missing or timezone-naive expiry timestamps
 Writes serialize and validate every row before `_atomic_write` (`registry.py`) creates a mode-`0600` same-directory temporary file and calls `os.replace`. An unlocked reader therefore sees either the complete prior inode or the complete replacement, never an in-place truncation window. Every registry writer uses this one path.
 
 Public mutators are read-modify-write under the lock: `set_kv`/`remove_kv` filter out the matching `(abspath, key)` then optionally re-append (`registry.py`); `record_simulator` / `record_emulator` construct typed records, and `set_managed_device` / `remove_device` replace by `(checkout, dtype, variant)`. The legacy `set_device` signature remains as a compatibility adapter. `get_or_create_kv` (`registry.py`) performs lookup, factory invocation, and append under one kv lock, so concurrent UUID provisioning returns the one committed value. There is no in-memory cache: every call re-reads the file, which keeps concurrent invocations consistent at the cost of re-parsing.
+
+### Read-only inspection snapshot
+
+`read_registry_snapshot(directory: Path | None = None) -> RegistrySnapshot` reads only the
+existing ports, KV, devices and claims TSV files. Missing files are empty. It never constructs
+`Registry`, creates locks, changes modes, consumes notices or garbage-collects claims. Reads
+observe each atomic file replacement separately, without a cross-file transaction guarantee.
+
+The frozen snapshot stores `ports`, `values`, `devices` and `claims` as tuples. `all_for(checkout)`
+returns fresh stored values, `all_checkouts()` returns the sorted resource/device/claim identity
+union, and `get_device(checkout, dtype, variant)`, `devices_for(checkout)` and
+`summary_for(checkout)` provide derived read views. Mutation readers and formats are unchanged.
+
+Malformed rows and required read/decoding errors raise `RegistryReadError(ApplicationError)`
+with stable code `registry_read_error`. Its `snapshot` retains valid available rows across all
+four files and its `diagnostics` tuple is ordered by file then row. Messages name source/row and
+never interpolate stored values or decoder excerpts. Env fails on any incomplete snapshot;
+status can use the partial snapshot to retain fleet observations while reporting failure.
 
 ### `_tsv_field` and row forgery
 

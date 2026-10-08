@@ -114,7 +114,7 @@ def test_guidance_lifecycle_loads_flyrail_in_fresh_processes(tmp_path, monkeypat
             tmp_path,
         )
         payload = json.loads(output)
-        assert payload["files"][0]["status"] == status
+        assert payload["data"]["files"][0]["status"] == status
         if command == "update":
             assert "Framework: `vite`" in agents.read_text()
     assert agents.read_text() == baseline

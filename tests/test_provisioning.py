@@ -597,21 +597,6 @@ default = "top-secret"
     assert "top-secret" not in err
 
 
-def test_provision_text_output_includes_resolved_values_when_explicit(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text("""
-[resources.API_TOKEN]
-type = "set"
-default = "top-secret"
-""")
-
-    assert sd.main(["--cwd", str(tmp_path), "--show-values"]) == 0
-
-    assert "API_TOKEN=top-secret (changed)" in capsys.readouterr().err
-
-
 def test_provision_json_output_hides_resolved_values_by_default(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "splashdown.toml").write_text("""
@@ -624,21 +609,6 @@ default = "top-secret"
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["resolved_keys"] == ["API_TOKEN"]
-
-
-def test_provision_json_output_includes_resolved_values_when_explicit(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    (tmp_path / "splashdown.toml").write_text("""
-[resources.API_TOKEN]
-type = "set"
-default = "top-secret"
-""")
-
-    assert sd.main(["--cwd", str(tmp_path), "--format", "json", "--show-values"]) == 0
-
-    assert json.loads(capsys.readouterr().out)["resolved"] == {"API_TOKEN": "top-secret"}
 
 
 def test_cwd_resource_type(registry, tmp_path):

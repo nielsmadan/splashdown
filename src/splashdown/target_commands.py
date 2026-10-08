@@ -36,6 +36,7 @@ from .devices import (
     ensure_fresh_sim,
 )
 from .errors import CapabilityError, DeviceError, UsageError
+from .interaction import require_confirmation
 from .launching import device_run, device_run_preflight, validate_device_run
 from .provisioning import provision, write_outputs
 from .recipe import (
@@ -311,13 +312,6 @@ def _discover_foreign_avds(managed: set[str]) -> list[str]:
     return [name for name in _android_avd_names() if name not in managed]
 
 
-def _confirm(prompt: str, *, yes: bool) -> bool:
-    if yes:
-        return True
-    print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
-    return input().strip().lower() in ("y", "yes")
-
-
 def cmd_target_prune(
     registry: Registry,
     *,
@@ -358,9 +352,12 @@ def cmd_target_prune(
     if dry_run:
         print("target prune: --dry-run, nothing destroyed", file=sys.stderr)
         return 0
-    if not _confirm("Continue?", yes=yes):
-        print("target prune: aborted", file=sys.stderr)
-        return 1
+    platform_argument = f" {platforms[0]}" if len(platforms) == 1 else ""
+    require_confirmation(
+        "Continue?",
+        yes=yes,
+        next_step=f"Run `splash target prune{platform_argument} --yes` to confirm.",
+    )
 
     done = 0
     for udid, _name, _runtime in foreign_ios:
@@ -520,9 +517,11 @@ def cmd_destroy(
             file=sys.stderr,
         )
         return 0
-    if not _confirm(f"Destroy {dtype}.{variant}?", yes=yes):
-        print(f"destroy {dtype}.{variant}: aborted", file=sys.stderr)
-        return 1
+    require_confirmation(
+        f"Destroy {dtype}.{variant}?",
+        yes=yes,
+        next_step=f"Run `splash destroy {dtype} {variant} --yes` to confirm.",
+    )
     abspath = str(cwd.resolve())
     with registry.operation_lock(abspath):
         variant, _spec, _recipe = _resolve_variant_for_cli(cwd, dtype, variant)
@@ -756,7 +755,7 @@ def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:  # noqa: 
         return _target_refresh(args, registry)
     if args.target_cmd == "prune":
         return _target_prune(args, registry)
-    fmt = getattr(args, "target_format", None) or getattr(args, "format", None) or "text"
+    fmt = getattr(args, "format", None) or "text"
     if args.target_cmd == "claims":
         return cmd_target_claims(registry, fmt)
     if args.target_cmd == "claim":
