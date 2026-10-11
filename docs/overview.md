@@ -1,7 +1,7 @@
 # Documentation
 
 Map of the `docs/` tree. `README.md` (repo root) is the authoritative user-facing manual;
-`AGENTS.md` / `CLAUDE.md` hold agent/contributor guidance. These docs go deeper, split by
+`AGENTS.md` holds agent/contributor guidance. These docs go deeper, split by
 **audience and format**.
 
 ## Two audiences

@@ -1,7 +1,7 @@
 # User Persona(s)
 
 > Last refined: 2026-06-23 (rev 2) · Sources: `README.md`, `pyproject.toml`
-> (description/keywords), `src/splashdown/cli.py` (CLI surface), `commands.py`, `CLAUDE.md`,
+> (description/keywords), `src/splashdown/cli.py` (CLI surface), `commands.py`, `AGENTS.md`,
 > user input (2026-06-23 rev 1: two co-primary personas, adoption undecided; rev 2: the
 > sharpest target is **developers driving LLM coding agents** — many agents running at once,
 > each in its own worktree).

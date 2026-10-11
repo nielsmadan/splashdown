@@ -1,7 +1,6 @@
 # AGENTS.md
 
 This file is the single source of truth for coding-agent guidance in this repository.
-`CLAUDE.md` imports it.
 
 ## What this is
 
