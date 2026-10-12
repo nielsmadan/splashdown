@@ -253,3 +253,45 @@ capabilities are leases (CB), a display-number resource type (CI), and process s
 - **Related decision**: the 1.0 review accepted removal of type=set and splash env set.
   Ordinary supplied values can remain in project env/config files. Linking is evaluated
   independently and is not a prerequisite for removing manual-value storage.
+
+## CO — Installed app provenance and native compatibility (future)
+
+- **Status**: requested on 2026-10-07 as a future candidate. No commitment to ship in 1.0;
+  storage, compatibility detection and CLI behavior require a separate design.
+- **Job**: know which app build from which checkout is installed on a particular phone before
+  serving that checkout's JavaScript. In React Native, an older installed binary may contain
+  different native modules or dependencies and fail with another checkout's JavaScript.
+- **Candidate facts**: hardware identity, application/bundle ID, installed app version/build,
+  originating checkout and revision (including dirty-build provenance), and a native-build
+  compatibility fingerprint. A checkout path, Git revision or marketing version alone does not
+  establish native compatibility. Support more than one app on a phone.
+- **Evidence boundary**: distinguish the last build Splashdown successfully installed from what
+  is verified on the phone now. Manual installs, uninstall/reinstall and builds from other tools
+  can invalidate saved knowledge. Unknown must remain unknown; ownership of a phone is not proof
+  of what app build it contains. Record successful installation separately from launch success.
+- **Evaluation**: determine which native inputs affect compatibility (native dependencies and
+  code, platform/build settings, generated native projects), what installed metadata can be read,
+  and how to report a likely mismatch with rebuild guidance. Prefer a small record of actual
+  installations or verifiable app metadata over an assumed history of every checkout/run.
+- **Related Metro question**: investigate selecting the development server at runtime so switching
+  checkout ports does not itself require a native rebuild. Treat endpoint routing and native-build
+  compatibility separately: pointing an old binary at new Metro output does not update its native
+  modules. Account for Android and iOS separately and for physical USB versus network connections.
+- **Android routing evidence, 2026-10-07**: React Native documents changing the development
+  server's host/port in [device development settings](https://reactnative.dev/docs/running-on-device#method-2-connect-via-wi-fi).
+  The [ADB reverse interface](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)
+  supports different device and host ports. Evaluate a fixed device-local port mapped to the
+  selected checkout's Metro port, restoring the mapping after reconnect. The installed app must
+  request that device-local endpoint; a LAN override bypasses it. One device port serves one
+  selected host endpoint at a time, shared by apps using that port. Existing build/install commands
+  may set their own routing, so this is not yet a supported Splashdown reuse mode.
+- **iOS routing evidence, 2026-10-07**: current React Native's
+  [Configure Bundler implementation](https://github.com/facebook/react-native/blob/main/packages/react-native/React/CoreModules/RCTDevMenu.mm#L337)
+  sets an explicit runtime host/port and reloads JavaScript in development builds.
+  [RCTBundleURLProvider](https://github.com/facebook/react-native/blob/main/packages/react-native/React/Base/RCTBundleURLProvider.mm)
+  persists the endpoint via RCT_jsLocation. Evaluate launch-argument overrides on a physical device
+  before promising automation: Apple's [argument preference domain](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/UserDefaults/AboutPreferenceDomains/AboutPreferenceDomains.html)
+  suggests a route for apps using that provider, but Splashdown/Community CLI forwarding and actual
+  device behavior have not been verified. A physical iPhone needs a reachable host address.
+- **Validation boundary**: research and local launcher inspection only; no installed phone app,
+  runtime routing, rebuild skipping or compatibility detection was changed or device-tested.

@@ -16,7 +16,14 @@ the product serves them. This is the high-level "why / for whom / what's missing
   evaluate a possible `splash link` workflow before the contract freeze. Inclusion and syntax
   remain undecided. The candidate covers frontend/backend ports and shared resource references.
 
+## Future candidates
+
+Future candidate: [installed app provenance and native compatibility](use-cases.md#co--installed-app-provenance-and-native-compatibility-future).
+Track which build from which checkout is on a phone and evaluate React Native native/JavaScript
+compatibility and runtime Metro routing. Added October 7; no 1.0 shipping commitment.
+
 ## Reviews (dated snapshots, newest first)
+
 - [2026-06-23-agent-persona-and-adjacent-use-cases.md](2026-06-23-agent-persona-and-adjacent-use-cases.md)
   — agent-persona reframe + adjacent-use-case brainstorm (code+docs+`--multi`). Headline: lead
   with the parallel-agent framing; the silent collisions are caches/daemons/test-runners/
