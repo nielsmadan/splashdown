@@ -6,11 +6,13 @@ Splashdown publishes Python artifacts through GitHub Releases and distributes th
 
 ## Release commands
 
-`just release` derives a proposed version with the pinned git-cliff configuration: `feat` produces
-a minor release, `fix` a patch release, and a breaking change a minor release while on `0.x`.
-It runs `just check`, then shows the version, affected files, push destination, and publication
-steps. Enter `y` to confirm, enter a different version or bump and then confirm, or press Enter to
-cancel. Release edits begin only after confirmation.
+Releases use [curtains](https://github.com/nielsmadan/curtaincall); install it first with
+`brew install nielsmadan/tap/curtaincall`. `just release` forwards its arguments to curtains, which
+reads the policy in `scripts/release.json`. It derives a proposed version with the pinned git-cliff
+configuration: `feat` produces a minor release, `fix` a patch release, and a breaking change a
+minor release while on `0.x`. It runs `just check`, then shows the version, affected files, push
+destination, and publication steps. Enter `y` to confirm, enter a different version or bump and
+then confirm, or press Enter to cancel. Release edits begin only after confirmation.
 
 ```sh
 just release
@@ -21,15 +23,18 @@ just release patch --yes
 ```
 
 `patch`, `minor`, `major`, and exact versions all use the same confirmation flow. `--dry-run`
-inspects local and remote Git state and calculates a proposal without running checks or publishing.
-`--yes` explicitly bypasses the prompt; unattended invocations otherwise fail. A release with no
-automatic bump requires an explicit version or bump.
+inspects local and remote Git state and calculates a proposal without publishing. It skips the
+tool check and every policy command, including `just check` and the git-cliff suggestion, so its
+proposal is the conventional-commit estimate. `--yes` explicitly bypasses the prompt; unattended
+invocations otherwise fail. A release with no automatic bump requires an explicit version or bump.
 
-Run from a clean `main` checkout with complete history, matching local/origin release tags, and all
-origin commits incorporated. Existing local commits are included in the push and counted in the
-preview. Required tools are Python 3.9+, Git, Just, and uv/uvx, with Git push access to the
-repository. `scripts/release.json` declares checks and preparation steps; `scripts/release.py`
-uses Git for remote inspection, tagging, and pushing.
+Run from a clean `main` checkout with complete history and Git push access to the repository.
+Every historical `vMAJOR.MINOR.PATCH` tag must exist both locally and on origin and peel to the
+same commit, not only the latest. Curtains never fetches: the fetched `origin/main` must be an
+ancestor of `HEAD`, so fetch first when origin may have moved. Existing local commits are included
+in the push. A real release requires Git, Python, Just, and uv/uvx. `scripts/release.json`
+declares checks and preparation steps; curtains uses Git for remote inspection, tagging, and
+pushing.
 
 The recipe updates `pyproject.toml`, regenerates `uv.lock` and `CHANGELOG.md`, commits those files,
 and atomically pushes `main` with its annotated release tag. The GitHub workflow builds the

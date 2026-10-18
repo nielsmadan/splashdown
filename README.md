@@ -271,4 +271,4 @@ just release --dry-run          # inspect the proposal without checks or publica
 Re-running `just install` refreshes the installed code even when the version is unchanged.
 With `just install-editable`, source edits take effect without reinstalling.
 
-See [Release and distribution](docs/tech/release.md) for version overrides and the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and commit conventions.
+`just release` needs [curtains](https://github.com/nielsmadan/curtaincall), installed with `brew install nielsmadan/tap/curtaincall`. See [Release and distribution](docs/tech/release.md) for version overrides and the release flow. Tagging publishes a GitHub release and auto-updates the `Formula/splashdown.rb` in `nielsmadan/homebrew-tap`. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and commit conventions.
