@@ -47,7 +47,8 @@ SPLASH_SMOKE_KEEP=1 just smoke-first-use
 
 - **Tests**: new behavior gets a test in the matching `tests/test_<module>.py`. Run `just test`
   (or the full `just check`).
-- **Types**: the source is `mypy --strict` over `src/splashdown`. Run `just typecheck`.
+- **Types**: the source and release scripts are `mypy --strict` over `src/splashdown` and
+  `scripts/`. Run `just typecheck`.
 - **Docs**: user docs live in `docs/user/` and publish to [splashdown.dev](https://splashdown.dev).
   Preview with `just serve-docs`, build with `just build-docs`.
 - **Architecture**: `AGENTS.md` is the canonical guide to how the codebase fits together (modules,

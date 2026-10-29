@@ -10,16 +10,16 @@ import homebrew_resources as brew
 
 
 class HomebrewResourcesTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.root = Path(__file__).resolve().parent.parent
 
-    def test_runtime_graph_is_dependency_ordered_and_omits_development_packages(self):
+    def test_runtime_graph_is_dependency_ordered_and_omits_development_packages(self) -> None:
         self.assertEqual(
             [item["name"] for item in brew.runtime_packages(self.root)],
             ["argcomplete", "tomlkit", "pyflyrail"],
         )
 
-    def test_pyflyrail_uses_pypi_source_archive(self):
+    def test_pyflyrail_uses_pypi_source_archive(self) -> None:
         package = brew.runtime_packages(self.root)[-1]
         self.assertEqual(package["source"], {"registry": "https://pypi.org/simple"})
         self.assertTrue(package["sdist"]["url"].endswith(f"/pyflyrail-{package['version']}.tar.gz"))
@@ -38,7 +38,7 @@ class HomebrewResourcesTests(unittest.TestCase):
             ):
                 brew.prepare_resources(self.root, Path(temp) / "cache", overrides)
 
-    def test_staging_verifies_bytes_and_selects_source_project_root(self):
+    def test_staging_verifies_bytes_and_selects_source_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             archive = root / "source.tar.gz"
@@ -60,7 +60,7 @@ class HomebrewResourcesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 brew.stage_resource(resource, root / "rejected")
 
-    def test_runtime_downloads_reject_wrong_locked_or_transport_checksums(self):
+    def test_runtime_downloads_reject_wrong_locked_or_transport_checksums(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             archive = root / "wrong.tar.gz"
@@ -76,7 +76,7 @@ class HomebrewResourcesTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 brew.prepare_resources(self.root, root / "missing", {})
 
-    def test_formula_stages_each_resource_at_its_installable_root(self):
+    def test_formula_stages_each_resource_at_its_installable_root(self) -> None:
         resources = (
             brew.Resource(
                 "tomlkit", "https://example.com/tomlkit.tar.gz", "1" * 64, Path("archive")

@@ -3,85 +3,223 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated release tag to publish (for example, v0.17.0)
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
+    env:
+      UV_FROZEN: "true"
+    defaults:
+      run:
+        working-directory: release-source
+    outputs:
+      release-commit: ${{ steps.identity.outputs.release-commit }}
+      version: ${{ steps.project.outputs.version }}
+      prerelease: ${{ steps.project.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
-      - name: Extract version from tag
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
 
-      - name: Install build deps
-        run: python -m pip install --quiet build pytest pyyaml .
-
-      - name: Test
-        run: python -m pytest tests/ scripts/ -q
-
-      - name: Build sdist + wheel
-        run: python -m build
-
-      - name: Compute source tarball SHA256
+      - name: Validate annotated tag and ancestry
+        id: identity
+        working-directory: .
         run: |
-          curl -fsSL -o /tmp/source.tar.gz \
-            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          TARBALL_SHA=$(shasum -a 256 /tmp/source.tar.gz | cut -d' ' -f1)
-          echo "TARBALL_SHA=$TARBALL_SHA" >> "$GITHUB_ENV"
-          echo "Source tarball SHA256: $TARBALL_SHA"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "Release retries must run from main" >&2
+              exit 1
+            fi
+            RELEASE_COMMIT=$(python scripts/release_workflow.py validate-tag "$RELEASE_TAG")
+          else
+            RELEASE_COMMIT=$(python scripts/release_workflow.py \
+              validate-tag "$RELEASE_TAG" "$GITHUB_SHA")
+          fi
+          echo "RELEASE_COMMIT=$RELEASE_COMMIT" >> "$GITHUB_ENV"
+          echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.identity.outputs.release-commit }}
+          path: release-source
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.8.10"
+          python-version: "3.13"
+          working-directory: release-source
+
+      - name: Validate project version and determine prerelease status
+        id: project
+        run: |
+          python ../scripts/release_workflow.py project-metadata \
+            "$RELEASE_TAG" pyproject.toml >> "$GITHUB_OUTPUT"
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+
+      - run: uv sync --frozen
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run pylint src/splashdown
+      - run: uv run mypy
+      - name: Test with branch coverage
+        run: |
+          mkdir -p .cache/release
+          uv run pytest tests/ scripts/ -q --cov --cov-branch \
+            --cov-report=term-missing --cov-fail-under=80 \
+            --basetemp=.cache/release/pytest
+      - name: Build sdist then wheel from sdist
+        run: |
+          rm -rf dist build
+          uv build --sdist
+          uv build --wheel "dist/splashdown-${VERSION}.tar.gz"
+          test -f "dist/splashdown-${VERSION}.tar.gz"
+          test -f "dist/splashdown-${VERSION}-py3-none-any.whl"
+
+      - name: Verify isolated wheel and sdist installs
+        run: |
+          mkdir -p .cache/release/bundle/dist
+          cp dist/* .cache/release/bundle/dist/
+          uv venv --python 3.13 .cache/release/env-wheel
+          uv pip install --python .cache/release/env-wheel/bin/python \
+            "dist/splashdown-${VERSION}-py3-none-any.whl"
+          uv venv --python 3.13 .cache/release/env-sdist
+          uv pip install --python .cache/release/env-sdist/bin/python \
+            "dist/splashdown-${VERSION}.tar.gz"
+          test "$(.cache/release/env-wheel/bin/splash --version)" = "splashdown ${VERSION}"
+          test "$(.cache/release/env-sdist/bin/splash --version)" = "splashdown ${VERSION}"
+
+      - name: Compute source checksum and generate release notes
+        run: |
+          curl -fsSL -o .cache/release/source.tar.gz \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          sha256sum .cache/release/source.tar.gz | cut -d' ' -f1 \
+            > .cache/release/bundle/source-sha256.txt
+          uvx git-cliff@2.13.1 --current --strip all \
+            -o .cache/release/bundle/release-notes.md
+          sed -i '/^## \[/d' .cache/release/bundle/release-notes.md
+          PREV_TAG=$(python ../scripts/release_workflow.py previous-tag "$RELEASE_TAG")
+          if [ -n "$PREV_TAG" ]; then
+            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+              "$GITHUB_REPOSITORY" "$PREV_TAG" "$RELEASE_TAG" \
+              >> .cache/release/bundle/release-notes.md
+          fi
 
       - name: Generate and verify Homebrew runtime resources
         run: |
-          python scripts/homebrew_resources.py \
-            --source-sha "$TARBALL_SHA" \
+          uv run python ../scripts/homebrew_resources.py \
+            --source-sha "$(cat .cache/release/bundle/source-sha256.txt)" \
             --cache "$RUNNER_TEMP/homebrew-resources" \
             --verify-install "$RUNNER_TEMP/homebrew-venv" \
-            --output "$RUNNER_TEMP/splashdown.rb"
+            --output .cache/release/bundle/splashdown.rb
+          ruby -c .cache/release/bundle/splashdown.rb
 
-      - name: Create GitHub release
+      - name: Save verified release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle
+          path: release-source/.cache/release/bundle
+          if-no-files-found: error
+          include-hidden-files: true
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Revalidate trusted publication code
+        env:
+          RELEASE_COMMIT: ${{ needs.verify.outputs.release-commit }}
+        run: |
+          test "$(python scripts/release_workflow.py validate-tag \
+            "$RELEASE_TAG" "$RELEASE_COMMIT")" = "$RELEASE_COMMIT"
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: release-bundle
+
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
-          # Release notes = this tag's changelog section (same feat/fix grouping as
-          # CHANGELOG.md, via cliff.toml). Strip header/footer and the redundant
-          # `## [version]` heading (the release title already carries it).
-          pip install --quiet git-cliff==2.13.1
-          git-cliff --current --strip all -o /tmp/release-notes.md || true
-          sed -i '/^## \[/d' /tmp/release-notes.md
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
-          if [ -n "$PREV_TAG" ]; then
-            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-              "${GITHUB_REPOSITORY}" "${PREV_TAG}" "${GITHUB_REF_NAME}" >> /tmp/release-notes.md
+          args=()
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
           fi
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "splashdown $VERSION" \
-            --notes-file /tmp/release-notes.md
+          python scripts/release_workflow.py publish \
+            "$RELEASE_TAG" \
+            "splashdown ${{ needs.verify.outputs.version }}" \
+            release-bundle/release-notes.md \
+            "${{ needs.verify.outputs.release-commit }}" \
+            release-bundle/dist/* "${args[@]}"
 
-      - name: Update Homebrew tap
+      - name: Render, validate, and commit Homebrew formula
+        id: formula
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          git clone https://github.com/nielsmadan/homebrew-tap.git "$TAP_DIR"
+          FORMULA_ACTION=$(python scripts/render_formula.py \
+            "$VERSION" "$(cat release-bundle/source-sha256.txt)" \
+            release-bundle/splashdown.rb \
+            "$TAP_DIR/Formula/splashdown.rb")
+          if [ "$FORMULA_ACTION" = "skipped-newer" ]; then
+            echo "A newer Homebrew formula is already published"
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ruby -c "$TAP_DIR/Formula/splashdown.rb"
+          git -C "$TAP_DIR" config user.name "github-actions[bot]"
+          git -C "$TAP_DIR" config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C "$TAP_DIR" add Formula/splashdown.rb
+          if git -C "$TAP_DIR" diff --cached --quiet; then
+            echo "Homebrew formula is current"
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git -C "$TAP_DIR" commit -m "chore: update splashdown to ${VERSION}"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+          echo "tap-dir=$TAP_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Push Homebrew formula
+        if: steps.formula.outputs.push == 'true'
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_DIR: ${{ steps.formula.outputs.tap-dir }}
         run: |
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/nielsmadan/homebrew-tap.git" \
-            "$RUNNER_TEMP/homebrew-tap"
-
-          FORMULA_FILE="$RUNNER_TEMP/homebrew-tap/Formula/splashdown.rb"
-
-          cp "$RUNNER_TEMP/splashdown.rb" "$FORMULA_FILE"
-
-          cd "$RUNNER_TEMP/homebrew-tap"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/splashdown.rb
-          git diff --cached --quiet && echo "no changes to push" && exit 0
-          git commit -m "Update splashdown to ${VERSION}"
-          git push
+          BASIC_AUTH=$(printf 'x-access-token:%s' "$HOMEBREW_TAP_TOKEN" | base64 | tr -d '\n')
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $BASIC_AUTH" \
+            git -C "$TAP_DIR" push

@@ -20,7 +20,7 @@ just format         # ruff format (writes)
 just setup          # install dependencies and hooks, then verify the checkout
 just doctor         # verify tools and hook installation
 just coverage       # pytest with coverage reports
-just typecheck      # mypy --strict over src/splashdown
+just typecheck      # mypy --strict over src/splashdown and scripts/
 just build-docs     # strict user-docs build into ./site
 just serve-docs     # serve the docs site
 ```
@@ -35,7 +35,8 @@ command. `just install-editable` links it to the checkout so source edits take e
 ## Before declaring done
 
 Run `just check`, not only pytest. For dependency or release changes, also reproduce the release
-test install in a clean virtual environment with `pip install build pytest pyyaml .`.
+install verification in a clean virtual environment as documented in
+[docs/tech/release.md](docs/tech/release.md#clean-environment-verification).
 
 Coverage uses the `fail_under = 80` value in `pyproject.toml` and is enforced by CI and the
 pre-push hook. `just check` intentionally stays fast and does not collect coverage.
@@ -119,7 +120,8 @@ ownership is a comment- and whitespace-aware question `tomllib` cannot answer.
 
 ## Conventions
 
-- Runtime is Python 3.13; ruff and mypy target 3.11. Strict mypy applies to `src/splashdown`.
+- Runtime is Python 3.13; ruff and mypy target 3.11. Strict mypy applies to `src/splashdown` and
+  `scripts/`.
 - Runtime dependencies are `argcomplete`, `tomlkit`, and `pyflyrail` from PyPI (imported as `flyrail`).
   Flyrail owns instruction-section lifecycle and shares the existing TOML parser dependency.
   `scripts/homebrew_resources.py` verifies and stages the locked runtime source archives.

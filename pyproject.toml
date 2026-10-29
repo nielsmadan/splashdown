@@ -52,7 +52,7 @@ exclude_also = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 # Explicit rule families on top of ruff's defaults (extend-select). Honors the
@@ -79,6 +79,8 @@ max-args = 6
 # Tests use `setup; assert` one-liners, asserts, private access, /tmp paths,
 # local imports, unchecked subprocess, and literal expected values.
 "tests/*" = ["S101", "SLF001", "S108", "E702", "E402", "PLC0415", "PLW1510", "PLR2004"]
+# Release helper tests use plain asserts, private access, and literal expected values.
+"scripts/test_*" = ["S101", "SLF001", "PLR2004"]
 
 [tool.pylint."messages control"]
 disable = ["all"]
@@ -89,7 +91,7 @@ score = false
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/splashdown"]
+files = ["src/splashdown", "scripts"]
 strict = true
 
 [tool.pytest.ini_options]

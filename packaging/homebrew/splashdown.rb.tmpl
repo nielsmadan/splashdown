@@ -1,0 +1,34 @@
+class Splashdown < Formula
+  include Language::Python::Virtualenv
+
+  desc "Per-checkout resource provisioner: sims, ports, env templates for git worktrees"
+  homepage "https://github.com/nielsmadan/splashdown"
+  url "https://github.com/nielsmadan/splashdown/archive/refs/tags/v{{VERSION}}.tar.gz"
+  sha256 "{{SHA256}}"
+  license "MIT"
+  head "https://github.com/nielsmadan/splashdown.git", branch: "main"
+
+  depends_on "python@3.13"
+
+{{RESOURCES}}
+  def install
+    venv = virtualenv_create(libexec, "python3.13")
+{{INSTALL_RESOURCES}}
+    venv.pip_install_and_link buildpath
+    generate_completions_from_executable(
+      libexec/"bin/register-python-argcomplete", "splash",
+      shell_parameter_format: :arg, base_name: "splash", shells: [:bash, :zsh]
+    )
+  end
+
+  test do
+    assert_match "splashdown #{version}", shell_output("#{bin}/splash --version")
+    Dir.chdir(testpath) do
+      ENV["XDG_STATE_HOME"] = (testpath/"state").to_s
+      system "git", "init", "-q"
+      system bin/"splash", "init", "--loader", "none"
+      assert_predicate testpath/"splashdown.toml", :exist?
+      system bin/"splash", "ai", "status"
+    end
+  end
+end

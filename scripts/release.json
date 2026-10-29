@@ -6,6 +6,14 @@
     [
       "just",
       "check"
+    ],
+    [
+      "just",
+      "coverage"
+    ],
+    [
+      "just",
+      "build"
     ]
   ],
   "tools": [

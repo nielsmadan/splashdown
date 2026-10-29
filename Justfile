@@ -39,10 +39,10 @@ doctor:
 # --- Dev ---
 
 test:
-    @uv run pytest -q
+    @uv run pytest tests/ scripts/ -q
 
 test-verbose:
-    @uv run pytest -v
+    @uv run pytest tests/ scripts/ -v
 
 # Networked compatibility canary: latest Vite + real init + worktree hook + two servers.
 # Not part of `check`; use SPLASH_SMOKE_KEEP=1 to retain its temporary workspace and logs.
@@ -65,7 +65,7 @@ lint-imports:
 format:
     @uv run ruff format
 
-# Type-check src/splashdown with mypy.
+# Type-check src/splashdown and scripts with mypy.
 typecheck:
     @uv run mypy
 
@@ -75,12 +75,13 @@ check:
     @uv run ruff format --check
     @uv run pylint src/splashdown
     @uv run mypy
-    @uv run pytest -q
+    @uv run pytest tests/ scripts/ -q
 
-# Build sdist + wheel into ./dist
+# Build sdist, then the wheel from that sdist, into ./dist
 build:
     @rm -rf dist build *.egg-info
-    @python3 -m build
+    @uv build --sdist
+    @uv build --wheel dist/splashdown-*.tar.gz
 
 # Install the current source as the global `splash` binary via uv.
 install:

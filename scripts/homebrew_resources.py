@@ -13,6 +13,7 @@ import urllib.request
 import venv
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from packaging.requirements import Requirement
 
@@ -25,10 +26,10 @@ class Resource:
     archive: Path
 
 
-def runtime_packages(root: Path) -> list[dict]:
+def runtime_packages(root: Path) -> list[dict[str, Any]]:
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     lock = tomllib.loads((root / "uv.lock").read_text())
-    by_name: dict[str, list[dict]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
     for package in lock["package"]:
         by_name.setdefault(package["name"], []).append(package)
     app = by_name[project["name"]][0]
@@ -39,10 +40,10 @@ def runtime_packages(root: Path) -> list[dict]:
         dependency["name"] for dependency in app["dependencies"]
     }:
         raise ValueError("project runtime dependencies disagree with uv.lock")
-    ordered: dict[str, dict] = {}
+    ordered: dict[str, dict[str, Any]] = {}
     active: set[str] = set()
 
-    def visit(dependency: dict) -> None:
+    def visit(dependency: dict[str, Any]) -> None:
         if set(dependency) != {"name"}:
             raise ValueError(
                 "conditional or multiple-version runtime dependencies need an explicit Homebrew policy"
@@ -82,7 +83,7 @@ def _download(url: str, destination: Path) -> None:
 
 
 def prepare_resources(
-    root: Path, cache: Path, overrides: dict | None = None
+    root: Path, cache: Path, overrides: dict[str, dict[str, str]] | None = None
 ) -> tuple[Resource, ...]:
     cache.mkdir(parents=True, exist_ok=True)
     resources: list[Resource] = []
@@ -124,7 +125,7 @@ def stage_resource(resource: Resource, destination: Path) -> Path:
 def verify_install(resources: tuple[Resource, ...], environment: Path, project: Path) -> None:
     if environment.exists():
         raise ValueError("verification environment must be new")
-    venv.EnvBuilder(with_pip=True).create(environment)
+    venv.EnvBuilder(with_pip=True, symlinks=True).create(environment)
     python = environment / "bin" / "python"
     arguments = [
         str(python),
@@ -158,42 +159,19 @@ def render_formula(version: str, source_sha: str, resources: tuple[Resource, ...
         f'    resource("{item.name}").stage {{ venv.pip_install Pathname.pwd }}'
         for item in resources
     )
-    return f'''class Splashdown < Formula
-  include Language::Python::Virtualenv
-
-  desc "Per-checkout resource provisioner: sims, ports, env templates for git worktrees"
-  homepage "https://github.com/nielsmadan/splashdown"
-  url "https://github.com/nielsmadan/splashdown/archive/refs/tags/v{version}.tar.gz"
-  sha256 "{source_sha}"
-  license "MIT"
-  head "https://github.com/nielsmadan/splashdown.git", branch: "main"
-
-  depends_on "python@3.13"
-
-{blocks}
-  def install
-    venv = virtualenv_create(libexec, "python3.13")
-{installs}
-    venv.pip_install_and_link buildpath
-    generate_completions_from_executable(
-      libexec/"bin/register-python-argcomplete", "splash",
-      shell_parameter_format: :arg, base_name: "splash", shells: [:bash, :zsh]
-    )
-  end
-
-  test do
-    assert_match "Per-checkout resource provisioner", shell_output("#{{bin}}/splash --help")
-    Dir.chdir(testpath) do
-      ENV["XDG_STATE_HOME"] = (testpath/"state").to_s
-      system "git", "init", "-q"
-      system bin/"splash", "init", "minimal"
-      assert_predicate testpath/"splashdown.toml", :exist?
-      assert_predicate testpath/"splashdown.env", :exist?
-      system bin/"splash", "ai", "status"
-    end
-  end
-end
-'''
+    template = Path(__file__).resolve().parent.parent / "packaging/homebrew/splashdown.rb.tmpl"
+    content = template.read_text(encoding="utf-8")
+    values = {
+        "{{VERSION}}": version,
+        "{{SHA256}}": source_sha,
+        "{{RESOURCES}}": blocks,
+        "{{INSTALL_RESOURCES}}": installs,
+    }
+    for placeholder, value in values.items():
+        if content.count(placeholder) != 1:
+            raise ValueError(f"formula template must contain one {placeholder} placeholder")
+        content = content.replace(placeholder, value)
+    return content
 
 
 def main() -> None:
