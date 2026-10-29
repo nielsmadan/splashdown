@@ -181,7 +181,9 @@ def _rn_run(
     destination = as_launch_destination(destination)
     device_id = _destination_id(destination)
     if isinstance(destination, IOSDestination):
-        cmd = ["npx", "react-native", "run-ios", "--udid", device_id, *_rn_ios_flags(recipe)]
+        # RN CLI resolves --udid against simulators only; a physical device needs --device.
+        target_flag = "--udid" if destination.owned else "--device"
+        cmd = ["npx", "react-native", "run-ios", target_flag, device_id, *_rn_ios_flags(recipe)]
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
             rc = subprocess.call(cmd, cwd=cwd, env=env)
         if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):

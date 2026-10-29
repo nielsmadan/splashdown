@@ -123,6 +123,13 @@ def test_rn_run_ios_and_android(tmp_path, monkeypatch):
     assert not any("--scheme" in c or "--mode" in c for c in flat)
 
 
+def test_rn_run_targets_physical_ios_device_by_device_flag(tmp_path, monkeypatch):
+    calls = _capture_profile_calls(monkeypatch)
+    r = sd.Recipe({}, tmp_path / "x.toml")
+    sd.runners._rn_run(tmp_path, r, {"kind": "ios", "udid": "P1", "physical": True})
+    assert ["npx", "react-native", "run-ios", "--device", "P1"] in calls
+
+
 def test_rn_run_scopes_android_tools_to_selected_serial(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setenv("SPLASHDOWN_TEST_SENTINEL", "kept")
