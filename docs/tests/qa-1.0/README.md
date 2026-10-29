@@ -9,6 +9,8 @@ tooling, real Git events, or real hardware, which the unit suite must never depe
 - A record identifies the tested artifact, the tool versions, the host, the scenario inputs, the
   observed output, and the final state. Keep an original failure alongside its retest rather than
   overwriting it.
+- A scenario the host cannot exercise is recorded as blocked or not run, never as a pass; a
+  support claim no available host can execute is a release-gate decision, not a test result.
 
 `mkdocs.yml` publishes `docs/user/` only, so nothing here reaches the public site.
 

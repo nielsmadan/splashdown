@@ -376,9 +376,14 @@ instructions; it is never reported as wired, and `post_checkout_files` names not
 Nesting detection lives in `hooks.py` alongside the other Git shell-outs: `_git_worktree_root`,
 `_nested_worktree`, `_nested_project`, and the shared `_print_nested_checkout_hook_note`.
 `_wire_post_checkout_native` refuses to write and prints that note when the directory is a nested
-project, so the guard sits at the single point of installation rather than at each of its callers
-(init wiring, doctor `--fix`, and trust activation). `commands.py` imports the same helpers, so
-init and trust cannot classify a directory differently.
+project. That guard covers only the native write point; the adapter installers resolve the Git
+root and write without re-checking nesting, so callers guard themselves instead: the wiring
+check's `applies` excludes nested projects (`wiring.py`) and trust activation checks
+`_nested_project` before `_activate_post_checkout_hook` (`commands.py`). A new caller that
+installs or activates a hook must apply its own `_nested_project` check; moving the guard above
+adapter dispatch was considered and deferred because a nested project is still entitled to
+adapter configuration. `commands.py` imports the same helpers, so init and trust cannot classify
+a directory differently.
 
 The shared `POST_CHECKOUT_HOOK` script is defensive: Git supplies the checkout root as its working
 directory, the script exits 0 if there is no `splashdown.toml`, resolves `splash` once, rejects a

@@ -378,7 +378,11 @@ re-running it produces no diff — and splashdown's own region is marked so it c
 removed later. `owns_config(cwd)` reports whether the loader's configuration holds splashdown's
 integration and nothing else; `approve(cwd)` runs the loader's trust command; and
 `approval_detail` states what that approval means for that loader, which `splash trust`
-prints as a warning.
+prints as a warning. Approval is decided from config content because the tools scope their
+grants differently: mise's `trust` is keyed on the config path and covers later edits, while
+direnv hashes the content and re-prompts on change (verified against `mise trust --help`,
+2026-09-12). Creation-time approval cannot substitute either: per-clone trust state does not
+travel with Git, so a linked worktree would inherit a config its own clone never approved.
 
 A `WirePlan` carries `status` (`created`, `updated`, `configured`, `reused`, `nothing`), the
 path, the text to write (`None` for the no-write outcomes), a `note` for the report, and a
