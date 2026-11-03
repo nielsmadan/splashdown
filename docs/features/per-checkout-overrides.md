@@ -51,7 +51,7 @@ and every document is validated completely before its values are used:
 
 The CLI side:
 
-- `add` validates, then writes the variant. `_target_add` (`src/splashdown/target_commands.py`) collects
+- `add` validates, then writes the variant. `add_target` (`src/splashdown/target_authoring.py`) collects
   the `--model/--ios/--device/--image/--name/--id/--platform` flags into a field dict and
   calls `target_add` (`src/splashdown/targets.py`). It rejects flags that do not belong
   to the selected target type, validates field values, re-checks for collisions against
@@ -101,8 +101,9 @@ model = "iPhone 16"
 ios   = "17.5"
 ```
 
-`splash target add <type> <variant>` flags (`src/splashdown/cli.py`) are optional, but
-only the fields belonging to the selected type are accepted:
+`splash target add <type> <variant>` accepts only fields belonging to the selected type
+(`src/splashdown/cli.py`). Named physical additions require `--id`; omitting the device variant
+starts the terminal guide. Local physical additions require a valid recipe.
 
 | Flag | Field | Used by |
 |---|---|---|
@@ -110,9 +111,9 @@ only the fields belonging to the selected type are accepted:
 | `--ios` | `ios` | simulator (runtime, e.g. `17.5`) |
 | `--device` | `device` | emulator (AVD device profile) |
 | `--image` | `image` | emulator (system image) |
-| `--name` | `name` | simulator/emulator name override; device match by name |
-| `--id` | `id` | device: exact udid / adb serial |
-| `--platform` | `platform` | device: narrow auto-pick to `ios`/`android` |
+| `--name` | `name` | simulator/emulator name override |
+| `--id` | `id` | device: required exact hardware UDID / serial |
+| `--platform` | `platform` | device: constrain identity or guide discovery to `ios`/`android` |
 
 All supplied values must be non-empty strings; `platform` is restricted to `ios` or
 `android`. The same field rules apply to hand-written recipe, local, and global target

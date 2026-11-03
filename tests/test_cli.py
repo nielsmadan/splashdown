@@ -401,7 +401,7 @@ def test_cli_target_add_help_explains_type_specific_options(capsys):
         "Android system image",
         "simulator: --model, --ios, --name",
         "emulator: --device, --image, --name",
-        "device: --name, --id, --platform",
+        "device: --id, --platform",
     ):
         assert phrase in out
 
@@ -488,7 +488,7 @@ def _device_args(tmp_path, dtype, variant=None):
 _ALL_TYPES_RECIPE = (
     '[targets.simulator.default]\nmodel = "iPhone 17"\n'
     '[targets.emulator.default]\ndevice = "pixel_9"\n'
-    "[targets.device.default]\n"
+    '[targets.device.default]\nid = "PHONE"\n'
 )
 
 

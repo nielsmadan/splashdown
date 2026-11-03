@@ -16,12 +16,55 @@ def _physical_claim(owner, **changes):
     row = sd.PhysicalClaim(
         catalog_identity="recipe:/repo:pixel",
         platform="android",
-        hardware_id="wifi:5555",
+        hardware_id="PHONE-A",
         target_label="pixel",
         owner_checkout=str(owner),
         claimed_at="2026-08-26T09:00:00+00:00",
     )
     return replace(row, **changes)
+
+
+@pytest.mark.parametrize("hardware_id", ["192.0.2.10:5555", "adb-phone._adb-tls-connect._tcp"])
+@pytest.mark.parametrize("force", [False, True])
+def test_legacy_network_claim_blocks_cutover_until_owner_releases(
+    registry, tmp_path, hardware_id, force
+):
+    from splashdown.errors import ApplicationError
+
+    owner = tmp_path / "old checkout"
+    owner.mkdir()
+    requester = tmp_path / "new"
+    requester.mkdir()
+    old = _physical_claim(owner, hardware_id=hardware_id)
+    registry._write_claims([old])
+    before = registry.claim_file.read_bytes()
+    new = _physical_claim(requester, catalog_identity="local:new:phone")
+    with pytest.raises(ApplicationError, match="Release the old claim") as error:
+        registry.attempt_claim(new, force=force)
+    assert error.value.code == "legacy_device_claim"
+    assert error.value.next_steps == (f"splash --cwd '{owner}' target release --all",)
+    assert registry.claim_file.read_bytes() == before
+    assert registry.release_claim(old.catalog_identity, str(owner)).status == "released"
+    assert registry.attempt_claim(new).status == "claimed"
+    assert registry.all_claims() == (new,)
+
+
+def test_legacy_android_claim_does_not_block_ios(registry, tmp_path):
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    old = _physical_claim(owner, hardware_id="wifi:5555")
+    registry._write_claims([old])
+    ios = _physical_claim(owner, catalog_identity="ios:phone", platform="ios", hardware_id="UDID")
+    assert registry.attempt_claim(ios).status == "claimed"
+    assert registry.all_claims() == (old, ios)
+
+
+def test_new_android_claim_rejects_transport_identity(registry, tmp_path):
+    from splashdown.errors import ApplicationError
+
+    with pytest.raises(ApplicationError, match="hardware serial"):
+        registry.attempt_claim(_physical_claim(tmp_path, hardware_id="wifi:5555"))
+    assert registry.all_claims() == ()
 
 
 def _claim_notice(owner, **changes):
@@ -53,7 +96,7 @@ def _claim_flock_worker(paths, owner, start_event, results):
 def test_claim_round_trip_and_malformed_rows_are_skipped(registry, checkout):
     row = _physical_claim(checkout)
     registry.claim_file.write_text(
-        f"recipe:/repo:pixel\tandroid\twifi:5555\tpixel\t{checkout}"
+        f"recipe:/repo:pixel\tandroid\tPHONE-A\tpixel\t{checkout}"
         "\t2026-08-26T09:00:00+00:00"
         + "\n"
         + "too\tfew\tclaim\tfields\n"

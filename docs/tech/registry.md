@@ -120,7 +120,7 @@ Devices track sims/AVDs splashdown created. Lookups: `get_device`/`devices_for`/
 
 Claims are current ownership, not managed hardware rows. The domain layer constructs catalog
 identities as `source:scope:device:variant`: recipe scope is the Git common directory, local scope
-is the checkout, and global scope is the global config path. `attempt_claim` removes dead-owner
+is the checkout, and global scope is the global config path. A successful `attempt_claim` removes dead-owner
 rows, then conflicts on either equal catalog identity or equal `(platform, hardware_id)`. The first
 key preserves one recipe target across linked worktrees and Android endpoint changes. The second
 key prevents differently named targets from claiming the same resolved phone.
@@ -130,6 +130,14 @@ key prevents differently named targets from claiming the same resolved phone.
 same-owner catalog claim is idempotent and updates a changed hardware ID while retaining the
 original claim time, after checking it does not conflict elsewhere. Generic allocation may lose a
 race after discovery, but it can continue to later configured candidates from the same snapshot.
+
+Before any Android acquisition, including `force=True`, `attempt_claim` rejects a requested
+connection address and checks live Android rows for recognizable old address keys (`:` or `._tcp`).
+Such a row raises `legacy_device_claim` before mutation, preserving all rows. The error supplies
+`splash --cwd 'owning checkout' target release --all`; that explicit recovery needs neither device
+discovery nor configuration parsing and releases the checkout's claims. No automatic conversion
+or release is attempted. Hardware-keyed rows retain their format and ownership. Opaque historical
+IDs cannot be retrospectively classified as connection addresses by this check.
 
 `release_claim` addresses one catalog identity and normally refuses another live owner's row.
 `release_claims` removes every row owned by one checkout. `all_claims(gc=True)` is registry-only

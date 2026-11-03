@@ -64,6 +64,12 @@ def _no_watchman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_checks, "watchman_available", lambda: False)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_physical_revalidation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sd.device_claims, "verify_android_connection", lambda *_a, **_k: None)
+    monkeypatch.setattr(sd.device_claims, "verify_ios_connection", lambda *_a, **_k: None)
+
+
 @pytest.fixture
 def registry(tmp_path: Path) -> sd.Registry:
     return sd.Registry(
@@ -96,6 +102,7 @@ def _stub_physical(monkeypatch, ios=None, android=None):
 def _write_physical_recipe(tmp_path):
     (tmp_path / "splashdown.toml").write_text("""
 [targets.device.default]
+id = "00008-PHONE"
 
 [project]
 framework = "flutter"

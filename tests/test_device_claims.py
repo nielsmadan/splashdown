@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -25,20 +27,168 @@ def _physical_target(variant: str, spec: dict[str, str]) -> sd.ConfiguredPhysica
     )
 
 
+def _mock_ios_revalidation(monkeypatch, devices):
+    calls = []
+
+    def probe(argv, **_kwargs):
+        calls.append(argv)
+        return json.dumps({"result": {"devices": devices}}).encode()
+
+    monkeypatch.setattr(sd.device_ios, "require_macos", lambda _operation: None)
+    monkeypatch.setattr(sd.device_ios, "check_output_finite", probe)
+    monkeypatch.setattr(
+        sd.device_claims, "verify_ios_connection", sd.device_ios.verify_ios_connection
+    )
+    return calls
+
+
+def _write_phone_target(checkout: Path, source: str) -> Path:
+    path = checkout / sd.LOCAL_NAME if source == "local" else sd._global_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[targets.device.pixel]\nplatform = "android"\nid = "ANDROID-1"\n')
+    return path
+
+
+@pytest.mark.parametrize("source", ["local", "global"])
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        (["pixel"], "text"),
+        (["pixel"], "json"),
+        (["--available", "android"], "text"),
+        (["--available", "android"], "json"),
+    ],
+)
+def test_claim_and_release_without_recipe_or_env(
+    registry, checkout, monkeypatch, capsys, source, invocation
+):
+    selection, fmt = invocation
+    _write_phone_target(checkout, source)
+    before = {path.name: path.read_bytes() for path in checkout.iterdir()}
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    discovery = []
+
+    def discover(platform, **_kwargs):
+        discovery.append(platform)
+        return (PIXEL,)
+
+    monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", discover)
+    assert sd.main(["--cwd", str(checkout), "target", "claim", *selection, "--format", fmt]) == 0
+
+    (claim,) = registry.all_claims()
+    assert (claim.hardware_id, claim.target_label, claim.owner_checkout) == (
+        "ANDROID-1",
+        "pixel",
+        str(checkout.resolve()),
+    )
+    assert claim.catalog_identity.startswith(f"{source}:")
+    output = capsys.readouterr()
+    if fmt == "json":
+        payload = json.loads(output.out)
+        assert payload["hardware_id"] == "ANDROID-1"
+        assert payload["source"] == source
+    elif selection == ["pixel"]:
+        assert "claimed pixel (android ANDROID-1)" in output.err
+    else:
+        assert output.out == "pixel\n"
+
+    assert sd.main(["--cwd", str(checkout), "target", "release", "pixel"]) == 0
+    assert capsys.readouterr().err == "released pixel\n"
+    assert registry.all_claims() == ()
+    assert discovery == ["android"]
+    assert {path.name: path.read_bytes() for path in checkout.iterdir()} == before
+
+
+@pytest.mark.parametrize("source", ["recipe", "local", "global"])
+@pytest.mark.parametrize(
+    "action", [["claim", "pixel"], ["claim", "--available", "android"], ["release", "pixel"]]
+)
+def test_claim_commands_preserve_ownership_with_invalid_config(
+    registry, checkout, monkeypatch, capsys, source, action
+):
+    global_path = _write_phone_target(checkout, "global")
+    paths = {
+        "recipe": checkout / sd.RECIPE_NAME,
+        "local": checkout / sd.LOCAL_NAME,
+        "global": global_path,
+    }
+    path = paths[source]
+    path.write_text("[targets\n")
+    registry.attempt_claim(
+        sd.PhysicalClaim(
+            f"global:{global_path.resolve()}:device:pixel",
+            "android",
+            "ANDROID-1",
+            "pixel",
+            str(checkout.resolve()),
+            "2026-11-02T12:00:00+00:00",
+        )
+    )
+    before = registry.claim_file.read_bytes()
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_a, **_k: pytest.fail("invalid configuration reached discovery"),
+    )
+
+    assert sd.main(["--cwd", str(checkout), "target", *action]) == 1
+    assert f"error: {path.name}: [document] invalid TOML" in capsys.readouterr().err
+    assert registry.claim_file.read_bytes() == before
+    assert path.read_text() == "[targets\n"
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "broken-symlink"])
+def test_claim_rejects_unreadable_recipe(registry, checkout, monkeypatch, capsys, failure):
+    _write_phone_target(checkout, "global")
+    recipe = checkout / sd.RECIPE_NAME
+    if failure == "broken-symlink":
+        recipe.symlink_to(checkout / "missing.toml")
+        expected = "No such file or directory"
+    else:
+        recipe.write_text("")
+        original_open = Path.open
+
+        def open_path(path, *args, **kwargs):
+            if path == recipe:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_path)
+        expected = "Permission denied"
+    before = registry.claim_file.read_bytes()
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    monkeypatch.setattr(
+        sd.device_claims,
+        "discover_physical_snapshot",
+        lambda *_a, **_k: pytest.fail("unreadable recipe reached discovery"),
+    )
+
+    assert sd.main(["--cwd", str(checkout), "target", "claim", "pixel"]) == 1
+    error = capsys.readouterr().err
+    assert error.startswith("error: ")
+    assert expected in error
+    assert sd.RECIPE_NAME in error
+    assert registry.claim_file.read_bytes() == before
+
+
 def test_configured_physical_targets_preserves_source_and_declaration_order(tmp_path):
     _write_recipe(
         tmp_path,
         """\
 [targets.device.recipe-first]
 platform = "ios"
+id = "IOS-1"
 [targets.device.recipe-second]
 platform = "android"
+id = "ANDROID-1"
 """,
     )
     (tmp_path / sd.LOCAL_NAME).write_text(
         """\
 [targets.device.local-first]
 platform = "android"
+id = "ANDROID-2"
 """
     )
     global_path = sd._global_config_path()
@@ -47,8 +197,10 @@ platform = "android"
         """\
 [targets.device.global-first]
 platform = "ios"
+id = "IOS-2"
 [targets.device.global-second]
 platform = "android"
+id = "ANDROID-3"
 """
     )
 
@@ -70,7 +222,7 @@ def test_recipe_target_identity_is_shared_by_linked_worktrees(tmp_path, monkeypa
     second = tmp_path / "worktree"
     second.mkdir()
     for cwd in (first, second):
-        _write_recipe(cwd, '[targets.device.phone]\nplatform = "ios"\n')
+        _write_recipe(cwd, '[targets.device.phone]\nplatform = "ios"\nid = "IOS-1"\n')
     monkeypatch.setattr(sd.device_claims, "git_dirs", lambda _cwd: sd.GitDirs(common, common))
 
     assert sd.configured_physical_targets(first)[0].catalog_identity == (
@@ -84,7 +236,7 @@ def test_recipe_target_identity_differs_between_clones(tmp_path, monkeypatch):
     first.mkdir()
     second.mkdir()
     for cwd in (first, second):
-        _write_recipe(cwd, '[targets.device.phone]\nplatform = "ios"\n')
+        _write_recipe(cwd, '[targets.device.phone]\nplatform = "ios"\nid = "IOS-1"\n')
     monkeypatch.setattr(
         sd.device_claims,
         "git_dirs",
@@ -103,7 +255,7 @@ def test_local_target_identity_is_checkout_scoped(tmp_path):
     second.mkdir()
     for cwd in (first, second):
         _write_recipe(cwd, "")
-        (cwd / sd.LOCAL_NAME).write_text('[targets.device.phone]\nplatform = "ios"\n')
+        (cwd / sd.LOCAL_NAME).write_text('[targets.device.phone]\nplatform = "ios"\nid = "IOS-1"\n')
 
     assert sd.configured_physical_targets(first)[0].catalog_identity != (
         sd.configured_physical_targets(second)[0].catalog_identity
@@ -119,7 +271,7 @@ def test_global_target_identity_is_shared_between_projects(tmp_path):
     _write_recipe(second, "")
     global_path = sd._global_config_path()
     global_path.parent.mkdir(parents=True)
-    global_path.write_text('[targets.device.phone]\nplatform = "ios"\n')
+    global_path.write_text('[targets.device.phone]\nplatform = "ios"\nid = "IOS-1"\n')
 
     assert sd.configured_physical_targets(first)[0].catalog_identity == (
         sd.configured_physical_targets(second)[0].catalog_identity
@@ -127,7 +279,7 @@ def test_global_target_identity_is_shared_between_projects(tmp_path):
 
 
 def test_recipe_target_identity_falls_back_to_resolved_recipe_path(tmp_path, monkeypatch):
-    _write_recipe(tmp_path, '[targets.device.phone]\nplatform = "ios"\n')
+    _write_recipe(tmp_path, '[targets.device.phone]\nplatform = "ios"\nid = "IOS-1"\n')
 
     def no_git(_cwd: Path) -> sd.GitDirs:
         raise ValueError("not Git")
@@ -140,10 +292,10 @@ def test_recipe_target_identity_falls_back_to_resolved_recipe_path(tmp_path, mon
 
 
 def test_global_variant_shadowed_by_project_uses_project_identity(tmp_path):
-    _write_recipe(tmp_path, '[targets.device.phone]\nplatform = "ios"\n')
+    _write_recipe(tmp_path, '[targets.device.phone]\nplatform = "ios"\nid = "IOS-1"\n')
     global_path = sd._global_config_path()
     global_path.parent.mkdir(parents=True)
-    global_path.write_text('[targets.device.phone]\nplatform = "android"\n')
+    global_path.write_text('[targets.device.phone]\nplatform = "android"\nid = "ANDROID-1"\n')
 
     targets = sd.configured_physical_targets(tmp_path)
 
@@ -174,17 +326,49 @@ def test_claim_configured_target_is_idempotent_for_owner(registry, checkout, mon
     assert len(registry.all_claims()) == 1
 
 
-@pytest.mark.parametrize("snapshot", [(), (PIXEL, IPHONE)])
+@pytest.mark.parametrize(
+    "snapshot,message",
+    [
+        ((), "no connected physical device"),
+        (
+            (PIXEL, {**PIXEL, "name": "Second connection"}),
+            "multiple connected physical devices",
+        ),
+    ],
+)
 def test_claim_configured_target_rejects_unavailable_or_ambiguous_without_writing(
-    registry, checkout, monkeypatch, snapshot
+    registry, checkout, monkeypatch, snapshot, message
 ):
-    target = _physical_target("phone", {})
+    target = _physical_target("phone", {"platform": "android", "id": "ANDROID-1"})
     monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: snapshot)
+    before = registry.claim_file.read_bytes()
 
-    with pytest.raises(sd.DeviceError):
+    with pytest.raises(sd.DeviceError, match=message):
         sd.claim_configured_target(registry, checkout, target)
 
     assert registry.all_claims() == ()
+    assert registry.claim_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("selection", ["named", "available"])
+def test_ios_claim_revalidates_before_acquiring(registry, checkout, monkeypatch, selection):
+    target = _physical_target("iphone", {"platform": "ios", "id": "IOS-1"})
+    monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (IPHONE,))
+    monkeypatch.setattr(
+        sd.device_claims, "configured_physical_targets", lambda *_a, **_k: (target,)
+    )
+    probes = _mock_ios_revalidation(monkeypatch, [])
+    before = registry.claim_file.read_bytes()
+
+    with pytest.raises(sd.DeviceError, match=r"could not verify.*IOS-1.*no longer lists"):
+        if selection == "named":
+            sd.claim_configured_target(registry, checkout, target)
+        else:
+            sd.claim_available_target(registry, checkout, "ios")
+
+    assert probes == [["xcrun", "devicectl", "list", "devices", "--json-output", "-"]]
+    assert registry.all_claims() == ()
+    assert registry.claim_file.read_bytes() == before
 
 
 def test_claim_configured_target_reports_busy_owner_and_time(registry, checkout, monkeypatch):
@@ -239,7 +423,7 @@ def test_claim_available_target_uses_catalog_order_and_skips_unavailable_targets
     first = _physical_target("first", {"platform": "android", "id": "MISSING"})
     second = _physical_target("second", {"platform": "android", "id": "ANDROID-1"})
     monkeypatch.setattr(
-        sd.device_claims, "configured_physical_targets", lambda _cwd: (first, second)
+        sd.device_claims, "configured_physical_targets", lambda _cwd, **_kwargs: (first, second)
     )
     monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL,))
 
@@ -254,7 +438,7 @@ def test_claim_available_target_retries_after_atomic_race_loss(registry, checkou
     competitor = checkout.parent / "competitor"
     competitor.mkdir()
     monkeypatch.setattr(
-        sd.device_claims, "configured_physical_targets", lambda _cwd: (first, second)
+        sd.device_claims, "configured_physical_targets", lambda _cwd, **_kwargs: (first, second)
     )
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL, IPHONE)
@@ -289,7 +473,7 @@ def test_claim_available_target_skips_same_owner_claim_created_during_race(
     first = _physical_target("first", {"platform": "android", "id": "ANDROID-1"})
     second = _physical_target("second", {"platform": "ios", "id": "IOS-1"})
     monkeypatch.setattr(
-        sd.device_claims, "configured_physical_targets", lambda _cwd: (first, second)
+        sd.device_claims, "configured_physical_targets", lambda _cwd, **_kwargs: (first, second)
     )
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL, IPHONE)
@@ -335,7 +519,9 @@ def test_claim_available_target_skips_busy_hardware_alias(registry, checkout, mo
         )
     )
     monkeypatch.setattr(
-        sd.device_claims, "configured_physical_targets", lambda _cwd: (taken, alias, fallback)
+        sd.device_claims,
+        "configured_physical_targets",
+        lambda _cwd, **_kwargs: (taken, alias, fallback),
     )
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL, IPHONE)
@@ -345,15 +531,17 @@ def test_claim_available_target_skips_busy_hardware_alias(registry, checkout, mo
 
 
 def test_claim_available_target_skips_ambiguous_target(registry, checkout, monkeypatch):
-    ambiguous = _physical_target("ambiguous", {"platform": "android"})
+    ambiguous = _physical_target("ambiguous", {"platform": "android", "id": "ANDROID-1"})
     fallback = _physical_target("fallback", {"platform": "ios", "id": "IOS-1"})
     monkeypatch.setattr(
-        sd.device_claims, "configured_physical_targets", lambda _cwd: (ambiguous, fallback)
+        sd.device_claims,
+        "configured_physical_targets",
+        lambda _cwd, **_kwargs: (ambiguous, fallback),
     )
     monkeypatch.setattr(
         sd.device_claims,
         "discover_physical_snapshot",
-        lambda *_a, **_k: (PIXEL, PIXEL_OTHER, IPHONE),
+        lambda *_a, **_k: ({**PIXEL, "error": "ambiguous connections for ANDROID-1"}, IPHONE),
     )
 
     assert sd.claim_available_target(registry, checkout, "any").target == fallback
@@ -363,7 +551,7 @@ def test_claim_available_target_filters_requested_platform(registry, checkout, m
     ios = _physical_target("ios", {"platform": "ios", "id": "IOS-1"})
     android = _physical_target("android", {"platform": "android", "id": "ANDROID-1"})
     monkeypatch.setattr(
-        sd.device_claims, "configured_physical_targets", lambda _cwd: (ios, android)
+        sd.device_claims, "configured_physical_targets", lambda _cwd, **_kwargs: (ios, android)
     )
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL, IPHONE)
@@ -374,7 +562,9 @@ def test_claim_available_target_filters_requested_platform(registry, checkout, m
 
 def test_claim_available_target_never_selects_undeclared_hardware(registry, checkout, monkeypatch):
     target = _physical_target("iphone", {"platform": "ios", "id": "IOS-1"})
-    monkeypatch.setattr(sd.device_claims, "configured_physical_targets", lambda _cwd: (target,))
+    monkeypatch.setattr(
+        sd.device_claims, "configured_physical_targets", lambda _cwd, **_kwargs: (target,)
+    )
     monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL,))
 
     with pytest.raises(sd.DeviceError, match="no configured, connected, free any physical target"):
@@ -400,3 +590,123 @@ def test_notices_for_displaced_expire_thirty_days_after_event():
             "2026-09-25T10:00:00+00:00",
         ),
     )
+
+
+def test_rebound_connection_is_rejected_before_claim(tmp_path, registry, monkeypatch):
+    (tmp_path / "splashdown.toml").write_text(
+        '[targets.device.phone]\nplatform="android"\nid="PHONE-A"\n'
+    )
+    target = sd.resolve_physical_target(tmp_path, "phone")
+    observed = {
+        "id": "PHONE-A",
+        "platform": "android",
+        "name": "Phone",
+        "transport_id": "192.0.2.10:5555",
+        "adb_transport_id": "7",
+    }
+
+    def verify(destination, expected, **_kwargs):
+        assert destination.adb_transport_id == "7"
+        assert expected == "PHONE-A"
+        raise sd.DeviceError("connection changed")
+
+    monkeypatch.setattr(sd.device_claims, "verify_android_connection", verify)
+    with pytest.raises(sd.DeviceError, match="connection changed"):
+        sd.claim_configured_target(registry, tmp_path, target, snapshot=[observed])
+    assert registry.all_claims() == ()
+
+
+def test_claim_revalidation_keeps_the_remaining_discovery_budget(tmp_path, registry, monkeypatch):
+    target = _physical_target("pixel", {"platform": "android", "id": "ANDROID-1"})
+    times = iter([100.0, 102.0])
+    budgets = []
+    with monkeypatch.context() as patch:
+        patch.setattr(sd.device_claims.time, "monotonic", lambda: next(times))
+        patch.setattr(
+            sd.device_claims,
+            "verify_android_connection",
+            lambda _destination, _id, *, timeout: budgets.append(timeout),
+        )
+        result = sd.claim_configured_target(registry, tmp_path, target, snapshot=[PIXEL], timeout=5)
+    assert result.status == "claimed"
+    assert budgets == [3.0]
+
+
+def test_run_rechecks_connection_after_preflight_and_preserves_claim(
+    tmp_path, registry, monkeypatch
+):
+    (tmp_path / "splashdown.toml").write_text(
+        '[targets.device.phone]\nplatform="android"\nid="PHONE-A"\n'
+    )
+    observed = {
+        "id": "PHONE-A",
+        "platform": "android",
+        "name": "Phone",
+        "transport_id": "192.0.2.10:5555",
+        "adb_transport_id": "7",
+    }
+    current = ["PHONE-A"]
+    checks = []
+
+    def verify(destination, expected, **_kwargs):
+        checks.append((destination.serial, destination.adb_transport_id, expected))
+        if current[0] != expected:
+            raise sd.DeviceError("connection changed")
+
+    monkeypatch.setattr(sd.device_claims, "verify_android_connection", verify)
+    monkeypatch.setattr(
+        sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: [observed]
+    )
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_a: None)
+    monkeypatch.setattr(
+        sd.target_commands, "device_run_preflight", lambda *_a: current.__setitem__(0, "PHONE-B")
+    )
+    monkeypatch.setattr(
+        sd.target_commands,
+        "device_run",
+        lambda *_a: pytest.fail("must not dispatch to replacement phone"),
+    )
+    with pytest.raises(sd.DeviceError, match="connection changed"):
+        sd.cmd_run(tmp_path, registry, "device", "phone")
+    assert checks == [("192.0.2.10:5555", "7", "PHONE-A")] * 2
+    assert registry.all_claims()[0].hardware_id == "PHONE-A"
+
+
+def test_ios_run_revalidates_after_preflight_and_preserves_existing_claim(
+    registry, checkout, monkeypatch
+):
+    _write_recipe(checkout, '[targets.device.iphone]\nplatform="ios"\nid="IOS-1"\n')
+    target = sd.resolve_physical_target(checkout, "iphone")
+    previous = sd.PhysicalClaim(
+        target.catalog_identity,
+        "ios",
+        "IOS-1",
+        "iphone",
+        str(checkout.resolve()),
+        "2026-08-26T10:00:00+00:00",
+    )
+    registry.attempt_claim(previous)
+    before = registry.claim_file.read_bytes()
+    device = {
+        "hardwareProperties": {"platform": "iOS", "udid": "IOS-1"},
+        "deviceProperties": {"name": "Niels iPhone"},
+        "connectionProperties": {"pairingState": "paired", "tunnelState": "disconnected"},
+    }
+    probes = _mock_ios_revalidation(monkeypatch, [device])
+    monkeypatch.setattr(sd.device_claims, "discover_physical_snapshot", lambda *_a, **_k: (IPHONE,))
+    monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_a: None)
+
+    def preflight(*_args):
+        device["connectionProperties"]["pairingState"] = "unpaired"
+
+    monkeypatch.setattr(sd.target_commands, "device_run_preflight", preflight)
+    launch = Mock(return_value=0)
+    monkeypatch.setattr(sd.target_commands, "device_run", launch)
+
+    with pytest.raises(sd.DeviceError, match=r"could not verify.*IOS-1.*finish pairing"):
+        sd.cmd_run(checkout, registry, "device", "iphone")
+
+    assert probes == [["xcrun", "devicectl", "list", "devices", "--json-output", "-"]] * 2
+    assert registry.all_claims() == (previous,)
+    assert registry.claim_file.read_bytes() == before
+    launch.assert_not_called()

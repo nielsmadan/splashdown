@@ -138,25 +138,54 @@ registry row is preserved so cleanup can be retried later on a capable host. See
 
 ### Physical discovery and claim selection
 
-Physical hardware cannot be created/booted/destroyed; the only operation is *discovery*.
-`_devicectl_json` in `device_ios.py` wraps `xcrun devicectl … --json-output -` (Xcode 15+) the
-same way `_xcrun_json` wraps simctl. `_ios_physical_devices` gates on
-`pairingState == paired` (not `tunnelState == connected`, because wifi devices sit disconnected
-until a launch-time tunnel) and excludes `unavailable` tunnels, returning
-`{id (udid), name, platform: "ios"}`. `_android_physical_devices` in `device_android.py` parses
-`adb devices -l`, skipping `emulator-*` serials (those are the `emulator` dtype), returning
-`{id (serial), name, platform: "android"}`.
+Physical hardware cannot be created/booted/destroyed. The platform adapters expose immutable
+`PhysicalObservation` records for onboarding and filtered dictionaries for existing launch/claim
+callers. `device_discovery.py` combines bounded platform probes, preserving inspection errors in
+`DiscoverySnapshot.issues` and blocked devices in its observations. On macOS, default discovery
+probes both platforms concurrently; other hosts default to Android. Explicit iOS selection on an
+unsupported host reports the capability problem.
 
-`physical_discover` in `devices.py` merges both for legacy resolution, and is forgiving
-by design: with `platform=None` a capability
-failure for one platform produces one warning and the other discovery path still runs. An
-*explicitly requested* platform re-raises its capability error. The optional shared `warned` set
-deduplicates warnings across several target variants. `_physical_match` filters by the spec's `id` (exact) or `name`
-(case-insensitive substring). `ensure_physical` in `devices.py` requires exactly one match —
-zero raises a setup hint from `_physical_no_match_msg`, two-or-more raises an
-"narrow with id/name/platform" error — and returns an `IOSDestination` or
-`AndroidDestination` with `owned=False`. `physical_status` maps the same match to
-`connected`/`absent`/`ambiguous` for legacy physical-target observations.
+The iOS adapter requires `pairingState == paired` and a recognized usable tunnel state. A paired
+`disconnected` tunnel remains selectable because wireless tunnels normally connect at launch.
+Unpaired, unavailable, unknown-state and missing-ID records remain visible to onboarding. Hardware
+UDID deduplication prefers a selectable record.
+
+Android parses `adb devices -l`, excludes emulator rows and retains unauthorized/offline/permission
+states for the guide. For ready rows it uses the reported ADB transport ID when available to read
+`ro.serialno`, falling back to `ro.boot.serialno`. Up to four identity probes run concurrently
+under the discovery deadline, each with a two-second ceiling. Results retain inventory order
+before connection deduplication. Empty, placeholder or malformed identities remain unselectable
+with USB guidance. Connections group by hardware ID. A sole metadata-confirmed USB connection wins
+over Wi-Fi unless their metadata conflict; unresolved duplicate connections produce an ambiguous
+record. The launch snapshot carries that ID with an error so matching that phone fails without
+blocking unrelated ready phones.
+
+`physical_match_snapshot` requires an exact hardware `id` and applies an optional platform filter.
+It raises `PhysicalAmbiguityError` for multiple matches or an ambiguous record.
+`resolve_physical_snapshot` is the shared pure destination resolver for `ensure_physical` and
+claim matching. `physical_status` translates ambiguity into its observation value, while
+acquisition rejects it. An Android destination uses `transport_id` when present, while claims
+persist the target's hardware ID. The current endpoint never replaces the saved hardware binding.
+It also carries the ephemeral numeric `adb_transport_id` when ADB supplies one. Before acquisition,
+`revalidate_physical_target` verifies both that token (`adb -t`) and the selected current endpoint
+(`adb -s`) against the expected hardware ID. iOS revalidation requires the selected UDID still be
+paired and usable, including a paired idle wireless tunnel. `cmd_run` repeats the bounded check
+after launch preflight and before dispatch. Failure stops the operation without choosing another
+phone, replacing its identity or retrying the acquisition automatically.
+`physical_discover` tolerates missing unrequested platform capabilities with a warning; an explicit
+platform request propagates its capability error.
+
+`target_authoring.py` owns direct and guided creation. It validates a local recipe and editable
+local config, or the independent global destination, before opening the guide. `device_onboarding.py`
+prints scanning progress and offers blocked-state help, explicit rescans, naming and final save
+confirmation. `picker.py` uses qwerty shortcuts and CSI/SS3 arrows with Enter. Unsupported key
+sequences are consumed as a unit. Name entry supports Backspace, Escape/EOF cancellation and
+Ctrl+C. It restores terminal attributes on every exit. `terminal.py` escapes device-provided
+control characters for display. Guided requests require text output plus terminal stdin/stderr.
+Direct named `--id` authoring needs no discovery or SDK. The final local save takes the checkout
+operation lock; global writes use a stable config sidecar lock and atomic replacement. Both re-read
+and validate their destination before a create-only edit. No locks span user prompts, and add
+never claims hardware, prepares resources or grants trust.
 
 Bare `splash target` uses the claim-aware inventory path instead. It runs one concurrent iOS and
 Android snapshot under the shared interactive deadline, matches every configured physical target
@@ -164,6 +193,10 @@ against that snapshot, and renders connection state independently from registry 
 configured target with no match renders `disconnected`; it can still render `claimed` when its
 catalog identity has a persisted claim. A platform capability failure renders that platform's
 targets `unavailable` without discarding the other platform's snapshot.
+Status consumes the adapters' full observations, preserving blocked states and probe errors.
+An unmatched target is unavailable when unidentified observations prevent establishing absence.
+A known ready peer remains healthy. Unknown iOS connection states are unavailable, and status
+includes the inspection error in its platform diagnostic.
 
 Claim-aware allocation lives in `device_claims.py`. `configured_physical_targets` builds the only
 eligible catalog from recipe, local, then global declarations, preserving declaration order within
@@ -171,11 +204,16 @@ each source. It assigns a catalog identity scoped to the Git common directory fo
 the checkout for local targets, and the global config path for global targets. Discovered hardware
 that has no configured target is never considered.
 
+Named claim/release and available-device allocation allow an absent recipe, retaining local/global
+catalog entries and directory-scoped ownership. An existing recipe, including a dangling symlink,
+must still load successfully. Available-device allocation validates the catalog before discovery.
+These operations do not depend on generated env output.
+
 `discover_physical_snapshot` invokes each requested platform once. An `any` request runs iOS and
 Android discovery concurrently under one deadline. Interactive claims and physical runs use the
 normal 30-second discovery budget. The worktree hook passes a five-second total budget.
-`match_physical_target` applies every candidate's selectors to the shared snapshot and returns a
-typed destination only for exactly one match.
+`match_physical_target` matches each candidate's hardware ID and optional platform against the
+shared snapshot and returns a typed destination only for exactly one usable match.
 
 Specific selection calls `Registry.attempt_claim` after matching. Generic selection reads one
 claim snapshot, walks the configured catalog, skips disconnected, ambiguous, busy, and
@@ -183,6 +221,10 @@ already-owned candidates, and tries later candidates from the same device snapsh
 claim race. Device discovery never runs under the claims-file lock. Registry transactions enforce
 both catalog-identity and `(platform, hardware_id)` conflicts, so aliases cannot allocate the same
 phone and recipe targets collide across linked worktrees.
+Recognizable historical Android connection-address claims block new Android acquisition until
+their owner explicitly releases them. The registry preserves those rows and provides the
+configuration- and SDK-independent `target release --all` recovery command. See
+[Physical claims and notices](registry.md#physical-claims-and-notices) for the detection boundary.
 
 ### ensure_fresh_sim: reconcile-on-drift
 

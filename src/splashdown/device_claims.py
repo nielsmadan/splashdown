@@ -12,17 +12,16 @@ from typing import Any, Literal
 from .bootstrap import git_dirs
 from .capabilities import warn_capability
 from .constants import CLAIM_NOTICE_DAYS, LOCAL_NAME, RECIPE_NAME
-from .device_android import _android_physical_devices
-from .device_ios import _ios_physical_devices
+from .device_android import _android_physical_devices, verify_android_connection
+from .device_ios import _ios_physical_devices, verify_ios_connection
 from .device_tools import DISCOVERY_TIMEOUT
 from .device_types import (
     AndroidDestination,
     ClaimNotice,
-    IOSDestination,
     LaunchDestination,
     PhysicalClaim,
 )
-from .devices import _physical_no_match_msg, physical_match_snapshot
+from .devices import resolve_physical_snapshot
 from .errors import CapabilityError, DeviceError
 from .recipe import (
     GlobalConfig,
@@ -57,11 +56,14 @@ def configured_physical_targets(
     cwd: Path, *, allow_missing_recipe: bool = False
 ) -> tuple[ConfiguredPhysicalTarget, ...]:
     recipe_path = cwd / RECIPE_NAME
-    recipe = (
-        Recipe.load(recipe_path)
-        if recipe_path.exists() or not allow_missing_recipe
-        else Recipe({}, recipe_path)
-    )
+    try:
+        recipe_path.lstat()
+    except FileNotFoundError:
+        if not allow_missing_recipe:
+            raise
+        recipe = Recipe({}, recipe_path)
+    else:
+        recipe = Recipe.load(recipe_path)
     local = LocalConfig.load(cwd / LOCAL_NAME)
     global_config = GlobalConfig.load(_global_config_path())
     merged_targets(recipe, local, global_config)
@@ -92,8 +94,10 @@ def configured_physical_targets(
     return tuple(catalog)
 
 
-def resolve_physical_target(cwd: Path, requested: str | None) -> ConfiguredPhysicalTarget:
-    catalog = configured_physical_targets(cwd)
+def resolve_physical_target(
+    cwd: Path, requested: str | None, *, allow_missing_recipe: bool = False
+) -> ConfiguredPhysicalTarget:
+    catalog = configured_physical_targets(cwd, allow_missing_recipe=allow_missing_recipe)
     variants = {target.variant: target.spec for target in catalog}
     variant, _spec = resolve_variant(variants, requested, load_settings(cwd).prefix_match)
     return next(target for target in catalog if target.variant == variant)
@@ -150,19 +154,19 @@ def discover_physical_snapshot(
 def match_physical_target(
     target: ConfiguredPhysicalTarget, snapshot: Sequence[dict[str, str]]
 ) -> LaunchDestination:
-    matches = physical_match_snapshot(target.spec, snapshot)
-    if not matches:
-        raise DeviceError(_physical_no_match_msg(target.spec))
-    if len(matches) > 1:
-        listing = ", ".join(f"{device['name']} ({device['id']})" for device in matches)
-        raise DeviceError(
-            f"multiple connected physical devices ({listing}); narrow with "
-            "`id`/`name`/`platform` on the variant"
-        )
-    device = matches[0]
-    if device["platform"] == "ios":
-        return IOSDestination(device["name"], device["id"], owned=False)
-    return AndroidDestination(device["name"], device["id"], owned=False)
+    return resolve_physical_snapshot(target.spec, snapshot)
+
+
+def revalidate_physical_target(
+    target: ConfiguredPhysicalTarget,
+    destination: LaunchDestination,
+    *,
+    timeout: float = DISCOVERY_TIMEOUT,
+) -> None:
+    if isinstance(destination, AndroidDestination):
+        verify_android_connection(destination, target.spec["id"], timeout=timeout)
+    else:
+        verify_ios_connection(destination, target.spec["id"], timeout=timeout)
 
 
 def _now() -> datetime:
@@ -175,7 +179,7 @@ def _claim_row(
     return PhysicalClaim(
         target.catalog_identity,
         destination.platform,
-        destination.identifier or "",
+        str(target.spec["id"]),
         target.variant,
         str(cwd.resolve()),
         _now().isoformat(),
@@ -202,12 +206,14 @@ def claim_configured_target(
     timeout: float = DISCOVERY_TIMEOUT,
     snapshot: Sequence[dict[str, str]] | None = None,
 ) -> PhysicalSelection:
+    deadline = time.monotonic() + timeout
     selected_snapshot = (
         tuple(snapshot)
         if snapshot is not None
         else discover_physical_snapshot(target.spec.get("platform", "any"), timeout=timeout)
     )
     destination = match_physical_target(target, selected_snapshot)
+    revalidate_physical_target(target, destination, timeout=_remaining_timeout(deadline))
     attempt = registry.attempt_claim(_claim_row(cwd, target, destination), force=force)
     if attempt.status == "busy":
         raise _busy_error(target, attempt.conflicts)
@@ -223,9 +229,11 @@ def claim_available_target(
     *,
     timeout: float = DISCOVERY_TIMEOUT,
 ) -> PhysicalSelection:
-    snapshot = discover_physical_snapshot(platform, timeout=timeout)
+    deadline = time.monotonic() + timeout
+    catalog = configured_physical_targets(cwd, allow_missing_recipe=True)
+    snapshot = discover_physical_snapshot(platform, timeout=_remaining_timeout(deadline))
     claims = registry.all_claims()
-    for target in configured_physical_targets(cwd):
+    for target in catalog:
         if platform != "any" and target.spec.get("platform") not in (None, platform):
             continue
         try:
@@ -236,13 +244,11 @@ def claim_available_target(
             claim
             for claim in claims
             if claim.catalog_identity == target.catalog_identity
-            or (
-                claim.platform == destination.platform
-                and claim.hardware_id == (destination.identifier or "")
-            )
+            or (claim.platform == destination.platform and claim.hardware_id == target.spec["id"])
         ]
         if matching_claims:
             continue
+        revalidate_physical_target(target, destination, timeout=_remaining_timeout(deadline))
         attempt = registry.attempt_claim(_claim_row(cwd, target, destination))
         if attempt.status == "busy":
             continue

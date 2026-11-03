@@ -91,8 +91,8 @@ leaf validator, `validate_target_spec`. Together they enforce:
 - each type table and each variant spec is a TOML table;
 - `simulator` accepts only `model`, `ios`, and `name`;
 - `emulator` accepts only `device`, `image`, and `name`;
-- `device` accepts only `id`, `name`, and `platform`, with platform restricted
-  to `ios` or `android`;
+- `device` requires exact hardware `id` and optionally accepts `platform`, restricted to `ios`
+  or `android`; whitespace, network addresses and wireless service names are rejected as IDs;
 - every supplied leaf is a non-empty string.
 
 It also carries one migration guard: any top-level `[devices.*]` table raises a

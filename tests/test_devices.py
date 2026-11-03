@@ -131,9 +131,9 @@ def test_ensure_fresh_recreates_when_udid_gone(registry, checkout, monkeypatch):
     assert info["udid"] == "UDID-NEW"
 
 
-def test_ensure_physical_autopicks_lone_ios(monkeypatch):
+def test_ensure_physical_resolves_exact_ios_id(monkeypatch):
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    info = sd.ensure_physical({})
+    info = sd.ensure_physical({"id": "00008-PHONE"})
     assert info == {
         "kind": "ios",
         "name": "Niels's iPhone",
@@ -142,9 +142,9 @@ def test_ensure_physical_autopicks_lone_ios(monkeypatch):
     }
 
 
-def test_ensure_physical_autopicks_lone_android(monkeypatch):
+def test_ensure_physical_resolves_exact_android_id(monkeypatch):
     _stub_physical(monkeypatch, android=[_PIXEL])
-    info = sd.ensure_physical({})
+    info = sd.ensure_physical({"id": "PXL1234"})
     assert info["kind"] == "android"
     assert info["serial"] == "PXL1234"
     assert info["physical"] is True
@@ -157,16 +157,15 @@ def test_ensure_physical_filters_by_id(monkeypatch):
     assert info["udid"] == "OTHER"
 
 
-def test_ensure_physical_filters_by_name_case_insensitive(monkeypatch):
-    other = {"id": "OTHER", "name": "Spare", "platform": "ios"}
-    _stub_physical(monkeypatch, ios=[_IPHONE, other])
-    info = sd.ensure_physical({"name": "niels"})
-    assert info["udid"] == "00008-PHONE"
+def test_ensure_physical_requires_id_even_with_matching_name(monkeypatch):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    with pytest.raises(sd.DeviceError, match="exact hardware"):
+        sd.ensure_physical({"name": "niels"})
 
 
-def test_ensure_physical_platform_scopes_autopick(monkeypatch):
+def test_ensure_physical_platform_scopes_exact_id(monkeypatch):
     _stub_physical(monkeypatch, ios=[_IPHONE], android=[_PIXEL])
-    info = sd.ensure_physical({"platform": "android"})
+    info = sd.ensure_physical({"platform": "android", "id": "PXL1234"})
     assert info["serial"] == "PXL1234"
 
 
@@ -222,8 +221,13 @@ def test_global_android_variant_scopes_react_native_launch(tmp_path, registry, m
     )
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.pixel]\nplatform = "android"\nname = "Pixel_9a"\n')
-    selected = {"id": "192.0.2.10:42137", "name": "Pixel_9a", "platform": "android"}
+    p.write_text('[targets.device.pixel]\nplatform = "android"\nid = "PIXEL9A"\n')
+    selected = {
+        "id": "PIXEL9A",
+        "transport_id": "192.0.2.10:42137",
+        "name": "Pixel_9a",
+        "platform": "android",
+    }
     _stub_physical(monkeypatch, android=[selected, _PIXEL])
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: (selected, _PIXEL)
@@ -254,7 +258,7 @@ def test_react_native_with_expo_modules_launches_claimed_wireless_device(
 ):
     (tmp_path / sd.RECIPE_NAME).write_text(
         '[apps.main]\npath = "."\nprofile = "react-native"\nresources = []\n'
-        '[targets.device.pixel]\nplatform = "android"\nname = "Pixel_9a"\n'
+        '[targets.device.pixel]\nplatform = "android"\nid = "PIXEL9A"\n'
     )
     (tmp_path / "package.json").write_text(
         json.dumps(
@@ -270,7 +274,7 @@ def test_react_native_with_expo_modules_launches_claimed_wireless_device(
     )
     (tmp_path / "app.json").write_text('{"name": "Demo", "displayName": "Demo"}')
     serial = "adb-4C081JEBF05757-GcRL7G._adb-tls-connect._tcp"
-    selected = {"id": serial, "name": "Pixel_9a", "platform": "android"}
+    selected = {"id": "PIXEL9A", "transport_id": serial, "name": "Pixel_9a", "platform": "android"}
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: (_PIXEL, selected)
     )
@@ -291,19 +295,19 @@ def test_react_native_with_expo_modules_launches_claimed_wireless_device(
         "--active-arch-only",
     ]
     assert kwargs["env"]["ANDROID_SERIAL"] == serial
-    assert registry.all_claims()[0].hardware_id == serial
+    assert registry.all_claims()[0].hardware_id == "PIXEL9A"
 
 
 def test_ensure_physical_errors_when_none(monkeypatch):
     _stub_physical(monkeypatch)
     with pytest.raises(sd.DeviceError, match="no connected physical device"):
-        sd.ensure_physical({})
+        sd.ensure_physical({"id": "00008-PHONE"})
 
 
 def test_ensure_physical_errors_when_ambiguous(monkeypatch):
-    _stub_physical(monkeypatch, ios=[_IPHONE], android=[_PIXEL])
+    _stub_physical(monkeypatch, ios=[_IPHONE], android=[{**_PIXEL, "id": "00008-PHONE"}])
     with pytest.raises(sd.DeviceError, match="multiple connected"):
-        sd.ensure_physical({})
+        sd.ensure_physical({"id": "00008-PHONE"})
 
 
 def test_physical_discover_tolerates_missing_ios_toolchain(monkeypatch, capsys):
@@ -320,11 +324,26 @@ def test_physical_discover_tolerates_missing_ios_toolchain(monkeypatch, capsys):
 
 def test_physical_status_states(monkeypatch):
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    assert sd.physical_status({}) == "connected"
+    assert sd.physical_status({"id": "00008-PHONE"}) == "connected"
     _stub_physical(monkeypatch)
-    assert sd.physical_status({}) == "absent"
-    _stub_physical(monkeypatch, ios=[_IPHONE], android=[_PIXEL])
-    assert sd.physical_status({}) == "ambiguous"
+    assert sd.physical_status({"id": "00008-PHONE"}) == "absent"
+    _stub_physical(monkeypatch, ios=[_IPHONE], android=[{**_PIXEL, "id": "00008-PHONE"}])
+    assert sd.physical_status({"id": "00008-PHONE"}) == "ambiguous"
+
+
+def test_physical_ambiguity_record_has_consistent_status_and_acquisition(monkeypatch):
+    from splashdown.errors import PhysicalAmbiguityError
+
+    _stub_physical(monkeypatch, android=[{**_PIXEL, "error": "Conflicting connections"}])
+    assert sd.physical_status({"platform": "android", "id": _PIXEL["id"]}) == "ambiguous"
+    with pytest.raises(PhysicalAmbiguityError, match="Conflicting connections"):
+        sd.ensure_physical({"platform": "android", "id": _PIXEL["id"]})
+
+
+def test_physical_status_preserves_invalid_spec_error(monkeypatch):
+    _stub_physical(monkeypatch, ios=[_IPHONE])
+    with pytest.raises(sd.DeviceError, match="exact hardware"):
+        sd.physical_status({})
 
 
 def test_ios_physical_devices_parses_devicectl(monkeypatch):
@@ -386,9 +405,15 @@ def test_android_physical_devices_excludes_emulators(monkeypatch):
         b"ZZZ                 unauthorized\n"
     )
     monkeypatch.setattr(sd.device_android, "_android_bin", lambda name: "/fake/adb")
-    monkeypatch.setattr(sd.devices.subprocess, "check_output", lambda *a, **k: out)
+    monkeypatch.setattr(
+        sd.devices.subprocess,
+        "check_output",
+        lambda argv, **k: out if argv[1:] == ["devices", "-l"] else b"PXL1234\n",
+    )
     devices = sd._android_physical_devices()
-    assert devices == [{"id": "PXL1234", "name": "Pixel_7", "platform": "android"}]
+    assert devices == [
+        {"id": "PXL1234", "name": "Pixel_7", "platform": "android", "adb_transport_id": "2"}
+    ]
 
 
 def test_ios_physical_devices_forwards_timeout_budget(monkeypatch):
@@ -494,7 +519,7 @@ def test_match_physical_target_filters_supplied_snapshot_without_discovery(monke
         variant="pixel",
         source="recipe",
         catalog_identity="recipe:test:device:pixel",
-        spec={"platform": "android", "name": "pixel"},
+        spec={"platform": "android", "id": "PXL1234"},
     )
     monkeypatch.setattr(
         sd.device_claims,
@@ -1855,7 +1880,8 @@ def test_target_inventory_discovers_platforms_concurrently_under_shared_budget(
     registry, checkout, monkeypatch, capsys
 ):
     (checkout / sd.RECIPE_NAME).write_text(
-        '[targets.device.iphone]\nplatform = "ios"\n[targets.device.pixel]\nplatform = "android"\n'
+        '[targets.device.iphone]\nplatform = "ios"\nid = "00008-PHONE"\n'
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
     )
     ios_started = threading.Event()
     android_started = threading.Event()
@@ -1896,6 +1922,7 @@ def test_target_inventory_keeps_claims_when_connection_is_ambiguous_or_unavailab
         """
 [targets.device.ambiguous]
 platform = "android"
+id = "PXL1234"
 
 [targets.device.iphone]
 platform = "ios"
@@ -1925,7 +1952,7 @@ id = "00008-PHONE"
     monkeypatch.setattr(
         sd.device_claims,
         "_android_physical_devices",
-        lambda **_kwargs: [_PIXEL, {"id": "OTHER", "name": "Other", "platform": "android"}],
+        lambda **_kwargs: [_PIXEL, {"id": "PXL1234", "name": "Other", "platform": "android"}],
     )
 
     assert sd.cmd_targets_list(checkout, registry, "json") == 0
@@ -2505,7 +2532,7 @@ def test_device_run_no_custom_command_uses_framework(tmp_path, monkeypatch):
 
 
 def test_global_target_add_and_remove(tmp_path):
-    path = sd.global_target_add("device", "my-iphone", {"platform": "ios", "name": "Niels iPhone"})
+    path = sd.global_target_add("device", "my-iphone", {"platform": "ios", "id": "00008-PHONE"})
     assert path == sd._global_config_path()
     gc = sd.GlobalConfig.load(path)
     assert gc.targets["device"]["my-iphone"]["platform"] == "ios"
@@ -2514,9 +2541,9 @@ def test_global_target_add_and_remove(tmp_path):
 
 
 def test_global_target_add_rejects_duplicate(tmp_path):
-    sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+    sd.global_target_add("device", "my-iphone", {"platform": "ios", "id": "00008-PHONE"})
     with pytest.raises(sd.DeviceError, match="already exists"):
-        sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+        sd.global_target_add("device", "my-iphone", {"platform": "ios", "id": "00008-PHONE"})
 
 
 def test_global_target_add_rejects_incompatible_fields():

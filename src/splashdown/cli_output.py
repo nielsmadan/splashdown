@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from .errors import ApplicationError
 from .results import CommandResult, OutputFormat, result_payload
+from .terminal import terminal_text
 
 if TYPE_CHECKING:
     from .device_claims import PhysicalSelection
@@ -53,7 +54,7 @@ def render_claim_selection(selection: PhysicalSelection, fmt: str, *, available:
         "target": selection.target.variant,
         "source": selection.target.source,
         "platform": selection.destination.platform,
-        "hardware_id": selection.destination.identifier or "",
+        "hardware_id": selection.claim.hardware_id,
         "owner": selection.claim.owner_checkout,
         "claimed_at": selection.claim.claimed_at,
         "status": selection.status,
@@ -65,7 +66,7 @@ def render_claim_selection(selection: PhysicalSelection, fmt: str, *, available:
     else:
         print(
             f"claimed {selection.target.variant} ({selection.destination.platform} "
-            f"{selection.destination.identifier}) for {selection.claim.owner_checkout}",
+            f"{selection.claim.hardware_id}) for {selection.claim.owner_checkout}",
             file=sys.stderr,
         )
 
@@ -160,13 +161,13 @@ def render_status_result(result: CommandResult, *, verbose: bool = False) -> Non
         for check in checks:
             if not isinstance(check, dict):
                 continue
-            print(f"  {check['state']}: {check['message']}")
+            print(terminal_text(f"  {check['state']}: {check['message']}", multiline=True))
             if verbose and check.get("path"):
                 print(f"    {check['path']}")
             steps = check.get("next_steps")
             if isinstance(steps, list):
                 for step in steps:
-                    print(f"    {step}")
+                    print(terminal_text(f"    {step}", multiline=True))
 
 
 def render_env_result(result: CommandResult) -> None:
@@ -242,16 +243,16 @@ def render_sync(
 
 def render_application_error(error: ApplicationError) -> int:
     prefix = "error: " if error.is_error else ""
-    print(f"{prefix}{error}", file=sys.stderr)
+    print(terminal_text(f"{prefix}{error}", multiline=True), file=sys.stderr)
     for warning in dict.fromkeys(error.warnings):
-        print(f"warning: {warning.message}", file=sys.stderr)
+        print(terminal_text(f"warning: {warning.message}", multiline=True), file=sys.stderr)
     for step in dict.fromkeys(error.next_steps):
-        print(step, file=sys.stderr)
+        print(terminal_text(step, multiline=True), file=sys.stderr)
     return error.exit_code
 
 
 def render_untyped_error(error: Exception) -> int:
-    print(f"error: {error}", file=sys.stderr)
+    print(terminal_text(f"error: {error}", multiline=True), file=sys.stderr)
     return 1
 
 
@@ -268,11 +269,11 @@ def emit_result(
         if render_text is not None:
             render_text(result)
         for warning in dict.fromkeys(result.warnings):
-            print(f"warning: {warning.message}", file=sys.stderr)
+            print(terminal_text(f"warning: {warning.message}", multiline=True), file=sys.stderr)
         if result.error is not None:
-            print(f"error: {result.error.message}", file=sys.stderr)
+            print(terminal_text(f"error: {result.error.message}", multiline=True), file=sys.stderr)
         for step in dict.fromkeys(result.next_steps):
-            print(step, file=sys.stderr)
+            print(terminal_text(step, multiline=True), file=sys.stderr)
     return result.exit_code
 
 

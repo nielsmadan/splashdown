@@ -8,7 +8,7 @@ import pytest
 import splashdown as sd
 from conftest import _git_init
 from splashdown import bootstrap, status, status_targets
-from splashdown.device_types import EmulatorRecord, SimulatorRecord
+from splashdown.device_types import EmulatorRecord, PhysicalObservation, SimulatorRecord
 from splashdown.port_inspection import PortOwner
 from splashdown.registry import RegistrySnapshot
 from splashdown.results import Diagnostic
@@ -357,7 +357,7 @@ def test_physical_mixed_platform_keeps_known_connection(tmp_path, monkeypatch):
     monkeypatch.setattr(
         status_targets,
         "_physical_android",
-        lambda: [{"id": "ANDROID", "platform": "android", "name": "Pixel"}],
+        lambda: [PhysicalObservation("android", "Pixel", "ANDROID", "ANDROID", "ready", "", True)],
     )
     result = status.build_status_report(tmp_path, RegistrySnapshot())
     row = _row(result)
@@ -366,10 +366,79 @@ def test_physical_mixed_platform_keeps_known_connection(tmp_path, monkeypatch):
     assert result.exit_code == 0
 
 
+@pytest.mark.parametrize(
+    "tunnel,expected", [("disconnected", "connected"), ("future-state", "unavailable")]
+)
+def test_ios_status_shares_deduplication_and_connection_rules(monkeypatch, tunnel, expected):
+    device = {
+        "hardwareProperties": {"platform": "iOS", "udid": "PHONE"},
+        "connectionProperties": {"pairingState": "paired", "tunnelState": tunnel},
+        "deviceProperties": {"name": "Phone"},
+    }
+    monkeypatch.setattr(
+        sd.device_ios,
+        "_devicectl_json",
+        lambda *_a, **_k: {"result": {"devices": [device, device]}},
+    )
+    observed = status_targets.TargetObservations().physical({"platform": "ios", "id": "PHONE"})
+    assert observed[1] == expected
+
+
+def test_android_identity_failure_is_unavailable_with_healthy_peer(tmp_path, monkeypatch):
+    _recipe(
+        tmp_path,
+        '[targets.device.a]\nplatform="android"\nid="PHONE-A"\n'
+        '[targets.device.b]\nplatform="android"\nid="PHONE-B"\n',
+    )
+    inventories = []
+
+    def adb(args, **kwargs):
+        if args[1:] == ["devices", "-l"]:
+            inventories.append(args)
+            return b"List of devices attached\nPHONE-A device\nPHONE-B device\n"
+        if args[2] == "PHONE-A":
+            raise sd.DeviceError("identity probe timed out")
+        assert args[2] == "PHONE-B"
+        return b"PHONE-B\n"
+
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda tool: tool)
+    monkeypatch.setattr(sd.device_android, "check_output_finite", adb)
+    row = _row(status.build_status_report(tmp_path, RegistrySnapshot()))
+    targets = {target["variant"]: target for target in row["targets"]}
+    assert (targets["a"]["status"], targets["a"]["health"]) == ("unavailable", "unavailable")
+    assert (targets["b"]["status"], targets["b"]["health"]) == ("connected", "healthy")
+    check = _checks(row)["target_discovery:android"]
+    assert check["state"] == "unavailable"
+    assert "identity probe timed out" in check["message"]
+    assert inventories == [["adb", "devices", "-l"]]
+
+
+def test_known_blocked_phone_does_not_hide_another_absent_id(monkeypatch):
+    monkeypatch.setattr(
+        status_targets,
+        "_physical_ios",
+        lambda: [
+            PhysicalObservation("ios", "Phone", "OTHER", "OTHER", "unavailable", "Reconnect", False)
+        ],
+    )
+    observations = status_targets.TargetObservations()
+    assert observations.physical({"platform": "ios", "id": "MISSING"}) == (
+        "MISSING",
+        "absent",
+        "missing",
+    )
+    assert observations.physical({"platform": "ios", "id": "OTHER"}) == (
+        "OTHER",
+        "unavailable",
+        "unavailable",
+    )
+    assert observations.unavailable == {"ios": "Reconnect"}
+
+
 @pytest.mark.parametrize("raw", [b"", b"wrong header\n", b"List of devices attached\nbad\n"])
 def test_malformed_android_probe_is_not_absence(monkeypatch, raw):
-    monkeypatch.setattr(status_targets, "_android_bin", lambda tool: tool)
-    monkeypatch.setattr(status_targets, "check_output_finite", lambda *args, **kwargs: raw)
+    monkeypatch.setattr(sd.device_android, "_android_bin", lambda tool: tool)
+    monkeypatch.setattr(sd.device_android, "check_output_finite", lambda *args, **kwargs: raw)
     with pytest.raises(sd.DeviceError):
         status_targets._physical_android()
 

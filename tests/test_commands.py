@@ -76,9 +76,7 @@ def test_physical_run_claims_snapshot_before_launch_and_reuses_its_claim(tmp_pat
     assert [claim.target_label for claim in sd.Registry().all_claims()] == ["default"]
 
 
-def test_explicit_physical_actions_require_recipe_even_with_global_target(
-    tmp_path, registry, monkeypatch
-):
+def test_physical_run_requires_recipe_even_with_global_target(tmp_path, registry, monkeypatch):
     sd.global_target_add("device", "pixel", {"platform": "android", "id": "PXL1234"})
     monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
     monkeypatch.setattr(sd.target_commands, "device_run", lambda *_args: 0)
@@ -90,12 +88,7 @@ def test_explicit_physical_actions_require_recipe_even_with_global_target(
 
     with pytest.raises(FileNotFoundError):
         sd.cmd_run(tmp_path, registry, "device", "pixel")
-    with pytest.raises(FileNotFoundError):
-        sd.cmd_target_claim(tmp_path, registry, "pixel", available=None, force=False, fmt="text")
-    with pytest.raises(FileNotFoundError):
-        sd.cmd_target_claim(tmp_path, registry, None, available="android", force=False, fmt="text")
-    with pytest.raises(FileNotFoundError):
-        sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=False)
+    assert registry.all_claims() == ()
 
 
 @pytest.mark.parametrize(
@@ -169,17 +162,23 @@ def test_physical_run_claim_rejects_other_live_owner_before_framework_launch(tmp
         ((), "no connected physical device"),
         (
             (
-                {"id": "PXL1234", "name": "Pixel", "platform": "android"},
-                {"id": "PXL5678", "name": "Pixel", "platform": "android"},
+                {
+                    "id": "PXL1234",
+                    "name": "Pixel",
+                    "platform": "android",
+                    "error": "ambiguous connections for PXL1234",
+                },
             ),
-            "multiple connected physical devices",
+            "ambiguous connections",
         ),
     ],
 )
 def test_physical_run_claim_rejects_unavailable_target_before_framework_launch(
     tmp_path, registry, monkeypatch, snapshot, message
 ):
-    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
     monkeypatch.setattr(sd.target_commands, "validate_device_run", lambda *_args: None)
     monkeypatch.setattr(
         sd.device_claims, "discover_physical_snapshot", lambda *_args, **_kwargs: snapshot
@@ -372,7 +371,9 @@ def test_target_claims_reads_registry_without_device_discovery(
 def test_target_release_specific_is_discovery_free_and_releases_owner(
     tmp_path, registry, monkeypatch, capsys
 ):
-    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
     target = sd.resolve_physical_target(tmp_path, "pixel")
     registry.attempt_claim(
         sd.PhysicalClaim(
@@ -417,11 +418,13 @@ def test_target_release_busy_owner_and_missing_claim_have_stable_results(
 ):
     owner = tmp_path / "owner"
     owner.mkdir()
-    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
     target = sd.resolve_physical_target(tmp_path, "pixel")
     registry.attempt_claim(
         sd.PhysicalClaim(
-            target.catalog_identity, "android", "PXL", "pixel", str(owner), "2026-08-26"
+            target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "2026-08-26"
         )
     )
 
@@ -468,10 +471,12 @@ def test_forced_claim_writes_notice_and_survives_notice_write_failure(
 def test_forced_release_writes_notice_for_displaced_owner(tmp_path, registry):
     owner = tmp_path / "owner"
     owner.mkdir()
-    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
     target = sd.resolve_physical_target(tmp_path, "pixel")
     registry.attempt_claim(
-        sd.PhysicalClaim(target.catalog_identity, "android", "PXL", "pixel", str(owner), "a")
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "a")
     )
 
     assert sd.cmd_target_release(tmp_path, registry, "pixel", all_owned=False, force=True) == 0
@@ -541,10 +546,12 @@ def test_forced_release_keeps_notice_and_output_inside_operation_lock(
 
     owner = tmp_path / "owner"
     owner.mkdir()
-    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.pixel]\nplatform = "android"\n')
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.pixel]\nplatform = "android"\nid = "PXL1234"\n'
+    )
     target = sd.resolve_physical_target(tmp_path, "pixel")
     registry.attempt_claim(
-        sd.PhysicalClaim(target.catalog_identity, "android", "PXL", "pixel", str(owner), "a")
+        sd.PhysicalClaim(target.catalog_identity, "android", "PXL1234", "pixel", str(owner), "a")
     )
     active = False
     lock_events: list[bool] = []
@@ -836,8 +843,23 @@ def test_cli_devices_lists_physical_status(tmp_path, monkeypatch, capsys):
     assert "connected" in out
 
 
+def test_target_inventory_recognizes_typed_ambiguity(tmp_path, monkeypatch, capsys):
+    _write_physical_recipe(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        sd.device_claims,
+        "_ios_physical_devices",
+        lambda **_kwargs: [{**_IPHONE, "error": "Conflicting transport records"}],
+    )
+    monkeypatch.setattr(sd.device_claims, "_android_physical_devices", lambda **_kwargs: [])
+    assert sd.main(["--cwd", str(tmp_path), "target", "--format", "json"]) == 0
+    inventory = json.loads(capsys.readouterr().out)
+    assert inventory[0]["connection"] == "ambiguous"
+
+
 def test_device_add_physical_writes_id_and_platform(tmp_path):
-    sd.target_add(tmp_path, "device", "my-phone", {"id": "ABC123", "platform": "ios", "name": None})
+    (tmp_path / sd.RECIPE_NAME).write_text("")
+    sd.target_add(tmp_path, "device", "my-phone", {"id": "ABC123", "platform": "ios"})
     text = (tmp_path / "splashdown.local.toml").read_text()
     assert "[targets.device.my-phone]" in text
     assert 'id = "ABC123"' in text
@@ -1141,7 +1163,7 @@ def test_target_add_global_writes_config(tmp_path):
             "device",
             "my-iphone",
             "--platform=ios",
-            "--name=Niels iPhone",
+            "--id=00008-PHONE",
             "--global",
         ]
     )
@@ -1152,7 +1174,7 @@ def test_target_add_global_writes_config(tmp_path):
 
 
 def test_target_remove_global(tmp_path):
-    sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+    sd.global_target_add("device", "my-iphone", {"platform": "ios", "id": "00008-PHONE"})
     rc = sd.main(["--cwd", str(tmp_path), "target", "remove", "device", "my-iphone", "--global"])
     assert rc == 0
     assert "my-iphone" not in sd.GlobalConfig.load(sd._global_config_path()).targets.get(
@@ -1162,7 +1184,7 @@ def test_target_remove_global(tmp_path):
 
 def test_target_list_marks_global_source(tmp_path, monkeypatch, capsys):
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    sd.global_target_add("device", "my-iphone", {"platform": "ios"})
+    sd.global_target_add("device", "my-iphone", {"platform": "ios", "id": "00008-PHONE"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
     assert "  global  " in line
@@ -1170,8 +1192,10 @@ def test_target_list_marks_global_source(tmp_path, monkeypatch, capsys):
 
 def test_target_list_annotates_shadowed_global(tmp_path, monkeypatch, capsys):
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    (tmp_path / sd.RECIPE_NAME).write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
-    sd.global_target_add("device", "my-iphone", {"platform": "android"})
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[targets.device.my-iphone]\nplatform = "ios"\nid = "00008-PHONE"\n'
+    )
+    sd.global_target_add("device", "my-iphone", {"platform": "android", "id": "PXL1234"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
     assert "shadows global" in line
@@ -1180,7 +1204,7 @@ def test_target_list_annotates_shadowed_global(tmp_path, monkeypatch, capsys):
 def test_global_device_resolves_in_repo_with_no_targets(tmp_path):
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\nid = "00008-PHONE"\n')
     assert sd.target_commands._declared_target_types(tmp_path) == ["device"]
     variant, spec, _ = sd.target_commands._resolve_variant_for_cli(tmp_path, "device", None)
     assert variant == "my-iphone"
@@ -1221,7 +1245,7 @@ def test_global_device_does_not_break_inference_in_mobile_project(tmp_path):
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\nid = "00008-PHONE"\n')
     assert sd.target_commands._infer_dtype(tmp_path, None) == "simulator"
 
 
@@ -1229,7 +1253,7 @@ def test_exact_global_variant_selects_device_type_in_mobile_project(tmp_path):
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.iphone17]\nplatform = "ios"\n')
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\nid = "00008-PHONE"\n')
 
     assert sd.target_commands._infer_dtype(tmp_path, None, "iphone17") == "device"
 
@@ -1238,7 +1262,7 @@ def test_exact_variant_shared_by_target_types_requires_explicit_type(tmp_path):
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.shared]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.shared]\nplatform = "ios"\n')
+    p.write_text('[targets.device.shared]\nplatform = "ios"\nid = "00008-PHONE"\n')
 
     with pytest.raises(sd.DeviceError, match="variant `shared` exists under multiple target types"):
         sd.target_commands._infer_dtype(tmp_path, None, "shared")
@@ -1249,7 +1273,7 @@ def test_cli_lifecycle_accepts_unique_global_variant_shorthand(tmp_path, monkeyp
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.iphone17]\nplatform = "ios"\nname = "Niels\'s iPhone"\n')
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\nid = "00008-PHONE"\n')
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     _stub_physical(monkeypatch, ios=[_IPHONE])
 
@@ -1260,7 +1284,7 @@ def test_global_device_type_prefix_stays_project_scoped(tmp_path):
     (tmp_path / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\nid = "00008-PHONE"\n')
     from argparse import Namespace
 
     args = Namespace(cwd=str(tmp_path), dtype="d", variant=None)
@@ -1291,9 +1315,10 @@ def test_load_variant_spec_loud_on_malformed_global(tmp_path):
 
 
 def test_target_list_annotates_local_shadowing_global(tmp_path, monkeypatch, capsys):
+    (tmp_path / sd.RECIPE_NAME).write_text("")
     _stub_physical(monkeypatch, ios=[_IPHONE])
-    sd.target_add(tmp_path, "device", "my-iphone", {"platform": "ios"})
-    sd.global_target_add("device", "my-iphone", {"platform": "android"})
+    sd.target_add(tmp_path, "device", "my-iphone", {"platform": "ios", "id": "00008-PHONE"})
+    sd.global_target_add("device", "my-iphone", {"platform": "android", "id": "PXL1234"})
     assert sd.main(["--cwd", str(tmp_path), "target"]) == 0
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "my-iphone" in ln)
     assert "  local (shadows global)  " in line

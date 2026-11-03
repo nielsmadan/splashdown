@@ -22,7 +22,7 @@ splash target add simulator repro-bug --model="iPhone 16" --ios=17.5
 
 The local file can also carry a `[settings]` block. See [Settings](settings.md).
 
-`settings` and `targets` are the only top-level sections accepted in this file. Target fields are type-specific. Simulators accept `model`, `ios`, and `name`, emulators accept `device`, `image`, and `name`, and physical devices accept `id`, `name`, and `platform`. All are optional, but supplied values must be non-empty strings, and `platform` must be `ios` or `android`. The same rules apply to `splash target add`, so an incompatible flag is rejected before the file is changed.
+`settings` and `targets` are the only top-level sections accepted in this file. Target fields are type-specific. Simulators accept `model`, `ios`, and `name`, emulators accept `device`, `image`, and `name`, and physical devices require `id` and optionally accept `platform`. Simulator and emulator fields are optional. Supplied values must be non-empty strings, and `platform` must be `ios` or `android`. The same rules apply to `splash target add`, so an incompatible flag is rejected before the file is changed.
 
 ## Machine-wide test devices
 
@@ -32,18 +32,25 @@ To reuse the same devices across every project without re-declaring them per rep
 # ~/.config/splashdown/config.toml — available in every checkout
 [targets.device.my-iphone]
 platform = "ios"
-name     = "Niels's iPhone"
+id       = "00008110-EXAMPLE"
 
 [targets.device.my-pixel]
 platform = "android"
+id = "PXL1234"
 ```
 
 Or via CLI (the `--global` flag writes here instead of the local file):
 
 ```sh
-splash target add device my-iphone --platform=ios --name="Niels's iPhone" --global
+splash target add device --platform ios --global
+# or provide a known hardware ID directly
+splash target add device my-iphone --platform ios --id 00008110-EXAMPLE --global
 splash target remove device my-iphone --global
 ```
+
+The guide stores each phone's exact hardware ID. Replace the IDs above with your own when editing
+TOML or using a direct command. See [Add a phone](devices.md#add-a-phone). Local device addition
+requires a valid recipe, while `--global` works independently of project configuration.
 
 How global variants surface in a project:
 

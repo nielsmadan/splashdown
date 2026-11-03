@@ -68,7 +68,7 @@ def test_physical_variant_completer_only_reads_configured_device_variants(checko
 
     _write_recipe(
         checkout,
-        '[targets.device.pixel]\nplatform = "android"\n'
+        '[targets.device.pixel]\nplatform = "android"\nid = "PIXEL"\n'
         '[targets.simulator.phone]\nmodel = "iPhone"\n',
     )
     monkeypatch.setattr(
@@ -311,7 +311,7 @@ def test_completion_via_main_autodetects_from_env(monkeypatch, capsys):
 def test_device_arg_completer_includes_global_device(checkout):
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\nid = "PHONE"\n')
     args = Namespace(cwd=str(checkout), dtype=None)
     assert "my-iphone" in device_arg_completer("", args)
 
@@ -332,7 +332,7 @@ def test_device_arg_completer_offers_project_variants_despite_global_device(chec
     )
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\n')
+    p.write_text('[targets.device.my-iphone]\nplatform = "ios"\nid = "PHONE"\n')
     args = Namespace(cwd=str(checkout), dtype=None)
     out = device_arg_completer("", args)
     assert "default" in out
@@ -344,7 +344,7 @@ def test_device_arg_completer_offers_unique_global_variant_in_mobile_project(che
     (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.iphone17]\nplatform = "ios"\n')
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\nid = "PHONE"\n')
     args = Namespace(cwd=str(checkout), dtype=None)
 
     assert "iphone17" in device_arg_completer("", args)
@@ -354,7 +354,7 @@ def test_device_arg_completer_offers_only_valid_commands_for_cross_type_duplicat
     (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.shared]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.shared]\nplatform = "ios"\n')
+    p.write_text('[targets.device.shared]\nplatform = "ios"\nid = "PHONE"\n')
     args = Namespace(cwd=str(checkout), dtype=None)
 
     assert device_arg_completer("", args) == ["device", "simulator"]
@@ -364,7 +364,7 @@ def test_device_arg_completer_does_not_offer_variant_claimed_by_type_prefix(chec
     (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.sim]\nplatform = "ios"\n')
+    p.write_text('[targets.device.sim]\nplatform = "ios"\nid = "PHONE"\n')
     args = Namespace(cwd=str(checkout), dtype=None)
 
     assert device_arg_completer("", args) == ["default", "device", "simulator"]
@@ -374,7 +374,7 @@ def test_variant_completer_stops_after_unique_first_slot_shorthand(checkout):
     (checkout / sd.RECIPE_NAME).write_text('[targets.simulator.default]\nmodel = "iPhone 17"\n')
     p = sd._global_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('[targets.device.iphone17]\nplatform = "ios"\n')
+    p.write_text('[targets.device.iphone17]\nplatform = "ios"\nid = "PHONE"\n')
     args = Namespace(cwd=str(checkout), dtype="iphone17")
 
     assert variant_completer("", args) == []

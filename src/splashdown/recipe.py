@@ -245,7 +245,7 @@ _RESOURCE_FIELDS = {
 _TARGET_FIELDS = {
     "simulator": {"model", "ios", "name"},
     "emulator": {"device", "image", "name"},
-    "device": {"id", "name", "platform"},
+    "device": {"id", "platform"},
 }
 _TEMPLATE_NAMES = {
     "cwd",
@@ -835,11 +835,29 @@ def validate_target_spec(
         )
     filtered = {key: value for key, value in spec.items() if value is not None}
     _allowed_keys(filtered, _TARGET_FIELDS[dtype], source=source, path=path)
+    if dtype == "device" and "id" not in filtered:
+        _schema_error(
+            source,
+            path,
+            problem="physical targets require an exact hardware id",
+            expected="id = a hardware UDID or Android serial; use `splash target add device` to discover it",
+        )
     for field, value in filtered.items():
         if field == "platform":
             _enum(value, {"ios", "android"}, source=source, path=f"{path}.{field}")
         else:
             _non_empty_string(value, source=source, path=f"{path}.{field}")
+    if dtype == "device" and (
+        any(character.isspace() for character in filtered["id"])
+        or ":" in filtered["id"]
+        or "._tcp" in filtered["id"]
+    ):
+        _schema_error(
+            source,
+            f"{path}.id",
+            problem="not a stable physical hardware identifier",
+            expected="a hardware UDID or Android serial, not a network address or discovery service",
+        )
     return filtered
 
 
@@ -933,7 +951,7 @@ LOCAL_SKELETON = """\
 # Target fields by type:
 #   simulator: model, ios, name
 #   emulator:  device, image, name
-#   device:    id, name, platform
+#   device:    id, platform
 #
 # Example: a one-off iPhone 16 sim to reproduce a bug only this checkout sees:
 #
@@ -1000,14 +1018,15 @@ GLOBAL_SKELETON = """\
 #
 # [targets.device.my-iphone]
 # platform = "ios"
-# name     = "Niels's iPhone"
+# id       = "00008110-EXAMPLE"
 #
 # [targets.device.my-pixel]
 # platform = "android"
+# id       = "PIXEL-HARDWARE-SERIAL"
 #
 # Or via CLI:
 #
-#   splash target add device my-iphone --platform=ios --name="Niels's iPhone" --global
+#   splash target add device --global
 #
 # Machine-wide settings (optional):
 #

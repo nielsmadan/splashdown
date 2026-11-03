@@ -78,7 +78,7 @@ The configuration layer expresses who owns the target:
 | Shared team test hardware for this project | `splashdown.toml` | Yes | Every checkout of this project |
 | A one-off device for one checkout | `splashdown.local.toml` | No | That checkout only |
 
-A physical-device target is only a selector. Splashdown does not pair, provision, rename, or reset the hardware. A teammate without the declared phone sees it as `absent`. The target does not block normal provisioning.
+A physical-device target binds a command label to a hardware ID. Splashdown does not pair, provision, rename, or reset the hardware. A teammate without the declared phone sees it as `absent`. The target does not block normal provisioning.
 
 Use distinct variant names such as `personal-iphone` and `team-iphone13`. A recipe or local variant shadows a global variant with the same name, and `splash target` displays the winning source.
 
@@ -113,7 +113,7 @@ adb connect 192.0.2.10:42137   # use the separate IP address & Port shown on the
 adb devices -l
 ```
 
-The connection port can change whenever Wireless debugging is toggled. Do not save an IP address and port in Splashdown config. Match Android hardware by the `model:` value from `adb devices -l`, or by its stable USB serial when cable use is expected.
+The connection port can change whenever Wireless debugging is toggled. Splashdown saves the hardware serial and resolves the current connection when you run or claim the phone. Do not save an IP address, port or wireless discovery service name in Splashdown config. If hardware identity cannot be resolved wirelessly, connect over USB and use the guided add flow.
 
 The Developer options **Stay awake** toggle only prevents sleep while charging. For an unplugged wireless device, temporarily increase the normal display timeout when a long installation needs the screen to remain awake.
 
@@ -121,38 +121,45 @@ The Developer options **Stay awake** toggle only prevents sleep while charging. 
 
 If you test on real mobile devices (phones or tablets), declare them once in the machine-wide config so every project can use them without re-adding. This is the recommended setup for anyone with a regular set of test devices.
 
-The machine-wide config lives at `~/.config/splashdown/config.toml` (it honors `$XDG_CONFIG_HOME`). Add a `device` target per device. The easiest way is the CLI, which writes to that file when you pass `--global`:
+The machine-wide config lives at `~/.config/splashdown/config.toml` (it honors `$XDG_CONFIG_HOME`).
+Start the guide to discover, name and save a phone:
 
 ```sh
-# an iPhone, matched by name
-splash target add device iphone17 --platform=ios --name="My iPhone" --global
-
-# an Android device, matched by the model reported by adb
-splash target add device pixel --platform=android --name=Pixel_9a --global
+splash target add device --global
+# or limit discovery and setup instructions to one platform
+splash target add device --platform android --global
 ```
 
-That produces:
+The guide lists connected phones and explains blocked connection states. Choose **Set up an
+unlisted phone** for setup guidance, then rescan. Letter shortcuts or arrows and Enter select an
+option. Before saving, it shows the exact hardware ID, your chosen target name and the destination
+file. See [Add a phone](devices.md#add-a-phone) for the complete flow and cancellation behavior.
+
+For a known hardware ID, the direct command also works without a connected phone or installed SDK:
+
+```sh
+splash target add device iphone17 --platform ios --id 00008110-EXAMPLE --global
+splash target add device pixel --platform android --id PXL1234 --global
+```
+
+Replace the example IDs with your devices' hardware IDs. These commands produce:
 
 ```toml
 # ~/.config/splashdown/config.toml
 [targets.device.iphone17]
 platform = "ios"
-name     = "My iPhone"
+id = "00008110-EXAMPLE"
 
 [targets.device.pixel]
 platform = "android"
-name     = "Pixel_9a"
+id = "PXL1234"
 ```
 
-Matching fields (all optional):
-
-| Field | Meaning |
-| --- | --- |
-| `platform` | `ios` or `android`, scopes auto-pick to one platform |
-| `name` | case-insensitive substring of the Xcode name or Android `model:` value |
-| `id` | exact udid (iOS) or adb serial (Android) |
-
-To look up a connected device's name or id, run `xcrun devicectl list devices` for iOS, or `adb devices -l` for Android. Android Wi-Fi serials may be a changing `IP:port`. Prefer `name` for wireless targets when only one connected device matches that model. With a single device connected you can skip these fields, and the configured target matches that device when claimed or run.
+Every physical target requires `id`, the iOS hardware UDID or Android hardware serial.
+`platform` is optional and accepts `ios` or `android`. Names such as `iphone17` and `pixel` are
+command labels. Splashdown matches hardware IDs even when a phone's display name or wireless
+connection address changes. If you need machine-readable output, add `--format json` to a direct
+named command. The interactive guide requires terminal stdin and stderr.
 
 !!! note "How global devices surface"
     Physical `device` variants from the global config are available in **every** project, because they match connected hardware and create nothing. Global `simulator` and `emulator` variants only appear in projects that already declare that target type. A project's own recipe or local variant of the same name always wins, and `splash target` shows the source (`global`, or `recipe (shadows global)`) so you can see what is in effect.
@@ -172,14 +179,17 @@ Put project-owned test phones in the committed `splashdown.toml`. Every teammate
 # splashdown.toml
 [targets.device.team-iphone13]
 platform = "ios"
-name     = "QA iPhone 13"
+id = "00008110-TEAM-EXAMPLE"
 
 [targets.device.team-pixel]
 platform = "android"
-name     = "Pixel_9a"
+id = "TEAM-PIXEL-SERIAL"
 ```
 
-Use the exact `id` instead when several connected devices could match the same name. An iPhone UDID and an Android USB serial are stable selectors for dedicated team hardware, but they are persistent hardware identifiers: commit them only to a private repository where the team has agreed to publish them. In a public repository, prefer a recognizable device `name` and keep any exact ids in local or global config. Do not commit an Android wireless `IP:port`, because it changes when the wireless-debugging service restarts.
+Replace these example IDs with the team devices' hardware IDs. Keep personal devices in local or
+global config when their identifiers should not be committed. A wireless Android connection
+address is transient and is not a valid hardware ID. The guide obtains the stable identity before
+saving a device.
 
 The recipe records the supported hardware catalog, not the pairing state. Each developer still trusts or pairs the physical device on their machine. See [The recipe](recipe.md) for the complete committed target schema and [Per-checkout overrides](overrides.md) for local and global precedence.
 

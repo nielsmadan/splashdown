@@ -4,6 +4,7 @@ import errno
 import fcntl
 import hashlib
 import os
+import shlex
 import socket
 import stat
 import tempfile
@@ -640,6 +641,31 @@ class Registry:
         with self._lock(self.claim_file):
             rows = self._read_claims()
             live_rows = [existing for existing in rows if Path(existing.owner_checkout).exists()]
+            if row.platform == "android":
+                if ":" in row.hardware_id or "._tcp" in row.hardware_id:
+                    raise ApplicationError(
+                        "Android claims require a hardware serial, not a connection address.",
+                        code="invalid_device_identity",
+                    )
+                legacy = next(
+                    (
+                        existing
+                        for existing in live_rows
+                        if existing.platform == "android"
+                        and (":" in existing.hardware_id or "._tcp" in existing.hardware_id)
+                    ),
+                    None,
+                )
+                if legacy is not None:
+                    raise ApplicationError(
+                        f"Android claim `{legacy.target_label}` owned by {legacy.owner_checkout} "
+                        "uses a connection address. Release the old claim from its owning "
+                        "checkout before acquiring Android claims with hardware IDs.",
+                        code="legacy_device_claim",
+                        next_steps=(
+                            f"splash --cwd {shlex.quote(legacy.owner_checkout)} target release --all",
+                        ),
+                    )
             conflicts = tuple(
                 existing
                 for existing in live_rows

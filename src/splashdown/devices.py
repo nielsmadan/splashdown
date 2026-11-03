@@ -51,7 +51,7 @@ from .device_types import (
 )
 
 # Public re-export for callers that import splashdown.devices.DeviceError.
-from .errors import CapabilityError
+from .errors import CapabilityError, PhysicalAmbiguityError
 from .errors import DeviceError as DeviceError  # noqa: PLC0414
 from .recipe import _current_branch, _make_scope, render_template
 from .registry import Registry
@@ -171,7 +171,7 @@ def _physical_match(
     warned: set[str] | None = None,
     on_warning: Callable[[CapabilityError], None] | None = None,
 ) -> list[dict[str, str]]:
-    """Discover and filter physical devices by a variant spec's platform/id/name."""
+    """Discover and filter physical devices by a variant's exact hardware identity."""
     devices = physical_discover(spec.get("platform"), warned=warned, on_warning=on_warning)
     return physical_match_snapshot(spec, devices)
 
@@ -184,13 +184,37 @@ def physical_match_snapshot(
     if platform:
         filtered = [device for device in filtered if device["platform"] == platform]
     want_id = spec.get("id")
-    want_name = spec.get("name")
     if want_id:
         filtered = [device for device in filtered if device["id"] == want_id]
-    elif want_name:
-        needle = str(want_name).lower()
-        filtered = [device for device in filtered if needle in device["name"].lower()]
+    else:
+        raise DeviceError("physical targets require an exact hardware `id`")
+    for device in filtered:
+        if device.get("error"):
+            raise PhysicalAmbiguityError(device["error"])
+    if len(filtered) > 1:
+        listing = ", ".join(f"{device['name']} ({device['id']})" for device in filtered)
+        raise PhysicalAmbiguityError(
+            f"multiple connected physical devices ({listing}); narrow with "
+            "`id`/`platform` on the variant"
+        )
     return filtered
+
+
+def resolve_physical_snapshot(
+    spec: dict[str, Any], snapshot: Sequence[dict[str, str]]
+) -> LaunchDestination:
+    devices = physical_match_snapshot(spec, snapshot)
+    if not devices:
+        raise DeviceError(_physical_no_match_msg(spec))
+    device = devices[0]
+    if device["platform"] == "ios":
+        return IOSDestination(device["name"], device["id"], owned=False)
+    return AndroidDestination(
+        device["name"],
+        device.get("transport_id", device["id"]),
+        owned=False,
+        adb_transport_id=device.get("adb_transport_id"),
+    )
 
 
 def ensure_physical(
@@ -199,24 +223,12 @@ def ensure_physical(
     warned: set[str] | None = None,
     on_warning: Callable[[CapabilityError], None] | None = None,
 ) -> LaunchDestination:
-    """Resolve a physical target to exactly one connected launch destination."""
-    devices = _physical_match(spec, warned=warned, on_warning=on_warning)
-    if not devices:
-        raise DeviceError(_physical_no_match_msg(spec))
-    if len(devices) > 1:
-        listing = ", ".join(f"{device['name']} ({device['id']})" for device in devices)
-        raise DeviceError(
-            f"multiple connected physical devices ({listing}); narrow with "
-            "`id`/`name`/`platform` on the variant"
-        )
-    device = devices[0]
-    if device["platform"] == "ios":
-        return IOSDestination(device["name"], device["id"], owned=False)
-    return AndroidDestination(device["name"], device["id"], owned=False)
+    snapshot = physical_discover(spec.get("platform"), warned=warned, on_warning=on_warning)
+    return resolve_physical_snapshot(spec, snapshot)
 
 
 def _physical_no_match_msg(spec: dict[str, Any]) -> str:
-    bits = [f"{key}={spec[key]!r}" for key in ("platform", "id", "name") if spec.get(key)]
+    bits = [f"{key}={spec[key]!r}" for key in ("platform", "id") if spec.get(key)]
     qualifier = f" matching {', '.join(bits)}" if bits else ""
     return (
         f"no connected physical device{qualifier}; plug one in and unlock it "
@@ -231,12 +243,11 @@ def physical_status(
     on_warning: Callable[[CapabilityError], None] | None = None,
 ) -> str:
     """Liveness for a physical target: connected, absent, or ambiguous."""
-    devices = _physical_match(spec, warned=warned, on_warning=on_warning)
-    if not devices:
-        return "absent"
-    if len(devices) > 1:
+    try:
+        devices = _physical_match(spec, warned=warned, on_warning=on_warning)
+    except PhysicalAmbiguityError:
         return "ambiguous"
-    return "connected"
+    return "connected" if devices else "absent"
 
 
 def _latest_os_for(dtype: str, cache: dict[str, str] | None) -> str:

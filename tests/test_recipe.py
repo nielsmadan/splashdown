@@ -277,7 +277,6 @@ name = "Demo"
 
 [targets.device.iphone]
 id = "ABC"
-name = "Phone"
 platform = "ios"
 """,
         tmp_path / "splashdown.toml",
@@ -574,7 +573,7 @@ def test_recipe_rejects_invalid_bootstrap_schema(tmp_path, text):
     [
         ("simulator", {"model": "iPhone", "ios": "latest", "name": "Demo"}),
         ("emulator", {"device": "pixel_9", "image": "image", "name": "Demo"}),
-        ("device", {"id": "ABC", "name": "Phone", "platform": "android"}),
+        ("device", {"id": "ABC", "platform": "android"}),
     ],
 )
 def test_target_schema_accepts_every_type(tmp_path, dtype, fields):
@@ -601,7 +600,7 @@ def test_target_schema_accepts_every_type(tmp_path, dtype, fields):
         ("simulator", {"device": "pixel"}),
         ("emulator", {"ios": "latest"}),
         ("device", {"model": "iPhone"}),
-        ("device", {"platform": "windows"}),
+        ("device", {"platform": "windows", "id": "PHONE"}),
         ("simulator", {"name": ""}),
     ],
 )
@@ -611,6 +610,21 @@ def test_target_schema_rejects_incompatible_or_invalid_fields(tmp_path, dtype, f
             {"targets": {dtype: {"default": fields}}},
             tmp_path / "splashdown.toml",
         )
+
+
+@pytest.mark.parametrize("config_type", [sd.Recipe, sd.LocalConfig, sd.GlobalConfig])
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"platform": "ios"}, "require an exact hardware id"),
+        ({"platform": "android", "id": "PHONE", "name": "Pixel"}, "unknown field `name`"),
+    ],
+)
+def test_physical_target_identity_contract_applies_to_every_config(
+    tmp_path, config_type, fields, message
+):
+    with pytest.raises(ValueError, match=message):
+        config_type({"targets": {"device": {"phone": fields}}}, tmp_path / "config.toml")
 
 
 @pytest.mark.parametrize("config_type", [sd.LocalConfig, sd.GlobalConfig])
@@ -955,10 +969,10 @@ def test_merged_targets_global_device_available_everywhere(tmp_path):
     r = sd.Recipe({}, tmp_path / "splashdown.toml")
     lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
     gc = sd.GlobalConfig(
-        {"targets": {"device": {"my-iphone": {"platform": "ios"}}}},
+        {"targets": {"device": {"my-iphone": {"platform": "ios", "id": "IOS-1"}}}},
         tmp_path / "config.toml",
     )
-    assert sd.merged_targets(r, lc, gc)["device"]["my-iphone"] == {"platform": "ios"}
+    assert sd.merged_targets(r, lc, gc)["device"]["my-iphone"] == {"platform": "ios", "id": "IOS-1"}
 
 
 def test_merged_targets_global_sim_gated_by_declared_type(tmp_path):
@@ -986,29 +1000,29 @@ def test_merged_targets_global_sim_appears_when_type_declared(tmp_path):
 
 def test_merged_targets_project_silently_shadows_global(tmp_path):
     r = sd.Recipe(
-        {"targets": {"device": {"main": {"platform": "ios", "name": "recipe-phone"}}}},
+        {"targets": {"device": {"main": {"platform": "ios", "id": "RECIPE-PHONE"}}}},
         tmp_path / "splashdown.toml",
     )
     lc = sd.LocalConfig({}, tmp_path / "splashdown.local.toml")
     gc = sd.GlobalConfig(
-        {"targets": {"device": {"main": {"platform": "android"}}}},
+        {"targets": {"device": {"main": {"platform": "android", "id": "GLOBAL-PHONE"}}}},
         tmp_path / "config.toml",
     )
     merged = sd.merged_targets(r, lc, gc)  # no error, unlike recipe-vs-local
-    assert merged["device"]["main"]["name"] == "recipe-phone"
+    assert merged["device"]["main"]["id"] == "RECIPE-PHONE"
 
 
 def test_merged_targets_local_silently_shadows_global(tmp_path):
     r = sd.Recipe({}, tmp_path / "splashdown.toml")
     lc = sd.LocalConfig(
-        {"targets": {"device": {"main": {"platform": "ios", "name": "local-phone"}}}},
+        {"targets": {"device": {"main": {"platform": "ios", "id": "LOCAL-PHONE"}}}},
         tmp_path / "splashdown.local.toml",
     )
     gc = sd.GlobalConfig(
-        {"targets": {"device": {"main": {"platform": "android"}}}},
+        {"targets": {"device": {"main": {"platform": "android", "id": "GLOBAL-PHONE"}}}},
         tmp_path / "config.toml",
     )
-    assert sd.merged_targets(r, lc, gc)["device"]["main"]["name"] == "local-phone"
+    assert sd.merged_targets(r, lc, gc)["device"]["main"]["id"] == "LOCAL-PHONE"
 
 
 def test_merged_targets_global_emulator_gated_by_declared_type(tmp_path):

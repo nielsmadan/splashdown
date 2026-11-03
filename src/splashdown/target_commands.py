@@ -23,6 +23,7 @@ from .device_claims import (
     match_physical_target,
     notices_for_displaced,
     resolve_physical_target,
+    revalidate_physical_target,
 )
 from .device_ios import _ios_current_state, _xcrun_json, ios_boot, ios_destroy, ios_shutdown
 from .device_types import AndroidDestination, IOSDestination, PhysicalClaim, as_launch_destination
@@ -35,7 +36,7 @@ from .devices import (
     device_status,
     ensure_fresh_sim,
 )
-from .errors import CapabilityError, DeviceError, UsageError
+from .errors import CapabilityError, DeviceError, PhysicalAmbiguityError, UsageError
 from .interaction import require_confirmation
 from .launching import device_run, device_run_preflight, validate_device_run
 from .provisioning import provision, write_outputs
@@ -54,9 +55,7 @@ from .targets import (
     _load_recipe_or_empty,
     _prepare_target_remove,
     _target_types_for_variant,
-    global_target_add,
     global_target_remove,
-    target_add,
     target_source,
 )
 
@@ -106,9 +105,7 @@ def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
                 destination = match_physical_target(target, snapshot)
             except DeviceError as error:
                 connection = (
-                    "ambiguous"
-                    if str(error).startswith("multiple connected physical devices")
-                    else "disconnected"
+                    "ambiguous" if isinstance(error, PhysicalAmbiguityError) else "disconnected"
                 )
             else:
                 connection = "connected"
@@ -123,7 +120,7 @@ def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
                     claim
                     for claim in claims
                     if claim.platform == destination.platform
-                    and claim.hardware_id == (destination.identifier or "")
+                    and claim.hardware_id == target.spec["id"]
                 ),
                 None,
             )
@@ -450,6 +447,8 @@ def cmd_run(cwd: Path, registry: Registry, dtype: str | None, variant_arg: str |
                 ensure_fresh_sim(registry, cwd, dtype, variant, spec)
             )
         device_run_preflight(cwd, recipe, destination, resolved)
+        if dtype == "device":
+            revalidate_physical_target(target, destination)
         if destination.owned:
             if isinstance(destination, IOSDestination):
                 ios_boot(destination.identifier, _ios_current_state(destination.identifier))
@@ -532,26 +531,6 @@ def cmd_destroy(
         device_destroy_row(row)
         registry.remove_device(abspath, dtype, variant)
     print(f"destroyed {dtype}.{variant} ({row.identifier})", file=sys.stderr)
-    return 0
-
-
-def _target_add(args: Any, cwd: Path, registry: Registry) -> int:
-    fields = {
-        "model": args.model,
-        "ios": args.ios,
-        "device": args.device,
-        "image": args.image,
-        "name": args.sim_name,
-        "id": args.device_id,
-        "platform": args.platform,
-    }
-    if getattr(args, "global_scope", False):
-        path = global_target_add(args.dtype, args.variant, fields)
-        print(f"added target `{args.dtype}.{args.variant}` to {path}", file=sys.stderr)
-        return 0
-    with registry.operation_lock(str(cwd.resolve())):
-        target_add(cwd, args.dtype, args.variant, fields)
-    print(f"added target `{args.dtype}.{args.variant}` to {LOCAL_NAME}", file=sys.stderr)
     return 0
 
 
@@ -670,7 +649,7 @@ def cmd_target_claim(
     checkout = str(cwd.resolve())
     with registry.operation_lock(checkout):
         if available is None:
-            target = resolve_physical_target(cwd, variant)
+            target = resolve_physical_target(cwd, variant, allow_missing_recipe=True)
             selection = claim_configured_target(registry, cwd, target, force=force)
         else:
             selection = claim_available_target(
@@ -711,7 +690,7 @@ def cmd_target_release(
         return 0
 
     with registry.operation_lock(checkout):
-        target = resolve_physical_target(cwd, variant)
+        target = resolve_physical_target(cwd, variant, allow_missing_recipe=True)
         result = registry.release_claim(target.catalog_identity, checkout, force=force)
         if result.status == "busy":
             raise _release_busy_error(target.variant, result.conflicts[0])
@@ -744,11 +723,9 @@ def cmd_target_claims(registry: Registry, fmt: str) -> int:
     return 0
 
 
-def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:  # noqa: PLR0911
+def _target_dispatch(args: Any, cwd: Path, registry: Registry) -> int:
     if args.target_cmd is None:
         return cmd_targets_list(cwd, registry, getattr(args, "format", None) or "text")
-    if args.target_cmd == "add":
-        return _target_add(args, cwd, registry)
     if args.target_cmd == "remove":
         return _target_remove(args, cwd, registry)
     if args.target_cmd == "refresh":

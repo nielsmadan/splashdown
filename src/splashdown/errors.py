@@ -53,6 +53,10 @@ class DeviceError(RuntimeError):
     pass
 
 
+class PhysicalAmbiguityError(DeviceError):
+    pass
+
+
 class CapabilityError(DeviceError):
     def __init__(self, capability: str, message: str) -> None:
         self.capability = capability

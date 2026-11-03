@@ -13,6 +13,9 @@ validating `result_payload` serializer. `ApplicationError` carries a stable code
 partial state, warnings and next steps. `emit_result` is the final output boundary: JSON gets one
 seven-key envelope, while text invokes a data renderer before stderr diagnostics. AI, env inspection, and status are
 migrated consumers. Other handlers retain their existing output ownership until migrated.
+Text diagnostics escape terminal control characters through `terminal.py`, preserving newlines
+and tabs. JSON retains the original message value. Physical claim output uses the persisted
+hardware ID, including when the launch destination carries a current Wi-Fi address.
 
 For the *user-facing* contract of each command, see the feature docs cross-linked under [Related](#related). This doc covers the internals — the parser quirks, the dispatch table, and how the handlers compose the lower-level modules.
 
@@ -81,6 +84,8 @@ submodule imports inside handlers.
    the checkout operation lock. Dispatch the hidden hook event before constructing a Registry.
    Handle `init` inside the ordinary error renderer but before Registry construction, so its early refusals
    do not initialize machine-wide state.
+   Dispatch `target add` through `target_authoring.py` before Registry construction or notices;
+   its handler constructs a Registry only when saving a local target.
 6. Every other checkout command constructs the Registry
    and consumes notices before dispatching trust, untrust, bootstrap, or the ordinary flat command
    table. The final fall-through is `sync` (the default), so both bare `splash` and explicit
@@ -88,7 +93,7 @@ submodule imports inside handlers.
 
 Env inspection, status, completion generation, help, version, active argcomplete, hidden hook plumbing, and init paths that
 do not sync all exit before Registry construction and therefore do not consume pending claim
-notices. Other checkout-scoped commands consume notices before their handler runs, even when that
+notices. Target addition also skips pending notices. Other checkout-scoped commands consume notices before their handler runs, even when that
 handler later fails. `render_claim_notices` in `cli_output.py` names the target, transfer or
 forced-release action, actor checkout, and event time.
 
@@ -132,7 +137,7 @@ construction, or command dispatch. It owns constraints argparse cannot express c
 parser levels: the root output-option support matrix and the redundant
 `target remove --global --keep-instance` pair. It also rejects
 `target remove device --keep-instance`, because physical devices have no owned instance. `--format`
-is valid for sync, status, init, env/env get, bare target, target claims, target claim, and ai commands. Unsupported formats use `unsupported_format`;
+is valid for sync, status, init, env/env get, bare target, target add, target claims, target claim, and ai commands. Unsupported formats use `unsupported_format`;
 other rejected combinations use `invalid_arguments`, both exit 2. This registration does not
 migrate legacy operational JSON output. AI, env inspection, and status are complete envelope consumers.
 
@@ -517,9 +522,10 @@ they get sub-dispatchers rather than a single handler: `_target_dispatch` and
 `_env_dispatch`. The target dispatcher lives in `target_commands.py`; env dispatch remains in
 `commands.py` for mutations. Env reads use the early `_dispatch_env_inspection` boundary and
 `inspect_env` result service. Bare target and env invocations list records.
-`_target_dispatch` routes to focused
-add/remove/refresh/prune/claim/claims/release handlers and receives the registry constructed by
-`main()`, so every registry-using target handler shares the composition-root dependency.
+`_target_dispatch` routes to focused remove/refresh/prune/claim/claims/release handlers and
+receives the registry constructed by `main()`. Target addition uses the early
+`_dispatch_target_add` result boundary and `target_authoring.py`, before registry construction or
+claim-notice consumption. Cancellation and global authoring therefore do not create registry files.
 
 The claim parser requires exactly one specific `VARIANT` or `--available ios|android|any`; `--force`
 is specific-only. The release parser likewise requires exactly one `VARIANT` or `--all`, with
@@ -533,10 +539,13 @@ diagnostic goes to stderr. JSON selection includes source, platform, hardware ID
 claim time, and claimed/owned status. `render_target_inventory` aligns text columns with spaces and
 abbreviates owner paths below the home directory with `~`; JSON always retains canonical paths.
 
-`target add` validates its CLI field map with the same `validate_target_spec`
-used by recipe, local, and global loads. Flags incompatible with the chosen type
-raise `DeviceError` before rendering; the complete edited `LocalConfig` or `GlobalConfig` is
-then parsed before writing. Local add/remove reopen `splashdown.local.toml` through `safe_files.py`,
+`target add` validates its CLI field map with the same `validate_target_spec` used by recipe,
+local, and global loads. Physical definitions require an exact hardware ID; direct named additions
+require `--id`, and physical `--name` is rejected. Omitting the physical variant opens
+`device_onboarding.py` only for text output with terminal stdin/stderr. Incomplete noninteractive
+requests are usage errors with an explicit-command example. Results use the shared text/JSON
+envelope. The complete edited `LocalConfig` or `GlobalConfig` is parsed before writing; global
+add/remove serialize through a stable sidecar lock and atomically replace the config. Local add/remove reopen `splashdown.local.toml` through `safe_files.py`,
 which rejects symlinked components and non-regular destinations before lifecycle mutation, then
 uses same-directory atomic replacement with mode preservation. The `env set` branch accepts only declared
 `type="set"` resources: assignment, recipe, declaration, and type failures

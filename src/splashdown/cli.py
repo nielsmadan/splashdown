@@ -430,12 +430,14 @@ def _build_parser(state: ParseState | None = None) -> _Parser:  # noqa: PLR0915 
             "Type-specific options:\n"
             "  simulator: --model, --ios, --name\n"
             "  emulator: --device, --image, --name\n"
-            "  device: --name, --id, --platform"
+            "  device: --id, --platform (omit variant for guided setup)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add.add_argument("dtype", choices=TARGET_TYPES, metavar="TYPE")
-    add.add_argument("variant", help="variant name (e.g. `default`, `small-screen`)")
+    add.add_argument(
+        "variant", nargs="?", help="variant name; omit for guided physical-device setup"
+    )
     add.add_argument("--model", help="iOS simulator model, such as `iPhone 17`")
     add.add_argument("--ios", help="iOS runtime version; defaults to the latest installed")
     add.add_argument("--device", help="Android emulator hardware profile, such as `pixel_9`")
@@ -443,13 +445,13 @@ def _build_parser(state: ParseState | None = None) -> _Parser:  # noqa: PLR0915 
     add.add_argument(
         "--name",
         dest="sim_name",
-        help="simulator/emulator name override; device: match by device name",
+        help="simulator/emulator name override",
     )
-    add.add_argument("--id", dest="device_id", help="device: exact udid / adb serial")
+    add.add_argument("--id", dest="device_id", help="device: exact UDID / Android hardware serial")
     add.add_argument(
         "--platform",
         choices=("ios", "android"),
-        help="device: scope auto-pick to one platform",
+        help="device: platform for the hardware ID or guided setup",
     )
     add.add_argument(
         "--global",
@@ -558,6 +560,31 @@ def _consume_claim_notices(cwd: Path, registry: Registry) -> None:
 
 
 def _validate_parsed_args(parser: _Parser, args: argparse.Namespace) -> None:
+    if args.cmd == "target" and args.target_cmd == "add":
+        if args.dtype != "device" and args.variant is None:
+            parser.error("target add simulator/emulator requires a variant name")
+        if args.dtype == "device":
+            if any(
+                value is not None
+                for value in (args.model, args.ios, args.device, args.image, args.sim_name)
+            ):
+                parser.error(
+                    "target add device accepts --id and --platform; use the variant as its name"
+                )
+            if args.variant is not None and args.device_id is None:
+                parser.error(
+                    "target add device NAME requires --id HARDWARE_ID; omit NAME for guided setup"
+                )
+            if args.variant is None and args.device_id is not None:
+                parser.error(
+                    "--id requires a target name: splash target add device phone --id HARDWARE_ID"
+                )
+            if args.variant is None and (
+                args.format == "json" or not sys.stdin.isatty() or not sys.stderr.isatty()
+            ):
+                parser.error(
+                    "guided device setup requires terminal stdin/stderr and text output; use `splash target add device phone --platform android --id HARDWARE_ID`"
+                )
     if (
         args.cmd == "target"
         and args.target_cmd == "remove"
@@ -577,12 +604,12 @@ def _validate_parsed_args(parser: _Parser, args: argparse.Namespace) -> None:
         args.cmd in {"sync", "status", "init", "ai"}
         or (args.cmd == "completion" and args.format == "text")
         or (args.cmd == "env" and args.env_cmd in {None, "get"})
-        or (args.cmd == "target" and args.target_cmd in {None, "claim", "claims"})
+        or (args.cmd == "target" and args.target_cmd in {None, "add", "claim", "claims"})
     )
     if args.format is not None and not supports_format:
         error = _ParserUsageError(
             "--format is only supported by sync, status, init, env/env get, target lists, "
-            "target claims, and ai",
+            "target add, target claims, and ai",
             parser.state.parser or parser,
         )
         error.code = "unsupported_format"
@@ -765,6 +792,30 @@ def _dispatch_status(args: argparse.Namespace, state: ParseState, cwd: Path) -> 
         return _render_pre_dispatch_error(state, error)
 
 
+def _dispatch_target_add(args: argparse.Namespace, cwd: Path, state: ParseState) -> int:
+    from .cli_output import emit_result  # noqa: PLC0415
+    from .results import CommandResult, Diagnostic  # noqa: PLC0415
+    from .target_authoring import add_target, render_added_target  # noqa: PLC0415
+
+    try:
+        result = add_target(args, cwd)
+    except KeyboardInterrupt:
+        result = CommandResult(
+            "target add", "error", 130, error=Diagnostic("interrupted", "Device setup interrupted.")
+        )
+    except (ApplicationError, DeviceError, OSError, ValueError) as error:
+        result = CommandResult(
+            "target add",
+            "error",
+            error.exit_code if isinstance(error, ApplicationError) else 1,
+            error=Diagnostic(
+                error.code if isinstance(error, ApplicationError) else "operation_failed",
+                str(error),
+            ),
+        )
+    return emit_result(result, state.format, render_text=render_added_target)
+
+
 def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â€” one return/branch per subcommand; this is the dispatch table
     if argv is None:
         argv = sys.argv[1:]
@@ -799,6 +850,9 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
 
     if args.cmd == "status":
         return _dispatch_status(args, state, cwd)
+
+    if args.cmd == "target" and args.target_cmd == "add":
+        return _dispatch_target_add(args, cwd, state)
 
     if args.cmd == "ai":
         return _dispatch_ai(args)
@@ -869,5 +923,5 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
         return _cmd_provision(args, cwd, registry)
     except ApplicationError as error:
         return render_application_error(error)
-    except (DeviceError, ValueError) as error:
+    except (DeviceError, OSError, ValueError) as error:
         return render_untyped_error(error)

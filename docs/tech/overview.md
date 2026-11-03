@@ -17,7 +17,8 @@ is the canonical contributor summary. These docs go deeper, per subsystem.
   generated agent guidance.
 - [devices.md](devices.md) — `devices.py`: cross-platform lifecycle policy;
   `device_ios.py`/`device_android.py`: platform adapters; `device_tools.py`: finite subprocess
-  deadlines; `launching.py`: framework selection and launch dispatch.
+  deadlines; `device_discovery.py` and `device_onboarding.py`: observed phone state and guided
+  setup; `target_authoring.py`: safe direct/guided target creation; `launching.py`: framework selection and launch dispatch.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
   `yamltext.py`: the comment-stripping and YAML value-region readers both the checks and the
   hook-configuration editors use; `jsontext.py`: the byte-preserving JSON member splicer they and
@@ -25,6 +26,7 @@ is the canonical contributor summary. These docs go deeper, per subsystem.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
   `cli_output.py` + `results.py` + `interaction.py` + `project_selection.py`: parser/dispatch,
   shared result and confirmation boundaries, recipe-free selection, and legacy output ownership.
+  `terminal.py` supplies control-character escaping for diagnostics and the interactive picker.
   The same guide covers `hooks.py`, `hook_configs.py`, and quiet `completion.py` integration.
   Port-owner snapshots live in `port_inspection.py`; bounded Watchman and device-network checks
   live in `runtime_checks.py` and are composed by doctor and launch orchestration.

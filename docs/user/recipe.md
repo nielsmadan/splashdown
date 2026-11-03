@@ -203,25 +203,28 @@ device = "pixel_9"
 For a **plugged-in phone**, declare a `device` target. Unlike sims and emulators, Splashdown does
 not create or own physical hardware. It discovers what is connected and hands the native ID to the
 launcher. Recipe, local, and global physical targets all participate in machine-wide claims.
-Undeclared discovered phones never participate. The fields are optional selectors, but the target
-declaration itself is required before a phone can be claimed or run.
+Undeclared discovered phones never participate. Each target requires an exact hardware `id`.
+The optional `platform` limits it to iOS or Android. Use `splash target add device` to discover and
+save a phone locally, or add `--global` to make it available across projects.
 
 ```toml
 [targets.device.default]
-# platform = "ios"        # scope auto-pick to one platform: "ios" | "android"
-# name     = "My iPhone"  # match by device name
-# id       = "..."        # exact udid / adb serial
+platform = "ios"
+id = "00008110-EXAMPLE"   # replace with the phone's exact hardware UDID
 ```
 
 Target types and their compatible fields:
 
-| Type | Optional fields |
-| --- | --- |
-| `simulator` | `model`, `ios`, `name` |
-| `emulator` | `device`, `image`, `name` |
-| `device` | `id`, `name`, `platform` (`ios` or `android`) |
+| Type | Required fields | Optional fields |
+| --- | --- | --- |
+| `simulator` | None | `model`, `ios`, `name` |
+| `emulator` | None | `device`, `image`, `name` |
+| `device` | `id` | `platform` (`ios` or `android`) |
 
 All supplied target values must be non-empty strings. A field for the wrong type, such as `image` on a simulator, is an error.
+Physical IDs are hardware UDIDs or Android hardware serials. Network addresses and wireless
+discovery service names cannot be saved as physical IDs. The table name, such as `default`, is
+the convenient name you use in commands.
 
 ## Electron user-data isolation
 

@@ -30,7 +30,9 @@ splash destroy [type] [variant] [--yes]
 
 splash target                       # list declared targets + live state
 splash target add <type> <variant> [--model M] [--ios V] [--device D] [--image I]
-                  [--name N] [--id ID] [--platform ios|android] [--global]
+                  [--name N] [--id ID] [--platform ios|android] [--global] [--format text|json]
+splash target add device [--platform ios|android] [--global]
+                                      # guided physical-device setup in a terminal
 splash target remove <type> <variant> [--keep-instance] [--global]
 splash target refresh [ios|android|all]
                                       # reconcile every registered checkout
@@ -77,7 +79,7 @@ For an unassigned `set` resource without a default, supply its value with
 supplied value wins, and every supplied format must be valid. Long options require their exact
 spelling. Use `splash help target add` for contextual help. Help and version always print text.
 Completion prints shell code and rejects JSON. `--format` applies to sync, status, init,
-`env`, `env get`, bare `target`, `target claims`, `target claim`, and `ai` commands.
+`env`, `env get`, bare `target`, `target add`, `target claims`, `target claim`, and `ai` commands.
 Other combinations are usage errors. Status reports and environment values go to stdout.
 Diagnostics go to stderr.
 
@@ -235,7 +237,17 @@ after the action arguments. The last supplied value wins. Set and release use th
 
 Commands that load configuration validate the complete document before provisioning or project-file mutation. Unknown sections and fields, wrong types, invalid templates, and malformed target definitions exit 1 with a qualified error and no traceback.
 
-`splash target add` applies the same target schema as TOML files before writing. `simulator` accepts `--model`, `--ios`, and `--name`. `emulator` accepts `--device`, `--image`, and `--name`, where `--device` is the Android emulator hardware profile such as `pixel_9`. Physical `device` accepts `--id`, `--name`, and `--platform=ios|android`. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.
+`splash target add` applies the same target schema as TOML files before writing. `simulator` accepts `--model`, `--ios`, and `--name`. `emulator` accepts `--device`, `--image`, and `--name`, where `--device` is the Android emulator hardware profile such as `pixel_9`. Named physical `device` additions require `--id` and optionally accept `--platform=ios|android`. The ID is the hardware UDID or Android hardware serial, and the variant is its command label. Supplying a flag for the wrong target type is an error and leaves the local or global config unchanged.
+
+Omitting the variant in `splash target add device` starts guided discovery, setup help and naming.
+Use `--platform` to limit the guide to one platform and `--global` to save across projects.
+Local device addition requires a valid recipe. Global addition ignores unrelated project config.
+The guide requires text output and terminal stdin/stderr. Scripts and JSON requests supply the
+name and `--id` directly, without requiring SDK tools or a connected phone. See
+[Add a phone](devices.md#add-a-phone) for keyboard controls and cancellation.
+
+`target add --format json` uses the shared result envelope. Successful data includes `saved`,
+`type`, `variant`, `path` and the saved `fields`. Addition creates no claim or resource allocation.
 
 Local `target remove` destroys its managed simulator or emulator by default. A global removal edits
 the machine-wide declaration only, then `splash target refresh` reaps any instance the removal made

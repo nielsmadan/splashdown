@@ -169,8 +169,12 @@ instance is recreated at its declared version, while GC treats it like any other
 **Physical-device claims.** Only configured `device` targets from the recipe, local config, and
 global config participate. `configured_physical_targets` (`src/splashdown/device_claims.py`) walks
 them in recipe, local, then global declaration order. Xcode/ADB hardware that matches no configured
-target is never selected. Discovery takes one snapshot per requested platform, with iOS and Android
-running concurrently for `any`; matching applies `platform`/`id`/`name` selectors to that snapshot.
+target is never selected. Initial selection takes one snapshot per requested platform, with iOS and Android
+running concurrently for `any`; matching uses the required exact hardware `id` and optional
+`platform`. Android launch destinations carry the selected current transport separately from the
+hardware ID stored in the claim.
+The selected connection is revalidated before acquisition and after run preflight; a changed
+identity stops the operation without switching to another phone.
 
 `cmd_run` validates the launcher, refreshes resources and outputs, resolves the target, and calls
 `claim_configured_target` while the checkout operation lock is held. A free connected phone is
@@ -230,7 +234,8 @@ machine-wide catalog and defers instance cleanup to `target refresh`; combining 
 | TYPE / variant inference | `src/splashdown/target_commands.py` (`_infer_dtype`, `_resolve_variant_for_cli`) |
 | Fleet refresh (eager auto-upgrade) | `src/splashdown/target_commands.py` (`cmd_target_refresh`) |
 | Prune foreign (non-managed) sims/AVDs | `src/splashdown/target_commands.py` (`cmd_target_prune`) |
-| `target add` / `remove` (local variants) | Catalog edits in `src/splashdown/targets.py`; orchestration in `src/splashdown/target_commands.py` |
+| `target add` (local variants) | Catalog edits in `src/splashdown/targets.py`; orchestration in `src/splashdown/target_authoring.py` |
+| `target remove` (local variants) | Catalog edits in `src/splashdown/targets.py`; orchestration in `src/splashdown/target_commands.py` |
 | Framework launcher selection | `src/splashdown/launching.py` (`detect_framework`, `device_run`) |
 | iOS-native / Android-native launch | `src/splashdown/runners.py` |
 | Physical-device discovery | Cross-platform policy in `src/splashdown/devices.py`; platform probes in `device_ios.py` and `device_android.py` |
@@ -281,10 +286,8 @@ device = "pixel_9"            # Android device profile; default pixel_9
 # image  = "android-34"       # system image; "latest" (default) auto-upgrades
 
 [targets.device.default]       # physical hardware — discovered, not created
-# platform = "ios"            # scope auto-pick: "ios" | "android"
-# name     = "My iPhone"      # match by device name (substring)
-# id       = "..."            # exact udid / adb serial
-# name     = "..."            # (simulator/emulator) override the derived instance name
+platform = "ios"             # optional: ios | android
+id = "00008110-EXAMPLE"       # required exact hardware UDID or Android serial
 ```
 
 Field meaning by type:
@@ -293,10 +296,11 @@ Field meaning by type:
   version like `"17.0"`), `name` (instance-name override).
 - **emulator**: `device` (AVD device profile), `image` (`"latest"` default, or e.g.
   `"android-34"`), `name` (override).
-- **device**: `platform` / `id` / `name` — all optional selectors on a required configured target.
-  Undeclared discovered phones never participate in claims.
+- **device**: required `id` (exact hardware identity) and optional `platform`. The variant is the
+  command label; device display names are not selectors. Undeclared discovered phones never
+  participate in claims. Network addresses/service names are rejected as hardware IDs.
 
-Every field above is optional, but supplied values must be non-empty strings. `device.platform`
+Simulator/emulator fields are optional. Supplied values must be non-empty strings. `device.platform`
 must be `ios` or `android`. Fields do not cross target types: for example, `model` is valid only
 for a simulator and `image` only for an emulator.
 
@@ -354,6 +358,7 @@ splash target                          # list declared variants + live state
 splash target refresh [ios|android|all]    # reconcile stale/missing and reap undeclared/dead rows
 splash target prune [ios|android|all] [--dry-run] [--yes]   # remove non-managed sims/AVDs
 splash target add <type> <variant> [--model --ios --device --image --name --id --platform] [--global]
+splash target add device [--platform ios|android] [--global] # interactive onboarding
 splash target remove <type> <variant> [--keep-instance] [--global]
 splash target claims [--format text|json]
 splash target claim <variant> [--force] [--format text|json]
@@ -363,10 +368,22 @@ splash target release --all
 ```
 
 For `target add`, simulator fields are `--model`, `--ios`, and `--name`; emulator fields are
-`--device`, `--image`, and `--name`; physical-device fields are `--id`, `--name`, and `--platform`.
+`--device`, `--image`, and `--name`; direct physical-device authoring requires `--id` and
+optionally accepts `--platform`. The bare physical add form obtains the ID through discovery.
 The emulator `--device` flag names the Android hardware profile rather than physical hardware.
 `--keep-instance` applies only to simulator and emulator removal; physical `device` removal rejects
 it as an ineffective option.
+
+**Guided physical add.** `target_authoring.py` validates the destination before discovery and
+`device_onboarding.py` drives a text-only guide when both stdin and stderr are terminals. Local
+addition requires a valid recipe; global addition is independent of unrelated project config.
+Discovery shows ready and blocked observations, missing tools and inspection failures. Users can
+set up an unlisted phone, rescan, select with qwerty shortcuts or arrows/Enter, choose a literal
+variant, and review the hardware ID and path before saving. Esc/EOF cancels without a declaration;
+Ctrl+C exits 130. Prompts hold no registry or config lock. The final write revalidates create-only
+ownership and preserves unrelated configuration. Addition creates no claim, resource allocation,
+trust grant or remembered launch selection. Named `--id` authoring is SDK-free and supports
+`--format json`; incomplete JSON or redirected-input guide requests are usage errors.
 
 Linked-worktree auto-allocation is the strict project policy:
 

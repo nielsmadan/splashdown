@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from typing import Any
 
 from .capabilities import require_macos, translate_tool_errors
@@ -13,6 +14,7 @@ from .device_tools import (
     check_output_finite,
     run_finite,
 )
+from .device_types import IOSDestination, PhysicalObservation
 from .errors import CapabilityError, DeviceError
 
 
@@ -298,27 +300,119 @@ def _devicectl_json(args: list[str], *, timeout: float = DISCOVERY_TIMEOUT) -> A
         ) from error
     try:
         return json.loads(out)
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, UnicodeError) as error:
         raise DeviceError(f"could not parse devicectl output: {error}") from error
 
 
-def _ios_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
-    """Return paired, available physical iOS devices."""
+def _device_properties(device: dict[str, Any], field: str) -> dict[str, Any]:
+    value = device.get(field, {})
+    if not isinstance(value, dict):
+        raise DeviceError(f"could not parse devicectl output: invalid {field}")
+    return value
+
+
+def _device_property(properties: dict[str, Any], field: str) -> str:
+    value = properties.get(field, "")
+    if not isinstance(value, str):
+        raise DeviceError(f"could not parse devicectl output: invalid {field}")
+    return value
+
+
+def _ios_observation(device: object) -> PhysicalObservation | None:
+    if not isinstance(device, dict):
+        raise DeviceError("could not parse devicectl output: invalid device record")
+    hardware = _device_properties(device, "hardwareProperties")
+    platform = _device_property(hardware, "platform").lower()
+    if not platform:
+        raise DeviceError("could not parse devicectl output: missing device platform")
+    if platform != "ios":
+        return None
+    udid = _device_property(hardware, "udid")
+    connection = _device_properties(device, "connectionProperties")
+    pairing = _device_property(connection, "pairingState").lower()
+    tunnel = _device_property(connection, "tunnelState").lower()
+    name = _device_property(_device_properties(device, "deviceProperties"), "name")
+    observation = PhysicalObservation(
+        "ios", name or udid or "iOS device", udid or None, udid, "identity_unavailable", "", False
+    )
+    if (
+        not udid
+        or re.fullmatch(r"[A-Za-z0-9-]+", udid) is None
+        or udid.lower() in {"unknown", "null", "none"}
+        or not any(character.isalnum() for character in udid)
+        or set(udid) <= {"0", "-"}
+    ):
+        return replace(
+            observation,
+            hardware_id=None,
+            detail="Xcode did not provide a usable hardware UDID. Connect and pair the phone in Xcode, then rescan.",
+        )
+    if pairing != "paired":
+        return replace(
+            observation,
+            state=pairing or "pairing_unknown",
+            detail="Unlock the phone, tap Trust if prompted, and finish pairing in Xcode, then rescan.",
+        )
+    if tunnel == "unavailable":
+        return replace(
+            observation,
+            state="unavailable",
+            detail="Xcode reports this device unavailable. Unlock and reconnect it, then rescan.",
+        )
+    if tunnel not in {"connected", "disconnected"}:
+        return replace(
+            observation,
+            state="connection_unknown",
+            detail=f"Xcode reported an unrecognized connection state ({tunnel or 'missing'}). Check the device in Xcode, then rescan.",
+        )
+    return replace(observation, state="ready", selectable=True)
+
+
+def _ios_physical_observations(*, timeout: float = DISCOVERY_TIMEOUT) -> list[PhysicalObservation]:
+    if timeout <= 0:
+        raise DeviceError("iOS discovery timed out")
     data = _devicectl_json(["list", "devices"], timeout=timeout)
-    devices = (data.get("result") or {}).get("devices") or []
-    result: list[dict[str, str]] = []
-    for device in devices:
-        hardware = device.get("hardwareProperties") or {}
-        if (hardware.get("platform") or "").lower() != "ios":
-            continue
-        connection = device.get("connectionProperties") or {}
-        if (connection.get("pairingState") or "").lower() != "paired":
-            continue
-        if (connection.get("tunnelState") or "").lower() == "unavailable":
-            continue
-        udid = hardware.get("udid") or ""
-        if not udid:
-            continue
-        name = (device.get("deviceProperties") or {}).get("name") or udid
-        result.append({"id": udid, "name": name, "platform": "ios"})
-    return result
+    if not isinstance(data, dict) or not isinstance(data.get("result"), dict):
+        raise DeviceError("could not parse devicectl output: missing result")
+    devices = data["result"].get("devices")
+    if not isinstance(devices, list):
+        raise DeviceError("could not parse devicectl output: missing devices list")
+    observations = [item for device in devices if (item := _ios_observation(device)) is not None]
+    selected: dict[str, PhysicalObservation] = {}
+    unknown = [item for item in observations if item.hardware_id is None]
+    for observation in observations:
+        if observation.hardware_id is not None:
+            existing = selected.get(observation.hardware_id)
+            if existing is None or (observation.selectable and not existing.selectable):
+                selected[observation.hardware_id] = observation
+    return [*selected.values(), *unknown]
+
+
+def _ios_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
+    return [
+        {"id": item.hardware_id, "name": item.name, "platform": "ios"}
+        for item in _ios_physical_observations(timeout=timeout)
+        if item.selectable and item.hardware_id is not None
+    ]
+
+
+def verify_ios_connection(
+    destination: IOSDestination, hardware_id: str, *, timeout: float = DISCOVERY_TIMEOUT
+) -> None:
+    if destination.owned or not hardware_id or destination.identifier != hardware_id:
+        raise DeviceError("selected iOS destination does not match the expected hardware UDID")
+    try:
+        observations = _ios_physical_observations(timeout=timeout)
+    except DeviceError as error:
+        raise DeviceError(
+            f"could not verify the selected iOS phone {hardware_id}: {error}. "
+            "Check its connection in Xcode and rerun the command."
+        ) from error
+    matching = [item for item in observations if item.hardware_id == hardware_id]
+    if any(item.selectable for item in matching):
+        return
+    detail = matching[0].detail if matching else "Xcode no longer lists this phone"
+    raise DeviceError(
+        f"could not verify the selected iOS phone {hardware_id}: {detail}. "
+        "Reconnect the intended phone and rerun the command."
+    )

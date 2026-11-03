@@ -115,6 +115,7 @@ class AndroidDestination(_DestinationMapping):
     name: str
     identifier: str | None
     owned: bool
+    adb_transport_id: str | None = None
 
     platform: ClassVar[Literal["android"]] = "android"
 
@@ -163,6 +164,25 @@ class ClaimRelease:
     conflicts: tuple[PhysicalClaim, ...]
 
 
+@dataclass(frozen=True)
+class PhysicalObservation:
+    platform: str
+    name: str
+    hardware_id: str | None
+    transport_id: str
+    state: str
+    detail: str
+    selectable: bool
+    usb: bool = False
+    adb_transport_id: str | None = None
+
+
+@dataclass(frozen=True)
+class DiscoverySnapshot:
+    devices: tuple[PhysicalObservation, ...]
+    issues: tuple[str, ...]
+
+
 def as_launch_destination(value: DestinationLike) -> LaunchDestination:
     if isinstance(value, (IOSDestination, AndroidDestination)):
         return value
@@ -173,5 +193,11 @@ def as_launch_destination(value: DestinationLike) -> LaunchDestination:
         return IOSDestination(name, str(value.get("udid") or value.get("identifier") or ""), owned)
     if platform == "android":
         identifier = value.get("serial") or value.get("identifier")
-        return AndroidDestination(name, str(identifier) if identifier else None, owned)
+        transport_id = value.get("adb_transport_id")
+        return AndroidDestination(
+            name,
+            str(identifier) if identifier else None,
+            owned,
+            str(transport_id) if transport_id is not None else None,
+        )
     raise ValueError(f"unknown launch destination platform `{platform}`")

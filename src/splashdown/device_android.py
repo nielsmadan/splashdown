@@ -5,6 +5,9 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 from .capabilities import translate_tool_errors
@@ -15,10 +18,14 @@ from .device_tools import (
     check_output_finite,
     run_finite,
 )
+from .device_types import AndroidDestination, PhysicalObservation
 from .errors import CapabilityError, DeviceError
 
 _AVD_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]")
 _ADB_ROW_COLS = 2
+_HARDWARE_SERIAL_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_IDENTITY_PROBE_TIMEOUT = 2
+_IDENTITY_PROBE_WORKERS = 4
 
 
 def _sanitize_avd_name(name: str) -> str:
@@ -294,28 +301,200 @@ def android_destroy(avd_name: str) -> None:
         )
 
 
-def _android_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
-    """Return connected Android hardware, excluding emulator serials."""
+def _adb_device_rows(output: str) -> list[list[str]]:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines or lines[0] != "List of devices attached":
+        raise DeviceError("could not parse adb devices output: missing device-list header")
+    rows = [line.split() for line in lines[1:]]
+    if any(len(row) < _ADB_ROW_COLS for row in rows):
+        raise DeviceError("could not parse adb devices output: incomplete device row")
+    return [row for row in rows if not row[0].startswith("emulator-")]
+
+
+def _valid_hardware_serial(serial: str) -> bool:
+    return bool(
+        _HARDWARE_SERIAL_RE.fullmatch(serial)
+        and any(character.isalnum() for character in serial)
+        and serial.lower() not in {"unknown", "null", "none", "default", "0123456789abcdef"}
+        and set(serial) != {"0"}
+    )
+
+
+def _android_hardware_serial(adb: str, selector: list[str], deadline: float) -> str:
+    for prop in ("ro.serialno", "ro.boot.serialno"):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DeviceError("Android discovery timed out before reading the hardware serial")
+        with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
+            try:
+                output = check_output_finite(
+                    [adb, *selector, "shell", "getprop", prop],
+                    operation=f"adb read {prop}",
+                    timeout=min(_IDENTITY_PROBE_TIMEOUT, remaining),
+                    stderr=subprocess.PIPE,
+                )
+            except subprocess.CalledProcessError as error:
+                detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
+                raise DeviceError(
+                    f"adb could not read {prop}: {detail or f'exit {error.returncode}'}"
+                ) from error
+        serial = output.decode("utf-8", errors="replace").strip()
+        if _valid_hardware_serial(serial):
+            return serial
+    raise DeviceError("device returned an empty, placeholder or malformed hardware serial")
+
+
+def _android_observe_row(row: list[str], adb: str, deadline: float) -> PhysicalObservation:
+    endpoint, state = row[:2]
+    metadata = dict(part.split(":", 1) for part in row[2:] if ":" in part)
+    transport = metadata.get("transport_id")
+    if transport and not (transport.isascii() and transport.isdecimal()):
+        raise DeviceError(f"invalid adb transport_id for {endpoint}")
+    observation = PhysicalObservation(
+        "android",
+        metadata.get("model", endpoint),
+        None,
+        endpoint,
+        state,
+        "",
+        False,
+        usb=bool(metadata.get("usb")),
+        adb_transport_id=transport,
+    )
+    if state == "unauthorized":
+        return replace(
+            observation,
+            detail="Unlock the phone and accept its USB debugging authorization prompt, then rescan.",
+        )
+    if state == "offline":
+        return replace(
+            observation,
+            detail="ADB reports this connection offline. Unlock and reconnect the phone, then rescan.",
+        )
+    if state == "no" and len(row) > _ADB_ROW_COLS and row[2] in {"permissions", "permissions;"}:
+        return replace(
+            observation,
+            state="no_permissions",
+            detail="The host cannot access this device. Check Android USB permissions, then reconnect and rescan.",
+        )
+    if state != "device":
+        return replace(
+            observation,
+            detail=f"ADB reports {state}; reconnect the phone in normal Android mode and rescan.",
+        )
+    selector = ["-t", transport] if transport else ["-s", endpoint]
+    try:
+        hardware_id = _android_hardware_serial(adb, selector, deadline)
+    except DeviceError as error:
+        return replace(
+            observation,
+            state="identity_unavailable",
+            detail=f"{error}. Connect and authorize the phone over USB, then rescan.",
+        )
+    return replace(observation, hardware_id=hardware_id, state="ready", selectable=True)
+
+
+def _select_android_connections(
+    observations: list[PhysicalObservation],
+) -> list[PhysicalObservation]:
+    grouped: dict[str, list[PhysicalObservation]] = {}
+    for observation in observations:
+        if observation.hardware_id is not None:
+            grouped.setdefault(observation.hardware_id, []).append(observation)
+    selected = [observation for observation in observations if observation.hardware_id is None]
+    for hardware_id, matches in grouped.items():
+        usb_matches = [match for match in matches if match.usb]
+        models = {match.name for match in matches if match.name != match.transport_id}
+        if len(models) > 1 or (len(matches) > 1 and len(usb_matches) != 1):
+            endpoints = ", ".join(match.transport_id for match in matches)
+            detail = f"Hardware ID {hardware_id} has conflicting or ambiguous connections ({endpoints}). Disconnect extra connections, then rescan."
+            selected.append(replace(matches[0], state="ambiguous", detail=detail, selectable=False))
+        else:
+            selected.append(usb_matches[0] if usb_matches else matches[0])
+    return selected
+
+
+def _android_physical_observations(
+    *, timeout: float = DISCOVERY_TIMEOUT
+) -> list[PhysicalObservation]:
+    if timeout <= 0:
+        raise DeviceError("Android discovery timed out")
+    deadline = time.monotonic() + timeout
+    adb = _android_bin("adb")
     try:
         with translate_tool_errors("android", "adb", "install Android SDK platform-tools"):
             out = check_output_finite(
-                [_android_bin("adb"), "devices", "-l"],
+                [adb, "devices", "-l"],
                 operation="adb devices",
                 timeout=timeout,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             ).decode()
     except subprocess.CalledProcessError as error:
-        raise DeviceError(f"adb devices failed: exit {error.returncode}") from error
-    devices: list[dict[str, str]] = []
-    for line in out.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) < _ADB_ROW_COLS or parts[1] != "device":
-            continue
-        serial = parts[0]
-        if serial.startswith("emulator-"):
-            continue
-        model = next(
-            (part.split(":", 1)[1] for part in parts[2:] if part.startswith("model:")), serial
+        detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise DeviceError(f"adb devices failed: {detail or f'exit {error.returncode}'}") from error
+    except UnicodeError as error:
+        raise DeviceError("could not parse adb devices output: invalid text encoding") from error
+    with ThreadPoolExecutor(max_workers=_IDENTITY_PROBE_WORKERS) as executor:
+        observations = list(
+            executor.map(
+                partial(_android_observe_row, adb=adb, deadline=deadline), _adb_device_rows(out)
+            )
         )
-        devices.append({"id": serial, "name": model, "platform": "android"})
-    return devices
+    return _select_android_connections(observations)
+
+
+def _android_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
+    observations = _android_physical_observations(timeout=timeout)
+    return [
+        {
+            "id": item.hardware_id,
+            "name": item.name,
+            "platform": "android",
+            **({"error": item.detail} if item.state == "ambiguous" else {}),
+            **(
+                {"adb_transport_id": item.adb_transport_id}
+                if item.selectable and item.adb_transport_id is not None
+                else {}
+            ),
+            **(
+                {"transport_id": item.transport_id}
+                if item.selectable and item.transport_id != item.hardware_id
+                else {}
+            ),
+        }
+        for item in observations
+        if item.hardware_id is not None and (item.selectable or item.state == "ambiguous")
+    ]
+
+
+def verify_android_connection(
+    destination: AndroidDestination, hardware_id: str, *, timeout: float = DISCOVERY_TIMEOUT
+) -> None:
+    if destination.owned or not destination.serial or not hardware_id:
+        raise DeviceError(
+            "cannot verify an Android physical connection without its endpoint and hardware ID"
+        )
+    if timeout <= 0:
+        raise DeviceError("Android connection verification timed out; rerun the command")
+    deadline = time.monotonic() + timeout
+    token = destination.adb_transport_id
+    if token is not None and not (token.isascii() and token.isdecimal()):
+        raise DeviceError(
+            "invalid selected adb transport ID; rerun the command to select the phone again"
+        )
+    selectors = [["-s", destination.serial]]
+    if token is not None:
+        selectors.insert(0, ["-t", token])
+    try:
+        adb = _android_bin("adb")
+        for selector in selectors:
+            observed_id = _android_hardware_serial(adb, selector, deadline)
+            if observed_id != hardware_id:
+                raise DeviceError(
+                    f"selected connection {' '.join(selector)} identifies {observed_id}, expected {hardware_id}"
+                )
+    except DeviceError as error:
+        raise DeviceError(
+            f"could not verify the selected Android phone: {error}. "
+            "Reconnect the intended phone and rerun the command."
+        ) from error

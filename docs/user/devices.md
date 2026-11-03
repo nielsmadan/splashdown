@@ -155,8 +155,8 @@ Backed by `xcrun simctl`. Default device type: latest iPhone Pro. Default runtim
 Backed by `avdmanager` / `sdkmanager` / `emulator` / `adb` from `$ANDROID_HOME`. Default device profile: `pixel_9`. Default system image: latest installed, falling back to a known-good Android 34 image. AVD is created if missing, then booted detached. `splash` polls `adb` for the serial to appear.
 
 For `splash target add emulator`, `--device` selects this Android hardware profile. It does not
-select a connected physical device. Use target type `device` with `--id`, `--name`, or `--platform`
-for physical hardware.
+select a connected physical device. Use `splash target add device` for guided phone setup, or
+provide a target name and `--id` for a known phone. `--platform` is optional.
 
 After upgrading from a version that generated names without the path hash, recreate each
 default-named sim or emulator once with `splash destroy TYPE VARIANT --yes` followed by
@@ -167,7 +167,58 @@ explicit recreation. Targets with an explicit `name` are unchanged.
 
 `splash run pixel` resolves a configured connected phone, claims it for this checkout, then builds
 and launches. Discovery uses `xcrun devicectl` for iOS with Xcode 15 or later and `adb devices` for
-Android. The native UDID or serial is passed straight to the framework launcher.
+Android. Splashdown matches the saved hardware ID, then passes the current native destination to
+the framework launcher. For Android over Wi-Fi, that destination can differ from the hardware ID.
+
+### Add a phone
+
+For personal test devices shared across projects, run:
+
+```sh
+splash target add device --global
+```
+
+Omit `--global` to save in this checkout's `splashdown.local.toml`. Local addition requires a valid
+`splashdown.toml`, so run `splash init` first. Global addition works independently of project
+configuration. Add `--platform android` or `--platform ios` to limit discovery and setup guidance.
+
+The guide reports when a scan starts, lists selectable phones and shows blocked states, such as
+Android `unauthorized` or `offline`, alongside the next setup step. Missing SDK tools produce an explanation rather than
+an apparently empty device list. Choose **Set up an unlisted phone** even when another phone is
+already visible, then **Rescan** after completing the instructions.
+
+Use the displayed letter shortcuts, starting with `q`, `w`, `e`, or use arrow keys and Enter.
+After selecting a phone, type its command name, using Backspace to correct it, and review the
+hardware ID and destination file.
+Unsupported key combinations are ignored without entering stray characters or selecting a phone.
+**Save target** creates the declaration. Escape or EOF cancels without saving, and Ctrl+C exits
+with code 130. Adding a target does not claim it, prepare resources or grant project trust.
+
+USB is the simplest first connection. Android setup requires USB debugging and accepting the
+phone's debugging authorization prompt. iOS setup requires trusting and pairing with the Mac.
+Developer Mode is needed to run development apps, while a discovered paired phone may still
+need signing or installation setup. Follow the [Android USB guide](https://developer.android.com/tools/adb#Enabling)
+or [Apple pairing guide](https://developer.apple.com/documentation/xcode/managing-your-simulated-and-physical-devices-in-device-hub).
+Already discoverable wireless phones are also supported. The guide links to the platform's
+wireless setup instructions and does not exchange pairing codes itself.
+
+If `splash status` cannot inspect a phone's identity or connection, it reports the target as
+unavailable and includes the discovery error. Other phones with confirmed connections remain
+visible. Retry after addressing the reported problem.
+
+For scripts or a known hardware ID, supply the name and ID directly. Choose text or JSON output:
+
+```sh
+splash target add device pixel --platform android --id PXL1234 --global
+splash target add device pixel --platform android --id PXL1234 --global --format json
+```
+
+Direct addition does not require a connected phone or installed SDK tools. The guide requires
+terminal stdin and stderr and text output. Redirected stdin/stderr or JSON mode requires the
+explicit named command. The saved name is the label for `splash run device pixel`, not a device-name
+matcher. Duplicate target names are rejected without overwriting the existing declaration.
+
+### Run and diagnose a phone
 
 Before launch, Splashdown warns when resolved resource values contain loopback addresses such as
 `localhost`, `127.0.0.1`, or `::1`. On a phone these refer to the phone itself. Use your development
@@ -208,15 +259,26 @@ Declare physical targets in the committed recipe, the per-checkout local file, o
 config. Targets from all three sources participate in claims. Undeclared phones discovered by
 Xcode or ADB are never claimed or selected, even when only one phone is connected.
 
+`splash target claim` and named `splash target release` work with global or local phone definitions
+even when the selected directory has no `splashdown.toml` or `splashdown.env`. They do not run
+preparation or generate those files. Claims belong to the selected directory. Existing invalid
+or unreadable configuration still produces an error and preserves device ownership.
+
 ```toml
 [targets.device.pixel]
 platform = "android"
 id = "PXL1234"
 ```
 
-The selectors are optional. Use `platform` when any connected phone on that platform is suitable,
-`name` for a case-insensitive name match, or `id` for one exact device. If a selector matches more
-than one phone, narrow the target before running it.
+Every physical target requires an exact hardware `id`. `platform` is optional, and the table's
+variant name is its convenient command label. Android discovery resolves the hardware serial
+separately from the current USB or Wi-Fi connection. Do not save an `IP:port` or wireless discovery
+service name as the ID. If Splashdown cannot establish the hardware identity, connect over USB
+and rescan. A sole usable connection identified as USB by ADB takes precedence over Wi-Fi when both
+identify the same phone. Conflicting or ambiguous connections require reconnecting and rescanning.
+Before claiming, and again after run's preflight checks, Splashdown verifies that the selected
+connection still identifies the intended phone. A changed or unavailable connection stops the
+command and asks you to reconnect and rerun it.
 
 ```sh
 splash target                         # connection, claim, and concise owner state
@@ -252,6 +314,19 @@ Forced transfer and forced release warn the displaced checkout on its next ordin
 checkout-scoped `splash` command. The warning is consumed once. Completion, help, version output,
 and the hidden post-checkout command do not consume it.
 
+If an older Android claim stores a connection address, new Android claims stop until that old
+ownership is explicitly released. `--force` does not bypass this check. Run the recovery command
+printed in the error, using the owning checkout's path:
+
+```sh
+splash --cwd "/path/to/owning-checkout" target release --all
+```
+
+This releases every claim owned by that checkout and needs neither SDK tools nor valid project
+configuration. Splashdown preserves the old rows until you release them. Update any old target
+definition to its hardware ID before claiming again. Existing hardware-ID claims keep their
+format and ownership.
+
 Because Splashdown does not own the hardware, `start` only confirms connection and
 `stop` or `destroy` does not control the phone. `splash stop device pixel` does not release the
 claim. Claims are also removed by `splash deinit`, by `splash gc` after a checkout disappears, and
@@ -276,6 +351,6 @@ command printed by the hook, for example:
 splash target claim --available android
 ```
 
-Declare test phones once with `splash target add device my-iphone --platform ios --name "..."
---global` to make them available in every project. See
+Declare test phones once with `splash target add device --platform ios --global` to make them
+available in every project. See
 [machine-wide test devices](overrides.md#machine-wide-test-devices).

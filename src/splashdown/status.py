@@ -570,12 +570,12 @@ def _target_rows(
                 "unavailable",
             )
         if dtype == "device":
-            for platform in sorted(inspection.targets.unavailable):
+            for platform, detail in sorted(inspection.targets.unavailable.items()):
                 checks.append(
                     _check(
                         f"target_discovery:{platform}",
                         "unavailable",
-                        f"{platform} physical discovery unavailable.",
+                        f"{platform} physical discovery unavailable: {detail}",
                         "Run splash doctor for platform diagnostics.",
                     )
                 )
@@ -601,7 +601,7 @@ def _target_rows(
             if health == "unavailable"
             else ("Connect the physical device and check pairing.",)
             if health == "missing"
-            else ("Narrow the physical target id, name, or platform.",)
+            else ("Narrow the physical target id or platform.",)
             if health == "ambiguous"
             else ("Run splash target refresh to reconcile managed targets.",)
             if check_state == "finding"

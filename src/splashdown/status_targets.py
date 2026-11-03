@@ -6,11 +6,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
-from .device_android import _android_bin
-from .device_ios import _devicectl_json, _xcrun_json
+from .device_android import _android_bin, _android_physical_observations
+from .device_ios import _ios_physical_observations, _xcrun_json
 from .device_tools import DISCOVERY_TIMEOUT, check_output_finite
-from .device_types import EmulatorRecord, ManagedDevice, SimulatorRecord
-from .devices import _resolve_device_name, physical_match_snapshot
+from .device_types import EmulatorRecord, ManagedDevice, PhysicalObservation, SimulatorRecord
+from .devices import _resolve_device_name
 from .errors import DeviceError
 from .recipe import _make_scope
 
@@ -21,7 +21,7 @@ _ADB_ROW_COLUMNS = 2
 class TargetObservations:
     def __init__(self) -> None:
         self.cache: dict[str, object] = {}
-        self.unavailable: set[str] = set()
+        self.unavailable: dict[str, str] = {}
 
     def once(self, key: str, probe: Callable[[], T]) -> T:
         if key not in self.cache:
@@ -206,10 +206,9 @@ class TargetObservations:
         return name, state, "drifted" if drifted else "healthy"
 
     def physical(self, spec: dict[str, Any]) -> tuple[str, str, str]:
-        self.unavailable = set()
+        self.unavailable = {}
         platforms = [spec["platform"]] if spec.get("platform") else ["ios", "android"]
-        devices = []
-        failed = False
+        devices: list[PhysicalObservation] = []
         for platform in platforms:
             try:
                 devices.extend(
@@ -218,16 +217,29 @@ class TargetObservations:
                         _physical_ios if platform == "ios" else _physical_android,
                     )
                 )
-            except (OSError, ValueError, DeviceError, subprocess.SubprocessError):
-                failed = True
-                self.unavailable.add(platform)
-        matches = physical_match_snapshot(spec, devices)
-        name = str(spec.get("id") or spec.get("name") or spec.get("platform") or "auto")
-        if len(matches) > 1:
+            except (OSError, ValueError, DeviceError, subprocess.SubprocessError) as error:
+                self.unavailable[platform] = str(error)
+        name = str(spec["id"])
+        matches = [device for device in devices if device.hardware_id == name]
+        ready = [device for device in matches if device.selectable]
+        if len(ready) > 1 or any(device.state == "ambiguous" for device in matches):
             return name, "ambiguous", "ambiguous"
-        if matches:
-            return name, "connected", "unavailable" if failed else "healthy"
-        return name, "unavailable" if failed else "absent", "unavailable" if failed else "missing"
+        if ready:
+            return name, "connected", "unavailable" if self.unavailable else "healthy"
+        unresolved = [
+            device for device in devices if device.hardware_id is None or device.hardware_id == name
+        ]
+        for platform in platforms:
+            details = dict.fromkeys(
+                device.detail or device.state
+                for device in unresolved
+                if device.platform == platform
+            )
+            if details:
+                self.unavailable[platform] = "; ".join(details)
+        if self.unavailable:
+            return name, "unavailable", "unavailable"
+        return name, "absent", "missing"
 
 
 def _adb_rows(raw: str) -> list[list[str]]:
@@ -240,64 +252,12 @@ def _adb_rows(raw: str) -> list[list[str]]:
     return rows
 
 
-def _physical_android() -> list[dict[str, str]]:
-    raw = check_output_finite(
-        [_android_bin("adb"), "devices", "-l"],
-        operation="physical Android discovery",
-        timeout=DISCOVERY_TIMEOUT,
-        stderr=subprocess.DEVNULL,
-    ).decode()
-    rows = _adb_rows(raw)
-    if any(row[1] not in {"device", "offline", "unauthorized"} for row in rows):
-        raise DeviceError("unknown Android connection")
-    return [
-        {
-            "id": row[0],
-            "platform": "android",
-            "name": next(
-                (part.split(":", 1)[1] for part in row[2:] if part.startswith("model:")), row[0]
-            ),
-        }
-        for row in rows
-        if row[1] == "device" and not row[0].startswith("emulator-")
-    ]
+def _physical_android() -> list[PhysicalObservation]:
+    return _android_physical_observations()
 
 
-def _physical_ios() -> list[dict[str, str]]:
-    data = _devicectl_json(["list", "devices"])
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("result"), dict)
-        or not isinstance(data["result"].get("devices"), list)
-    ):
-        raise DeviceError("invalid physical iOS inventory")
-    result = []
-    for device in data["result"]["devices"]:
-        if not isinstance(device, dict) or any(
-            not isinstance(device.get(key), dict)
-            for key in ("hardwareProperties", "connectionProperties", "deviceProperties")
-        ):
-            raise DeviceError("invalid physical iOS device")
-        hardware = device["hardwareProperties"]
-        connection = device["connectionProperties"]
-        if str(hardware.get("platform", "")).lower() != "ios":
-            continue
-        if (
-            str(connection.get("pairingState", "")).lower() != "paired"
-            or str(connection.get("tunnelState", "")).lower() == "unavailable"
-        ):
-            continue
-        identifier = hardware.get("udid")
-        if not isinstance(identifier, str) or not identifier:
-            raise DeviceError("invalid physical iOS identity")
-        result.append(
-            {
-                "id": identifier,
-                "platform": "ios",
-                "name": str(device["deviceProperties"].get("name") or identifier),
-            }
-        )
-    return result
+def _physical_ios() -> list[PhysicalObservation]:
+    return _ios_physical_observations()
 
 
 def _name_scope(cwd: Path) -> dict[str, Any]:

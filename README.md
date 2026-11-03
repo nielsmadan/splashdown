@@ -200,6 +200,17 @@ also participate in machine-wide claims. Undeclared phones are never allocated. 
 claims a free connected target before the framework builds. A target owned by another live
 checkout, or a configured target that is disconnected, fails before build or installation.
 
+Explicit claims and named releases can use global or local phone definitions without a
+`splashdown.toml` or generated `splashdown.env`. Ownership is recorded against the selected directory.
+
+Add a phone with `splash target add device --global`. The interactive guide lists discovered phones,
+explains connection or authorization problems, and lets you rescan before naming and saving the
+target. It stores the exact hardware ID, including for Android phones connected wirelessly.
+Local addition omits `--global` and requires a valid recipe. For scripts or a known ID, use
+`splash target add device pixel --platform android --id PXL1234 --global --format json`.
+Adding a target does not claim the phone. See the [device guide](https://splashdown.dev/devices/)
+for setup and keyboard controls.
+
 ```sh
 splash run pixel                       # claim if free, then build and launch
 splash target claims                   # inspect every claim without device discovery
