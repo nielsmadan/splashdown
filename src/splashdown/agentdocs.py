@@ -105,13 +105,14 @@ class GuidanceResult:
 
 _BUNDLE_ID = "splashdown"
 _STATE_DIRECTORY = ".splashdown-ai"
-_METADATA_IGNORES = ("/.splashdown-ai/", "/.flyrail-*.state/")
+_METADATA_IGNORES = ("/.splashdown-ai/",)
 
 
 def _target(cwd: Path, name: str) -> fr.InstallationTarget:
     import flyrail as fr  # noqa: PLC0415
 
-    return fr.InstallationTarget(cwd / _STATE_DIRECTORY / name.removesuffix(".md").lower())
+    store = fr.DirectoryStore(cwd / _STATE_DIRECTORY / "flyrail")
+    return fr.InstallationTarget(store, (("file", name),))
 
 
 def _rendered(path: Path, block: str) -> tuple[fr.Bundle, fr.RenderedBundle]:
@@ -337,11 +338,8 @@ def _update_file(cwd: Path, name: str, block: str, replace: bool) -> GuidanceRes
             text = (resource.before.data or b"").decode("utf-8")
             if (
                 _has_markers(text)
-                and resource.resource.state_root.exists()
-                and (
-                    resource.previous is None
-                    or any(claim.bundle_id == _BUNDLE_ID for claim in resource.previous.claims)
-                )
+                and resource.previous is not None
+                and any(claim.bundle_id == _BUNDLE_ID for claim in resource.previous.claims)
             ):
                 return GuidanceResult(
                     name,

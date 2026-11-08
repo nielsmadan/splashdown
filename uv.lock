@@ -477,14 +477,14 @@ wheels = [
 
 [[package]]
 name = "pyflyrail"
-version = "0.3.1"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "tomlkit" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/da/b8a59a69567bddb2eaac823f6e7d96b35858651524f28ae35bc4a041fdf7/pyflyrail-0.3.1.tar.gz", hash = "sha256:7c5217483c9838ebcb8e4927feab21b02f03d63a47a1882556a7583f509033bd", size = 289175, upload-time = "2026-09-23T22:02:42.747Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/2d/58ca9d2c665cdc8e623f71abdbe70e9a6f0490b9cbef344726c9f857540d/pyflyrail-0.4.0.tar.gz", hash = "sha256:94ed0dc3a837b0cf031a85d443df929f956ce187122536b32a08ef31e2ae993a", size = 316578, upload-time = "2026-11-01T02:58:34.668Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4d/ea/3a2b21a255e8ff9275101d2d85941967ca0d3fe240f4011ad433fff61373/pyflyrail-0.3.1-py3-none-any.whl", hash = "sha256:de300cabbdc6820257bac8ca6cc7a66fcb8f4d2ed7ebd58e3b749d8161d5eeca", size = 115077, upload-time = "2026-09-23T22:02:41.727Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/23/33eadde671f649033ab4368dfbdb6e2d9fe38db6cba0958a38b725a7ddf4/pyflyrail-0.4.0-py3-none-any.whl", hash = "sha256:78648e20d47f82c1ce82c039e3ed6a893ad0d4c03c398bbad11d895d8657abd3", size = 121958, upload-time = "2026-11-01T02:58:33.197Z" },
 ]
 
 [[package]]
@@ -644,7 +644,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "argcomplete", specifier = ">=3.7.2" },
-    { name = "pyflyrail", specifier = ">=0.1.0" },
+    { name = "pyflyrail", specifier = ">=0.4.0" },
     { name = "tomlkit", specifier = ">=0.15.1" },
 ]
 

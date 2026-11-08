@@ -485,9 +485,8 @@ bootstrap trust remain for sibling worktrees; only this checkout's bootstrap com
   loader config (`mise.toml`/`.envrc`/`devbox.json`), the project-owned hook target
   (`lefthook.yml` / `.husky/post-checkout` / `.pre-commit-config.yaml` / `prek.toml` /
   `.simple-git-hooks.json` or the `package.json` block), and managed sections in existing root
-  `AGENTS.md` / independent `CLAUDE.md` files. Guidance also creates private
-  `.splashdown-ai/agents`, `.splashdown-ai/claude`, and adjacent `.flyrail-*.state/` metadata
-  with permanent root `.gitignore` entries. Git's common `hooks/post-checkout` belongs to
+  `AGENTS.md` / independent `CLAUDE.md` files. Guidance also creates a private Flyrail state
+  store in `.splashdown-ai/flyrail` with a permanent root `.gitignore` entry. Git's common `hooks/post-checkout` belongs to
   `splash trust`, and the configured environment output belongs to the first sync.
 
 ## Gotchas

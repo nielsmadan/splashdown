@@ -300,10 +300,12 @@ be recreated or overwritten after selection. Symlinks, hardlinks, special files,
 malformed boundaries, and changed owned content remain protected. Surrounding bytes, newline
 style, BOM, and current security metadata survive updates and removal.
 
-The fixed `.splashdown-ai/agents` and `.splashdown-ai/claude` indexes allow independent failures
-and source-free traversal. Physical authorities remain adjacent to each destination in
-`.flyrail-*.state/`. These private directories have permanent root `.gitignore` entries that
-survive deinit. Never delete their metadata to resolve a conflict. Missing recorded claims are
+Both files are separate installations in one private Flyrail `DirectoryStore` at
+`.splashdown-ai/flyrail`, keyed by file name, which allows independent failures and source-free
+traversal. The store also holds each destination's physical authority and receipts, and writes
+stage inside it, so nothing is created beside the instruction files. `/.splashdown-ai/` has a
+permanent root `.gitignore` entry that survives deinit. Never delete store records to resolve a
+conflict. Missing recorded claims are
 reported and preserved until their metadata is restored.
 Core Flyrail diagnostics enforce missing committed receipt protection. Valid retained
 empty receipts can represent a completed retirement by another logical index.

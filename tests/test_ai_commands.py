@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 
@@ -162,8 +163,8 @@ import splashdown as sd
 root, name, boundary = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 original_prepare, original_move = lifecycle.prepare, transaction.move
 
-def prepare(plan):
-    journal = original_prepare(plan)
+def prepare(store, plan):
+    journal = original_prepare(store, plan)
     if boundary == "prepared" and plan.resource.destination == root / name:
         os._exit(77)
     return journal
@@ -198,10 +199,12 @@ def _files(project):
 
 @pytest.mark.parametrize("operation", ["update", "uninstall", "source-free-uninstall"])
 def test_interrupted_update_retries_through_real_cli(ai_project, operation):
+    from splashdown import agentdocs
+
     recipe = ai_project / sd.RECIPE_NAME
     recipe.write_text(recipe.read_text().replace('profile = "vite"', 'profile = "angular"'))
     _interrupt_update(ai_project)
-    target = fr.InstallationTarget(ai_project / ".splashdown-ai" / "agents")
+    target = agentdocs._target(ai_project, "AGENTS.md")
     observation = fr.inspect_installation("splashdown", target)
     assert observation.pending and observation.resources[0].recovery_paths
     before = _files(ai_project)
@@ -223,13 +226,15 @@ def test_interrupted_update_retries_through_real_cli(ai_project, operation):
 
 
 def test_claude_import_selection_follows_recovery_of_missing_file(ai_project):
+    from splashdown import agentdocs
+
     claude = ai_project / "CLAUDE.md"
     claude.write_bytes(b"# Claude rules\n")
     assert _cli(ai_project, "update").returncode == 0
     claude.write_bytes(b"@AGENTS.md\n" + claude.read_bytes())
     _interrupt_update(ai_project, "CLAUDE.md", "backup")
     assert not claude.exists()
-    target = fr.InstallationTarget(ai_project / ".splashdown-ai" / "claude")
+    target = agentdocs._target(ai_project, "CLAUDE.md")
     assert fr.inspect_installation("splashdown", target).pending
     retried = _cli(ai_project, "update")
     assert retried.returncode == 0, retried
@@ -244,6 +249,7 @@ def test_unknown_interruption_keeps_evidence_and_fails_cli_until_reconciled(ai_p
     _interrupt_update(ai_project)
     path = ai_project / "AGENTS.md"
     original = path.read_bytes()
+    prepared = path.stat()
     path.write_bytes(original + b"Foreign edit during interruption.\n")
     before = _files(ai_project)
     for action in ("update", "uninstall"):
@@ -252,6 +258,7 @@ def test_unknown_interruption_keeps_evidence_and_fails_cli_until_reconciled(ai_p
         assert json.loads(result.stdout)["data"]["files"][0]["status"] == "incomplete"
         assert _files(ai_project) == before
     path.write_bytes(original)
+    os.utime(path, ns=(prepared.st_atime_ns, prepared.st_mtime_ns))
     assert _cli(ai_project, "uninstall").returncode == 0
     assert path.read_bytes() == b"# Rules\n"
 

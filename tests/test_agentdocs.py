@@ -660,21 +660,18 @@ def test_required_existing_preview_rejects_stale_destination(tmp_path, monkeypat
         assert path.read_text() == "# Concurrent foreign edit\n"
 
 
-@pytest.mark.parametrize("metadata", ["index", "receipt"])
-def test_missing_metadata_cannot_authorize_marker_deletion(tmp_path, metadata):
-    import flyrail
+@pytest.mark.parametrize(("prefix", "suffix"), [("index/", ""), ("resource/", "/receipt")])
+def test_missing_metadata_cannot_authorize_marker_deletion(tmp_path, prefix, suffix):
+    from splashdown import agentdocs
 
     path = tmp_path / "AGENTS.md"
     recipe = _vite(tmp_path)
     path.write_text("# Rules\n")
     sd.sync_agent_guidance(tmp_path, recipe)
     original = path.read_bytes()
-    state = (
-        tmp_path / ".splashdown-ai" / "agents"
-        if metadata == "index"
-        else flyrail.ResourceAuthority(path).state_root
-    )
-    (state / f"{metadata}.json").unlink()
+    store = agentdocs._target(tmp_path, "AGENTS.md").store
+    [key] = [key for key in store.keys(prefix) if key.endswith(suffix)]
+    assert store.delete(key, expected=store.read(key))
     result = sd.remove_agent_guidance(tmp_path, recipe)[0]
     assert result.status == "failed"
     assert path.read_bytes() == original
@@ -713,10 +710,11 @@ range = [5174, 5200]
             )
         ]
     )
-    foreign_target = fr.InstallationTarget(tmp_path / "other-index")
+    foreign_store = fr.DirectoryStore(tmp_path / "other-state")
+    foreign_target = fr.InstallationTarget(foreign_store)
     assert fr.sync(foreign, rendered, foreign_target).observation.is_current
     foreign_document = path.read_bytes()
-    foreign_index = (foreign_target.index_root / "index.json").read_bytes()
+    foreign_records = {key: foreign_store.read(key) for key in foreign_store.keys("")}
     path.write_bytes(foreign_document + sd.render_agent_guidance(tmp_path, recipe).encode() + b"\n")
     if operation == "update":
         original = path.read_bytes()
@@ -729,7 +727,7 @@ range = [5174, 5200]
         assert sd.cmd_deinit(tmp_path, registry) == 0
     assert path.read_bytes() == foreign_document
     assert fr.inspect_installation("other-tool", foreign_target).is_current
-    assert (foreign_target.index_root / "index.json").read_bytes() == foreign_index
+    assert {key: foreign_store.read(key) for key in foreign_store.keys("")} == foreign_records
 
 
 def test_claude_import_preimage_remains_binding_after_recovery(tmp_path, monkeypatch):
@@ -745,7 +743,7 @@ def test_claude_import_preimage_remains_binding_after_recovery(tmp_path, monkeyp
     preview_removal = fr.preview_removal
 
     def change_before_preview(bundle_id, target):
-        if target.index_root.name == "claude":
+        if target.context == (("file", "CLAUDE.md"),):
             claude.write_bytes(original + b"New foreign guidance.\n")
         return preview_removal(bundle_id, target)
 
@@ -765,7 +763,6 @@ def test_permanent_metadata_ignores_survive_deinit_and_reinit(tmp_path, registry
         assert (tmp_path / ".gitignore").read_text().splitlines() == [
             "user-secret",
             "/.splashdown-ai/",
-            "/.flyrail-*.state/",
         ]
 
 
