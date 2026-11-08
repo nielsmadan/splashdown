@@ -55,15 +55,19 @@ published tag or asset.
 
 ## Workflow structure
 
-The workflow has two jobs. `verify` validates that the tag is annotated, identifies the pushed
-commit, and is contained in `origin/main`; checks out the exact tagged source; runs the full
+The workflow has two jobs, and each installs `curtains` with the `nielsmadan/curtaincall` action,
+whose pinned version is the `curtains` version it runs. `verify` runs `curtains ci validate-tag` to
+check that the tag is annotated, identifies the pushed commit, and is contained in `origin/main`;
+checks out the exact tagged source; runs the full
 quality gate (Ruff, Pylint import cycles, mypy, pytest with branch coverage); builds the sdist and
 then the wheel from that sdist; installs both artifacts into isolated virtual environments and
 checks `splash --version` in each; verifies the locked Homebrew resources and generated formula;
-and saves a release bundle (artifacts, source checksum, formula, and git-cliff notes) as a workflow
-artifact. `publish` revalidates the tag against the verified commit,
-creates or reconciles the GitHub release through `scripts/release_workflow.py publish`, and
-validates and pushes the bundled Homebrew formula.
+and saves a release bundle (artifacts, source checksum, formula, and git-cliff notes, linked to the
+tag from `curtains ci previous-tag`) as a workflow artifact. `publish` revalidates the tag against
+the verified commit, creates or reconciles the GitHub release with `curtains ci publish`, and
+validates and pushes the bundled Homebrew formula. Prereleases are published with `--prerelease`
+and `--not-latest`. `scripts/release_workflow.py` only checks the tag against the project version
+and derives prerelease status from the classifiers.
 
 Every action in the repository's workflows is locked to a commit in
 `.github/workflows/actions.lock`. Run `gh actions-lock` after adding a workflow or an action;

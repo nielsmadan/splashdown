@@ -35,6 +35,8 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - uses: nielsmadan/curtaincall@v1.2.0
+
       - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.13"
@@ -48,10 +50,9 @@ jobs:
               echo "Release retries must run from main" >&2
               exit 1
             fi
-            RELEASE_COMMIT=$(python scripts/release_workflow.py validate-tag "$RELEASE_TAG")
+            RELEASE_COMMIT=$(curtains ci validate-tag "$RELEASE_TAG")
           else
-            RELEASE_COMMIT=$(python scripts/release_workflow.py \
-              validate-tag "$RELEASE_TAG" "$GITHUB_SHA")
+            RELEASE_COMMIT=$(curtains ci validate-tag "$RELEASE_TAG" "$GITHUB_SHA")
           fi
           echo "RELEASE_COMMIT=$RELEASE_COMMIT" >> "$GITHUB_ENV"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
@@ -118,7 +119,7 @@ jobs:
           uvx git-cliff@2.13.1 --current --strip all \
             -o .cache/release/bundle/release-notes.md
           sed -i '/^## \[/d' .cache/release/bundle/release-notes.md
-          PREV_TAG=$(python ../scripts/release_workflow.py previous-tag "$RELEASE_TAG")
+          PREV_TAG=$(curtains ci previous-tag "$RELEASE_TAG" --directory "$GITHUB_WORKSPACE")
           if [ -n "$PREV_TAG" ]; then
             printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
               "$GITHUB_REPOSITORY" "$PREV_TAG" "$RELEASE_TAG" \
@@ -154,12 +155,13 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - uses: nielsmadan/curtaincall@v1.2.0
+
       - name: Revalidate trusted publication code
         env:
           RELEASE_COMMIT: ${{ needs.verify.outputs.release-commit }}
         run: |
-          test "$(python scripts/release_workflow.py validate-tag \
-            "$RELEASE_TAG" "$RELEASE_COMMIT")" = "$RELEASE_COMMIT"
+          test "$(curtains ci validate-tag "$RELEASE_TAG" "$RELEASE_COMMIT")" = "$RELEASE_COMMIT"
 
       - name: Download verified release bundle
         uses: actions/download-artifact@v8.0.2
@@ -171,17 +173,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          RELEASE_COMMIT: ${{ needs.verify.outputs.release-commit }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           args=()
           if [ "$PRERELEASE" = "true" ]; then
-            args+=(--prerelease)
+            args+=(--prerelease --not-latest)
           fi
-          python scripts/release_workflow.py publish \
-            "$RELEASE_TAG" \
-            "splashdown ${{ needs.verify.outputs.version }}" \
-            release-bundle/release-notes.md \
-            "${{ needs.verify.outputs.release-commit }}" \
-            release-bundle/dist/* "${args[@]}"
+          curtains ci publish "$RELEASE_TAG" "$RELEASE_COMMIT" \
+            --notes release-bundle/release-notes.md \
+            --title "splashdown $VERSION" "${args[@]}" \
+            release-bundle/dist/*
 
       - name: Render, validate, and commit Homebrew formula
         id: formula
