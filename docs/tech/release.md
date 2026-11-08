@@ -65,8 +65,9 @@ artifact. `publish` revalidates the tag against the verified commit,
 creates or reconciles the GitHub release through `scripts/release_workflow.py publish`, and
 validates and pushes the bundled Homebrew formula.
 
-Every action in the repository's workflows is pinned to a full commit SHA. Keep pins exact when
-updating.
+Every action in the repository's workflows is locked to a commit in
+`.github/workflows/actions.lock`. Run `gh actions-lock` after adding a workflow or an action;
+Dependabot updates the lockfile in its action bump pull requests.
 
 ## Version and lock ordering
 

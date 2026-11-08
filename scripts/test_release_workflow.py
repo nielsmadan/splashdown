@@ -510,12 +510,3 @@ def test_workflow_coverage_step_runs_from_a_fresh_directory(tmp_path: Path) -> N
     results = list((tmp_path / ".cache/release/pytest").glob("*/result"))
     assert results
     assert all(path.read_text(encoding="utf-8") == "passed" for path in results)
-
-
-def test_all_workflow_actions_use_full_commit_pins() -> None:
-    workflows = SCRIPT.parent.parent / ".github/workflows"
-    for path in workflows.glob("*.yml"):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            match = re.search(r"\buses:\s+[^@\s]+@([^\s]+)", line)
-            if match is not None:
-                assert re.fullmatch(r"[0-9a-f]{40}", match[1]), f"{path}: {line}"
