@@ -182,12 +182,21 @@ Omit `--global` to save in this checkout's `splashdown.local.toml`. Local additi
 `splashdown.toml`, so run `splash init` first. Global addition works independently of project
 configuration. Add `--platform android` or `--platform ios` to limit discovery and setup guidance.
 
-The guide reports when a scan starts, lists selectable phones and shows blocked states, such as
-Android `unauthorized` or `offline`, alongside the next setup step. Missing SDK tools produce an explanation rather than
-an apparently empty device list. Choose **Set up an unlisted phone** even when another phone is
-already visible, then **Rescan** after completing the instructions.
+The guide scans physical phones and tablets, excluding simulators and emulators. Android entries
+use the manufacturer and device name when available, with marketing names or model codes as a
+fallback. The hardware ID remains the identity saved in config. Multiple verified Wi-Fi
+connections to one phone appear as one entry.
+
+Connection problems such as Android `unauthorized` or `offline` appear under **Phones needing
+attention**, with the next step to take. Missing SDK tools appear under **Discovery problems**.
+Choose **Set up an unlisted phone** even when another phone is already visible. The guide gives
+USB and Wi-Fi instructions, including separate Android pairing and connection ports. Choose
+**Phone setup complete · scan again** when ready.
 
 Use the displayed letter shortcuts, starting with `q`, `w`, `e`, or use arrow keys and Enter.
+Each completed menu is replaced by a summary of your choice. Long lists scroll within the
+terminal height, and long labels are shortened to fit. The selected phone's full name and
+hardware ID appear before saving.
 After selecting a phone, type its command name, using Backspace to correct it, and review the
 hardware ID and destination file.
 Unsupported key combinations are ignored without entering stray characters or selecting a phone.
@@ -199,8 +208,9 @@ phone's debugging authorization prompt. iOS setup requires trusting and pairing 
 Developer Mode is needed to run development apps, while a discovered paired phone may still
 need signing or installation setup. Follow the [Android USB guide](https://developer.android.com/tools/adb#Enabling)
 or [Apple pairing guide](https://developer.apple.com/documentation/xcode/managing-your-simulated-and-physical-devices-in-device-hub).
-Already discoverable wireless phones are also supported. The guide links to the platform's
-wireless setup instructions and does not exchange pairing codes itself.
+Already discoverable wireless phones are also supported. The guide shows Android pairing commands
+to run in another terminal and links to the platform instructions. It does not exchange pairing
+codes itself.
 
 If `splash status` cannot inspect a phone's identity or connection, it reports the target as
 unavailable and includes the discovery error. Other phones with confirmed connections remain
@@ -275,7 +285,9 @@ variant name is its convenient command label. Android discovery resolves the har
 separately from the current USB or Wi-Fi connection. Do not save an `IP:port` or wireless discovery
 service name as the ID. If Splashdown cannot establish the hardware identity, connect over USB
 and rescan. A sole usable connection identified as USB by ADB takes precedence over Wi-Fi when both
-identify the same phone. Conflicting or ambiguous connections require reconnecting and rescanning.
+identify the same phone. Multiple Wi-Fi endpoints with the same verified hardware ID and consistent
+model information are combined into one phone. Conflicting models or unresolved duplicate
+connections require reconnecting and rescanning.
 Before claiming, and again after run's preflight checks, Splashdown verifies that the selected
 connection still identifies the intended phone. A changed or unavailable connection stops the
 command and asks you to reconnect and rerun it.

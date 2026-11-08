@@ -145,20 +145,28 @@ callers. `device_discovery.py` combines bounded platform probes, preserving insp
 probes both platforms concurrently; other hosts default to Android. Explicit iOS selection on an
 unsupported host reports the capability problem.
 
-The iOS adapter requires `pairingState == paired` and a recognized usable tunnel state. A paired
+The iOS adapter reads the current `properties` groups when present, otherwise the Xcode 15-era
+property groups. It excludes `hardware.reality == simulated` before considering pairing, and
+leaves unfamiliar device kinds unselectable. It requires `pairingState == paired` and a recognized usable tunnel state. A paired
 `disconnected` tunnel remains selectable because wireless tunnels normally connect at launch.
 Unpaired, unavailable, unknown-state and missing-ID records remain visible to onboarding. Hardware
 UDID deduplication prefers a selectable record.
 
-Android parses `adb devices -l`, excludes emulator rows and retains unauthorized/offline/permission
+Android parses `adb devices -l`, preserving spaces in mDNS service names, excludes emulator rows and retains unauthorized/offline/permission
 states for the guide. For ready rows it uses the reported ADB transport ID when available to read
 `ro.serialno`, falling back to `ro.boot.serialno`. Up to four identity probes run concurrently
 under the discovery deadline, each with a two-second ceiling. Results retain inventory order
 before connection deduplication. Empty, placeholder or malformed identities remain unselectable
 with USB guidance. Connections group by hardware ID. A sole metadata-confirmed USB connection wins
-over Wi-Fi unless their metadata conflict; unresolved duplicate connections produce an ambiguous
+over Wi-Fi unless their metadata conflict. Verified Wi-Fi endpoints with consistent model metadata
+collapse to one deterministic endpoint, ordered by endpoint and transport token. Unresolved duplicate connections produce an ambiguous
 record. The launch snapshot carries that ID with an error so matching that phone fails without
 blocking unrelated ready phones.
+
+Onboarding additionally reads Android manufacturer, device name and vendor marketing-name
+properties in one bounded query per selected phone. These optional labels fall back to the ADB
+model on failure and never change the saved hardware ID. Label queries share the discovery
+deadline and run only after connection deduplication, so claims and launch avoid this extra work.
 
 `physical_match_snapshot` requires an exact hardware `id` and applies an optional platform filter.
 It raises `PhysicalAmbiguityError` for multiple matches or an ambiguous record.
@@ -178,7 +186,10 @@ platform request propagates its capability error.
 `target_authoring.py` owns direct and guided creation. It validates a local recipe and editable
 local config, or the independent global destination, before opening the guide. `device_onboarding.py`
 prints scanning progress and offers blocked-state help, explicit rescans, naming and final save
-confirmation. `picker.py` uses qwerty shortcuts and CSI/SS3 arrows with Enter. Unsupported key
+confirmation. Completed menus collapse into action summaries. Setup instructions separate USB
+and Wi-Fi, and blocked phones appear in their own group. `picker.py` uses qwerty shortcuts and
+CSI/SS3 arrows with Enter. It limits visible options to the terminal height and clips labels by
+display width so redraws do not wrap through earlier output. Unsupported key
 sequences are consumed as a unit. Name entry supports Backspace, Escape/EOF cancellation and
 Ctrl+C. It restores terminal attributes on every exit. `terminal.py` escapes device-provided
 control characters for display. Guided requests require text output plus terminal stdin/stderr.

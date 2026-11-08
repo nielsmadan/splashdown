@@ -11,9 +11,13 @@ from .errors import DeviceError
 
 
 def _discover_platform(platform: str, timeout: float) -> DiscoverySnapshot:
-    discover = _ios_physical_observations if platform == "ios" else _android_physical_observations
     try:
-        return DiscoverySnapshot(tuple(discover(timeout=timeout)), ())
+        devices = (
+            _ios_physical_observations(timeout=timeout)
+            if platform == "ios"
+            else _android_physical_observations(timeout=timeout, include_names=True)
+        )
+        return DiscoverySnapshot(tuple(devices), ())
     except (DeviceError, OSError, UnicodeError) as error:
         return DiscoverySnapshot((), (f"{platform}: {error}",))
 

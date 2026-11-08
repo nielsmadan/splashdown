@@ -36,7 +36,7 @@ def interactive(monkeypatch, choices, names=()):
     names = iter(names)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr(device_onboarding, "choose", lambda *_args: next(choices))
+    monkeypatch.setattr(device_onboarding, "choose", lambda *_args, **_kwargs: next(choices))
     monkeypatch.setattr(device_onboarding, "read_name", lambda _prompt: next(names))
 
 
@@ -259,6 +259,10 @@ def test_picker_real_pty_restores_terminal(action, expected):
         stdout, _ = process.communicate(timeout=5)
         assert process.returncode == 0
         assert json.loads(stdout) == expected
+        if expected != "interrupt":
+            summary = b"Cancelled" if expected is None else f"Phones: {options[expected]}".encode()
+            completed = _read_until(master, summary, process)
+            assert b"\x1b[J" + summary in completed
         restored = termios.tcgetattr(slave)
         restored[3] &= ~getattr(termios, "PENDIN", 0)
         assert restored == before
@@ -276,6 +280,39 @@ def test_untrusted_device_text_is_escaped():
     from splashdown.picker import terminal_text
 
     assert terminal_text("Phone\x1b[2J\nOther") == "Phone\\x1b[2J\\nOther"
+
+
+def test_small_picker_scrolls_and_keeps_each_line_on_screen():
+    from splashdown.picker import _cell_width, _menu_lines
+
+    options = [f"Phone {number} 名称 très long " * 3 for number in range(30)]
+    lines = _menu_lines("Choose a phone", options, 27, os.terminal_size((32, 8)))
+    assert len(lines) < 8
+    assert all(_cell_width(line) < 32 for line in lines)
+    assert any(line.startswith(">     Phone 27") for line in lines)
+    assert "26-29 of 30" in lines[-2]
+
+
+def test_setup_flow_has_action_summaries(tmp_path, monkeypatch, capsys):
+    snapshot(monkeypatch)
+    prompts = []
+    choices = iter([0, 0, 0, None])
+
+    def choose(title, options, *, summaries):
+        prompts.append((title, options, summaries))
+        return next(choices)
+
+    monkeypatch.setattr(device_onboarding, "choose", choose)
+    assert device_onboarding.onboard_device(None, tmp_path / "local.toml", set()) is None
+    assert [prompt[2][0] for prompt in prompts[:3]] == [
+        "Set up an unlisted phone",
+        "Set up an unlisted Android phone",
+        "Phone setup complete",
+    ]
+    output = capsys.readouterr().err
+    assert "USB (recommended for the first connection)" in output
+    assert "adb pair <pairing-ip>:<pairing-port>" in output
+    assert "adb connect <ip>:<connection-port>" in output
 
 
 @pytest.mark.parametrize(

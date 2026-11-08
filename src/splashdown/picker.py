@@ -6,6 +6,7 @@ import sys
 import termios
 import time
 import tty
+import unicodedata
 from collections.abc import Sequence
 
 from .terminal import terminal_text
@@ -47,36 +48,105 @@ def _read_key(fd: int) -> str:
     return key.decode("ascii", errors="ignore")
 
 
-def choose(title: str, options: Sequence[str]) -> int | None:
+def _terminal_size() -> os.terminal_size:
+    try:
+        size = os.get_terminal_size(sys.stderr.fileno())
+    except OSError:
+        return os.terminal_size((80, 24))
+    return os.terminal_size((size.columns or 80, size.lines or 24))
+
+
+def _cell_width(text: str) -> int:
+    return sum(
+        0
+        if unicodedata.combining(character)
+        else 2
+        if unicodedata.east_asian_width(character) in {"W", "F"}
+        else 1
+        for character in text
+    )
+
+
+def _fit_line(text: str, columns: int) -> str:
+    text = terminal_text(text)
+    width = max(1, columns - 1)
+    if _cell_width(text) <= width:
+        return text
+    end = 0
+    used = 0
+    for index, character in enumerate(text):
+        used += _cell_width(character)
+        if used >= width:
+            break
+        end = index + 1
+    return text[:end] + "…"
+
+
+def _clear_lines(lines: Sequence[str], size: os.terminal_size) -> None:
+    rows = sum(max(1, (_cell_width(line) + size.columns - 1) // size.columns) for line in lines)
+    if rows:
+        print(f"\x1b[{min(rows, max(1, size.lines - 1))}A\r\x1b[J", end="", file=sys.stderr)
+
+
+def _menu_lines(
+    title: str, options: Sequence[str], selected: int, size: os.terminal_size
+) -> list[str]:
+    count = max(1, size.lines - 4)
+    start = min(max(0, selected - count // 2), max(0, len(options) - count))
+    visible = options[start : start + count]
+    lines = [title]
+    for index, label in enumerate(visible, start=start):
+        marker = ">" if index == selected else " "
+        shortcut = f"[{SHORTCUTS[index]}]" if index < len(SHORTCUTS) else "   "
+        lines.append(f"{marker} {shortcut} {label}")
+    if len(visible) < len(options):
+        lines.append(f"{start + 1}-{start + len(visible)} of {len(options)} · ↑/↓ to scroll")
+    lines.append("Letters select · ↑/↓ then Enter · Esc cancels")
+    return [_fit_line(line, size.columns) for line in lines]
+
+
+def choose(
+    title: str, options: Sequence[str], *, summaries: Sequence[str] | None = None
+) -> int | None:
     if not options:
         raise ValueError("a picker needs at least one option")
+    if summaries is not None and len(summaries) != len(options):
+        raise ValueError("each picker option needs a summary")
     fd = sys.stdin.fileno()
     previous = termios.tcgetattr(fd)
     selected = 0
-    redraw = False
+    lines: list[str] = []
+    result = None
     try:
         tty.setcbreak(fd)
         while True:
-            if redraw:
-                print(f"\x1b[{len(options) + 2}A\x1b[J", end="", file=sys.stderr)
-            print(title, file=sys.stderr)
-            for index, label in enumerate(options):
-                marker = ">" if index == selected else " "
-                shortcut = SHORTCUTS[index] if index < len(SHORTCUTS) else " "
-                print(f"{marker} [{shortcut}] {terminal_text(label)}", file=sys.stderr)
-            print("Letters select · ↑/↓ then Enter · Esc cancels", file=sys.stderr, flush=True)
+            size = _terminal_size()
+            _clear_lines(lines, size)
+            lines = _menu_lines(title, options, selected, size)
+            print("\n".join(lines), file=sys.stderr, flush=True)
             key = _read_key(fd).lower()
             if key == "cancel":
-                return None
+                break
             if key == "enter":
-                return selected
+                result = selected
+                break
             if key and key in SHORTCUTS[: len(options)]:
-                return SHORTCUTS.index(key)
+                result = SHORTCUTS.index(key)
+                break
             if key in {"up", "down"}:
                 selected = (selected + (1 if key == "down" else -1)) % len(options)
-            redraw = True
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, previous)
+        _clear_lines(lines, _terminal_size())
+        summary = (
+            "Cancelled"
+            if result is None
+            else summaries[result]
+            if summaries is not None
+            else f"{title}: {options[result]}"
+        )
+        print(terminal_text(summary), file=sys.stderr, flush=True)
+    return result
 
 
 def read_name(prompt: str) -> str | None:

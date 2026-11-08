@@ -321,20 +321,40 @@ def _device_property(properties: dict[str, Any], field: str) -> str:
 def _ios_observation(device: object) -> PhysicalObservation | None:
     if not isinstance(device, dict):
         raise DeviceError("could not parse devicectl output: invalid device record")
-    hardware = _device_properties(device, "hardwareProperties")
+    properties = _device_properties(device, "properties") if "properties" in device else None
+    source = properties if properties is not None else device
+    hardware = _device_properties(
+        source, "hardware" if properties is not None else "hardwareProperties"
+    )
+    reality = _device_property(hardware, "reality").lower()
+    if reality == "simulated":
+        return None
     platform = _device_property(hardware, "platform").lower()
     if not platform:
         raise DeviceError("could not parse devicectl output: missing device platform")
     if platform != "ios":
         return None
     udid = _device_property(hardware, "udid")
-    connection = _device_properties(device, "connectionProperties")
+    connection = _device_properties(
+        source, "connection" if properties is not None else "connectionProperties"
+    )
     pairing = _device_property(connection, "pairingState").lower()
-    tunnel = _device_property(connection, "tunnelState").lower()
-    name = _device_property(_device_properties(device, "deviceProperties"), "name")
+    tunnel = _device_property(
+        connection, "state" if properties is not None else "tunnelState"
+    ).lower()
+    name = _device_property(
+        _device_properties(source, "state" if properties is not None else "deviceProperties"),
+        "name",
+    )
     observation = PhysicalObservation(
         "ios", name or udid or "iOS device", udid or None, udid, "identity_unavailable", "", False
     )
+    if reality not in {"", "physical"}:
+        return replace(
+            observation,
+            state="device_kind_unknown",
+            detail=f"Xcode reported an unrecognized device kind ({reality}). Check the device in Xcode, then rescan.",
+        )
     if (
         not udid
         or re.fullmatch(r"[A-Za-z0-9-]+", udid) is None

@@ -130,9 +130,11 @@ splash target add device --global
 splash target add device --platform android --global
 ```
 
-The guide lists connected phones and explains blocked connection states. Choose **Set up an
-unlisted phone** for setup guidance, then rescan. Letter shortcuts or arrows and Enter select an
-option. Before saving, it shows the exact hardware ID, your chosen target name and the destination
+The guide lists physical phones, using recognizable Android manufacturer and device names when
+available, and groups connection problems separately. Choose **Set up an unlisted phone** for
+USB or Wi-Fi guidance, then **Phone setup complete · scan again**. Letter shortcuts or arrows and
+Enter select an option, and each completed menu becomes a summary of your choice.
+Before saving, it shows the exact hardware ID, your chosen target name and the destination
 file. See [Add a phone](devices.md#add-a-phone) for the complete flow and cancellation behavior.
 
 For a known hardware ID, the direct command also works without a connected phone or installed SDK:

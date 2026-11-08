@@ -23,9 +23,16 @@ from .errors import CapabilityError, DeviceError
 
 _AVD_INVALID_RE = re.compile(r"[^A-Za-z0-9._-]")
 _ADB_ROW_COLS = 2
+_ADB_MDNS_ROW_RE = re.compile(r"^(.+?\._adb(?:-tls-connect)?\._tcp\.?)[ \t]+(\S.*)$")
 _HARDWARE_SERIAL_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _IDENTITY_PROBE_TIMEOUT = 2
 _IDENTITY_PROBE_WORKERS = 4
+_PHONE_LABEL_COMMAND = (
+    "getprop ro.product.manufacturer; printf '\\0'; "
+    "settings get global device_name; printf '\\0'; "
+    "getprop ro.product.marketname; printf '\\0'; "
+    "getprop ro.config.marketing_name"
+)
 
 
 def _sanitize_avd_name(name: str) -> str:
@@ -305,7 +312,12 @@ def _adb_device_rows(output: str) -> list[list[str]]:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines or lines[0] != "List of devices attached":
         raise DeviceError("could not parse adb devices output: missing device-list header")
-    rows = [line.split() for line in lines[1:]]
+    rows = [
+        [match[1], *match[2].split()]
+        if (match := _ADB_MDNS_ROW_RE.fullmatch(line))
+        else line.split()
+        for line in lines[1:]
+    ]
     if any(len(row) < _ADB_ROW_COLS for row in rows):
         raise DeviceError("could not parse adb devices output: incomplete device row")
     return [row for row in rows if not row[0].startswith("emulator-")]
@@ -405,17 +417,31 @@ def _select_android_connections(
     for hardware_id, matches in grouped.items():
         usb_matches = [match for match in matches if match.usb]
         models = {match.name for match in matches if match.name != match.transport_id}
-        if len(models) > 1 or (len(matches) > 1 and len(usb_matches) != 1):
+        wifi_only = all(
+            not match.usb
+            and (
+                match.transport_id.rstrip(".").endswith("._tcp")
+                or re.fullmatch(r"(?:\[[^]]+\]|[^: ]+):[0-9]+", match.transport_id)
+            )
+            for match in matches
+        )
+        if len(models) > 1 or (len(matches) > 1 and len(usb_matches) != 1 and not wifi_only):
             endpoints = ", ".join(match.transport_id for match in matches)
             detail = f"Hardware ID {hardware_id} has conflicting or ambiguous connections ({endpoints}). Disconnect extra connections, then rescan."
             selected.append(replace(matches[0], state="ambiguous", detail=detail, selectable=False))
         else:
-            selected.append(usb_matches[0] if usb_matches else matches[0])
+            selected.append(
+                usb_matches[0]
+                if usb_matches
+                else min(
+                    matches, key=lambda match: (match.transport_id, match.adb_transport_id or "")
+                )
+            )
     return selected
 
 
 def _android_physical_observations(
-    *, timeout: float = DISCOVERY_TIMEOUT
+    *, timeout: float = DISCOVERY_TIMEOUT, include_names: bool = False
 ) -> list[PhysicalObservation]:
     if timeout <= 0:
         raise DeviceError("Android discovery timed out")
@@ -440,7 +466,47 @@ def _android_physical_observations(
                 partial(_android_observe_row, adb=adb, deadline=deadline), _adb_device_rows(out)
             )
         )
-    return _select_android_connections(observations)
+    selected = _select_android_connections(observations)
+    if not include_names:
+        return selected
+    with ThreadPoolExecutor(max_workers=_IDENTITY_PROBE_WORKERS) as executor:
+        return list(
+            executor.map(partial(_android_phone_name, adb=adb, deadline=deadline), selected)
+        )
+
+
+def _android_phone_name(
+    observation: PhysicalObservation, *, adb: str, deadline: float
+) -> PhysicalObservation:
+    remaining = deadline - time.monotonic()
+    if not observation.selectable or remaining <= 0:
+        return observation
+    selector = (
+        ["-t", observation.adb_transport_id]
+        if observation.adb_transport_id
+        else ["-s", observation.transport_id]
+    )
+    try:
+        output = check_output_finite(
+            [adb, *selector, "shell", _PHONE_LABEL_COMMAND],
+            operation="adb read phone name",
+            timeout=min(_IDENTITY_PROBE_TIMEOUT, remaining),
+            stderr=subprocess.PIPE,
+        ).decode()
+    except (DeviceError, OSError, subprocess.CalledProcessError, UnicodeError):
+        return observation
+    fields = [value.strip() for value in output.split("\0")]
+    try:
+        manufacturer, device_name, market_name, marketing_name = (
+            "" if value.lower() in {"null", "unknown", "none"} else value for value in fields
+        )
+    except ValueError:
+        return observation
+    names = (device_name, market_name, marketing_name)
+    name = next((value for value in names if value), observation.name.replace("_", " "))
+    if manufacturer and not name.casefold().startswith(manufacturer.casefold()):
+        name = f"{manufacturer.capitalize() if manufacturer.islower() else manufacturer} {name}"
+    return replace(observation, name=name)
 
 
 def _android_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:

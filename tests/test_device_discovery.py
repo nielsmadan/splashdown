@@ -91,6 +91,88 @@ def test_android_usb_is_metadata_based_and_preferred(monkeypatch):
     assert observed[0].selectable
 
 
+@pytest.mark.parametrize("transport", [True, False])
+def test_android_mdns_name_with_spaces_keeps_its_connection_state(monkeypatch, transport):
+    endpoint = "adb-PHONE-A-random (2)._adb-tls-connect._tcp"
+    selector = ("-t", "12") if transport else ("-s", endpoint)
+    calls = adb_inventory(
+        monkeypatch,
+        [f"{endpoint} device model:Pixel_9" + (" transport_id:12" if transport else "")],
+        {(*selector, "ro.serialno"): b"PHONE-A\n"},
+    )
+    observed = android._android_physical_observations()
+    assert [(item.hardware_id, item.transport_id, item.state) for item in observed] == [
+        ("PHONE-A", endpoint, "ready")
+    ]
+    assert observed[0].selectable
+    assert calls[1][0] == ["/fake/adb", *selector, "shell", "getprop", "ro.serialno"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_android_verified_wifi_aliases_select_one_stable_connection(monkeypatch, reverse):
+    rows = [
+        "adb-PHONE-A-random (2)._adb-tls-connect._tcp device model:Galaxy transport_id:3",
+        "adb-PHONE-A-random._adb-tls-connect._tcp device model:Galaxy transport_id:2",
+        "192.0.2.4:4567 device model:Galaxy transport_id:1",
+    ]
+    adb_inventory(
+        monkeypatch,
+        list(reversed(rows)) if reverse else rows,
+        {("-t", str(token), "ro.serialno"): b"PHONE-A\n" for token in (1, 2, 3)},
+    )
+    observed = android._android_physical_observations()
+    assert len(observed) == 1
+    assert observed[0].hardware_id == "PHONE-A"
+    assert observed[0].transport_id == "192.0.2.4:4567"
+    assert observed[0].adb_transport_id == "1"
+    assert observed[0].selectable
+
+
+def test_android_wifi_aliases_with_conflicting_models_remain_blocked(monkeypatch):
+    adb_inventory(
+        monkeypatch,
+        [
+            "192.0.2.4:4567 device model:Pixel transport_id:1",
+            "adb-PHONE-A-random._adb-tls-connect._tcp device model:Galaxy transport_id:2",
+        ],
+        {("-t", str(token), "ro.serialno"): b"PHONE-A\n" for token in (1, 2)},
+    )
+    observed = android._android_physical_observations()
+    assert len(observed) == 1
+    assert observed[0].state == "ambiguous"
+    assert observed[0].selectable is False
+
+
+@pytest.mark.parametrize(
+    "label,expected",
+    [
+        (b"Xiaomi\n\0Redmi A5\n\0Redmi A5\n\0", "Xiaomi Redmi A5"),
+        (b"samsung\n\0Niels's A15\n\0\0", "Samsung Niels's A15"),
+        (b"HONOR\n\0null\n\0\0HONOR Test Phone\n", "HONOR Test Phone"),
+        (b"Google\n\0\0\0", "Google Pixel 9"),
+        (b"unparseable", "Pixel_9"),
+        (DeviceError("name query timed out"), "Pixel_9"),
+    ],
+)
+def test_onboarding_android_names_are_optional_and_preserve_hardware_identity(
+    monkeypatch, label, expected
+):
+    calls = adb_inventory(
+        monkeypatch,
+        ["192.0.2.4:4567 device model:Pixel_9 transport_id:12"],
+        {
+            ("-t", "12", "ro.serialno"): b"PHONE-A\n",
+            ("-t", "12", android._PHONE_LABEL_COMMAND): label,
+        },
+    )
+    observed = android._android_physical_observations(include_names=True)
+    assert [
+        (item.hardware_id, item.name, item.transport_id, item.selectable) for item in observed
+    ] == [("PHONE-A", expected, "192.0.2.4:4567", True)]
+    assert len(calls) == 3
+    assert 0 < calls[-1][1]["timeout"] <= 2
+
+
 def test_android_does_not_prefer_unusable_usb_over_wifi(monkeypatch):
     calls = adb_inventory(
         monkeypatch,
@@ -389,6 +471,40 @@ def test_ios_preserves_pairing_states_and_idle_tunnels(monkeypatch):
         ("PENDING", "connection_unknown", False),
     ]
     assert ios._ios_physical_devices() == [{"id": "READY", "name": "iPhone", "platform": "ios"}]
+
+
+@pytest.mark.parametrize("current_schema", [False, True])
+def test_ios_physical_discovery_excludes_simulators(monkeypatch, current_schema):
+    devices = [iphone("REAL", name="Test iPhone"), iphone("SIM", name="iPhone simulator")]
+    for device, reality in zip(devices, ["physical", "simulated"], strict=True):
+        device["hardwareProperties"]["reality"] = reality
+    if current_schema:
+        devices = [
+            {
+                "properties": {
+                    "hardware": device["hardwareProperties"],
+                    "state": device["deviceProperties"],
+                    "connection": {"pairingState": "paired", "state": "disconnected"},
+                }
+            }
+            for device in devices
+        ]
+    monkeypatch.setattr(ios, "_devicectl_json", lambda *a, **kw: {"result": {"devices": devices}})
+    observed = ios._ios_physical_observations()
+    assert [(item.hardware_id, item.name, item.selectable) for item in observed] == [
+        ("REAL", "Test iPhone", True)
+    ]
+    assert ios._ios_physical_devices() == [{"id": "REAL", "name": "Test iPhone", "platform": "ios"}]
+
+
+def test_ios_unknown_device_kind_is_not_selectable(monkeypatch):
+    device = iphone()
+    device["hardwareProperties"]["reality"] = "new-kind"
+    monkeypatch.setattr(ios, "_devicectl_json", lambda *a, **kw: {"result": {"devices": [device]}})
+    observed = ios._ios_physical_observations()[0]
+    assert observed.state == "device_kind_unknown"
+    assert "new-kind" in observed.detail
+    assert observed.selectable is False
 
 
 def test_ios_deduplicates_udid_and_uses_available_record(monkeypatch):
