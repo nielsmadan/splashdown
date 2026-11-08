@@ -26,27 +26,60 @@ def _physical_claim(owner, **changes):
 
 @pytest.mark.parametrize("hardware_id", ["192.0.2.10:5555", "adb-phone._adb-tls-connect._tcp"])
 @pytest.mark.parametrize("force", [False, True])
-def test_legacy_network_claim_blocks_cutover_until_owner_releases(
-    registry, tmp_path, hardware_id, force
-):
-    from splashdown.errors import ApplicationError
-
+def test_network_claim_does_not_block_other_android_targets(registry, tmp_path, hardware_id, force):
     owner = tmp_path / "old checkout"
     owner.mkdir()
     requester = tmp_path / "new"
     requester.mkdir()
     old = _physical_claim(owner, hardware_id=hardware_id)
     registry._write_claims([old])
-    before = registry.claim_file.read_bytes()
     new = _physical_claim(requester, catalog_identity="local:new:phone")
-    with pytest.raises(ApplicationError, match="Release the old claim") as error:
-        registry.attempt_claim(new, force=force)
-    assert error.value.code == "legacy_device_claim"
-    assert error.value.next_steps == (f"splash --cwd '{owner}' target release --all",)
-    assert registry.claim_file.read_bytes() == before
-    assert registry.release_claim(old.catalog_identity, str(owner)).status == "released"
-    assert registry.attempt_claim(new).status == "claimed"
+
+    result = registry.attempt_claim(new, force=force)
+
+    assert result.status == "claimed"
+    assert result.claim == new
+    assert result.displaced == ()
+    assert registry.all_claims() == (old, new)
+
+
+@pytest.mark.parametrize("hardware_id", ["192.0.2.10:5555", "adb-phone._adb-tls-connect._tcp"])
+def test_network_claim_preserves_catalog_ownership_until_forced(registry, tmp_path, hardware_id):
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    requester = tmp_path / "requester"
+    requester.mkdir()
+    old = _physical_claim(owner, hardware_id=hardware_id)
+    registry._write_claims([old])
+    new = _physical_claim(requester)
+
+    busy = registry.attempt_claim(new)
+
+    assert busy.status == "busy"
+    assert busy.conflicts == (old,)
+    assert registry.all_claims() == (old,)
+
+    forced = registry.attempt_claim(new, force=True)
+
+    assert forced.status == "claimed"
+    assert forced.claim == new
+    assert forced.displaced == (old,)
     assert registry.all_claims() == (new,)
+
+
+@pytest.mark.parametrize("hardware_id", ["192.0.2.10:5555", "adb-phone._adb-tls-connect._tcp"])
+def test_owner_refreshes_network_claim_with_verified_hardware_id(registry, checkout, hardware_id):
+    old = _physical_claim(checkout, hardware_id=hardware_id)
+    registry._write_claims([old])
+    new = _physical_claim(checkout, claimed_at="2026-08-27T09:00:00+00:00")
+
+    result = registry.attempt_claim(new)
+
+    expected = replace(new, claimed_at=old.claimed_at)
+    assert result.status == "owned"
+    assert result.claim == expected
+    assert result.displaced == ()
+    assert registry.all_claims() == (expected,)
 
 
 def test_legacy_android_claim_does_not_block_ios(registry, tmp_path):
@@ -59,11 +92,12 @@ def test_legacy_android_claim_does_not_block_ios(registry, tmp_path):
     assert registry.all_claims() == (old, ios)
 
 
-def test_new_android_claim_rejects_transport_identity(registry, tmp_path):
+@pytest.mark.parametrize("hardware_id", ["192.0.2.10:5555", "adb-phone._adb-tls-connect._tcp"])
+def test_new_android_claim_rejects_transport_identity(registry, tmp_path, hardware_id):
     from splashdown.errors import ApplicationError
 
     with pytest.raises(ApplicationError, match="hardware serial"):
-        registry.attempt_claim(_physical_claim(tmp_path, hardware_id="wifi:5555"))
+        registry.attempt_claim(_physical_claim(tmp_path, hardware_id=hardware_id))
     assert registry.all_claims() == ()
 
 

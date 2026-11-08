@@ -132,12 +132,10 @@ original claim time, after checking it does not conflict elsewhere. Generic allo
 race after discovery, but it can continue to later configured candidates from the same snapshot.
 
 Before any Android acquisition, including `force=True`, `attempt_claim` rejects a requested
-connection address and checks live Android rows for recognizable old address keys (`:` or `._tcp`).
-Such a row raises `legacy_device_claim` before mutation, preserving all rows. The error supplies
-`splash --cwd 'owning checkout' target release --all`; that explicit recovery needs neither device
-discovery nor configuration parsing and releases the checkout's claims. No automatic conversion
-or release is attempted. Hardware-keyed rows retain their format and ownership. Opaque historical
-IDs cannot be retrospectively classified as connection addresses by this check.
+connection address (`:` or `._tcp`) with `invalid_device_identity`. Existing live address-based
+rows still reserve their catalog identities and remain unchanged when another target is claimed.
+They cannot establish hardware aliases because a connection address is not a stable identity.
+Conflicts stay scoped to the requested catalog identity or `(platform, hardware_id)` pair.
 
 `release_claim` addresses one catalog identity and normally refuses another live owner's row.
 `release_claims` removes every row owned by one checkout. `all_claims(gc=True)` is registry-only

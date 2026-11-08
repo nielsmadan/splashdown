@@ -99,6 +99,53 @@ def test_claim_and_release_without_recipe_or_env(
     assert {path.name: path.read_bytes() for path in checkout.iterdir()} == before
 
 
+@pytest.mark.parametrize("hardware_id", ["192.0.2.10:5555", "adb-phone._adb-tls-connect._tcp"])
+@pytest.mark.parametrize("selection", [["xiaomi"], ["--available", "android"]])
+def test_free_android_target_can_be_claimed_despite_unrelated_network_claim(
+    registry, checkout, monkeypatch, capsys, hardware_id, selection
+):
+    path = _write_phone_target(checkout, "global")
+    path.write_text(
+        path.read_text() + '\n[targets.device.xiaomi]\nplatform = "android"\nid = "ANDROID-2"\n'
+    )
+    owner = checkout.parent / "pixel-owner"
+    owner.mkdir()
+    old = sd.PhysicalClaim(
+        f"global:{path.resolve()}:device:pixel",
+        "android",
+        hardware_id,
+        "pixel",
+        str(owner.resolve()),
+        "2026-08-26T09:00:00+00:00",
+    )
+    registry._write_claims([old])
+    monkeypatch.setattr(sd.cli, "Registry", lambda: registry)
+    for module in (sd.device_claims, sd.target_commands):
+        monkeypatch.setattr(
+            module, "discover_physical_snapshot", lambda *_a, **_k: (PIXEL, PIXEL_OTHER)
+        )
+    command = ["--cwd", str(checkout), "target"]
+
+    assert sd.main([*command, "--format", "json"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [(row["variant"], row["claim"]) for row in rows] == [
+        ("pixel", "claimed"),
+        ("xiaomi", "free"),
+    ]
+
+    assert sd.main([*command, "claim", *selection, "--format", "json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert (result["target"], result["hardware_id"], result["status"]) == (
+        "xiaomi",
+        "ANDROID-2",
+        "claimed",
+    )
+    preserved, claimed = registry.all_claims()
+    assert preserved == old
+    assert claimed.target_label == "xiaomi"
+    assert claimed.owner_checkout == str(checkout.resolve())
+
+
 @pytest.mark.parametrize("source", ["recipe", "local", "global"])
 @pytest.mark.parametrize(
     "action", [["claim", "pixel"], ["claim", "--available", "android"], ["release", "pixel"]]

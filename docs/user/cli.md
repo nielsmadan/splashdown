@@ -264,6 +264,8 @@ Physical claim commands act only on configured `device` targets from the recipe,
 and global config. `splash run pixel` claims a free connected target before framework build or
 installation. A busy or disconnected target fails before that work starts. The claim persists
 after process exit and launch failure, and `splash stop device pixel` does not release it.
+Ownership conflicts apply to the same configured target or physical hardware ID. An outdated
+claim for another target does not block claiming a free phone.
 
 `splash target claims` reads registry ownership without device discovery. Its text output and JSON
 output include the target, source, platform, hardware ID, canonical owner checkout, and claim time.

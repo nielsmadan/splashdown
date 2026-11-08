@@ -314,18 +314,11 @@ Forced transfer and forced release warn the displaced checkout on its next ordin
 checkout-scoped `splash` command. The warning is consumed once. Completion, help, version output,
 and the hidden post-checkout command do not consume it.
 
-If an older Android claim stores a connection address, new Android claims stop until that old
-ownership is explicitly released. `--force` does not bypass this check. Run the recovery command
-printed in the error, using the owning checkout's path:
-
-```sh
-splash --cwd "/path/to/owning-checkout" target release --all
-```
-
-This releases every claim owned by that checkout and needs neither SDK tools nor valid project
-configuration. Splashdown preserves the old rows until you release them. Update any old target
-definition to its hardware ID before claiming again. Existing hardware-ID claims keep their
-format and ownership.
+An older Android claim that stores a connection address still reserves its configured target.
+It does not block claims for other targets. Update that target's definition to its hardware ID,
+then run `splash target claim pixel` from the owning checkout to refresh its claim. The owner
+and original claim time are preserved. Transferring it from another checkout still requires
+`--force`.
 
 Because Splashdown does not own the hardware, `start` only confirms connection and
 `stop` or `destroy` does not control the phone. `splash stop device pixel` does not release the

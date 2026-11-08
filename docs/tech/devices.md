@@ -221,10 +221,9 @@ already-owned candidates, and tries later candidates from the same device snapsh
 claim race. Device discovery never runs under the claims-file lock. Registry transactions enforce
 both catalog-identity and `(platform, hardware_id)` conflicts, so aliases cannot allocate the same
 phone and recipe targets collide across linked worktrees.
-Recognizable historical Android connection-address claims block new Android acquisition until
-their owner explicitly releases them. The registry preserves those rows and provides the
-configuration- and SDK-independent `target release --all` recovery command. See
-[Physical claims and notices](registry.md#physical-claims-and-notices) for the detection boundary.
+An existing address-based claim retains its catalog ownership without blocking other targets.
+See [Physical claims and notices](registry.md#physical-claims-and-notices) for identity validation
+and conflict rules.
 
 ### ensure_fresh_sim: reconcile-on-drift
 
