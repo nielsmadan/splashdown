@@ -84,36 +84,119 @@ Use distinct variant names such as `personal-iphone` and `team-iphone13`. A reci
 
 ## Prepare an iPhone
 
-1. Connect the unlocked iPhone by cable and accept **Trust This Computer**.
-2. Enable **Settings → Privacy & Security → Developer Mode**. Restart and confirm when iOS asks.
-3. Open the project in Xcode once. Select the development team under **Signing & Capabilities**. Splashdown does not manage Apple accounts or code signing.
-4. Confirm Xcode can see the paired phone:
+Pairing lets your Mac communicate with the phone. Developer Mode permits development apps to run. Complete both before your first launch. The same steps apply to an iPad.
 
-    ```sh
-    xcrun devicectl list devices
-    ```
+### Pair by USB
 
-For wireless use, keep the Mac and iPhone on the same network. In [Xcode's Device Hub](https://developer.apple.com/documentation/xcode/managing-your-simulated-and-physical-devices-in-device-hub), choose **Add Device (+) → Pair Nearby Device** and follow the prompts. A cable-trusted phone may already appear. A paired device may report a disconnected tunnel while idle, because Xcode establishes it lazily when the app launches. Keep the phone unlocked during installation.
+1. Install and open full Xcode on the Mac. Choose **Xcode → Open Developer Tool → Device Hub**. In older Xcode versions, open **Window → Devices and Simulators → Devices**.
+2. Unlock the phone and connect it with a data-capable USB cable. Accept any accessory connection prompt on the Mac.
+3. On the phone, tap **Trust** in **Trust This Computer** and enter the phone's passcode if asked.
+4. Select the phone in Device Hub's sidebar. Follow any setup instructions shown for it, clicking **Pair** if that button appears. If it is already paired, there is no extra pairing code to enter.
+
+### Enable Developer Mode
+
+1. On the phone, open **Settings → Privacy & Security → Developer Mode** and turn it on. If the option is missing, initiate pairing with the Mac first.
+2. Tap **Restart**. After the phone restarts, unlock it and confirm Developer Mode in the prompt. Enter the phone's passcode if asked. Turning on the switch alone does not complete setup.
+3. Return to Xcode and finish any remaining setup. Device Hub shows the phone under **Available** when ready.
+
+See [Apple's Developer Mode instructions](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device) for the confirmation screens.
+
+### Use Wi-Fi
+
+After USB pairing, put the phone and Mac on the same Wi-Fi network and unplug the cable. The network needs IPv6 enabled. Keep the phone unlocked during the first connection and app installation. A paired device may report a disconnected tunnel while idle, because Xcode establishes it when needed at launch.
+
+For initial pairing **without a cable**, Device Hub requires **iOS or iPadOS 27 or newer**:
+
+1. Connect the phone and Mac to the same Wi-Fi network.
+2. In Device Hub, choose **Add Device (+) → Pair Nearby Device** and select the iPhone or iPad device type.
+3. Follow the instructions shown for that device type. Allow the Mac to find devices on the local network if prompted.
+4. Select the discovered phone and click **Next**. Enter the PIN displayed on the phone into the Mac's pairing dialog.
+5. Tap **Trust** on the phone and complete Developer Mode setup as described above.
+
+For earlier iOS versions, use USB for the initial pairing. See [Apple's Device Hub guide](https://developer.apple.com/documentation/xcode/managing-your-simulated-and-physical-devices-in-device-hub) for pairing and connection details.
+
+### Verify and add the phone
+
+In another terminal, check that Xcode lists the phone:
+
+```sh
+xcrun devicectl list devices
+```
+
+If it is missing, reconnect it by cable, unlock it and check Xcode for unfinished setup or trust prompts. If `devicectl` is unavailable, install and select full Xcode, rather than only the standalone Command Line Tools.
+
+Return to Splashdown and choose **Phone setup complete · scan again**, or start `splash target add device --platform ios --global`. Select the phone, choose a command name and save it. To change the name reported by the phone itself, use **Settings → General → About → Name**, then scan again.
+
+Before running your app, open its project in Xcode and select the development team under **Signing & Capabilities**. Pairing does not verify app signing or installation. Splashdown does not manage Apple accounts or code signing.
 
 ## Prepare an Android device
 
-1. Open **Settings → About phone** (sometimes **Software information**) and tap **Build number** seven times.
-2. Open **Developer options**, enable **USB debugging**, connect the unlocked phone by cable, and accept the computer's RSA key.
-3. Confirm `adb` reports state `device`, not `unauthorized` or `offline`:
+Install current [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) on the computer and make sure `adb` is on `PATH`. If the Splashdown guide is already open, run the commands below in another terminal.
+
+### Enable Developer options
+
+1. Open **Settings → About phone** and tap **Build number** seven times. On Samsung, it is under **About phone → Software information → Build number**. Follow any confirmation prompt.
+2. Find **Developer options** in Settings, often under **System**, and keep its main switch enabled. Menu names vary by manufacturer, so use Settings search if necessary. See [Android's Developer options guide](https://developer.android.com/studio/debug/dev-options).
+
+Choose either USB or Wi-Fi below. USB authorization and wireless pairing are separate. You can use Wi-Fi without connecting a USB cable first on Android 11 or newer.
+
+### Connect by USB
+
+1. Turn on **USB debugging** in Developer options.
+2. Connect a data-capable USB cable to the computer and unlock the phone.
+3. Accept **Allow USB debugging?** on the phone. This authorizes the computer's RSA key. On your own test machine, you can also select **Always allow from this computer**.
+4. Check the connection:
 
     ```sh
     adb devices -l
     ```
 
-For wireless use, keep the computer and phone on the same trusted Wi-Fi network. Follow [Android's wireless-debugging setup](https://developer.android.com/tools/adb): open **Developer options → Wireless debugging → Pair device with pairing code**, then use the pairing address and six-digit code:
+Look for your phone with state `device`. No `adb pair` command is needed for USB.
+
+### Pair over Wi-Fi
+
+These steps require Android 11 or newer and a computer and phone on the same Wi-Fi network:
+
+1. Open **Developer options → Wireless debugging**, turn it on and allow debugging on the network when prompted.
+2. Tap **Pair device with pairing code**. Keep this dialog open. It shows a pairing IP address, a port and a six-digit code.
+3. Run `adb pair` with the address and port from that dialog, replacing the example below with the values on your phone:
+
+    ```sh
+    adb pair 192.0.2.10:37123
+    ```
+
+4. Enter the six-digit code when the terminal asks. Wait for the successful-pairing message, then run `adb devices -l`.
+5. If the phone is still missing, return to the main **Wireless debugging** page. Use the separate **IP address & Port** displayed there with `adb connect`:
+
+    ```sh
+    adb connect 192.0.2.10:42137
+    adb devices -l
+    ```
+
+The two addresses above are examples. **The pairing port and connection port are different.** Pairing authorizes the computer, while connecting opens the debugging session. A successful pairing alone does not guarantee the phone will appear in Splashdown. Check for state `device` in `adb devices -l`. See [Android's wireless-debugging guide](https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi).
+
+If Wireless debugging turns off, enable it again and use the connection address currently displayed. Its port can change. If your computer is still listed under **Paired devices**, try `adb connect` before pairing again. Pair again if the computer has been forgotten or its debugging authorization revoked.
+
+### Verify and add the phone
+
+Run:
 
 ```sh
-adb pair 192.0.2.10:37123
-adb connect 192.0.2.10:42137   # use the separate IP address & Port shown on the main page
 adb devices -l
 ```
 
-The connection port can change whenever Wireless debugging is toggled. Splashdown saves the hardware serial and resolves the current connection when you run or claim the phone. Do not save an IP address, port or wireless discovery service name in Splashdown config. If hardware identity cannot be resolved wirelessly, connect over USB and use the guided add flow.
+| What you see | Next step |
+| --- | --- |
+| Your phone with state `device` | Return to Splashdown and choose **Phone setup complete · scan again**. |
+| `unauthorized` | Unlock the phone and accept its debugging authorization prompt. |
+| `offline` | Reconnect the USB cable or use the current Wi-Fi connection address, then check again. |
+| No USB entry | Try another data cable or port. With the cable connected, toggle USB debugging off and on, then accept the authorization prompt. |
+| No Wi-Fi entry | Check Wireless debugging is still enabled, both devices use the same network, and `adb connect` uses the main page's current connection port. |
+| `adb` command not found | Install Platform-Tools and add its `platform-tools` directory to `PATH`. |
+
+If the guide is not open, run `splash target add device --platform android --global`. Select the phone, choose a command name and save it.
+
+Splashdown saves the hardware serial and resolves the current connection when you run or claim the phone. Do not save an IP address, port or wireless discovery service name in Splashdown config. If hardware identity cannot be resolved wirelessly, connect over USB and use the guided add flow.
 
 The Developer options **Stay awake** toggle only prevents sleep while charging. For an unplugged wireless device, temporarily increase the normal display timeout when a long installation needs the screen to remain awake.
 

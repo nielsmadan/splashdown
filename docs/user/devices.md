@@ -190,7 +190,8 @@ connections to one phone appear as one entry.
 Connection problems such as Android `unauthorized` or `offline` appear under **Phones needing
 attention**, with the next step to take. Missing SDK tools appear under **Discovery problems**.
 Choose **Set up an unlisted phone** even when another phone is already visible. The guide gives
-USB and Wi-Fi instructions, including separate Android pairing and connection ports. Choose
+USB and Wi-Fi instructions, including Xcode's pairing controls and separate Android pairing and
+connection ports. Choose
 **Phone setup complete · scan again** when ready.
 
 Use the displayed letter shortcuts, starting with `q`, `w`, `e`, or use arrow keys and Enter.
@@ -205,12 +206,14 @@ with code 130. Adding a target does not claim it, prepare resources or grant pro
 
 USB is the simplest first connection. Android setup requires USB debugging and accepting the
 phone's debugging authorization prompt. iOS setup requires trusting and pairing with the Mac.
-Developer Mode is needed to run development apps, while a discovered paired phone may still
-need signing or installation setup. Follow the [Android USB guide](https://developer.android.com/tools/adb#Enabling)
-or [Apple pairing guide](https://developer.apple.com/documentation/xcode/managing-your-simulated-and-physical-devices-in-device-hub).
-Already discoverable wireless phones are also supported. The guide shows Android pairing commands
-to run in another terminal and links to the platform instructions. It does not exchange pairing
-codes itself.
+Developer Mode is needed to run development apps on iOS. The guide includes its Settings path,
+restart and confirmation prompt, plus connection checks for both platforms. A discovered paired
+phone may still need signing or installation setup.
+
+For the full walkthrough, see [Prepare an iPhone](getting-started-mobile.md#prepare-an-iphone)
+or [Prepare an Android device](getting-started-mobile.md#prepare-an-android-device). These cover
+initial pairing, switching to Wi-Fi and what to do when the phone does not appear. The CLI guide
+shows Android commands to run in another terminal. It does not exchange pairing codes itself.
 
 If `splash status` cannot inspect a phone's identity or connection, it reports the target as
 unavailable and includes the discovery error. Other phones with confirmed connections remain
