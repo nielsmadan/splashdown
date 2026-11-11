@@ -173,8 +173,8 @@ class PhysicalObservation:
     state: str
     detail: str
     selectable: bool
-    usb: bool = False
     adb_transport_id: str | None = None
+    connection_type: str | None = None
 
 
 @dataclass(frozen=True)

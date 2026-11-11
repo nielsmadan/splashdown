@@ -63,6 +63,7 @@ class TargetInventoryRow:
     connection: str
     claim: str
     owner: str
+    connection_type: str | None = None
 
 
 def _check(

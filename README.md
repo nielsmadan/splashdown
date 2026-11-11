@@ -211,6 +211,9 @@ Local addition omits `--global` and requires a valid recipe. For scripts or a kn
 Adding a target does not claim the phone. See the [device guide](https://splashdown.dev/devices/)
 for setup and keyboard controls.
 
+`splash target` shows each phone's connection as `USB` or `Wi-Fi/LAN` when known, alongside its
+claim and owner. JSON reports the type separately in `connection_type` (`usb`, `network`, or `null`).
+
 ```sh
 splash run pixel                       # claim if free, then build and launch
 splash target claims                   # inspect every claim without device discovery

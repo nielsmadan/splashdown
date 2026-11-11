@@ -60,6 +60,7 @@ def test_android_uses_hardware_identity_and_current_wifi_endpoint(monkeypatch):
             "",
             True,
             adb_transport_id="12",
+            connection_type="network",
         )
     ]
     assert calls[1][0] == ["/fake/adb", "-t", "12", "shell", "getprop", "ro.serialno"]
@@ -71,6 +72,7 @@ def test_android_uses_hardware_identity_and_current_wifi_endpoint(monkeypatch):
             "platform": "android",
             "transport_id": "192.0.2.4:4567",
             "adb_transport_id": "12",
+            "connection_type": "network",
         }
     ]
 
@@ -87,8 +89,33 @@ def test_android_usb_is_metadata_based_and_preferred(monkeypatch):
     observed = android._android_physical_observations()
     assert len(observed) == 1
     assert observed[0].transport_id == "PHONE-A"
-    assert observed[0].usb
     assert observed[0].selectable
+    assert observed[0].connection_type == "usb"
+
+
+@pytest.mark.parametrize(
+    "endpoint,metadata,expected",
+    [
+        ("PHONE-A", "usb:1-1", "usb"),
+        ("192.0.2.4:4567", "usb:1-1", "usb"),
+        ("192.0.2.4:4567", "", "network"),
+        ("[2001:db8::1]:4567", "", "network"),
+        ("adb-PHONE-A (2)._adb-tls-connect._tcp.", "", "network"),
+        ("PHONE-A", "", None),
+    ],
+)
+def test_android_discovery_reports_only_known_connection_types(
+    monkeypatch, endpoint, metadata, expected
+):
+    adb_inventory(
+        monkeypatch,
+        [f"{endpoint} device {metadata} model:Pixel transport_id:1"],
+        {("-t", "1", "ro.serialno"): b"PHONE-A"},
+    )
+    observed = android._android_physical_observations()[0]
+    assert observed.selectable
+    assert observed.connection_type == expected
+    assert android._android_physical_devices()[0].get("connection_type") == expected
 
 
 @pytest.mark.parametrize("transport", [True, False])
@@ -244,6 +271,7 @@ def test_android_ready_device_survives_an_unrelated_ambiguous_identity(monkeypat
         "name": "Other",
         "platform": "android",
         "adb_transport_id": "3",
+        "connection_type": "usb",
     }
 
 
@@ -471,6 +499,45 @@ def test_ios_preserves_pairing_states_and_idle_tunnels(monkeypatch):
         ("PENDING", "connection_unknown", False),
     ]
     assert ios._ios_physical_devices() == [{"id": "READY", "name": "iPhone", "platform": "ios"}]
+
+
+@pytest.mark.parametrize("current_schema", [False, True])
+@pytest.mark.parametrize("tunnel", ["connected", "disconnected"])
+@pytest.mark.parametrize(
+    "transport,expected",
+    [
+        ("wired", "usb"),
+        ("localNetwork", "network"),
+        ("future", None),
+        ("", None),
+        (None, None),
+        (False, None),
+        (42, None),
+    ],
+)
+def test_ios_connection_type_survives_discovery(
+    monkeypatch, current_schema, tunnel, transport, expected
+):
+    device = iphone(tunnel=tunnel)
+    device["connectionProperties"]["transportType"] = transport
+    if current_schema:
+        device = {
+            "properties": {
+                "hardware": device["hardwareProperties"],
+                "state": device["deviceProperties"],
+                "connection": {
+                    "pairingState": "paired",
+                    "state": tunnel,
+                    "transportType": transport,
+                },
+            }
+        }
+    monkeypatch.setattr(ios, "_devicectl_json", lambda *a, **kw: {"result": {"devices": [device]}})
+
+    observed = ios._ios_physical_observations()[0]
+    assert observed.selectable
+    assert observed.connection_type == expected
+    assert ios._ios_physical_devices()[0].get("connection_type") == expected
 
 
 @pytest.mark.parametrize("current_schema", [False, True])

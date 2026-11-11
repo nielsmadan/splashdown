@@ -356,6 +356,16 @@ def _android_hardware_serial(adb: str, selector: list[str], deadline: float) -> 
     raise DeviceError("device returned an empty, placeholder or malformed hardware serial")
 
 
+def _android_connection_type(endpoint: str, *, usb: bool) -> str | None:
+    if usb:
+        return "usb"
+    if endpoint.rstrip(".").endswith("._tcp") or re.fullmatch(
+        r"(?:\[[^]]+\]|[^: ]+):[0-9]+", endpoint
+    ):
+        return "network"
+    return None
+
+
 def _android_observe_row(row: list[str], adb: str, deadline: float) -> PhysicalObservation:
     endpoint, state = row[:2]
     metadata = dict(part.split(":", 1) for part in row[2:] if ":" in part)
@@ -370,8 +380,8 @@ def _android_observe_row(row: list[str], adb: str, deadline: float) -> PhysicalO
         state,
         "",
         False,
-        usb=bool(metadata.get("usb")),
         adb_transport_id=transport,
+        connection_type=_android_connection_type(endpoint, usb=bool(metadata.get("usb"))),
     )
     if state == "unauthorized":
         return replace(
@@ -415,16 +425,9 @@ def _select_android_connections(
             grouped.setdefault(observation.hardware_id, []).append(observation)
     selected = [observation for observation in observations if observation.hardware_id is None]
     for hardware_id, matches in grouped.items():
-        usb_matches = [match for match in matches if match.usb]
+        usb_matches = [match for match in matches if match.connection_type == "usb"]
         models = {match.name for match in matches if match.name != match.transport_id}
-        wifi_only = all(
-            not match.usb
-            and (
-                match.transport_id.rstrip(".").endswith("._tcp")
-                or re.fullmatch(r"(?:\[[^]]+\]|[^: ]+):[0-9]+", match.transport_id)
-            )
-            for match in matches
-        )
+        wifi_only = all(match.connection_type == "network" for match in matches)
         if len(models) > 1 or (len(matches) > 1 and len(usb_matches) != 1 and not wifi_only):
             endpoints = ", ".join(match.transport_id for match in matches)
             detail = f"Hardware ID {hardware_id} has conflicting or ambiguous connections ({endpoints}). Disconnect extra connections, then rescan."
@@ -516,6 +519,7 @@ def _android_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dic
             "id": item.hardware_id,
             "name": item.name,
             "platform": "android",
+            **({"connection_type": item.connection_type} if item.connection_type else {}),
             **({"error": item.detail} if item.state == "ambiguous" else {}),
             **(
                 {"adb_transport_id": item.adb_transport_id}

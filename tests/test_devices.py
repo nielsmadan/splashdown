@@ -1798,7 +1798,10 @@ name = "android-dev"
 
     def discover_android(**_kwargs):
         calls.append("android")
-        return [_PIXEL, {"id": "XIAOMI", "name": "Xiaomi", "platform": "android"}]
+        return [
+            {**_PIXEL, "connection_type": "usb"},
+            {"id": "XIAOMI", "name": "Xiaomi", "platform": "android", "connection_type": "network"},
+        ]
 
     monkeypatch.setattr(sd.device_claims, "_ios_physical_devices", discover_ios)
     monkeypatch.setattr(sd.device_claims, "_android_physical_devices", discover_android)
@@ -1822,6 +1825,7 @@ name = "android-dev"
             "connection": "connected",
             "claim": "claimed",
             "owner": str(pixel_owner.resolve()),
+            "connection_type": "usb",
         },
         {
             "type": "device",
@@ -1832,6 +1836,7 @@ name = "android-dev"
             "connection": "connected",
             "claim": "free",
             "owner": "",
+            "connection_type": "network",
         },
         {
             "type": "device",
@@ -1842,6 +1847,7 @@ name = "android-dev"
             "connection": "disconnected",
             "claim": "claimed",
             "owner": str(iphone_owner.resolve()),
+            "connection_type": None,
         },
         {
             "type": "device",
@@ -1852,6 +1858,7 @@ name = "android-dev"
             "connection": "connected",
             "claim": "claimed",
             "owner": str(pixel_owner.resolve()),
+            "connection_type": "usb",
         },
         {
             "type": "simulator",
@@ -1862,6 +1869,7 @@ name = "android-dev"
             "connection": "shutdown",
             "claim": "not-applicable",
             "owner": "",
+            "connection_type": None,
         },
         {
             "type": "emulator",
@@ -1872,6 +1880,7 @@ name = "android-dev"
             "connection": "running",
             "claim": "not-applicable",
             "owner": "",
+            "connection_type": None,
         },
     ]
 

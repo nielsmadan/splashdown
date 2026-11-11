@@ -93,7 +93,9 @@ def render_target_inventory(rows: Sequence[TargetInventoryRow], fmt: str) -> Non
             row.variant,
             row.source,
             row.platform,
-            row.connection,
+            {"usb": "USB", "network": "Wi-Fi/LAN"}.get(row.connection_type or "", row.connection)
+            if row.connection == "connected"
+            else row.connection,
             row.claim,
             _short_path(row.owner) if row.owner else "",
         )

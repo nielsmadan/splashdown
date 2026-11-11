@@ -97,6 +97,7 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
             "connected",
             "claimed",
             "/checkouts/app.feature-pixel",
+            connection_type="network",
         ),
         sd.status.TargetInventoryRow(
             "simulator",
@@ -116,7 +117,7 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
 
     assert text == (
         "TARGET   SOURCE  PLATFORM  CONNECTION  CLAIM           OWNER\n"
-        "pixel    recipe  android   connected   claimed         /checkouts/app.feature-pixel\n"
+        "pixel    recipe  android   Wi-Fi/LAN   claimed         /checkouts/app.feature-pixel\n"
         "default  recipe  ios       absent      not-applicable\n"
     )
     assert json.loads(capsys.readouterr().out) == [
@@ -129,6 +130,7 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
             "connection": "connected",
             "claim": "claimed",
             "owner": "/checkouts/app.feature-pixel",
+            "connection_type": "network",
         },
         {
             "type": "simulator",
@@ -139,7 +141,43 @@ def test_render_target_inventory_uses_concise_text_owner_and_canonical_json_owne
             "connection": "absent",
             "claim": "not-applicable",
             "owner": "",
+            "connection_type": None,
         },
+    ]
+
+
+@pytest.mark.parametrize(
+    "connection,connection_type,expected",
+    [
+        ("connected", "usb", "USB"),
+        ("connected", "network", "Wi-Fi/LAN"),
+        ("connected", None, "connected"),
+        ("connected", "future", "connected"),
+        ("disconnected", "usb", "disconnected"),
+        ("unavailable", "network", "unavailable"),
+    ],
+)
+def test_target_inventory_connection_label_preserves_unavailable_state(
+    capsys, connection, connection_type, expected
+):
+    row = sd.status.TargetInventoryRow(
+        "device",
+        "phone",
+        "global",
+        "Phone",
+        "ios",
+        connection,
+        "free",
+        "",
+        connection_type=connection_type,
+    )
+    sd.render_target_inventory([row], "text")
+    assert capsys.readouterr().out.splitlines()[1].split() == [
+        "phone",
+        "global",
+        "ios",
+        expected,
+        "free",
     ]
 
 

@@ -346,8 +346,20 @@ def _ios_observation(device: object) -> PhysicalObservation | None:
         _device_properties(source, "state" if properties is not None else "deviceProperties"),
         "name",
     )
+    transport = connection.get("transportType")
     observation = PhysicalObservation(
-        "ios", name or udid or "iOS device", udid or None, udid, "identity_unavailable", "", False
+        "ios",
+        name or udid or "iOS device",
+        udid or None,
+        udid,
+        "identity_unavailable",
+        "",
+        False,
+        connection_type=(
+            {"wired": "usb", "localnetwork": "network"}.get(transport.lower())
+            if isinstance(transport, str)
+            else None
+        ),
     )
     if reality not in {"", "physical"}:
         return replace(
@@ -410,7 +422,12 @@ def _ios_physical_observations(*, timeout: float = DISCOVERY_TIMEOUT) -> list[Ph
 
 def _ios_physical_devices(*, timeout: float = DISCOVERY_TIMEOUT) -> list[dict[str, str]]:
     return [
-        {"id": item.hardware_id, "name": item.name, "platform": "ios"}
+        {
+            "id": item.hardware_id,
+            "name": item.name,
+            "platform": "ios",
+            **({"connection_type": item.connection_type} if item.connection_type else {}),
+        }
         for item in _ios_physical_observations(timeout=timeout)
         if item.selectable and item.hardware_id is not None
     ]

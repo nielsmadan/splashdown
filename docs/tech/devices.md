@@ -204,6 +204,14 @@ against that snapshot, and renders connection state independently from registry 
 configured target with no match renders `disconnected`; it can still render `claimed` when its
 catalog identity has a persisted claim. A platform capability failure renders that platform's
 targets `unavailable` without discarding the other platform's snapshot.
+Connection type is observation metadata, never registry state. iOS maps `transportType` values
+`wired` and `localNetwork` to `usb` and `network`; Android uses ADB's `usb` metadata or a network
+endpoint. Missing, unknown or non-string transport metadata remains unset without blocking
+discovery. The inventory uses `physical_match_snapshot` to keep that metadata from the same
+selected observation. Text renders
+connected phones as `USB` or `Wi-Fi/LAN`, falling back to `connected`; JSON preserves `connection`
+and adds nullable `connection_type`. Unavailable states and managed simulator/emulator states
+remain independent of transport.
 Status consumes the adapters' full observations, preserving blocked states and probe errors.
 An unmatched target is unavailable when unidentified observations prevent establishing absence.
 A known ready peer remains healthy. Unknown iOS connection states are unavailable, and status

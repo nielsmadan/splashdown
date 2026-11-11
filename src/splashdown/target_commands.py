@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +21,6 @@ from .device_claims import (
     claim_configured_target,
     configured_physical_targets,
     discover_physical_snapshot,
-    match_physical_target,
     notices_for_displaced,
     resolve_physical_target,
     revalidate_physical_target,
@@ -35,6 +35,7 @@ from .devices import (
     device_shutdown_row,
     device_status,
     ensure_fresh_sim,
+    physical_match_snapshot,
 )
 from .errors import CapabilityError, DeviceError, PhysicalAmbiguityError, UsageError
 from .interaction import require_confirmation
@@ -60,6 +61,21 @@ from .targets import (
 )
 
 _PLATFORM_OF_DTYPE = {"simulator": "ios", "emulator": "android"}
+
+
+def _physical_inventory_match(
+    spec: dict[str, Any], snapshot: Sequence[dict[str, str]], unavailable: set[str]
+) -> tuple[str, dict[str, str] | None]:
+    platform = spec.get("platform", "any")
+    if platform in unavailable or (platform == "any" and unavailable):
+        return "unavailable", None
+    try:
+        matches = physical_match_snapshot(spec, snapshot)
+    except PhysicalAmbiguityError:
+        return "ambiguous", None
+    except DeviceError:
+        return "disconnected", None
+    return ("connected", matches[0]) if matches else ("disconnected", None)
 
 
 def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
@@ -94,32 +110,19 @@ def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
             or target.spec.get("platform")
             or "auto"
         )
-        destination = None
-        connection = (
-            "unavailable"
-            if platform in unavailable or (platform == "any" and unavailable)
-            else "disconnected"
-        )
-        if connection != "unavailable":
-            try:
-                destination = match_physical_target(target, snapshot)
-            except DeviceError as error:
-                connection = (
-                    "ambiguous" if isinstance(error, PhysicalAmbiguityError) else "disconnected"
-                )
-            else:
-                connection = "connected"
-                platform = destination.platform
+        connection, device = _physical_inventory_match(target.spec, snapshot, unavailable)
+        if device is not None:
+            platform = device["platform"]
         owner_claim = next(
             (claim for claim in claims if claim.catalog_identity == target.catalog_identity),
             None,
         )
-        if owner_claim is None and destination is not None:
+        if owner_claim is None and device is not None:
             owner_claim = next(
                 (
                     claim
                     for claim in claims
-                    if claim.platform == destination.platform
+                    if claim.platform == device["platform"]
                     and claim.hardware_id == target.spec["id"]
                 ),
                 None,
@@ -129,11 +132,12 @@ def cmd_targets_list(cwd: Path, registry: Registry, fmt: str) -> int:
                 "device",
                 target.variant,
                 target_source("device", target.variant, recipe, local, glob),
-                destination.name if destination is not None else configured_name,
+                device["name"] if device is not None else configured_name,
                 platform,
                 connection,
                 "claimed" if owner_claim is not None else "free",
                 owner_claim.owner_checkout if owner_claim is not None else "",
+                connection_type=device.get("connection_type") if device is not None else None,
             )
         )
     for dtype, variants in catalog.items():

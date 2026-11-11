@@ -307,6 +307,14 @@ splash target claim --available ios
 splash target claim --available any
 ```
 
+The `splash target` table shows `USB` or `Wi-Fi/LAN` for connected phones when the connection
+type is known. Network connections share one label because the platform tools do not always
+distinguish Wi-Fi from Ethernet. An unknown connection type still displays `connected`.
+Disconnected, unavailable and ambiguous states take precedence over the connection type.
+JSON keeps the state in `connection` and reports `connection_type` as `usb`, `network`, or `null`
+when unknown or not applicable. The type describes the selected connection, so Android shows
+`USB` when its usable USB connection takes precedence over a Wi-Fi connection to the same phone.
+
 `claim --available` checks configured targets in recipe, local, then global order and prints only
 the selected variant to stdout in text mode. Diagnostics use stderr. Add `--format json` to receive
 `target`, `source`, `platform`, `hardware_id`, `owner`, `claimed_at`, and `status`.
