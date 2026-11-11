@@ -3007,3 +3007,25 @@ def test_deinit_names_the_hook_entry_it_preserves(tmp_path, registry, monkeypatc
         "note: left splashdown's post-checkout entry in .pre-commit-config.yaml (pre-commit)"
         in capsys.readouterr().err
     )
+
+
+def test_deinit_names_the_outdated_lefthook_entry_it_preserves(tmp_path, registry, capsys):
+    _git_init(tmp_path)
+    hook = tmp_path / "lefthook.yml"
+    config = (
+        "post-checkout:\n  commands:\n    splashdown:\n"
+        "      run: 'TOP=$PWD; SPLASH=$(command -v splash) || exit 0; "
+        'case "$SPLASH" in /*) ;; *) SPLASH="$TOP/$SPLASH";; esac; '
+        'case "$SPLASH" in "$TOP"/*) echo "post-checkout: refusing checkout-controlled '
+        'splash executable" >&2; exit 0;; esac; '
+        '"$SPLASH" hook post-checkout "{1}" "{2}" "{3}" >&2 || true\'\n'
+    )
+    hook.write_text(config)
+
+    assert sd.cmd_deinit(tmp_path, registry) == 0
+
+    assert hook.read_text() == config
+    assert (
+        "note: left splashdown's post-checkout entry in lefthook.yml (lefthook)"
+        in capsys.readouterr().err
+    )

@@ -85,6 +85,22 @@ A brand new worktree has no Husky hooks until your project's own Husky install h
 A custom `core.hooksPath` must invoke a trusted absolute `splash` executable and forward Git's
 three event arguments. Splashdown does not take over that path.
 
+### Lefthook integration
+
+Splashdown generates this job in your Lefthook configuration:
+
+```yaml
+post-checkout:
+  commands:
+    splashdown:
+      run: splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true
+```
+
+It runs `splash` from the hook's `PATH`. The three arguments let Splashdown identify worktree
+creation. Diagnostics remain visible, but a missing executable or failed Splashdown command
+does not fail the checkout. Run `splash doctor --fix` to replace an older Splashdown-generated
+job with this form. Custom commands are preserved.
+
 ## Retry and rerun
 
 Splashdown writes completion only after every command succeeds. A failed first attempt can be

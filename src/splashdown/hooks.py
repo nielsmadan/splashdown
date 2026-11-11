@@ -18,7 +18,6 @@ from .hook_configs import (
     SIMPLE_GIT_HOOKS_DYNAMIC_NAMES,
     SIMPLE_GIT_HOOKS_JSON_NAMES,
     SIMPLE_GIT_HOOKS_PACKAGE_KEY,
-    SPLASH_GUARD,
     _report_left_alone,
     existing_config,
     pre_commit_config_path,
@@ -79,9 +78,14 @@ exit 0
 """
 
 _LEFTHOOK_LEGACY_RUN = "splash"
-_LEFTHOOK_RUN = (
-    f'\'{SPLASH_GUARD}"$SPLASH" hook post-checkout "{{1}}" "{{2}}" "{{3}}" >&2 || true\''
+_LEFTHOOK_GUARDED_RUN = (
+    "'TOP=$PWD; SPLASH=$(command -v splash) || exit 0; "
+    'case "$SPLASH" in /*) ;; *) SPLASH="$TOP/$SPLASH";; esac; '
+    'case "$SPLASH" in "$TOP"/*) echo "post-checkout: refusing checkout-controlled '
+    'splash executable" >&2; exit 0;; esac; '
+    '"$SPLASH" hook post-checkout "{1}" "{2}" "{3}" >&2 || true\''
 )
+_LEFTHOOK_RUN = 'splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true'
 _OWNED_HOOKS = {LEGACY_POST_CHECKOUT_HOOK, POST_CHECKOUT_HOOK}
 
 
@@ -740,7 +744,7 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         value = _lefthook_run_value(lines[run_index]) if run_index is not None else None
         if value == _LEFTHOOK_RUN:
             return True
-        if value == _LEFTHOOK_LEGACY_RUN and run_index is not None:
+        if value in {_LEFTHOOK_LEGACY_RUN, _LEFTHOOK_GUARDED_RUN} and run_index is not None:
             run_indent = lines[run_index][: len(lines[run_index]) - len(lines[run_index].lstrip())]
             lines[run_index] = f"{run_indent}run: {_LEFTHOOK_RUN}"
             atomic_write_text(path, newline.join(lines), root=cwd, create=True)
@@ -919,6 +923,8 @@ def _lefthook_state(cwd: Path) -> str:
     value = _lefthook_run_value(lines[run_index]) if run_index is not None else None
     if value == _LEFTHOOK_RUN:
         return "ok"
+    if value == _LEFTHOOK_GUARDED_RUN:
+        return "outdated"
     return "legacy" if value == _LEFTHOOK_LEGACY_RUN else "modified"
 
 
@@ -941,9 +947,9 @@ def _simple_git_hooks_path(cwd: Path) -> Path:
 
 _LEFTHOOK_MANUAL = (
     "Forward the event from the post-checkout job in your lefthook configuration,\n"
-    "invoking a trusted absolute splash executable. lefthook substitutes `{1}`,\n"
+    "using splash from PATH. lefthook substitutes `{1}`,\n"
     "`{2}` and `{3}`; shell positionals expand to nothing there:\n"
-    '    run: /trusted/path/splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true\n'
+    f"    run: {_LEFTHOOK_RUN}\n"
     "`splash doctor --fix` writes that job when the existing one is Splashdown's own."
 )
 _HUSKY_MANUAL = (
@@ -1074,6 +1080,7 @@ _STATE_DETAIL = {
     "missing": "{manager} post-checkout is missing",
     "modified": "{manager} post-checkout was modified",
     "legacy": "{manager} post-checkout is sync-only",
+    "outdated": "{manager} post-checkout uses an outdated wrapper",
     "unrecognized": "{manager} configuration is in a shape splashdown cannot edit",
 }
 
@@ -1153,7 +1160,7 @@ def preserved_post_checkout_config(cwd: Path) -> tuple[str, Path] | None:
     splashdown's entry. Teardown never edits it, so a caller can name what stays."""
     detection = detect_hook_configuration(cwd)
     adapter = _ADAPTERS.get(detection.manager)
-    if adapter is None or adapter.state(cwd) != "ok":
+    if adapter is None or adapter.state(cwd) not in {"ok", "outdated"}:
         return None
     return adapter.manager, adapter.config_path(cwd)
 

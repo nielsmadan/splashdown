@@ -56,5 +56,7 @@ or manual bootstrap because it does not forward the event.
 The schema requires Splashdown 0.17.0. Generated hooks invoke the internal event command once and
 forward all three Git arguments. Exact legacy Splashdown hooks migrate; modified or user-owned hooks
 remain untouched. Tracked hook-manager files are upgraded only by author-facing init/doctor repair,
-never by a teammate's local trust decision. A hook resolves `splash` once, rejects an executable
-inside the checkout, and absorbs the handler's failure after it prints a retry command.
+never by a teammate's local trust decision. Lefthook invokes `splash` through PATH with the same
+executable trust as its other jobs. Other generated hooks resolve it once and reject paths spelled
+inside the checkout. All absorb the handler's failure after it prints a retry command. See
+[Hook path](../tech/bootstrap.md#hook-path) for the forwarding and executable checks.

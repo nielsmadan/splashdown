@@ -187,7 +187,7 @@ def test_wire_lefthook_appends_block_when_absent(tmp_path):
     assert "pre-commit:" in text
     assert "post-checkout:" in text
     assert "splashdown:" in text
-    assert '"$SPLASH" hook post-checkout' in text
+    assert '      run: splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true\n' in text
 
 
 def test_wire_lefthook_inserts_under_existing_post_checkout(tmp_path):
@@ -209,6 +209,40 @@ def test_wire_lefthook_idempotent(tmp_path):
     twice = (tmp_path / "lefthook.yml").read_text()
     assert once == twice
     assert twice.count("splashdown:") == 1
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "missing"])
+def test_lefthook_command_forwards_events_without_failing_checkout(tmp_path, outcome):
+    sd._wire_post_checkout_lefthook(tmp_path)
+    text = (tmp_path / "lefthook.yml").read_text()
+    command = next(
+        line.strip().removeprefix("run: ") for line in text.splitlines() if "run:" in line
+    )
+    old, new, flag = "0" * 40, "a" * 40, "1"
+    command = command.replace("{1}", old).replace("{2}", new).replace("{3}", flag)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if outcome != "missing":
+        executable = bin_dir / "splash"
+        exit_code = 1 if outcome == "failure" else 0
+        executable.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@"\nexit {exit_code}\n')
+        executable.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", command],
+        cwd=tmp_path,
+        env={"PATH": str(bin_dir)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == ""
+    if outcome == "missing":
+        assert "splash" in result.stderr
+        assert "not found" in result.stderr
+    else:
+        assert result.stderr.splitlines() == ["hook", "post-checkout", old, new, flag]
 
 
 def test_wire_lefthook_creates_config_if_only_pkg_dep(tmp_path):
@@ -585,8 +619,6 @@ def test_rn_hook_husky_autofix_warns_until_husky_installs_its_hooks(tmp_path):
 def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
     _git_init(tmp_path)
     (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
-    # Place an empty metro.config.js to satisfy the rn-metro-config "applies" check;
-    # detect will still report problem. We're only checking the hook here.
     (tmp_path / "metro.config.js").write_text(
         "module.exports = { server: { port: Number(process.env.RCT_METRO_PORT) || 8081 } };\n"
     )

@@ -290,9 +290,10 @@ updates only its own entry, and every adapter is idempotent.
   checkout, and invokes the internal event handler once with all three Git arguments. A missing
   executable prints a note. The wrapper absorbs the handler's failure after diagnostics.
 
-Every adapter shares `SPLASH_GUARD` (`hook_configs.py`), the one-line form of the native hook's
-resolution and checkout-controlled-executable rejection, so a manager's configuration cannot be
-used to run a `splash` that lives inside the checkout.
+Lefthook uses a short command that invokes `splash` through PATH. The other generated integrations
+retain their executable-resolution guards. See [the hook execution contract](../tech/bootstrap.md#hook-path)
+for the trust boundary and failure behavior. Init and doctor can replace the exact previous
+guarded Lefthook command while preserving custom jobs.
 
 A configuration splashdown cannot parse is never reported as wired, and a file it cannot read
 back exactly is never rewritten. The YAML editor recognizes block mappings and block sequences

@@ -782,7 +782,7 @@ def test_trust_does_not_edit_tracked_lefthook_configuration(tmp_path, capsys):
     assert path.read_text() == legacy
     err = capsys.readouterr().err
     assert "lefthook post-checkout is sync-only" in err
-    assert 'run: /trusted/path/splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true' in err
+    assert 'run: splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true' in err
     # lefthook templating, not shell positionals: `"$1" "$2" "$3"` expands to nothing there.
     assert '"$1" "$2" "$3"' not in err
     assert "`splash doctor --fix` writes that job" in err
@@ -807,19 +807,37 @@ def test_trust_does_not_edit_tracked_husky_hook(tmp_path, capsys):
     assert "`splash doctor --fix` writes that hook" in err
 
 
-def test_doctor_fix_migrates_exact_legacy_lefthook_job(tmp_path):
+@pytest.mark.parametrize(
+    ("old_run", "detail"),
+    [
+        ("splash", "lefthook post-checkout is sync-only"),
+        (
+            (
+                "'TOP=$PWD; SPLASH=$(command -v splash) || exit 0; "
+                'case "$SPLASH" in /*) ;; *) SPLASH="$TOP/$SPLASH";; esac; '
+                'case "$SPLASH" in "$TOP"/*) echo "post-checkout: refusing checkout-controlled '
+                'splash executable" >&2; exit 0;; esac; '
+                '"$SPLASH" hook post-checkout "{1}" "{2}" "{3}" >&2 || true\''
+            ),
+            "lefthook post-checkout uses an outdated wrapper",
+        ),
+    ],
+)
+def test_doctor_fix_migrates_exact_legacy_lefthook_job(tmp_path, old_run, detail):
     _git_init(tmp_path)
     _write_recipe(tmp_path, "true")
     path = tmp_path / "lefthook.yml"
     path.write_text(
-        "post-checkout:\n  commands:\n    splashdown:\n      run: splash\n      tags: local\n"
+        f"post-checkout:\n  commands:\n    splashdown:\n      run: {old_run}\n      tags: local\n"
     )
 
+    assert sd.post_checkout_readiness(tmp_path).detail == detail
     assert sd.cmd_doctor(tmp_path, fix=True) == 0
 
     text = path.read_text()
-    assert '"$SPLASH" hook post-checkout' in text
+    assert '      run: splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true\n' in text
     assert "tags: local" in text
+    assert sd.post_checkout_readiness(tmp_path).ready
 
 
 def test_doctor_fix_preserves_modified_lefthook_job(tmp_path):

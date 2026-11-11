@@ -357,8 +357,9 @@ because a configuration directory outranks a bare dependency.
 8. **`conflict`** — two managers with equal evidence. Everything is preserved and the candidates are named.
 9. **`none`** — `_wire_post_checkout_native` writes `post-checkout` under Git's common hooks directory. That location is shared by all worktrees, and splashdown never changes `core.hooksPath`. It lives in the local `.git` directory, so init only announces it and `cmd_trust` writes it.
 
-Every adapter shares `SPLASH_GUARD` (`hook_configs.py`), the one-line form of the native hook's
-executable resolution and checkout-controlled-executable rejection.
+Lefthook runs `splash` directly through PATH. Pre-commit, prek, and simple-git-hooks share
+`SPLASH_GUARD` (`hook_configs.py`), the one-line form of the native and Husky hook's executable
+resolution guard. See [the hook execution contract](bootstrap.md#hook-path).
 
 The YAML editor in `hook_configs.py` recognizes one narrow document shape and refuses everything
 else. `_pre_commit_analysis` strips comments through `yamltext.py` (the dependency-free seam that

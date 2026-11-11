@@ -37,9 +37,9 @@ setup is a no-op, and that local activation happens at `splash trust` rather tha
 Run everything in disposable repositories outside the splashdown checkout. Point
 `XDG_STATE_HOME` at a scratch directory so the registry never touches real machine state, and
 point `GIT_CONFIG_GLOBAL` at a scratch file so `core.hooksPath` experiments stay local. Install
-the candidate as the real `splash` executable and put it first on `PATH`, because the forwarding
-command each adapter writes resolves `splash` through `command -v` and refuses an executable
-inside the checkout.
+the candidate as the real `splash` executable outside the test repositories and put it first on
+`PATH`. Lefthook invokes it directly; the other generated hooks resolve it through `command -v`
+and refuse paths spelled inside the checkout. See [Hook path](../../tech/bootstrap.md#hook-path).
 
 ```sh
 uv venv "$SCRATCH/qa-venv"
