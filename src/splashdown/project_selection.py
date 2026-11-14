@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .constants import RECIPE_NAME
 from .errors import ApplicationError
+from .safe_files import diagnostic_git_executable
 
 
 @dataclass(frozen=True)
@@ -44,17 +45,23 @@ def resolve_start_directory(
         ) from error
 
 
-def _worktree_root(start: Path) -> Path | None:
+def _worktree_root(start: Path, *, diagnostic: bool = False) -> Path | None:
     try:
+        executable = (
+            str(diagnostic_git_executable(start, search_directory=Path.cwd()))
+            if diagnostic
+            else None
+        )
         result = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            executable=executable,
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (OSError, UnicodeError, subprocess.TimeoutExpired) as error:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         raise ApplicationError(
             f"Unable to discover Git worktree: {error}", code="io_error"
         ) from error
@@ -87,14 +94,24 @@ def _recipe_entry(directory: Path) -> Path | None:
 
 
 def select_project(
-    start: Path, *, exact: bool = False, known_checkouts: Collection[str] = ()
+    start: Path,
+    *,
+    exact: bool = False,
+    known_checkouts: Collection[str] = (),
+    diagnostic: bool = False,
 ) -> ProjectSelection:
     if str(start) in known_checkouts:
         try:
             start.stat()
         except FileNotFoundError:
             return ProjectSelection(start, start, None, None)
-    root = None if exact else _worktree_root(start)
+    root = (
+        None
+        if exact
+        else _worktree_root(start, diagnostic=True)
+        if diagnostic
+        else _worktree_root(start)
+    )
     directory = start
     while True:
         recipe = _recipe_entry(directory)

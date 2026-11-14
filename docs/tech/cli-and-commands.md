@@ -11,7 +11,7 @@ checks defined in `wiring.py`. Shared-result status gathering lives in `status.p
 `results.py` defines dependency-free `CommandResult`, `Diagnostic`, JSON types, and the
 validating `result_payload` serializer. `ApplicationError` carries a stable code, optional data,
 partial state, warnings and next steps. `emit_result` is the final output boundary: JSON gets one
-seven-key envelope, while text invokes a data renderer before stderr diagnostics. AI, env inspection, and status are
+seven-key envelope, while text invokes a data renderer before stderr diagnostics. AI, env inspection, status, and doctor are
 migrated consumers. Other handlers retain their existing output ownership until migrated.
 Text diagnostics escape terminal control characters through `terminal.py`, preserving newlines
 and tabs. JSON retains the original message value. Physical claim output uses the persisted
@@ -79,7 +79,8 @@ submodule imports inside handlers.
 3. Install completion (`cli.py`) — imported lazily, immediately before `parse_args`, because during an active completion argcomplete parses `COMP_LINE` itself and exits inside `parse_args` (see [completion](#completionpy--fail-silent-completers)).
 4. `parse_args`, select sync when no command was supplied, validate cross-option contracts, dispatch help and completion before checkout resolution,
    then validate all supplied cwd values and store the project selection for `_resolve_cwd`.
-5. Dispatch env inspection and status through their read-only snapshot and result boundaries before
+5. Doctor requests guarded diagnostic Git selection through `select_project` before inspection.
+   Dispatch env inspection, status, and doctor through their read-only snapshot and result boundaries before
    Registry construction or notices. Dispatch `ai` before Registry construction; its status is read-only, while mutations acquire
    the checkout operation lock. Dispatch the hidden hook event before constructing a Registry.
    Handle `init` inside the ordinary error renderer but before Registry construction, so its early refusals
@@ -91,7 +92,7 @@ submodule imports inside handlers.
    table. The final fall-through is `sync` (the default), so both bare `splash` and explicit
    `splash sync` land on `_cmd_provision`.
 
-Env inspection, status, completion generation, help, version, active argcomplete, hidden hook plumbing, and init paths that
+Env inspection, status, doctor, completion generation, help, version, active argcomplete, hidden hook plumbing, and init paths that
 do not sync all exit before Registry construction and therefore do not consume pending claim
 notices. Target addition also skips pending notices. Other checkout-scoped commands consume notices before their handler runs, even when that
 handler later fails. `render_claim_notices` in `cli_output.py` names the target, transfer or
@@ -137,9 +138,9 @@ construction, or command dispatch. It owns constraints argparse cannot express c
 parser levels: the root output-option support matrix and the redundant
 `target remove --global --keep-instance` pair. It also rejects
 `target remove device --keep-instance`, because physical devices have no owned instance. `--format`
-is valid for sync, status, init, env/env get, bare target, target add, target claims, target claim, and ai commands. Unsupported formats use `unsupported_format`;
+is valid for sync, status, init, env/env get, bare target, target add, target claims, target claim, doctor, and ai commands. Unsupported formats use `unsupported_format`;
 other rejected combinations use `invalid_arguments`, both exit 2. This registration does not
-migrate legacy operational JSON output. AI, env inspection, and status are complete envelope consumers.
+migrate legacy operational JSON output. AI, env inspection, status, and doctor are complete envelope consumers.
 
 Environment commands use shared `--cwd`. Set/release retain exact-directory mutation selection.
 Env inspection uses RegistrySnapshot and nearest recipe-or-registered identity selection.
@@ -207,7 +208,7 @@ uses exit-1 `recipe_missing`. Other stable boundary codes include `invalid_argum
 `io_error`, `device_error`, `capability_unavailable`, and `operation_failed` (1), plus
 `interrupted` (130). Generated guidance details use warning code `guidance_generated`.
 
-AI, env inspection, and status are complete envelope consumers. `_dispatch_env_inspection` reads
+AI, env inspection, status, and doctor are complete envelope consumers. `_dispatch_env_inspection` reads
 `read_registry_snapshot` before normal Registry construction and notice consumption. It validates
 every cwd with `known_checkouts`, uses `select_project(..., known_checkouts=...)`, calls pure
 `commands.inspect_env(cwd, snapshot, key=None) -> CommandResult`, and emits once through
@@ -251,7 +252,54 @@ security-sensitive hook and init paths must preserve their explicit rendering co
 
 This module spans onboarding, provisioning orchestration, and env dispatch. Target
 lifecycle and fleet operations live in `target_commands.py`; hook wiring lives in `hooks.py`, while
-doctor orchestration lives in `doctor.py`. Status and output formatting have their own modules.
+doctor orchestration lives in `doctor.py`. Doctor dispatch occurs before mutable registry
+construction and claim-notice consumption. It uses `run_doctor` and the shared text/JSON result
+boundary, with configuration first and all declared apps in scope. Status and output formatting have their own modules.
+
+#### Doctor tool observations
+
+`runners.runner_prerequisites` describes the existing built-in device launchers' common tools and
+platforms, using the launcher executable constants. `android_gradle_command` shares the native
+runner's wrapper selection. `runtime_checks.app_tooling` combines those facts with one invocation's
+`ToolObservations`; the immutable `AppTooling` retains per-app route availability for dependent
+checks. Common requirements and routes do not borrow availability from another app. Custom commands
+are never executed or dependency-inferred.
+
+Executable checks use file metadata, never version execution. Android SDK lookup reuses the device
+adapter's path selection and inspects build directories, adb and Java. The macOS Java shim alone is
+not proof of a JDK. Flutter JDK selection remains incomplete because configured `jdk-dir` and
+Android Studio's bundled JDK resolver are not statically inspected; shell Java availability is
+not a substitute. Relative SDK/JDK environment paths also report incomplete instead of resolving
+against doctor's process directory. iOS uses absolute `DEVELOPER_DIR` or bounded `/usr/bin/xcode-select --print-path`,
+then inspects the selected Xcode executable/SDK paths. This is not build or version compatibility
+validation. Native iOS also checks the runner's bare `xcodebuild` lookup using the app's effective
+PATH. Successes and failures are cached. These checks run outside repair locks and have no
+repair callbacks. [Device observation](devices.md#doctor-observation-boundary) has its own stricter
+no-start boundary.
+
+#### Doctor CocoaPods snapshot
+
+`runtime_checks.pods_check` shares the invocation's `ToolObservations`, so optional iOS severity
+uses only that app's verified Android route. It has no repair callback and does not enter the
+repair lock. Raw bytes establish only lock/installed-manifest consistency; no Podfile evaluation,
+resolver, installer or launch preflight runs. Both input paths and actual read failures remain
+visible. Missing and different manifests are installation findings, while unreadable inputs are
+incomplete even with an Android alternative.
+
+Native roots are app-scoped: `ios/` for React Native/Expo/Flutter, app root for native iOS, a whole
+literal exported React Native `project.ios.sourceDir`, or the declared native iOS workspace/project
+parent. Unsupported/dynamic React Native configuration, custom platforms and encountered
+native-root xcconfig CocoaPods path settings require manual verification. A standalone xcconfig
+is not proof of effective build settings. No recursive project/configuration resolver is implied.
+No established Podfile skips inspection, including Expo before generation. The reader refuses
+symlinked components and nonregular inputs, opens without following the final link and uses
+nonblocking opens plus descriptor validation to avoid a substituted FIFO hanging the inspection.
+Each input is limited to 1 MiB, including lockfiles; oversized inputs report incomplete inspection.
+The layout observation, including any failure, is reused for manual guidance so unsupported
+layouts retain their native-source, Podfile and manifest path-verification next step.
+Bundler guidance uses literal CocoaPods evidence from the nearest Gemfile when walking from the
+Podfile directory up to the checkout root. `BUNDLE_GEMFILE` overrides receive manual preparation
+guidance rather than an inferred install command. No Gemfile is evaluated.
 
 #### Provision handlers (`sync` / `init`)
 
@@ -324,8 +372,8 @@ originals. Clone-wide trust and the shared hook remain; checkout completion is r
 #### Git post-checkout hook installation
 
 `hooks.py` owns post-checkout integration. `_configure_post_checkout_hook` (init) writes only the
-project-owned configuration; `_ensure_post_checkout_hook` (doctor `--fix`) additionally performs
-local installation. Both *coexist* with whatever hook manager the project already uses, rather than
+project-owned configuration; `_ensure_post_checkout_hook` additionally performs
+local installation for authorized activation flows. Doctor never calls the activating helper. Both *coexist* with whatever hook manager the project already uses, rather than
 clobbering it.
 
 `detect_hook_configuration` returns a `HookDetection` with the owning manager, the reason, and
@@ -405,12 +453,12 @@ the two halves of the configuration/activation split are reported separately rat
 conflated. Native and Husky hooks must exactly match the owned event-aware body and be
 executable. Lefthook must contain the exact event-aware run value; pre-commit, prek, and
 simple-git-hooks must carry the exact forwarding entry. A custom or modified form is
-reported as unverifiable rather than green, and `ready` without `active` is a `doctor` warning
-rather than a tick, because the configuration is correct but no event can arrive yet.
+reported as unverifiable rather than green, and `ready` without `active` is a `doctor` problem, because the configuration is correct but no event
+can arrive yet.
 `post_checkout_files` names the file an adapter writes, which is what doctor reports as changed,
-and names nothing when the adapter's state is `unrecognized`. `splash doctor --fix` can add the project-level hook
-check for a recipe with `[bootstrap]` even when framework detection fails, so minimal and generic
-projects have the same migration path.
+and names nothing when the adapter's state is `unrecognized`. Doctor adds the project-level hook
+check for a valid recipe with `[bootstrap]` even when no apps are configured. Its legacy activation
+callback is disabled, so the finding retains manual guidance.
 
 The hidden handler checks the lifecycle recursion marker, takes the private checkout lock, and
 loads one recipe snapshot. It then takes shared clone trust. Without sync trust it constructs no

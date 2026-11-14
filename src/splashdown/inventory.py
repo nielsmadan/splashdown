@@ -9,6 +9,14 @@ if TYPE_CHECKING:
     from .recipe import Recipe
 
 
+@dataclass(frozen=True)
+class ManagedResource:
+    name: str
+    kind: str
+    writer: str
+    destination: str | None
+
+
 @dataclass
 class AppInventory:
     name: str
@@ -16,6 +24,7 @@ class AppInventory:
     profile: str
     project_path: Path | None = None
     capabilities: tuple[str, ...] = ()
+    managed_resources: tuple[ManagedResource, ...] | None = None
 
 
 @dataclass

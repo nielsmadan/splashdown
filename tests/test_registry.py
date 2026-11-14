@@ -703,6 +703,8 @@ def test_get_or_create_kv_is_lock_serialized_under_thread_contention(registry, c
             port_file=registry.port_file,
             kv_file=registry.kv_file,
             device_file=registry.device_file,
+            claim_file=registry.claim_file,
+            claim_notice_file=registry.claim_notice_file,
         )
         for _ in range(count)
     ]
@@ -771,21 +773,11 @@ def test_registry_mutations_atomically_replace_tsv(registry, checkout, monkeypat
     assert replacement_mode == 0o600
 
 
-def test_operation_locks_use_a_bounded_shard_set(registry, monkeypatch):
-    from contextlib import contextmanager
-
-    targets = set()
-
-    @contextmanager
-    def record_lock(path):
-        targets.add(path)
-        yield
-
-    monkeypatch.setattr(registry, "_lock", record_lock)
+def test_operation_locks_use_a_bounded_shard_set(registry):
     for index in range(2048):
         with registry.operation_lock(f"/checkout/{index}"):
             pass
-
+    targets = list(registry.kv_file.parent.glob("checkout-operation-*.lock"))
     assert 1 < len(targets) <= sd.registry._OPERATION_LOCK_SHARDS
     assert {path.parent for path in targets} == {registry.kv_file.parent}
 
@@ -1212,3 +1204,109 @@ def test_snapshot_dangling_registry_entry_is_not_absent(tmp_path, kind):
         read_registry_snapshot(directory)
     assert caught.value.code == "registry_read_error"
     assert caught.value.snapshot.all_checkouts() == []
+
+
+def _operation_lock_child(checkout, directory, instance, attempting, acquired, release):
+    from pathlib import Path
+
+    from splashdown.registry import Registry, checkout_operation_lock
+
+    directory = Path(directory)
+    if instance:
+        registry = Registry(
+            port_file=directory / "ports.tsv",
+            kv_file=directory / "kv.tsv",
+            device_file=directory / "devices.tsv",
+            claim_file=directory / "claims.tsv",
+            claim_notice_file=directory / "claim-notices.tsv",
+        )
+        lock = registry.operation_lock(checkout)
+    else:
+        lock = checkout_operation_lock(checkout, directory=directory)
+    attempting.set()
+    with lock:
+        acquired.set()
+        if not release.wait(10):
+            raise RuntimeError("lock test release timed out")
+
+
+@pytest.mark.parametrize("child_instance", [False, True])
+def test_checkout_operation_lock_contends_with_registry_in_both_directions(
+    tmp_path, child_instance
+):
+    from splashdown.registry import checkout_operation_lock
+
+    directory = tmp_path / "custom-kv-parent"
+    directory.mkdir()
+    registry = sd.Registry(
+        port_file=tmp_path / "ports.tsv",
+        kv_file=directory / "kv.tsv",
+        device_file=tmp_path / "devices.tsv",
+        claim_file=tmp_path / "claims.tsv",
+        claim_notice_file=tmp_path / "claim-notices.tsv",
+    )
+    checkout = str(tmp_path / "checkout")
+    context = get_context("spawn")
+    manager = context.Manager()
+    attempting, acquired, release = (manager.Event() for _ in range(3))
+    child = context.Process(
+        target=_operation_lock_child,
+        args=(checkout, str(directory), child_instance, attempting, acquired, release),
+    )
+    lock = (
+        checkout_operation_lock(checkout, directory=directory)
+        if child_instance
+        else registry.operation_lock(checkout)
+    )
+    try:
+        with lock:
+            child.start()
+            assert attempting.wait(10)
+            assert not acquired.wait(0.2)
+        assert acquired.wait(10)
+        release.set()
+        child.join(10)
+        assert child.exitcode == 0
+    finally:
+        release.set()
+        if child.is_alive():
+            child.terminate()
+        child.join(10)
+        manager.shutdown()
+    assert len(list(directory.glob("checkout-operation-*.lock"))) == 1
+    assert list(tmp_path.glob("checkout-operation-*.lock")) == []
+
+
+def test_checkout_operation_lock_dynamic_state_and_failure_release(tmp_path, monkeypatch):
+    import hashlib
+
+    from splashdown.registry import checkout_operation_lock
+
+    checkout = "exact/checkout/string"
+    shard = int.from_bytes(hashlib.sha256(checkout.encode()).digest()[:4]) % 256
+    for name in ("first", "second"):
+        state = tmp_path / name
+        monkeypatch.setenv("XDG_STATE_HOME", str(state))
+        with pytest.raises(ValueError, match="failure"), checkout_operation_lock(checkout):
+            raise ValueError("failure")
+        context = get_context("spawn")
+        manager = context.Manager()
+        attempting, acquired, release = (manager.Event() for _ in range(3))
+        release.set()
+        child = context.Process(
+            target=_operation_lock_child,
+            args=(checkout, str(state / "splashdown"), False, attempting, acquired, release),
+        )
+        try:
+            child.start()
+            assert acquired.wait(10)
+            child.join(10)
+            assert child.exitcode == 0
+        finally:
+            if child.is_alive():
+                child.terminate()
+            child.join(10)
+            manager.shutdown()
+        assert list((state / "splashdown").iterdir()) == [
+            state / "splashdown" / f"checkout-operation-{shard:03d}.lock"
+        ]

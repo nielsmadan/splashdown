@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from .errors import CapabilityError
 
@@ -27,3 +28,10 @@ def warn_capability(error: CapabilityError, warned: set[str]) -> None:
     warned.add(error.capability)
     label = {"ios": "iOS", "android": "Android"}.get(error.capability, error.capability)
     print(f"warning: skipping {label}: {error}", file=sys.stderr)
+
+
+@dataclass(frozen=True)
+class LaunchPrerequisites:
+    common: tuple[str, ...]
+    platforms: tuple[str, ...]
+    guidance: str

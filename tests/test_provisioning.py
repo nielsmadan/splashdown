@@ -67,6 +67,8 @@ def test_concurrent_uuid_provision_returns_the_committed_value(registry, checkou
             port_file=registry.port_file,
             kv_file=registry.kv_file,
             device_file=registry.device_file,
+            claim_file=registry.claim_file,
+            claim_notice_file=registry.claim_notice_file,
         )
         for _ in range(2)
     ]
@@ -104,6 +106,8 @@ def test_checkout_operation_lock_spans_output_commit(registry, checkout, monkeyp
         port_file=registry.port_file,
         kv_file=registry.kv_file,
         device_file=registry.device_file,
+        claim_file=registry.claim_file,
+        claim_notice_file=registry.claim_notice_file,
     )
     first_writer_entered = threading.Event()
     release_first_writer = threading.Event()

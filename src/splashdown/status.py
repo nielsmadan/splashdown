@@ -3,20 +3,17 @@ from __future__ import annotations
 import errno
 import json
 import os
-import re
 import socket
 import stat
 import subprocess
-import tomllib
-from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
-from .constants import LOCAL_NAME, RECIPE_NAME, newline_for, split_lines
+from .constants import LOCAL_NAME, RECIPE_NAME, newline_for
 from .errors import DeviceError, LoaderConflictError
-from .hooks import HookInspection, post_checkout_readiness
-from .loaders import LOADERS
+from .hooks import HookInspection, post_checkout_readiness, validate_hook_inputs
+from .loaders import validate_loader_config, validated_loader_plan
 from .port_inspection import PortOwner, listening_processes
 from .provisioning import (
     DEFAULT_WRITER,
@@ -378,109 +375,29 @@ def _trust_and_hooks(cwd: Path, recipe: Recipe) -> list[JsonObject]:
 
 
 def _validate_hook_inputs(cwd: Path, common: Path) -> HookInspection:
-    from .hook_configs import _pre_commit_analysis  # noqa: PLC0415
-    from .hooks import _MANAGER_CONFIG_NAMES, detect_hook_configuration  # noqa: PLC0415
-    from .yamltext import _yaml_key_regions  # noqa: PLC0415
-
     configured = _git(cwd, ["config", "--get", "core.hooksPath"])
     if configured.returncode not in {0, 1}:
         raise subprocess.SubprocessError("Git hook configuration probe failed")
-    hook_dir = Path(configured.stdout.strip()) if configured.returncode == 0 else common / "hooks"
-    if not hook_dir.is_absolute():
-        hook_dir = cwd / hook_dir
-    with suppress(FileNotFoundError):
-        for path in hook_dir.iterdir():
-            if not path.name.endswith(".sample") and stat.S_ISREG(path.stat().st_mode):
-                path.read_bytes()
-    inputs = HookInspection(common, configured.stdout.strip() if configured.returncode == 0 else "")
-    detection = detect_hook_configuration(cwd, strict=inputs)
-    candidates = _MANAGER_CONFIG_NAMES.get(detection.manager, ())
-    for name in candidates:
-        path = cwd / name
-        text = _optional_text(path)
-        if text is None:
-            continue
-        if path.suffix == ".json" and not isinstance(json.loads(text), dict):
-            raise ValueError("expected JSON object")
-        if path.suffix == ".toml":
-            tomllib.loads(text)
-        if path.suffix in {".yml", ".yaml"}:
-            if detection.manager in {"pre-commit", "prek"}:
-                if _pre_commit_analysis(text)[0] == "unrecognized":
-                    raise ValueError("uninterpretable pre-commit configuration")
-            elif detection.manager == "lefthook":
-                for value in _yaml_key_regions(text, "post-checkout", indent=0):
-                    _validate_lefthook_flow(value)
-        break
-    _optional_text(hook_dir / "post-checkout")
-    if detection.manager == "husky":
-        _optional_text(cwd / ".husky" / "post-checkout")
-    return inputs
-
-
-def _validate_lefthook_flow(value: str) -> None:
-    lines = split_lines(value)
-    scalar_indent = -1
-    for index, line in enumerate(lines):
-        indent = len(line) - len(line.lstrip())
-        if scalar_indent >= 0:
-            if not line.strip() or indent > scalar_indent:
-                continue
-            scalar_indent = -1
-        match = re.match(r"\s*(?:-\s*)?(?:[^:\n\[{]+:\s*)?([\[{|>])", line)
-        if match is None:
-            continue
-        if match.group(1) in "|>":
-            scalar_indent = indent
-        elif not _balanced_yaml_flow("\n".join(lines[index:])[match.start(1) :]):
-            raise ValueError("uninterpretable lefthook configuration")
-
-
-def _balanced_yaml_flow(value: str) -> bool:
-    stack: list[str] = []
-    quote = ""
-    escaped = False
-    for index, char in enumerate(value):
-        if quote:
-            if escaped:
-                escaped = False
-            elif quote == '"' and char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = ""
-        elif char in "\"'":
-            quote = char
-        elif char in "[{":
-            stack.append(char)
-        elif char in "]}" and (not stack or stack.pop() != {"]": "[", "}": "{"}[char]):
-            return False
-        elif char in "]}" and not stack:
-            return not value[index + 1 :].split("\n", 1)[0].strip()
-    return not stack and not quote
+    return validate_hook_inputs(
+        cwd, HookInspection(common, configured.stdout.strip() if configured.returncode == 0 else "")
+    )
 
 
 def _loader(cwd: Path, recipe: Recipe) -> list[JsonObject]:
     name = str(recipe.project.get("loader", "none"))
     if name == "none":
         return [_check("loader", "not_applicable", "No shell loader declared.")]
-    loader = LOADERS[name]
-    candidates = {
-        "mise": ("mise.toml", ".mise.toml"),
-        "direnv": (".envrc",),
-        "devbox": ("devbox.json",),
-    }[name]
-    paths = [cwd / candidate for candidate in candidates]
     try:
-        for path in paths:
-            text = read_optional_editable_text(path, root=cwd)
-            if text is not None and path.suffix == ".toml":
-                tomllib.loads(text)
-            elif text is not None and path.suffix == ".json":
-                value = json.loads(text)
-                if not isinstance(value, dict):
-                    raise ValueError("invalid loader object")
-            if text is not None:
-                break
+        validate_loader_config(cwd, name)
+    except LoaderConflictError:
+        return [
+            _check(
+                "loader",
+                "finding",
+                f"{name} wiring needs manual configuration.",
+                "Inspect the loader configuration and its env-file directive.",
+            )
+        ]
     except (OSError, ValueError):
         return [
             _check(
@@ -491,7 +408,7 @@ def _loader(cwd: Path, recipe: Recipe) -> list[JsonObject]:
             )
         ]
     try:
-        plan = loader.plan(cwd, recipe.env_file)
+        plan = validated_loader_plan(cwd, name, recipe.env_file)
         checks = [
             _check(
                 "loader",

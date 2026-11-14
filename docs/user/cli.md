@@ -17,7 +17,7 @@ splash deinit                       # remove checkout-local state, keep shared h
 splash trust                        # authorize automatic handling for this clone
 splash untrust                      # revoke clone-wide automatic handling
 splash bootstrap [--rerun]          # sync + run bootstrap once for this checkout
-splash doctor [--fix] [--framework=…]
+splash doctor [--fix] [--format text|json]
 splash ai status                    # inspect recorded agent guidance without changing files
 splash ai update [--replace]         # render current recipe, optionally replace edited blocks
 splash ai uninstall                 # remove guidance without changing provisioning

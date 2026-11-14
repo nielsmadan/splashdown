@@ -147,7 +147,7 @@ from .devices import (
     physical_discover,
     physical_status,
 )
-from .doctor import cmd_doctor
+from .doctor import DoctorOutcome, cmd_doctor, run_doctor
 from .errors import (
     ApplicationError,
     CapabilityError,

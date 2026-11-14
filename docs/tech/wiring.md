@@ -10,7 +10,7 @@
 - [How it works (current state)](#how-it-works-current-state)
   - [The `WiringCheck` contract](#the-wiringcheck-contract)
   - [Check registries and the profile boundary](#check-registries-and-the-profile-boundary)
-  - [`cmd_doctor`: resolve → run loop](#cmd_doctor-resolve--run-loop)
+  - [`run_doctor`: resolve → run loop](#run_doctor-resolve--run-loop)
   - [The individual checks](#the-individual-checks)
   - [Why Electron integration is not a WiringCheck](#why-electron-integration-is-not-a-wiringcheck)
   - [Idempotency: sentinel-wrapped patches](#idempotency-sentinel-wrapped-patches)
@@ -41,11 +41,15 @@ wired without a follow-up `doctor --fix`.
 
 `WiringCheck` (`wiring.py`) is a `NamedTuple` carrying everything `doctor` needs
 to handle one fact: an `id`, a human `description`, `applies(cwd) -> bool`,
-`detect(cwd) -> ("ok"|"problem", detail)`, an optional `autofix(cwd) -> None`,
-`manual_instructions(cwd) -> str`, an `activation` flag, and `files(cwd)`. The
-contract is deliberately three-state per check: not-applicable (skip), ok, or
-problem — with two escape hatches on a problem (an autofix that may exist, and
-manual instructions that always do).
+`detect(cwd) -> (state, detail)`, an optional `autofix(cwd) -> None`,
+`manual_instructions(cwd) -> str`, an `activation` flag, and `files(cwd)`.
+Detection states are `ok` for verified behavior, `warning` for advisory observations,
+`problem` for a diagnosed defect, `incomplete` for failed or unsupported inspection, and
+`skipped` for explicit uninspected coverage. A false applicability predicate also yields
+`skipped`. Checks can offer a safe repair callback and manual guidance; warnings and
+incomplete observations are not inherently repairable. See the
+[`run_doctor` contract](#run_doctor-resolve--run-loop) for failure isolation, repair eligibility,
+and exit policy.
 
 `files` names the project files this check's autofix may rewrite. The init pass
 snapshots those bytes around the fix so it can report the files it changed
@@ -54,26 +58,24 @@ the `_no_wiring_files` default.
 
 #### Threading the environment output destination
 
-The callables take only `cwd`, so a check that must know where this checkout
-writes its environment output closes over the destination at construction time.
-`Profile.wiring_checks(app, env_file)` carries it, `rn_wiring_checks(env_file)`
-builds the RN list around it, and `_vite_process_env_check(env_file)` and
-`_rn_xcode_check(env_file)` are the two factories that consume it. Checks that
-are destination-independent ignore the argument and stay module-level constants.
+`profile_core.configured_app_inventory` resolves the final recipe's app associations through
+`resolve_writer` and `writer_output_path`. Doctor and init share this builder; `inventory.py`
+remains dependency-free. `AppInventory.managed_resources=None` means scaffold discovery, while
+an empty tuple is a configured app with no resources. Init reconstructs inventories after final
+recipe parsing, not from scanner defaults.
 
-`env_file` reaches a check spelled relative to the directory that check inspects,
-which is not always the project root: `wiring_destination(check_dir, project_dir,
-env_file)` does that conversion, so a React Native app at `apps/mobile` gets
-`../../splashdown.env` and patches a path that resolves. `commands.py` computes it
-per app from the recipe's `env_file`; `doctor.py` computes it from
-`_doctor_env_file`, which reads the same recipe key.
+Checks close over actual resource names, kinds, writers, and destinations. A missing managed port
+skips consumption checks. Several arbitrary ports need a recognized consumer relationship or an
+explicit incomplete result. The RN dotenv check resolves the chosen resource's file relative to
+the app with `wiring_destination`. Shell `envrc` and non-file writers take a manual inherited-value
+path and never invent a dotenv filename.
 
 `activation` classifies what the autofix writes. A check is `activation=True` when
 its repair touches the local checkout rather than project-owned, committable
 configuration: `_HOOK_WIRING_CHECK` sets it, because its autofix installs the local
 Git hook or runs the owning hook manager's install command. `_apply_init_wiring_checks` (`commands.py`)
-skips those checks, which is what keeps `splash init` configuration-only; `doctor`
-and `doctor --fix` run them as before. Classifying the check itself, rather than
+skips those checks, which keeps init configuration-only. Doctor inspects them but rejects
+activation callbacks during repair. Classifying the check itself, rather than
 filtering by `id` at init, means a future activation-class check is excluded from
 init by construction and by whichever Profile returns it.
 
@@ -93,10 +95,11 @@ the destination-bound `rn-xcode-env` check. The shared `_HOOK_WIRING_CHECK`
 per-checkout wiring; `_RN_WIRING_CHECKS` appends that same object, so the RN and
 native hook checks cannot drift apart.
 
-Its `applies` returns `False` in a nested project. Git invokes checkout hooks from
-the worktree root, so the hook the check would install belongs to a directory where
-the nested recipe is invisible: doctor reports `hook: not applicable` there instead
-of a permanent problem pointing at a `--fix` that cannot work.
+Doctor strips the profile hook registration and builds separate project-wide configuration and
+activation checks for every framework. `inspect_hook_inputs` excludes non-Git and nested projects,
+uses bounded Git probes, and returns the validated discovery inputs reused for inspection and
+configuration edits. Git invokes checkout hooks at the worktree root, where a nested recipe is
+invisible.
 
 This is **order-dependent**, and the coupling runs through `profiles_mobile.py`:
 
@@ -113,86 +116,108 @@ lazily, not from another module after import), because Profiles read the populat
 list. Web, server, and Compose checks are built by `profiles_web.py`,
 `profiles_server.py`, and `profiles_compose.py` rather than going through the RN registry.
 
-### `cmd_doctor`: resolve → run loop
+### `run_doctor`: resolve → run loop
 
-`cmd_doctor` resolves all check targets through `_resolve_check_targets`. Project-level Compose
-checks are collected first, and a recipe with `[bootstrap]` adds the hook check. Framework
-resolution then selects the app directory and Profile checks. When framework detection is
-ambiguous or unavailable, project checks still run; doctor asks for `--framework` only when there
-are no project checks to perform. Profile checks are built with the recipe's environment output
-destination, spelled relative to the resolved app directory, so doctor judges the wiring against
-the file this checkout actually writes. Framework and project checks are combined by id so the shared
-hook check is emitted once. A resolved framework with no checks exits 0 with either the env-only
-positive verdict or a neutral "no checks defined" note.
+`run_doctor(cwd, fix=False)` returns the shared `CommandResult`; `cmd_doctor` emits it through
+`cli_output.render_doctor_result`. Configuration is the first outcome. Missing or invalid recipes
+stop diagnostics at exit 1, preserving the selected file and parse/schema cause.
 
-React Native and Expo add `WATCHMAN_CHECK` from `runtime_checks.py` as a project check after
-framework resolution. It receives the checkout root even when Profile checks receive a nested
-app directory. This keeps a valid monorepo-root watch from being mistaken for a watch above the
-checkout.
+Configured `[apps]` entries determine every app path and profile, including repeated profiles.
+When apps are absent, an explicit non-auto `[project] framework` describes one app at the root.
+Without either, doctor reports limited app coverage and still runs shared checks. It never scans
+the filesystem to choose a framework or resolves a launch/default app. Compose, hook and Watchman
+checks run once at the project root. App outcomes keep their app name and path even when check IDs
+repeat. Check-construction failures remain scoped so independent app/shared checks still run.
 
-The run loop in `doctor.py` walks each check:
+Each frozen `DoctorOutcome` records scope, app, path, check ID, state, message, manual next steps,
+changed files, and repair status. Applicability, direct detection, guidance, repair preparation,
+repair, and recheck failures become explicit incomplete outcomes. Detection exceptions never
+permit repair. A skipped check is not a health claim. Exit 0 means completed checks have no
+unresolved problems, including advisory warnings; problem/incomplete or failed/unverified repairs
+exit 1, usage exits 2, and cancellation exits 130 with completed outcomes and changes retained.
 
-1. `applies(cwd)` false → print "not applicable", skip.
-2. `detect` returns `ok` → print `✓`.
-3. `problem` **and** `--fix` **and** `autofix is not None` → call `autofix` (wrapped
-   in `try/except` so one check failing reports rather than crashing the run,
-   `doctor.py`), then re-`detect`. On `ok` print `✓ (fixed)`; otherwise print
-   `✗ still problem after autofix` and the manual snippet, count it bad.
-4. Otherwise (problem with no fix requested/available) → print `✗` plus the manual
-   snippet, count it bad.
+Eligible repairs first establish known candidate files. The lock-only `checkout_operation_lock`
+uses the canonical checkout identity, then the engine reloads the recipe and rebuilds the affected
+check under the lock. It repeats applicability/detection and holds the lock through the edit and
+recheck. Safe byte snapshots before and in `finally` after editing retain partial writes, including
+when repair raises or is interrupted. Failed candidate enumeration prevents editing; unreadable or
+newly discovered post-edit candidates make change accounting explicitly incomplete. Tool probes
+stay outside this repair boundary. Neither mode constructs `Registry` or consumes notices; plain
+inspection and ineligible repairs create no lock bookkeeping.
 
-Exit code is 0 only when nothing is left in the `problem` state.
+After a repair attempt, pending framework checks reload their recipe/resource context before
+inspection. This keeps sibling checks current when the recipe changed while waiting for the lock;
+removed checks are skipped and completed outcomes remain intact. Tool and device probes are not
+repeated by this refresh.
+
+Framework repairs are enabled only through the resource-aware catalog. Activation callbacks
+remain excluded.
+
+Text findings and summary go to stdout, operational failure diagnostics to stderr. JSON uses one
+shared envelope with every outcome and summary, including partial results and changed paths.
+
 Init uses `_apply_init_wiring_checks` to run the same Profile-owned safe autofixes per app.
 `_apply_init_wiring_check` detects, fixes, then detects again: a fix that did not resolve the
 problem prints `✗` with the check's manual instructions rather than passing silently, and the
 files whose bytes changed are appended to `InitReport.changed` (see
 `docs/features/framework-wiring.md`).
 
-A detect returns `ok`, `warning`, or `problem`. `doctor` renders a warning as `⚠` and does not
-count it against the exit code; `splash init` treats it as settled, because the remaining step is
-local activation rather than a project edit.
+Advisory warnings do not count against doctor's exit code. Required inactive integrations are
+problems, while failed applicable probes remain incomplete. Status retains its separate readiness
+policy: an observed finding alone does not make status fail.
 
 Every writable check uses `safe_files.py` for its edit. The helper rejects a final symlink,
 non-regular destination, configured-root escape, or symlinked parent component; opens existing files with
 `O_NOFOLLOW` where available; and commits through same-directory atomic replacement while
 preserving the existing mode. The .NET writer additionally passes the detected BOM encoding and
 newline convention. Every hook-manager repair — lefthook, husky, pre-commit, prek,
-simple-git-hooks, and the native hook — uses the same helper, with executable mode applied to hook
+simple-git-hooks — uses the same helper, with executable mode applied to hook
 replacements rather than a follow-up `chmod`.
 
 ### The individual checks
 
-- **`hook`** (`_rn_hook_detect` and `_HOOK_WIRING_CHECK`) — delegates detection to
-  `post_checkout_readiness`, the same exact policy used during `splash trust`. Lefthook,
-  pre-commit, prek, and simple-git-hooks must carry the owned event-forwarding entry; Husky and
-  native hooks must have the owned body and be executable. A modified hook is reported as
-  unverifiable instead of accepted by substring, and so is a configuration shape the editor could
-  not parse. Overcommit, a conflict between two managers, and a configured `core.hooksPath` are
-  reported but not touched. Autofix delegates to `_ensure_post_checkout_hook` through
-  `_autofix_ensure_post_checkout_hook` so it coexists with the project's existing manager.
-  `_rn_hook_files` reports the file the owning adapter writes, through `post_checkout_files`, and
-  reports nothing when that adapter's state is `unrecognized`. Correct configuration whose manager
-  hook is not installed in this checkout detects as `warning`, not `ok`: the project file is right
-  but no event can arrive until that manager's own install has run. RN and project-level
-  registrations use the same `hook` id, so doctor emits one diagnostic.
+- **`hook` / `hook-activation`** (`doctor.py`) — use `post_checkout_readiness` and the strict
+  `validate_hook_inputs` seam shared with status. Configuration follows manager precedence and
+  recognizes exact owned entries, including legacy migration to the short Lefthook command.
+  Only a recognized manager configuration gets a repair through `_configure_post_checkout_hook`.
+  Native hooks, conflicting managers, custom hook paths and unsupported shapes remain manual.
+  Configuration is revalidated inside the operation lock. Local activation is a separate
+  report-only outcome: a known inactive required integration is a problem, even after a verified
+  configuration repair. No installer or `_ensure_post_checkout_hook` callback runs.
+  Activation requires an executable effective Git hook entry. Lefthook flow mappings in the
+  root or owned job regions remain manual because the block editor cannot place them safely.
+  Refused edits retain bounded discovery inputs through manual guidance.
+- **`loader` / `loader-tool` / `loader-approval`** — inspect the recipe's selected loader and
+  effective env destination. `validated_loader_plan` shares parsing and the existing `Loader.plan`
+  contract with status. Valid user-owned directives count as configured. Malformed/conflicting
+  inputs have no repair callback; recognized writes use only `apply_wire_plan`. Tool presence and
+  authorization are separate observations after configuration repairs and outside the lock.
+  Direnv uses bounded `status --json`, verifies the exact `foundRC.path`, and accepts only known
+  integer approval states. Failed probes are incomplete. Mise/devbox authorization observation is
+  explicitly unsupported. Parent-shell loading is never inferred; direnv scripts are not evaluated.
+  Direnv inspection accepts flat shell commands and refuses compound, expanded, or unterminated
+  contexts before offering a repair. Generated direnv/devbox paths are shell-quoted. Mise path
+  precedence includes dangling links so an unsafe preferred config cannot redirect a repair to a
+  lower-priority file. Locked repair refresh builds only the affected check catalog.
 - **`rn-metro-config`** (`_rn_metro_detect` in `wiring.py`) —
   `metro.config.js` should read `process.env.RCT_METRO_PORT`. Autofix
   (`_rn_metro_autofix`, `wiring.py`) recognizes three object-literal shapes
   (documented in the comment at `wiring.py`): a literal `port: <N>` is rewritten
-  in place to `Number(process.env.RCT_METRO_PORT) || <N>` keeping the literal as
+  in place to `Number(process.env.<actual-port>) || <N>` keeping the literal as
   fallback; an existing `server: {` block gets a port line inserted at its open
   brace; a bare `const config = {` / `module.exports = {` object gets a whole
   `server` block injected. The brace-aware injection lives in `_rn_metro_inject`
-  (`wiring.py`), driven by three regexes in the same module. If none
-  match, autofix returns without writing and the check surfaces manual instructions.
-- **`rn-pkg-port`** (`_rn_pkg_detect` in `wiring.py`) — strips
-  a hardcoded `--port <N>` from `package.json` scripts that boot Metro. The target
-  set (`_pkg_scripts_with_port`, `wiring.py`) is the default RN script names
-  `start`/`ios`/`android`, plus any script invoking `react-native start`. The
-  `react-native start` match (`wiring.py`) is deliberately narrow so `--port` on
-  unrelated tools (`react-native-test-runner --port 4000`) is left alone. Autofix
-  re-serializes `package.json` with 2-space indent, which reformats the whole file;
-  every key and value survives, the layout may not.
+  (`wiring.py`). The object must reach the export. Unknown or nested consumers remain
+  incomplete without editing. Later references to the selected config or exported object,
+  including property writes and aliases, also require manual verification of mutations.
+- **`rn-pkg-port`** (`wiring.py`) checks recognized React Native launch commands. Numeric
+  `--port` arguments become `${RCT_METRO_PORT:-N}` so their original value survives as a fallback.
+  JSON member splicing preserves unrelated settings and formatting. Renamed Metro resources need
+  an explicit script flag, otherwise the check prints that actual resource name for manual wiring.
+  Canonical resources may use the framework's native default only when no explicit port flag
+  overrides it. Argument matching respects quotes and rejects duplicate port flags. Unsupported shell syntax
+  in a relevant script is incomplete and preserves the file, even when another segment has
+  a recognizable literal port.
 - **`rn-xcode-env`** (`_rn_xcode_detect` in `wiring.py`) —
   `ios/.xcode.env` should source `RCT_METRO_PORT` from the environment output this
   checkout writes. Detection splits the file into shell statements
@@ -204,57 +229,83 @@ replacements rather than a follow-up `chmod`.
   neither proves wiring nor blocks repair. Collected paths are resolved
   (`${SRCROOT}` and its aliases point at `ios/`, so `${SRCROOT}/../x.env` is the
   app's `x.env`) and compared with the configured destination. A match is `ok`
-  however it was written — sentinel block, hand-written conditional, whatever. A
+  for configured filenames without an `.env` suffix as well. Destinations support letters,
+  digits, spaces, dots, slashes, underscores and hyphens. Other shell characters yield incomplete
+  coverage before any repair, with guidance to change the destination or quote it manually.
+  It can be a sentinel block or supported handwritten conditional. A
   port wiring that reads some *other* dotenv is a problem, not an `ok`: it is
   wiring this check did not recognize as reading the right file, and autofix leaves
-  it byte-identical so the manual instructions can name the edit. Otherwise autofix
-  strips any static literal export, strips any prior sentinel block, then appends a
+  it byte-identical so the manual instructions can name the edit. Otherwise autofix replaces a recognized literal export or prior managed block with a
   sentinel-wrapped managed block (`_xcode_block(env_file)`, `wiring.py`): honor a
   value already set by `run-ios`, else read the configured destination, else fall
-  back to 8083. A reference through an unrecognized shell variable resolves to no
+  back to the previous literal (8083 when absent). Other handwritten assignments are preserved. A reference through an unrecognized shell variable resolves to no
   path, so it reads as unparsed rather than as wired.
-- **`watchman-root`** (`watchman_watch_root` in `runtime_checks.py`) — when Watchman is installed,
-  runs `watchman --no-spawn --no-local watch-list` with a three-second timeout. JSON must contain
-  a list of absolute root paths without an error. Resolved roots that are strict ancestors of
-  the resolved checkout are problems; the checkout itself and unrelated roots pass. Missing
-  Watchman makes the check not applicable, while query errors and unfamiliar responses remain
-  problems. It never starts a daemon or changes watches. Ancestor findings recommend reviewing
-  shared use before `watchman watch-del PATH` and restarting Metro.
-- **`vite-config-process-env`** (returned by `ViteProfile.wiring_checks` in
-  `profiles_web.py`) —
-  rewrites the `loadEnv` idiom `env.X` to `process.env.X` in `vite.config.{ts,js,mjs}`
-  so values loaded into the shell by mise/direnv/devbox reach Vite. The matcher
-  skips already-fixed `process.env.X`. The rewrite is skipped entirely when Vite
-  already loads the configured destination itself. That needs all three of: a
-  destination named `.env`, `.env.local`, `.env.development` or
-  `.env.development.local` directly in the Vite root (the dev server runs in
-  `development` mode, so `.env.production` and friends are never loaded); a
-  `loadEnv` call whose directory argument resolves to that root
-  (`_vite_dir_is_app_root` accepts `process.cwd()`, `__dirname`,
-  `import.meta.dirname`, `"."`, and `path.resolve`/`path.join`/`path.dirname`
-  wrappers around them, and rejects any other directory); and the empty prefix
-  `""`, the one spelling that exposes names without Vite's `VITE_` prefix.
-  Arguments are split by `_js_call_arguments`, which balances nested parentheses,
-  so `loadEnv(mode, process.cwd(), "")` is recognized. A bare identifier is resolved
-  once through its `const`/`let`/`var` binding in the same file; a directory reached
-  any other way is not recognized as the root, so the rewrite proceeds. Any condition failing means
-  the rewrite proceeds, because `loadEnv` from another directory or with the
-  default prefix would leave `env.WEB_DEV_PORT` undefined.
-- **`vite-port-wired`** (`profiles_web.py`) — report-only assertion that Vite names the
-  allocated port variable. It accepts bracket access and destructuring, but never invents a
-  `server.port` block in arbitrary config.
+- **`watchman-root`** (`watchman_watch_root` in `runtime_checks.py`) — for configured RN/Expo
+  apps, runs once at the checkout root using exactly `watchman --no-spawn --no-local watch-list`
+  with a three-second timeout. The selected external executable is pinned and checkout-controlled
+  paths/links are refused, including tools outside a nested recipe but inside an enclosing
+  checkout. The same boundary guard in `safe_files.py` protects direnv authorization probes and diagnostic
+  Git selection. `safe_files.diagnostic_git_executable` pins a validated external executable.
+  Hook discovery resolves relative PATH entries against the inspected checkout. Doctor alone
+  passes `diagnostic=True` through early `select_project` to guard its initial Git probe, which
+  retains invocation-relative PATH lookup for outside `--cwd` selection. The guard recognizes both
+  `.git` directories and worktree marker files without executing Git. JSON must contain absolute
+  roots without an error. Strict ancestor roots
+  are advisory sharing risks; a valid empty/local list establishes only that root property.
+  Missing optional Watchman skips with roots uninspected. There is no guessed stopped-daemon
+  signature: nonzero exits, permission/protocol errors, timeouts and invalid responses remain
+  incomplete. The adapter never starts a daemon or changes watches.
+- **`vite-port-wired`** (`profiles_web.py`) inspects the
+  top-level `server.port` flow in a literal export or simple `defineConfig` return. Supported
+  reads include process-env dot/bracket syntax, simple constant aliases/destructuring, numeric
+  `Number`/decimal `parseInt` conversion, and `||`/`??` fallbacks following the managed read.
+  The shared Vite/Astro/Metro recognizer retains the leading read's identity and source spans
+  through aliases and nested conversions. Its fallback summary assumes the managed key's valid
+  allocated numeric value and keeps only reads reachable before a guaranteed literal fallback.
+  Vite checks those sources in order, so an excluded key can use a reachable same-key inherited
+  fallback without borrowing an unreachable read. Bitwise operators, comma expressions,
+  nondecimal conversion, unrelated/constant-leading fallbacks, and unparenthesized mixtures of
+  `||` and `??` remain incomplete. A key mentioned in logging or another config
+  slot proves nothing. Spread, nested/conditional return, mutation, arithmetic, and unknown
+  expressions report incomplete coverage.
+  A recognized Vite `loadEnv` import admits inherited values as well as dotenv values according
+  to its third argument: omitted/undefined means `VITE_`, a literal string admits that prefix,
+  `""` admits all, and literal string arrays admit any matching prefix (`[]` admits none).
+  `envPrefix` does not change this filter. The directory determines dotenv loading, not the
+  inherited-value filter; a positive result does not claim parent-shell activation or file loading.
+  Dynamic prefixes are manual. For a recognized excluded managed read, the only repair is
+  `(process.env.KEY ?? env.KEY)` at that read, preserving the original fallback and all unrelated
+  API/ dotenv accesses. Missing `server.port` remains manual-only.
 - **`astro-config-port`** (`profiles_web.py`) — wires top-level `server.port` to
   `WEB_DEV_PORT`, while refusing ambiguous nested `server` shapes.
 - **`angular-pkg-port`** (`profiles_web.py`) — rewrites `ng serve` npm scripts so
-  `--port $WEB_DEV_PORT` reaches Angular's CLI.
+  the declared key reaches Angular's CLI. Numeric flags retain their number as a shell fallback.
+  Only actual argument tokens are edited, preserving quoted unrelated arguments. Duplicate port
+  flags and unsupported values are left for manual repair. JSON edits locate root scripts/tasks
+  and launch profiles beneath their actual parent, then verify the intended semantic change.
 - **`deno-port-wired`** (`profiles_web.py`) — validates task flag order or a source-level
-  `PORT` read; only task commands are mechanically rewritten.
-- **`compose-hardcoded-ports`** (`profiles_compose.py`) — project-level, report-only
-  detection for pinned host ports and literal container names across block and flow YAML shapes.
+  port expression reading the actual key; only task commands are mechanically rewritten. Source
+  calls are located outside quoted literals and require the same narrow effective-value grammar
+  as other managed-port consumers. Unreachable reads and quoted examples remain incomplete.
+- **`compose-hardcoded-ports`** (`profiles_compose.py`) — project-level static report-only
+  detection for fixed host ports, literal container names and fixed absolute bind sources in
+  supported block/flow and short/long forms. The narrow Compose mapping/sequence readers use
+  `yamltext._yaml_key_regions` to keep service and owned value slots distinct. Findings name the
+  file, service, slot and source, and remain advisory unless a separate managed-consumer check
+  establishes a real contract violation. Relative/named/interpolated sources are distinguished;
+  interpolated values and runtime configuration are unverified. Aliases, inheritance, includes,
+  malformed/unknown slots and refused/unreadable files remain incomplete, retaining independent
+  service findings. File selection uses `lstat` so dangling links and special files cannot appear
+  absent. Inline mapping values cannot discard deeper continuation content. Quoted scalars are
+  limited to complete, simply quoted literals; double-quoted escapes and embedded/trailing
+  quote forms remain incomplete rather than hiding a fixed source behind unsupported encoding.
+  Inspection uses the regular-file-only read seam. No YAML dependency, Docker/Colima
+  query or rewrite is involved. Guidance reads actual recipe declarations and expressly leaves
+  stored allocations, service-to-resource associations and invoking-shell loading unverified.
 - **`springboot-application-properties`** (defined inline in the Spring Boot
   Profile in `profiles_server.py`) — checks that
   `application.properties`/`application.yml` uses the `server.port=${PORT:8080}`
-  placeholder. **Report-only**: `autofix=None`, so `doctor`
+  placeholder as the complete value, optionally quoted in YAML. **Report-only**: `autofix=None`, so `doctor`
   reports the `✗` and prints manual instructions but never rewrites the file, even
   under `--fix`.
 - **Laravel's `vite-port-wired`** (`LaravelProfile.wiring_checks` in
@@ -310,10 +361,9 @@ on purpose so a hand-written conditional/shell-substitution wiring is not mangle
 `wiring.py` owns the `WiringCheck` contract and shared concrete file checks. The categorized
 profile modules depend on those definitions, but wiring never imports profiles, scanner,
 commands, or the package root.
-`doctor.py` is the higher orchestration layer: it reads the profile catalog, resolves launch
-context through `launching.py`, combines app and project checks, and renders results. A recipe with
-`[bootstrap]` adds the project hook check before framework resolution, so repair remains available
-for minimal, generic, and ambiguous projects. This makes
+`doctor.py` is the higher orchestration layer: it reads the profile catalog and configured app
+scopes, combines app and project checks, and returns structured results. A recipe with `[bootstrap]`
+adds the project hook check even when no apps are declared. This makes
 the direction `doctor → profile modules → wiring → hooks`; no function-local import is needed to hide a
 backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph in CI.
 
@@ -321,7 +371,7 @@ backward edge. Pylint's `cyclic-import` check enforces the acyclic package graph
 
 - `wiring.py` — `WiringCheck`, the RN check registry, `rn_wiring_checks`,
   `wiring_destination`, concrete detect/autofix helpers, and `_HOOK_WIRING_CHECK`.
-- `doctor.py` — `cmd_doctor`, framework/project target resolution, deduplication, and rendering.
+- `doctor.py` — `run_doctor`, configured app/project targets, failure isolation, and repair accounting.
 - `hooks.py` — shared hook readiness, exact manager parsing, repair, and manual instructions.
 - `profiles_mobile.py` — Profiles reuse the registries via `rn_wiring_checks(env_file)` /
   `[_HOOK_WIRING_CHECK]`.

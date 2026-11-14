@@ -1,6 +1,6 @@
 # Bound device-run diagnostics to facts Splashdown can establish
 
-**Status:** accepted
+**Status:** accepted; decision 5 superseded by [0011](0011-report-checkout-sharing-as-advisory.md)
 
 ## Context
 

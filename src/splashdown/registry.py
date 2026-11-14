@@ -61,6 +61,24 @@ _TSV_FORBIDDEN = (
 )
 
 
+@contextmanager
+def checkout_operation_lock(abspath: str, *, directory: Path | None = None) -> Iterator[None]:
+    directory = state_directory() if directory is None else directory
+    directory.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(abspath.encode()).digest()
+    shard = int.from_bytes(digest[:4]) % _OPERATION_LOCK_SHARDS
+    lock_path = directory / f"checkout-operation-{shard:03d}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def _tsv_field(value: str, *, what: str) -> str:
     if any(ch in value for ch in _TSV_FORBIDDEN):
         raise ValueError(f"registry {what} may not contain tab or line-break characters: {value!r}")
@@ -367,10 +385,7 @@ class Registry:
 
     @contextmanager
     def operation_lock(self, abspath: str) -> Iterator[None]:
-        digest = hashlib.sha256(abspath.encode()).digest()
-        shard = int.from_bytes(digest[:4]) % _OPERATION_LOCK_SHARDS
-        lock_target = self.kv_file.parent / f"checkout-operation-{shard:03d}"
-        with self._lock(lock_target):
+        with checkout_operation_lock(abspath, directory=self.kv_file.parent):
             yield
 
     def _read_ports(self) -> list[tuple[int, str, str]]:

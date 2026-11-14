@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn, cast
 
-from .catalog import PROFILES
 from .cli_output import render_application_error, render_claim_notices, render_untyped_error
 from .commands import (
     InitOptions,
@@ -358,12 +357,6 @@ def _build_parser(state: ParseState | None = None) -> _Parser:  # noqa: PLR0915 
         action="store_true",
         help="apply safe autofixes; print manual instructions for the rest",
     )
-    p.add_argument(
-        "--framework",
-        default=None,
-        choices=tuple(PROFILES),
-        help="override framework detection with a known profile",
-    )
 
     for verb in ("run", "start", "stop", "destroy"):
         p = sub.add_parser(verb, help=argparse.SUPPRESS)
@@ -601,7 +594,7 @@ def _validate_parsed_args(parser: _Parser, args: argparse.Namespace) -> None:
         parser.error("target remove device cannot be combined with --keep-instance")
 
     supports_format = (
-        args.cmd in {"sync", "status", "init", "ai"}
+        args.cmd in {"sync", "status", "init", "ai", "doctor"}
         or (args.cmd == "completion" and args.format == "text")
         or (args.cmd == "env" and args.env_cmd in {None, "get"})
         or (args.cmd == "target" and args.target_cmd in {None, "add", "claim", "claims"})
@@ -609,7 +602,7 @@ def _validate_parsed_args(parser: _Parser, args: argparse.Namespace) -> None:
     if args.format is not None and not supports_format:
         error = _ParserUsageError(
             "--format is only supported by sync, status, init, env/env get, target lists, "
-            "target add, target claims, and ai",
+            "target add, target claims, doctor, and ai",
             parser.state.parser or parser,
         )
         error.code = "unsupported_format"
@@ -699,7 +692,7 @@ def _select_command_directory(args: argparse.Namespace, state: ParseState) -> Pa
     args.selection = (
         ProjectSelection(start, start, None, None)
         if exact and args.cmd != "init"
-        else select_project(start, exact=exact)
+        else select_project(start, exact=exact, diagnostic=args.cmd == "doctor")
     )
     return cast(ProjectSelection, args.selection).directory
 
@@ -851,6 +844,9 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
     if args.cmd == "status":
         return _dispatch_status(args, state, cwd)
 
+    if args.cmd == "doctor":
+        return cmd_doctor(cwd, fix=args.fix, output_format=state.format)
+
     if args.cmd == "target" and args.target_cmd == "add":
         return _dispatch_target_add(args, cwd, state)
 
@@ -897,9 +893,6 @@ def _dispatch(argv: list[str] | None = None) -> int:  # noqa: PLR0911, PLR0912 â
 
         if args.cmd == "gc":
             return cmd_gc(registry)
-
-        if args.cmd == "doctor":
-            return cmd_doctor(cwd, fix=args.fix, framework_override=args.framework)
 
         if args.cmd == "run":
             return cmd_run(cwd, registry, args.dtype, args.variant)

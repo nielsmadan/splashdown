@@ -349,7 +349,6 @@ def test_cli_init_rejects_removed_option(option, existing_recipe, tmp_path, monk
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--format", "json", "doctor"],
         ["--show-values", "run"],
         ["--show-values", "env", "get", "KEY"],
         ["--format", "json", "target", "refresh"],

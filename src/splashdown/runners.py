@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .capabilities import require_macos, translate_tool_errors
+from .capabilities import LaunchPrerequisites, require_macos, translate_tool_errors
 from .constants import split_lines
 from .device_tools import (
     DISCOVERY_TIMEOUT,
@@ -33,6 +33,37 @@ from .errors import DeviceError
 from .recipe import Recipe
 
 _MAX_PORT = 65535
+_FLUTTER_TOOL = "flutter"
+_NODE_LAUNCHER = "npx"
+
+
+def runner_prerequisites(profile: str) -> LaunchPrerequisites | None:
+    if profile == "flutter":
+        return LaunchPrerequisites(
+            (_FLUTTER_TOOL,),
+            ("ios", "android"),
+            "Run `flutter doctor` manually for deeper validation.",
+        )
+    if profile in {"react-native", "expo"}:
+        command = "npx react-native doctor" if profile == "react-native" else "npx expo-doctor"
+        return LaunchPrerequisites(
+            ("node", _NODE_LAUNCHER),
+            ("ios", "android"),
+            f"Run `{command}` manually for deeper validation.",
+        )
+    if profile == "ios-native":
+        return LaunchPrerequisites(
+            (), ("ios",), "Review the selected Xcode installation and app signing in Xcode."
+        )
+    if profile == "android-native":
+        return LaunchPrerequisites(
+            (), ("android",), "Review the JDK and Android SDK in Android Studio."
+        )
+    return None
+
+
+def android_gradle_command(cwd: Path) -> str:
+    return "./gradlew" if (cwd / "gradlew").exists() else "gradle"
 
 
 def _no_flag(label: str, value: str) -> str:
@@ -69,7 +100,7 @@ def _flutter_run(
     destination = as_launch_destination(destination)
     device_id = _destination_id(destination)
     with translate_tool_errors("flutter", "flutter", "install Flutter and add it to PATH"):
-        return subprocess.call(["flutter", "run", "-d", device_id], cwd=cwd, env=env)
+        return subprocess.call([_FLUTTER_TOOL, "run", "-d", device_id], cwd=cwd, env=env)
 
 
 def _rn_ios_flags(recipe: Recipe) -> list[str]:
@@ -183,7 +214,14 @@ def _rn_run(
     if isinstance(destination, IOSDestination):
         # RN CLI resolves --udid against simulators only; a physical device needs --device.
         target_flag = "--udid" if destination.owned else "--device"
-        cmd = ["npx", "react-native", "run-ios", target_flag, device_id, *_rn_ios_flags(recipe)]
+        cmd = [
+            _NODE_LAUNCHER,
+            "react-native",
+            "run-ios",
+            target_flag,
+            device_id,
+            *_rn_ios_flags(recipe),
+        ]
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
             rc = subprocess.call(cmd, cwd=cwd, env=env)
         if rc != 0 and (hint := _rn_ios_arch_hint(cwd)):
@@ -192,7 +230,7 @@ def _rn_run(
             _warn_if_metro_unavailable(env)
         return rc
     cmd = [
-        "npx",
+        _NODE_LAUNCHER,
         "react-native",
         "run-android",
         "--deviceId",
@@ -220,11 +258,15 @@ def _expo_run(
     if isinstance(destination, IOSDestination):
         with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
             return subprocess.call(
-                ["npx", "expo", "run:ios", "--device", device_id, *port_args], cwd=cwd, env=env
+                [_NODE_LAUNCHER, "expo", "run:ios", "--device", device_id, *port_args],
+                cwd=cwd,
+                env=env,
             )
     with translate_tool_errors("node", "npx", "install Node.js and add npx to PATH"):
         return subprocess.call(
-            ["npx", "expo", "run:android", "--device", device_id, *port_args], cwd=cwd, env=env
+            [_NODE_LAUNCHER, "expo", "run:android", "--device", device_id, *port_args],
+            cwd=cwd,
+            env=env,
         )
 
 
@@ -616,8 +658,7 @@ def _android_native_run(
     if not isinstance(destination, AndroidDestination):
         raise DeviceError("android-native requires an Android destination")
     serial = _destination_id(destination)
-    gradlew = cwd / "gradlew"
-    gradle_cmd = [f"./{gradlew.name}"] if gradlew.exists() else ["gradle"]
+    gradle_cmd = [android_gradle_command(cwd)]
     gradle_tool = gradle_cmd[0]
 
     install_task = f":{module}:install{variant[:1].upper()}{variant[1:]}"

@@ -104,9 +104,7 @@ def test_detect_framework_flutter_wins_over_react_native(tmp_path):
     assert sd.detect_framework(tmp_path, r) == "flutter"
 
 
-def test_cmd_doctor_runs_vite_wiring_check_in_legacy_recipe(tmp_path):
-    """`[project] framework = "vite"` + a vite.config that uses loadEnv → doctor
-    must surface the vite-config-process-env check (not "no wiring defined")."""
+def test_cmd_doctor_skips_port_checks_without_managed_resources(tmp_path, capsys):
     (tmp_path / "splashdown.toml").write_text('[project]\nframework = "vite"\n')
     (tmp_path / "vite.config.ts").write_text("""\
 import { defineConfig, loadEnv } from "vite";
@@ -116,7 +114,8 @@ export default defineConfig(({ mode }) => {
 });
 """)
     rc = sd.cmd_doctor(tmp_path)
-    assert rc != 0
+    assert rc == 0
+    assert "managed-port-scope: skipped: No managed port declared" in capsys.readouterr().out
 
 
 def test_vite_autofix_refuses_symlinked_config(tmp_path):
@@ -134,7 +133,7 @@ export default defineConfig(({ mode }) => {
     check = next(
         c
         for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-        if c.id == "vite-config-process-env"
+        if c.id == "vite-port-wired"
     )
 
     with pytest.raises(ValueError, match="symlink"):
@@ -948,7 +947,7 @@ def test_laravel_claims_both_dev_server_ports(tmp_path):
         "WEB_DEV_PORT": {"type": "port", "range": [5174, 5200]},
     }
     assert [c.id for c in sd.PROFILES["laravel"].wiring_checks(app, "splashdown.env")] == [
-        "vite-port-wired"
+        "vite-port-wired",
     ]
 
 
@@ -1065,16 +1064,16 @@ def test_angular_wiring_replaces_literal_port(tmp_path):
     check = _angular_app(tmp_path, "ng serve --port 4300 --open")
     check.autofix(tmp_path)
     scripts = json.loads((tmp_path / "package.json").read_text())["scripts"]
-    assert scripts["start"] == "ng serve --port $WEB_DEV_PORT --open"
-    assert "4300" not in scripts["start"]
+    assert scripts["start"] == "ng serve --port ${WEB_DEV_PORT:-4300} --open"
+    assert check.detect(tmp_path)[0] == "ok"
 
 
-def test_angular_autofix_replaces_a_variable_port_instead_of_duplicating(tmp_path):
+def test_angular_autofix_preserves_an_unknown_variable_port(tmp_path):
     check = _angular_app(tmp_path, "ng serve --port $OTHER_PORT")
     check.autofix(tmp_path)
     script = json.loads((tmp_path / "package.json").read_text())["scripts"]["start"]
-    assert script == "ng serve --port $WEB_DEV_PORT"
-    assert script.count("--port") == 1
+    assert script == "ng serve --port $OTHER_PORT"
+    assert check.detect(tmp_path)[0] == "problem"
 
 
 def test_angular_autofix_keeps_the_flag_on_ng_serve_in_a_compound_script(tmp_path):
@@ -1194,7 +1193,7 @@ def test_deno_autofix_leaves_deno_run_tasks_alone(tmp_path):
     check = _deno_app(tmp_path, original)
     check.autofix(tmp_path)
     assert (tmp_path / "deno.json").read_text() == original
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "incomplete"
 
 
 def test_deno_detect_accepts_code_that_reads_port(tmp_path):
@@ -1250,8 +1249,8 @@ def test_deno_detect_ignores_commented_out_wiring_in_jsonc(tmp_path):
 def test_deno_detect_reports_a_config_it_cannot_parse(tmp_path):
     check = _deno_app(tmp_path, "{ this is not json at all ")
     status, detail = check.detect(tmp_path)
-    assert status == "problem"
-    assert "can't read" in detail
+    assert status == "incomplete"
+    assert "cannot be parsed as JSON" in detail
 
 
 def test_angular_detect_reports_when_no_ng_serve_script_exists(tmp_path):
@@ -1596,7 +1595,7 @@ def test_deno_detect_ignores_commented_out_source_wiring(tmp_path):
     (tmp_path / "main.ts").write_text(
         '// Deno.env.get("PORT")\nDeno.serve(() => new Response(""));'
     )
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "incomplete"
 
 
 def test_deno_autofix_leaves_chained_commands_alone(tmp_path):

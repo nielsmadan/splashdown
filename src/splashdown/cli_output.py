@@ -295,3 +295,39 @@ def render_ai_result(result: CommandResult) -> None:
     activation = result.data.get("activation")
     if activation:
         print(activation)
+
+
+def render_doctor_result(result: CommandResult) -> None:
+    if result.data is None:
+        return
+    outcomes = result.data.get("outcomes")
+    if isinstance(outcomes, list):
+        for row in outcomes:
+            if not isinstance(row, dict):
+                continue
+            label = row["app"] or row["scope"]
+            print(
+                terminal_text(
+                    f"{label} ({row['path']}) {row['check_id']}: {row['state']}: {row['message']}",
+                    multiline=True,
+                )
+            )
+            for field in ("changed_files", "next_steps"):
+                values = row.get(field)
+                if isinstance(values, list):
+                    for value in values:
+                        prefix = "changed: " if field == "changed_files" else ""
+                        print(terminal_text(f"  {prefix}{value}", multiline=True))
+            if row.get("repair") != "none":
+                print(f"  repair: {row['repair']}")
+    summary = result.data.get("summary")
+    if isinstance(summary, dict):
+        print(
+            "Doctor: "
+            + ", ".join(
+                f"{summary[state]} {state}"
+                for state in ("ok", "warning", "problem", "incomplete", "skipped")
+            )
+        )
+        if summary.get("applicable") == 0:
+            print("No applicable checks were completed; this is not a project health assessment.")

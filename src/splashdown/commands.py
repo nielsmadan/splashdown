@@ -49,6 +49,7 @@ from .hooks import (
 )
 from .inventory import ProjectInventory
 from .loaders import LOADERS, NOTHING, Loader, WirePlan, apply_wire_plan
+from .profile_core import configured_app_inventory
 from .provisioning import (
     DEFAULT_WRITER,
     WriterResult,
@@ -69,7 +70,7 @@ from .recipe import (
 )
 from .registry import Registry, RegistrySnapshot
 from .results import CommandResult, Diagnostic
-from .safe_files import atomic_write_text
+from .safe_files import atomic_write_text, read_optional_editable_bytes
 from .scanner import (
     LoaderSelection,
     Scanner,
@@ -90,7 +91,7 @@ from .target_commands import cmd_target_prune as cmd_target_prune  # noqa: PLC04
 from .target_commands import cmd_target_refresh as cmd_target_refresh  # noqa: PLC0414
 from .target_commands import cmd_targets_list as cmd_targets_list  # noqa: PLC0414
 from .targets import _load_recipe_or_empty
-from .wiring import WiringCheck, run_wiring_detect, wiring_destination
+from .wiring import WiringCheck, wiring_destination
 
 
 def _create_local_skeleton(cwd: Path) -> bool:
@@ -531,7 +532,12 @@ def cmd_init(
             _print_electron_isolation_pointer(inv)
 
             if any(app.profile != "unknown" for app in inv.apps):
-                _apply_init_wiring_checks(inv, cwd, env_file, report)
+                _apply_init_wiring_checks(
+                    ProjectInventory(inv.workspace, configured_app_inventory(recipe), inv.loader),
+                    cwd,
+                    env_file,
+                    report,
+                )
             _sync_init_guidance(cwd, Recipe.load(recipe_path), report)
         _print_init_next_steps(cwd, worktree_root, env_file)
         return report
@@ -546,37 +552,88 @@ def _apply_init_wiring_checks(
     for app in inv.apps:
         if app.profile == "unknown":
             continue
-        destination = wiring_destination(app.path, cwd, env_file)
-        for check in PROFILES[app.profile].wiring_checks(app, destination):
-            if check.activation or not check.applies(app.path):
+        try:
+            destination = wiring_destination(app.path, cwd, env_file)
+            checks = PROFILES[app.profile].wiring_checks(app, destination)
+        except Exception as error:  # noqa: BLE001
+            print(f"  ✗ {app.name}: check construction failed: {error}", file=sys.stderr)
+            continue
+        for check in checks:
+            if check.activation:
                 continue
-            _apply_init_wiring_check(check, app.path, cwd, report)
+            try:
+                applies = check.applies(app.path)
+            except Exception as error:  # noqa: BLE001
+                print(f"  ✗ {check.id}: applicability failed: {error}", file=sys.stderr)
+                continue
+            if applies:
+                _apply_init_wiring_check(check, app.path, cwd, report)
 
 
 def _apply_init_wiring_check(
     check: WiringCheck, app_dir: Path, cwd: Path, report: InitReport
 ) -> None:
-    """Detect, fix what is safely mechanical, then detect again. A fix that did not
-    resolve the problem is reported with the edit the user has to make by hand."""
-    status, detail = run_wiring_detect(check, app_dir)
-    if status in {"ok", "warning"}:
+    try:
+        status, detail = check.detect(app_dir)
+    except Exception as error:  # noqa: BLE001
+        _report_wiring_problem(check, app_dir, f"inspection incomplete: {error}")
         return
-    if check.autofix is None:
+    if status in {"ok", "warning", "skipped"}:
+        return
+    if status != "problem" or check.autofix is None:
         _report_wiring_problem(check, app_dir, detail)
         return
-    before = {path: _file_bytes(path) for path in check.files(app_dir)}
+    try:
+        paths = check.files(app_dir)
+        if not paths:
+            raise ValueError("repair has no known candidate files")
+        before = {path: read_optional_editable_bytes(path, root=cwd) for path in paths}
+    except Exception as error:  # noqa: BLE001
+        _report_wiring_problem(check, app_dir, f"repair preparation failed: {error}")
+        return
     try:
         check.autofix(app_dir)
+        status, detail = check.detect(app_dir)
+        if status not in {"ok", "warning"}:
+            _report_wiring_problem(check, app_dir, detail)
     except Exception as error:  # noqa: BLE001
-        print(f"  ✗ {check.id}: autofix failed: {error}", file=sys.stderr)
-        _print_wiring_instructions(check, app_dir)
-        return
-    for path, original in before.items():
-        if _file_bytes(path) != original:
-            report.changed.append(os.path.relpath(path, cwd))
-    status, detail = run_wiring_detect(check, app_dir)
-    if status not in {"ok", "warning"}:
-        _report_wiring_problem(check, app_dir, detail)
+        _report_wiring_problem(check, app_dir, f"repair or recheck incomplete: {error}")
+    finally:
+        _record_init_wiring_changes(check, app_dir, cwd, before, report)
+
+
+def _record_init_wiring_changes(
+    check: WiringCheck,
+    app_dir: Path,
+    cwd: Path,
+    before: dict[Path, bytes | None],
+    report: InitReport,
+) -> None:
+    paths_after = set(before)
+    interrupted = False
+    try:
+        paths_after.update(check.files(app_dir))
+    except KeyboardInterrupt:
+        interrupted = True
+        print(f"  ✗ {check.id}: change accounting enumeration interrupted", file=sys.stderr)
+    except Exception as error:  # noqa: BLE001
+        print(f"  ✗ {check.id}: change accounting incomplete: {error}", file=sys.stderr)
+    for path in sorted(paths_after):
+        try:
+            after = read_optional_editable_bytes(path, root=cwd)
+            if path not in before:
+                raise ValueError(f"no before snapshot for {path}")
+            if after != before[path]:
+                name = os.path.relpath(path, cwd)
+                if name not in report.changed:
+                    report.changed.append(name)
+        except KeyboardInterrupt:
+            interrupted = True
+            print(f"  ✗ {check.id}: change accounting interrupted for {path}", file=sys.stderr)
+        except Exception as error:  # noqa: BLE001
+            print(f"  ✗ {check.id}: change accounting incomplete: {error}", file=sys.stderr)
+    if interrupted:
+        raise KeyboardInterrupt
 
 
 def _file_bytes(path: Path) -> bytes | None:
@@ -594,7 +651,12 @@ def _report_wiring_problem(check: WiringCheck, app_dir: Path, detail: str) -> No
 def _print_wiring_instructions(check: WiringCheck, app_dir: Path) -> None:
     if check.manual_instructions is None:
         return
-    for line in check.manual_instructions(app_dir).splitlines():
+    try:
+        instructions = check.manual_instructions(app_dir)
+    except Exception as error:  # noqa: BLE001
+        print(f"      guidance incomplete: {error}", file=sys.stderr)
+        return
+    for line in instructions.splitlines():
         print(f"      {line}", file=sys.stderr)
 
 

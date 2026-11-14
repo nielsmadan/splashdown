@@ -217,6 +217,36 @@ def test_loader_syntax_error_vs_parseable_conflict(tmp_path, contents, state, ex
     assert _checks(_row(result))["loader"]["state"] == state
 
 
+@pytest.mark.parametrize("show_all", [False, True])
+def test_malformed_direnv_markers_retain_status_json_observations(tmp_path, capsys, show_all):
+    bad, good = tmp_path / "a", tmp_path / "b"
+    bad.mkdir()
+    good.mkdir()
+    _recipe(bad, '[project]\nloader="direnv"\n[resources.TOKEN]\ntype="set"\n')
+    _recipe(good)
+    (bad / ".envrc").write_text("# >>> splashdown-managed dotenv >>>\n")
+    snapshot = RegistrySnapshot(values=((str(bad), "TOKEN", "value"), (str(good), "KEY", "value")))
+
+    assert sd.cmd_status(bad, snapshot, "json", show_all=show_all) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    checkouts = payload["data"]["checkouts"]
+    assert [row["checkout"] for row in checkouts] == (
+        [str(bad), str(good)] if show_all else [str(bad)]
+    )
+    assert _checks(checkouts[0])["loader"]["state"] == "finding"
+    assert checkouts[0]["resources"] == [{"key": "TOKEN", "state": "assigned", "port_state": ""}]
+
+
+def test_dangling_preferred_mise_config_is_status_error(tmp_path):
+    _recipe(tmp_path, '[project]\nloader="mise"\n')
+    (tmp_path / "mise.toml").symlink_to("absent.toml")
+    (tmp_path / ".mise.toml").write_text('[env]\n_.file="splashdown.env"\n')
+    result = status.build_status_report(tmp_path, RegistrySnapshot())
+    assert result.exit_code == 1
+    assert _checks(_row(result))["loader"]["state"] == "error"
+
+
 def test_listener_inventory_reused_for_fleet(tmp_path, monkeypatch):
     snapshot = RegistrySnapshot()
     rows = []

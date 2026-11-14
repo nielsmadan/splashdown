@@ -99,4 +99,6 @@ can be upgraded locally. Every manager's configuration is tracked project conten
 previous guarded Lefthook command with the short form. Readiness uses one exact parser
 shared by trust activation and doctor, including executable checks for native and Husky hooks and
 exact argument forwarding for all managers, and reports configuration and local activation
-separately.
+separately. Doctor treats known inactive integration as a problem and never installs a native
+hook or activates a manager. Its configuration repair and recheck reuse bounded, validated Git
+inputs under the checkout operation lock.

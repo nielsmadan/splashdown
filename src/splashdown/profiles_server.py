@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
 from .inventory import AppInventory
-from .profile_core import Profile, _manual_port_guidance, _profile_port
+from .jsontext import _member_span, _object_span, _remove_json_member
+from .profile_core import (
+    Profile,
+    _manual_port_guidance,
+    _profile_port,
+    managed_ports,
+    resource_scope_check,
+)
 from .safe_files import atomic_write_text, read_editable_bytes
 from .wiring import WiringCheck
 from .yamltext import _strip_hash_comments, _yaml_key_regions
@@ -97,24 +103,31 @@ class SpringBootProfile(Profile):
         return {"PORT": {"type": "port", "range": [8081, 8180]}}
 
     def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
-        return [_springboot_application_properties_check()]
+        ports = managed_ports(app, "PORT", env_file)
+        return (
+            [_springboot_application_properties_check(ports[0].name)]
+            if len(ports) == 1
+            else [resource_scope_check(ports)]
+        )
 
 
-def _springboot_application_properties_check() -> WiringCheck:
+def _springboot_application_properties_check(port_var: str = "PORT") -> WiringCheck:
     return WiringCheck(
         id="springboot-application-properties",
-        description="application.properties reads server.port from PORT env",
+        description=f"application.properties reads server.port from {port_var} env",
         # Derived from the same enumeration detect uses. Two hardcoded filenames here
         # skipped the check entirely on an `application.yaml`- or profile-only project.
         applies=lambda cwd: bool(_springboot_config_files(cwd)),
-        detect=_springboot_app_props_detect,
+        detect=lambda cwd: _springboot_app_props_detect(cwd, port_var),
         autofix=None,  # manual-only — patching Java configs is too risky to auto-rewrite
-        manual_instructions=_springboot_app_props_manual,
+        manual_instructions=lambda cwd: _springboot_app_props_manual(cwd).replace("PORT", port_var),
     )
 
 
 _SPRING_FLAT_PORT_RE = re.compile(r"^[ \t]*server\.port[ \t]*[:=][ \t]*(.+)$", re.MULTILINE)
-_SPRING_NESTED_PORT_RE = re.compile(r"(?:^|[{,\n])[ \t]*port[ \t]*:[ \t]*([^,}\n]+)")
+_SPRING_NESTED_PORT_RE = re.compile(
+    r"(?:^|[{,\n])[ \t]*port[ \t]*:[ \t]*((?:\$\{[^}\n]*\}|[^,}\n])+)"
+)
 
 
 def _springboot_config_files(cwd: Path) -> list[Path]:
@@ -144,16 +157,23 @@ def _springboot_declared_port(path: Path) -> str | None:
     return values[-1] if values else None
 
 
-def _springboot_app_props_detect(cwd: Path) -> tuple[str, str]:
+def _springboot_app_props_detect(cwd: Path, port_var: str = "PORT") -> tuple[str, str]:
     declared = {
         p.name: v for p in _springboot_config_files(cwd) if (v := _springboot_declared_port(p))
     }
     if not declared:
-        return ("problem", "server.port should read ${PORT:8080} from env")
-    pinned = sorted(name for name, value in declared.items() if "${PORT" not in value)
+        return ("problem", f"server.port should read ${{{port_var}:8080}} from env")
+    pinned = sorted(
+        name
+        for name, value in declared.items()
+        if re.fullmatch(
+            r"(?P<quote>[\"']?)\$\{" + re.escape(port_var) + r"(?::\d+)?\}(?P=quote)", value
+        )
+        is None
+    )
     if pinned:
         return ("problem", f"server.port is pinned to a literal in: {', '.join(pinned)}")
-    return ("ok", "server.port uses PORT env placeholder")
+    return ("ok", f"server.port uses {port_var} env placeholder")
 
 
 def _springboot_app_props_manual(cwd: Path) -> str:
@@ -191,6 +211,26 @@ class AspNetCoreProfile(Profile):
         return {"ASPNETCORE_HTTP_PORTS": {"type": "port", "range": [5201, 5300]}}
 
     def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
+        ports = managed_ports(app, "ASPNETCORE_HTTP_PORTS", env_file)
+        if not ports:
+            return [resource_scope_check(ports)]
+        if not any(port.name == "ASPNETCORE_HTTP_PORTS" for port in ports):
+            return [
+                WiringCheck(
+                    "aspnet-launch-settings",
+                    "ASP.NET Core managed port mapping",
+                    lambda _: True,
+                    lambda _: (
+                        "incomplete",
+                        "ASP.NET Core does not natively read the declared port names: "
+                        + ", ".join(port.name for port in ports),
+                    ),
+                    None,
+                    lambda _: (
+                        "Map the intended port to ASPNETCORE_HTTP_PORTS (.NET 8+) or ASPNETCORE_URLS before launching."
+                    ),
+                )
+            ]
         if _aspnet_supports_http_ports(app.path):
             return [_aspnet_launch_settings_check()]
         return [_aspnet_legacy_tfm_check()]
@@ -317,19 +357,25 @@ def _aspnet_launch_settings_detect(cwd: Path) -> tuple[str, str]:
 def _aspnet_launch_settings_autofix(cwd: Path) -> None:
     path = _launch_settings_path(cwd)
     data, encoding, newline = _read_launch_settings(path, root=cwd)
-    changed = False
-    for spec in _aspnet_project_profiles(data).values():
-        changed = spec.pop("applicationUrl", None) is not None or changed
-    if changed:
-        # Append a bare "\n" — `newline=` translates every \n on write, so passing
-        # the CRLF here too would emit a trailing \r\r\n.
+    text = read_editable_bytes(path, root=cwd).decode(encoding)
+    updated = text
+    for name, spec in _aspnet_project_profiles(data).items():
+        if "applicationUrl" not in spec:
+            continue
+        root = _object_span(updated, json.loads(updated), None)
+        profiles = _member_span(updated, root, "profiles") if root is not None else None
+        member = _member_span(updated, (profiles[1], profiles[2] - 1), name) if profiles else None
+        if member is None:
+            return
+        changed = _remove_json_member(updated, (member[1], member[2] - 1), "applicationUrl")
+        if changed is None:
+            return
+        updated = changed
+        del spec["applicationUrl"]
+    if updated != text and json.loads(updated) == data:
         atomic_write_text(
-            path,
-            json.dumps(data, indent=2) + "\n",
-            root=cwd,
-            text_format=(encoding, newline),
+            path, updated.replace("\r\n", "\n"), root=cwd, text_format=(encoding, newline)
         )
-        print("patched Properties/launchSettings.json (dropped applicationUrl)", file=sys.stderr)
 
 
 def _aspnet_launch_settings_manual(cwd: Path) -> str:

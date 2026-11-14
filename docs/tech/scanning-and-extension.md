@@ -143,11 +143,13 @@ defines eight extension points and flags; subclasses override the ones that appl
   conventional default.
 - `targets(app)` — default device targets emitted during scanner-driven init.
 - `wiring_checks(app, env_file)` — `WiringCheck`s that `splash init` and `splash doctor` run
-  to patch consumer configs (see `docs/tech/wiring.md`). `env_file` is the environment output
-  destination this checkout writes, already spelled relative to `app.path`. A check that patches
-  a consumer of those values must bind it — through a factory closing over it, as
-  `_rn_xcode_check` and `_vite_process_env_check` do — instead of assuming the default name;
-  a check that patches nothing destination-specific ignores the argument.
+  to patch consumer configs (see `docs/tech/wiring.md`). `env_file` spells the project default output
+  relative to the app. Configured checks use the app's actual managed-resource names, kinds,
+  resolved writers and destinations from `profile_core.configured_app_inventory`; see
+  [resource context](wiring.md#threading-the-environment-output-destination).
+  `_rn_xcode_check` binds a dotenv destination, while `profiles_web._vite_checks` checks
+  managed-port and inherited-value consumption. Vite does not prove dotenv loading or
+  parent-shell activation.
 - `agent_guidance(app, port_names)` — framework-specific Markdown launch instructions.
   Init supplies the recipe's actual names after collision mangling. Common guidance is
   generated automatically for every app that references a port resource.

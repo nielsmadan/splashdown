@@ -99,7 +99,7 @@ post-checkout:
 It runs `splash` from the hook's `PATH`. The three arguments let Splashdown identify worktree
 creation. Diagnostics remain visible, but a missing executable or failed Splashdown command
 does not fail the checkout. Run `splash doctor --fix` to replace an older Splashdown-generated
-job with this form. Custom commands are preserved.
+job with this form. Custom commands are preserved. Doctor changes only project configuration. It leaves local hook installation and manager activation to `splash trust` or the hook manager.
 
 ## Retry and rerun
 

@@ -244,6 +244,32 @@ An existing address-based claim retains its catalog ownership without blocking o
 See [Physical claims and notices](registry.md#physical-claims-and-notices) for identity validation
 and conflict rules.
 
+### Doctor observation boundary
+
+Doctor reads `RegistrySnapshot` without constructing `Registry`, retaining both usable rows and
+`RegistryReadError` diagnostics. Its scope is recipe/local declarations plus claims owned by the
+canonical checkout path. Claims already carry platform and exact hardware identity, so resolving
+them does not require enumerating global configuration. Saved simulator/emulator identifiers remain
+visible, but live existence and running-state observation is explicitly unsupported here.
+
+`device_discovery.observe_existing_adb` sends only the framed `host:devices-l` query to an existing
+server. It uses one three-second connect/send/read deadline and the protocol's four-hex-digit payload
+limit. It honors `ADB_SERVER_SOCKET` before address/port environment settings. Numeric TCP endpoints,
+localhost, absolute filesystem sockets and Linux abstract sockets are supported. Hostname DNS and
+other socket forms are unsupported without falling back. Refused connections and absent Unix sockets
+mean idle; timeouts, access failures, malformed framing/rows and server rejection remain failures.
+Both successful snapshots and failures are cached once per doctor invocation.
+
+Host inventory cannot verify the hardware properties checked by normal Android discovery. Its
+`PhysicalObservation` rows keep `hardware_id=None` and `selectable=False`, preserving transport IDs,
+reported states and USB/network metadata. A matching USB transport string is labeled transport-only,
+not proof of the saved phone's state. An unidentified network connection never proves another saved
+phone absent. No device shell, ADB client, connection mutation or identity/property request occurs.
+
+The existing iOS `simctl`/`devicectl` discovery adapters offer no no-start guarantee. Doctor does not
+invoke them and marks that live coverage unsupported. Status and launch retain their existing
+adapters, exact hardware matching, pairing information and paired-idle usability rules.
+
 ### ensure_fresh_sim: reconcile-on-drift
 
 `device_health` is the shared, read-only reconciliation query. It returns `healthy`, `missing`,
@@ -298,9 +324,9 @@ profiles — two apps sharing a profile are still two apps, and collapsing them 
 ambiguous workspace as if it were unambiguous.
 
 `resolve_app_dir` (`launching.py`) then answers *where* that framework lives: `cwd` when the
-root itself matches, else the single declared app's `path`. Both `device_run` and `cmd_doctor`
-resolve it, because wiring checks patch files inside the app directory and launchers shell out
-there — running either at the workspace root silently does nothing useful.
+root itself matches, else the single declared app's `path`. `device_run`
+resolves it before launching in the app directory. Doctor independently visits every configured
+app path/profile and does not use launch selection.
 
 Runnable profiles structurally implement `RunnableProfile`; web/backend profiles do not expose a
 `run` method. `cmd_run` checks this capability (or a matching custom `[project] run`) before device

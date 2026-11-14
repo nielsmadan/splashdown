@@ -1344,6 +1344,8 @@ def test_cli_target_remove_uses_composition_root_registry(tmp_path, monkeypatch)
         state / "ports.tsv",
         state / "kv.tsv",
         state / "devices.tsv",
+        state / "claims.tsv",
+        state / "claim-notices.tsv",
     )
     checkout = str(tmp_path.resolve())
     registry.set_device(checkout, "simulator", "repro", "UDID", "iPhone 17", "18.5")
@@ -1459,7 +1461,13 @@ def test_gc_preserves_unavailable_device_rows(tmp_path, monkeypatch, capsys):
     state = tmp_path / "state"
     ios = tmp_path / "dead-ios"
     android = tmp_path / "dead-android"
-    registry = sd.Registry(state / "ports.tsv", state / "kv.tsv", state / "devices.tsv")
+    registry = sd.Registry(
+        state / "ports.tsv",
+        state / "kv.tsv",
+        state / "devices.tsv",
+        state / "claims.tsv",
+        state / "claim-notices.tsv",
+    )
     registry.allocate_port(str(ios), "PORT", 19820, 19830)
     registry.set_kv(str(android), "TOKEN", "value")
     registry.set_device(str(ios), "simulator", "default", "UDID-DEAD", "iPhone 17", "18.5")
@@ -1703,6 +1711,8 @@ def test_cli_target_refresh_uses_composition_root_registry(tmp_path, monkeypatch
         state / "ports.tsv",
         state / "kv.tsv",
         state / "devices.tsv",
+        state / "claims.tsv",
+        state / "claim-notices.tsv",
     )
     captured = {}
 
@@ -2122,6 +2132,8 @@ def test_cli_device_prune_platform_positional_ios(tmp_path, monkeypatch):
         state / "ports.tsv",
         state / "kv.tsv",
         state / "devices.tsv",
+        state / "claims.tsv",
+        state / "claim-notices.tsv",
     )
     captured = {}
 

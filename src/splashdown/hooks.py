@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +22,7 @@ from .hook_configs import (
     SIMPLE_GIT_HOOKS_DYNAMIC_NAMES,
     SIMPLE_GIT_HOOKS_JSON_NAMES,
     SIMPLE_GIT_HOOKS_PACKAGE_KEY,
+    _pre_commit_analysis,
     _report_left_alone,
     existing_config,
     pre_commit_config_path,
@@ -33,10 +38,12 @@ from .hook_configs import (
 from .package_json import package_dependencies, read_package_json
 from .safe_files import (
     atomic_write_text,
+    diagnostic_git_executable,
     read_optional_editable_bytes,
     read_optional_editable_text,
     refusal_reason,
 )
+from .yamltext import _strip_hash_comment_lines, _yaml_key_regions
 
 LEGACY_POST_CHECKOUT_HOOK = """\
 #!/bin/sh
@@ -383,9 +390,9 @@ def mise_config_path(cwd: Path) -> Path:
     """The mise config splashdown reads and edits. Prefers an existing file so we
     edit the one the user already has instead of scaffolding a second one; falls
     back to `mise.toml` as the path to create."""
-    if (cwd / "mise.toml").exists():
+    if (cwd / "mise.toml").exists() or (cwd / "mise.toml").is_symlink():
         return cwd / "mise.toml"
-    if (cwd / ".mise.toml").exists():
+    if (cwd / ".mise.toml").exists() or (cwd / ".mise.toml").is_symlink():
         return cwd / ".mise.toml"
     return cwd / "mise.toml"
 
@@ -676,38 +683,25 @@ def _yaml_block_end(lines: list[str], start: int) -> int:
     return len(lines)
 
 
+def _lefthook_key_index(lines: list[str], key: str, parent: int | None = None) -> int | None:
+    start = 0 if parent is None else parent + 1
+    end = len(lines) if parent is None else _yaml_block_end(lines, parent)
+    indent = 0 if parent is None else len(lines[parent]) - len(lines[parent].lstrip()) + 2
+    pattern = rf"{' ' * indent}{re.escape(key)}:[ \t]*"
+    return next((index for index in range(start, end) if re.fullmatch(pattern, lines[index])), None)
+
+
 def _lefthook_splashdown_job(
     lines: list[str],
 ) -> tuple[int, int, int | None] | None:
-    post = next(
-        (index for index, line in enumerate(lines) if re.fullmatch(r"post-checkout:\s*", line)),
-        None,
-    )
+    post = _lefthook_key_index(lines, "post-checkout")
     if post is None:
         return None
-    post_end = _yaml_block_end(lines, post)
-    commands = next(
-        (
-            index
-            for index in range(post + 1, post_end)
-            if lines[index].strip() == "commands:" and not lines[index].lstrip().startswith("#")
-        ),
-        None,
-    )
+    commands = _lefthook_key_index(lines, "commands", post)
     if commands is None:
         return None
-    commands_indent = len(lines[commands]) - len(lines[commands].lstrip())
-    commands_end = min(_yaml_block_end(lines, commands), post_end)
-    job = next(
-        (
-            index
-            for index in range(commands + 1, commands_end)
-            if lines[index].strip() == "splashdown:"
-            and not lines[index].lstrip().startswith("#")
-            and len(lines[index]) - len(lines[index].lstrip()) == commands_indent + 2
-        ),
-        None,
-    )
+    commands_end = _yaml_block_end(lines, commands)
+    job = _lefthook_key_index(lines, "splashdown", commands)
     if job is None:
         return None
     job_indent = len(lines[job]) - len(lines[job].lstrip())
@@ -736,6 +730,9 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
     the local hooks is activation, not configuration, and happens elsewhere."""
     path = _lefthook_config_path(cwd)
     text = read_optional_editable_text(path, root=cwd) or ""
+    if not _lefthook_editable_shape(text):
+        _report_left_alone(path, "its hook configuration uses an unsupported YAML shape")
+        return False
     newline = newline_for(text)
     lines = split_lines(text)
     owned = _lefthook_splashdown_job(lines)
@@ -752,10 +749,7 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
             return True
         _report_left_alone(path, "its splashdown job was modified")
         return False
-    pc_idx = next(
-        (i for i, ln in enumerate(lines) if re.match(r"^post-checkout:\s*$", ln)),
-        None,
-    )
+    pc_idx = _lefthook_key_index(lines, "post-checkout")
     if pc_idx is None:
         sep = "" if not text or text.endswith(newline) else newline
         job = newline.join(
@@ -763,16 +757,7 @@ def _wire_post_checkout_lefthook(cwd: Path) -> bool:
         )
         atomic_write_text(path, text + sep + job + newline, root=cwd, create=True)
     else:
-        end_idx = len(lines)
-        for j in range(pc_idx + 1, len(lines)):
-            ln = lines[j]
-            if ln and not ln[0].isspace() and not ln.startswith("#"):
-                end_idx = j
-                break
-        cmds_idx = next(
-            (j for j in range(pc_idx + 1, end_idx) if re.match(r"^\s+commands:\s*$", lines[j])),
-            None,
-        )
+        cmds_idx = _lefthook_key_index(lines, "commands", pc_idx)
         if cmds_idx is not None:
             commands_indent = len(lines[cmds_idx]) - len(lines[cmds_idx].lstrip())
             addition = [
@@ -913,9 +898,41 @@ def _wire_post_checkout_native(cwd: Path) -> bool:
     return True
 
 
+def _lefthook_editable_shape(text: str) -> bool:
+    lines = split_lines(text)
+    stripped = _strip_hash_comment_lines(lines)
+    if any(
+        line and not line[:1].isspace() and not re.match(r"^[\w-]+:", line) for line in stripped
+    ):
+        return False
+    parent = None
+    for key in ("post-checkout", "commands", "splashdown"):
+        start = 0 if parent is None else parent + 1
+        end = len(lines) if parent is None else _yaml_block_end(lines, parent)
+        pattern = rf"[ \t]*(?:[-?][ \t]+)?([\"']?){key}\1(?:[ \t]*:|[ \t]*$)"
+        candidates = [index for index in range(start, end) if re.match(pattern, stripped[index])]
+        located = _lefthook_key_index(lines, key, parent)
+        regions = _yaml_key_regions("\n".join(lines[start:end]), key)
+        if candidates != ([] if located is None else [located]) or len(regions) != len(candidates):
+            return False
+        if located is None:
+            return True
+        children = [
+            line for line in stripped[located + 1 : _yaml_block_end(lines, located)] if line.strip()
+        ]
+        indent = len(lines[located]) - len(lines[located].lstrip()) + 2
+        if children and len(children[0]) - len(children[0].lstrip(" ")) != indent:
+            return False
+        parent = located
+    return True
+
+
 def _lefthook_state(cwd: Path) -> str:
     path = _lefthook_config_path(cwd)
-    lines = split_lines(path.read_bytes().decode()) if path.exists() else []
+    text = path.read_bytes().decode() if path.exists() else ""
+    if not _lefthook_editable_shape(text):
+        return "unrecognized"
+    lines = split_lines(text)
     owned = _lefthook_splashdown_job(lines)
     if owned is None:
         return "missing"
@@ -1092,7 +1109,7 @@ def _manager_hook_installed(
     if directory is None:
         return False
     hook = directory / "post-checkout"
-    if not hook.is_file():
+    if not hook.is_file() or not hook.stat().st_mode & 0o111:
         return False
     return True if manager == "husky" else _hook_signature(hook) == manager
 
@@ -1180,8 +1197,10 @@ def post_checkout_files(cwd: Path) -> tuple[Path, ...]:
     return () if native is None else (native,)
 
 
-def post_checkout_manual_instructions(cwd: Path) -> str:
-    readiness = post_checkout_readiness(cwd)
+def post_checkout_manual_instructions(cwd: Path, *, strict: bool | HookInspection = False) -> str:
+    readiness = (
+        post_checkout_readiness(cwd, strict=strict) if strict else post_checkout_readiness(cwd)
+    )
     body = _MANAGER_MANUAL.get(readiness.manager, _NATIVE_MANUAL)
     head, *rest = body.splitlines()
     return "\n".join(
@@ -1193,8 +1212,10 @@ def post_checkout_manual_instructions(cwd: Path) -> str:
     )
 
 
-def _warn_custom_hooks_path(cwd: Path) -> None:
-    current = _configured_hooks_path(cwd) or "?"
+def _warn_custom_hooks_path(cwd: Path, *, strict: bool | HookInspection = False) -> None:
+    current = (
+        _configured_hooks_path(cwd, strict=strict) if strict else _configured_hooks_path(cwd)
+    ) or "?"
     print(
         f"warning: core.hooksPath is `{current}` — not wiring automatically. "
         "Use a trusted absolute splash path and forward `$1`, `$2`, `$3`.",
@@ -1211,22 +1232,24 @@ def _report_conflicting_managers(detection: HookDetection) -> None:
     )
 
 
-def _configure_post_checkout_hook(cwd: Path) -> None:
+def _configure_post_checkout_hook(cwd: Path, *, strict: bool | HookInspection = False) -> None:
     """Write the project-owned hook configuration only. The native wrapper lives
     in the local `.git` directory, so it is installed by trusted activation."""
-    detection = detect_hook_configuration(cwd)
+    detection = (
+        detect_hook_configuration(cwd, strict=strict) if strict else detect_hook_configuration(cwd)
+    )
     adapter = _ADAPTERS.get(detection.manager)
     if adapter is not None:
         if not adapter.configure(cwd):
-            _report_manual_hook_activation(cwd)
+            _report_manual_hook_activation(cwd, strict=strict)
         return
     if detection.manager == "core-hookspath-other":
-        _warn_custom_hooks_path(cwd)
+        _warn_custom_hooks_path(cwd, strict=strict)
     elif detection.manager == "conflict":
         _report_conflicting_managers(detection)
     elif detection.manager == "overcommit":
-        _report_manual_hook_activation(cwd)
-    elif _native_hook_path(cwd) is None:
+        _report_manual_hook_activation(cwd, strict=strict)
+    elif (_native_hook_path(cwd, strict=strict) if strict else _native_hook_path(cwd)) is None:
         print("note: not a Git checkout; post-checkout hook not installed", file=sys.stderr)
     else:
         print(
@@ -1252,10 +1275,15 @@ def _ensure_post_checkout_hook(cwd: Path) -> None:
         _wire_post_checkout_native(cwd)
 
 
-def _report_manual_hook_activation(cwd: Path) -> None:
+def _report_manual_hook_activation(cwd: Path, *, strict: bool | HookInspection = False) -> None:
     """The manager's own configuration is tracked project content, so activation
     never rewrites it. Name the edit that finishes the integration instead."""
-    first, *rest = post_checkout_manual_instructions(cwd).splitlines()
+    instructions = (
+        post_checkout_manual_instructions(cwd, strict=strict)
+        if strict
+        else post_checkout_manual_instructions(cwd)
+    )
+    first, *rest = instructions.splitlines()
     print(f"note: {first}", file=sys.stderr)
     for line in rest:
         print(f"      {line}", file=sys.stderr)
@@ -1273,3 +1301,139 @@ def _activate_post_checkout_hook(cwd: Path) -> bool:
         _report_manual_hook_activation(cwd)
         return False
     return _wire_post_checkout_native(cwd)
+
+
+def _hook_optional_text(path: Path) -> str | None:
+    try:
+        return path.read_text()
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return None
+        raise ValueError("dangling hook configuration link") from None
+
+
+def validate_hook_inputs(cwd: Path, inputs: HookInspection) -> HookInspection:
+    hook_dir = (
+        Path(inputs.configured_path) if inputs.configured_path else inputs.common_dir / "hooks"
+    )
+    if not hook_dir.is_absolute():
+        hook_dir = cwd / hook_dir
+    with suppress(FileNotFoundError):
+        for path in hook_dir.iterdir():
+            if not path.name.endswith(".sample") and stat.S_ISREG(path.stat().st_mode):
+                path.read_bytes()
+    detection = detect_hook_configuration(cwd, strict=inputs)
+    candidates = _MANAGER_CONFIG_NAMES.get(detection.manager, ())
+    for name in candidates:
+        path = cwd / name
+        text = _hook_optional_text(path)
+        if text is None:
+            continue
+        if path.suffix == ".json" and not isinstance(json.loads(text), dict):
+            raise ValueError("expected JSON object")
+        if path.suffix == ".toml":
+            tomllib.loads(text)
+        if path.suffix in {".yml", ".yaml"}:
+            if detection.manager in {"pre-commit", "prek"}:
+                if _pre_commit_analysis(text)[0] == "unrecognized":
+                    raise ValueError("uninterpretable pre-commit configuration")
+            elif detection.manager == "lefthook":
+                _validate_lefthook_flow(text)
+                for value in _yaml_key_regions(text, "post-checkout", indent=0):
+                    _validate_lefthook_flow(value)
+        break
+    _hook_optional_text(hook_dir / "post-checkout")
+    if detection.manager == "husky":
+        _hook_optional_text(cwd / ".husky" / "post-checkout")
+    return inputs
+
+
+def _validate_lefthook_flow(value: str) -> None:
+    lines = split_lines(value)
+    scalar_indent = -1
+    for index, line in enumerate(lines):
+        indent = len(line) - len(line.lstrip())
+        if scalar_indent >= 0:
+            if not line.strip() or indent > scalar_indent:
+                continue
+            scalar_indent = -1
+        match = re.match(r"\s*(?:-\s*)?(?:[^:\n\[{]+:\s*)?([\[{|>])", line)
+        if match is None:
+            continue
+        if match.group(1) in "|>":
+            scalar_indent = indent
+        elif not _balanced_yaml_flow("\n".join(lines[index:])[match.start(1) :]):
+            raise ValueError("uninterpretable lefthook configuration")
+
+
+def _balanced_yaml_flow(value: str) -> bool:
+    stack: list[str] = []
+    quote = ""
+    escaped = False
+    for index, char in enumerate(value):
+        if quote:
+            if escaped:
+                escaped = False
+            elif quote == '"' and char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in "[{":
+            stack.append(char)
+        elif char in "]}" and (not stack or stack.pop() != {"]": "[", "}": "{"}[char]):
+            return False
+        elif char in "]}" and not stack:
+            return not value[index + 1 :].split("\n", 1)[0].strip()
+    return not stack and not quote
+
+
+def inspect_hook_inputs(cwd: Path) -> HookInspection | None:
+    executable = diagnostic_git_executable(cwd)
+
+    def git(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            executable=str(executable),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+
+    root = git(["rev-parse", "--show-toplevel"])
+    if root.returncode:
+        if "not a git repository" in root.stderr:
+            return None
+        raise subprocess.SubprocessError("Git checkout discovery failed")
+    top = Path(root.stdout.strip())
+    if not top.is_absolute():
+        raise ValueError("Git returned an invalid checkout root")
+    if top.resolve() != cwd.resolve():
+        return None
+    common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    if common.returncode or not Path(common.stdout.strip()).is_absolute():
+        raise subprocess.SubprocessError("Git common directory discovery failed")
+    configured = git(["config", "--get", "core.hooksPath"])
+    if configured.returncode not in {0, 1}:
+        raise subprocess.SubprocessError("Git hook configuration discovery failed")
+    return validate_hook_inputs(
+        cwd,
+        HookInspection(
+            Path(common.stdout.strip()),
+            configured.stdout.strip() if configured.returncode == 0 else "",
+        ),
+    )
+
+
+def post_checkout_configuration_files(cwd: Path, inputs: HookInspection) -> tuple[Path, ...]:
+    detection = detect_hook_configuration(cwd, strict=inputs)
+    adapter = _ADAPTERS.get(detection.manager)
+    if adapter is None or adapter.state(cwd) == "unrecognized":
+        return ()
+    return (adapter.config_path(cwd),)

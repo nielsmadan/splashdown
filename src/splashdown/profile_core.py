@@ -5,7 +5,8 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .inventory import AppInventory
+from .inventory import AppInventory, ManagedResource
+from .provisioning import DEFAULT_WRITER, resolve_writer, writer_output_path
 from .wiring import WiringCheck
 
 if TYPE_CHECKING:
@@ -99,4 +100,54 @@ def _profile_port(port_names: list[str], canonical: str) -> str:
     return next(
         (name for name in port_names if name == canonical or name.startswith(f"{canonical}_")),
         port_names[0],
+    )
+
+
+def configured_app_inventory(recipe: Recipe) -> list[AppInventory]:
+    specs = recipe.apps
+    framework = recipe.project.get("framework")
+    if not specs and framework and framework != "auto":
+        specs = {"main": {"path": ".", "profile": framework, "resources": list(recipe.resources)}}
+    apps = []
+    for name, spec in specs.items():
+        resources = []
+        for key in spec["resources"]:
+            resource = recipe.resources[key]
+            writer = resolve_writer(resource.get("writer", DEFAULT_WRITER), recipe.env_file)
+            resources.append(
+                ManagedResource(key, resource["type"], writer, writer_output_path(writer))
+            )
+        apps.append(
+            AppInventory(
+                name,
+                recipe.path.parent / spec["path"],
+                spec["profile"],
+                project_path=recipe.path.parent,
+                managed_resources=tuple(resources),
+            )
+        )
+    return apps
+
+
+def managed_ports(app: AppInventory, canonical: str, env_file: str) -> tuple[ManagedResource, ...]:
+    if app.managed_resources is not None:
+        return tuple(resource for resource in app.managed_resources if resource.kind == "port")
+    return (ManagedResource(canonical, "port", f"envfile={env_file}", env_file),)
+
+
+def resource_scope_check(ports: tuple[ManagedResource, ...]) -> WiringCheck:
+    state = "incomplete" if ports else "skipped"
+    detail = (
+        "Several managed ports have no established server-port relationship: "
+        + ", ".join(resource.name for resource in ports)
+        if ports
+        else "No managed port declared for this app; port consumption not inspected."
+    )
+    return WiringCheck(
+        "managed-port-scope",
+        "Configured server-port scope",
+        lambda _: True,
+        lambda _: (state, detail),
+        None,
+        lambda _: "Wire the intended managed resource to the server port explicitly.",
     )

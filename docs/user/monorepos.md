@@ -317,7 +317,7 @@ configuration above for that layout.
 
 Splashdown never rewrites `compose.yaml` / `docker-compose.yml`. It ships no YAML parser, and
 rewriting a format with significant whitespace by regex is not safe enough to do to your files.
-What it does instead is allocate the values and tell you exactly which lines to change.
+It declares the project-name resource during init and reports static sharing risks during doctor.
 
 When a compose file sits at the repo root, `splash init` adds a `COMPOSE_PROJECT_NAME` resource:
 
@@ -330,8 +330,9 @@ template = "{{ slug(parent) }}-{{ slug(cwd) }}-{{ truncate(hash(cwd_abs), 8) }}"
 That one variable does most of the work. Compose reads it from the environment and uses it to
 namespace containers, networks and volumes, so two worktrees of the same repo stop colliding
 without either compose file changing. The readable path tail is followed by a stable hash of the
-resolved checkout path, so unrelated clones with matching directory names stay separate too. Your loader already exports it on `cd`, so a plain
-`docker compose up` picks it up.
+resolved checkout path, so unrelated clones with matching directory names stay separate too.
+After provisioning, pass the value to Compose explicitly or through your chosen loader. A configured
+loader alone does not prove that your current shell has loaded it.
 
 Recipes generated before this suffix was added are not rewritten. To migrate, run
 `docker compose down` while the old `COMPOSE_PROJECT_NAME` is still loaded, update the template,
@@ -358,11 +359,34 @@ services:
 Drop `container_name:` while you are there. A literal container name defeats
 `COMPOSE_PROJECT_NAME`, since it pins the container to one name across every checkout.
 
-`splash doctor` reports what is still hardcoded:
+`splash doctor` reports fixed values as advisory warnings, naming their service and value slot:
 
 ```
-✗  compose-hardcoded-ports: compose.yaml hardcodes host ports 5432, 6379; container_name myapp_db
+compose-hardcoded-ports: warning: compose.yaml: services.db.ports[0]: fixed host port 5432 can collide across checkouts
 ```
+
+It also warns about fixed absolute bind sources, including long syntax:
+
+```yaml
+services:
+  db:
+    volumes:
+      - type: bind
+        source: /srv/shared/database
+        target: /var/lib/postgresql/data
+```
+
+Every checkout using that source can share data even with separate ports and project names.
+For isolation, choose a checkout-relative source such as `./data` or an ordinary project-scoped
+named volume. Intentional sharing is valid. Doctor never rewrites Compose files, moves data or
+queries Docker/Colima, including with `--fix`. Unsupported or unreadable YAML is incomplete,
+not proof of a collision. Relative and named sources are distinguished from fixed absolute binds,
+and interpolated values remain unverified until Compose resolves them.
+Simple single- and double-quoted values are recognized. Escaped double-quoted scalars and
+unsupported continuation or quote syntax leave the inspection incomplete for manual review.
+
+Guidance lists resources actually declared in your recipe. It does not claim that an example port
+or `COMPOSE_PROJECT_NAME` has been allocated, or that your invoking shell has loaded its value.
 
 Plain `splash init` detects the Compose file and declares `COMPOSE_PROJECT_NAME`
 automatically. Add `DB_PORT` yourself when the database needs a pinned host port, as in the
@@ -376,11 +400,13 @@ produce config you then have to undo.
 
 ## Gotchas
 
-**Vite's `loadEnv` doesn't see `splashdown.env`.** Vite's `loadEnv(mode, dir, "")` reads
-`.env.*` files from `dir`, not the parent shell environment. Values in `splashdown.env`
-(loaded by mise/direnv/devbox) are invisible to Vite unless the config reads
-`process.env.WEB_DEV_PORT` directly. `splash doctor --fix` rewrites `env.X` → `process.env.X`
-automatically. See [framework-wiring.md](framework-wiring.md) for details.
+**Vite's `loadEnv` filters inherited values as well as dotenv values.**
+`loadEnv(mode, dir, "")` admits all inherited keys, including values delivered through
+`splashdown.env`. The default prefix admits only `VITE_` keys. A literal prefix string or
+string array can admit your actual managed port name. Doctor follows that key to
+`server.port`, preserves valid loading and unrelated app settings, and reports dynamic
+flows for manual verification. A recognized excluded-key repair adds an inherited-value
+fallback only at that managed read. See [framework-wiring.md](framework-wiring.md).
 
 **`writer = "envfile=..."` breaks the mise / direnv contract.** Per-resource
 `writer = "envfile=apps/web/.env"` routes a value directly into an app-level `.env` file

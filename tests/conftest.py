@@ -21,6 +21,13 @@ _PIXEL = {"id": "PXL1234", "name": "Pixel_7", "platform": "android"}
 
 
 @pytest.fixture(autouse=True)
+def _isolate_coordination_state(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point XDG_CONFIG_HOME at an empty per-test dir so `load_settings` never reads
     the real `~/.config/splashdown/config.toml`. Tests that want a global config write
@@ -61,7 +68,7 @@ def _stub_loader_approval(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_watchman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from splashdown import runtime_checks
 
-    monkeypatch.setattr(runtime_checks, "watchman_available", lambda: False)
+    monkeypatch.setattr(runtime_checks, "watchman_available", lambda *_: False)
 
 
 @pytest.fixture(autouse=True)
@@ -173,3 +180,16 @@ def terminate_process(proc: subprocess.Popen[str]) -> None:
         proc.stdout.close()
     if proc.stderr is not None:
         proc.stderr.close()
+
+
+@pytest.fixture
+def controlled_doctor_toolchains(monkeypatch: pytest.MonkeyPatch) -> None:
+    from splashdown.runtime_checks import ToolFact, ToolObservations
+
+    monkeypatch.setattr(ToolObservations, "ios", lambda _: ToolFact(True, "fixture iOS SDK"))
+    monkeypatch.setattr(
+        ToolObservations, "android", lambda _: ToolFact(True, "fixture Android SDK")
+    )
+    monkeypatch.setattr(
+        ToolObservations, "executable", lambda *_, **__: ToolFact(True, "fixture executable")
+    )

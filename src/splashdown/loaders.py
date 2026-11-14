@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .constants import normalized_env_reference
+from .constants import normalized_env_reference, split_lines
 from .errors import LoaderConflictError
 from .hooks import mise_config_path
 from .jsontext import (
@@ -222,7 +224,7 @@ _DIRENV_END = "# <<< splashdown-managed dotenv <<<"
 def _direnv_block(env_file: str) -> str:
     # `dotenv_if_exists` (not `dotenv`) so a fresh checkout doesn't hard-error
     # before the destination has been generated.
-    return f"{_DIRENV_BEGIN}\ndotenv_if_exists {env_file}\n{_DIRENV_END}\n"
+    return f"{_DIRENV_BEGIN}\ndotenv_if_exists {shlex.quote(env_file)}\n{_DIRENV_END}\n"
 
 
 _DIRENV_BLOCK_RE = re.compile(
@@ -269,7 +271,7 @@ class DirenvLoader(Loader):
         block = _direnv_block(env_file)
         base = existing or ""
         if _DIRENV_BLOCK_RE.search(base):
-            new_text = _DIRENV_BLOCK_RE.sub(block, base, count=1)
+            new_text = _DIRENV_BLOCK_RE.sub(lambda _: block, base, count=1)
         else:
             head = base.rstrip()
             new_text = (head + "\n\n" if head else "") + block
@@ -329,7 +331,7 @@ _DEVBOX_HOOK_MARKER = "# splashdown-managed"
 
 
 def _devbox_hook_cmd(env_file: str) -> str:
-    return f"{_DEVBOX_HOOK_MARKER}\nset -a; source {env_file}; set +a"
+    return f"{_DEVBOX_HOOK_MARKER}\nset -a; source {shlex.quote(env_file)}; set +a"
 
 
 _DEVBOX_ALLEXPORT_RE = re.compile(r"^set[ \t]+(?P<sign>[-+])(?:a|o[ \t]+allexport)$")
@@ -544,3 +546,109 @@ LOADERS: dict[str, Loader] = {
     "devbox": DevboxLoader(),
     "none": NoneLoader(),
 }
+
+
+def loader_config_path(cwd: Path, name: str) -> Path:
+    if name == "mise":
+        return mise_config_path(cwd)
+    return cwd / {"direnv": ".envrc", "devbox": "devbox.json"}[name]
+
+
+def _validate_direnv_shell(text: str) -> None:
+    reserved = {
+        "if",
+        "then",
+        "elif",
+        "else",
+        "fi",
+        "for",
+        "while",
+        "until",
+        "do",
+        "done",
+        "case",
+        "esac",
+        "in",
+        "function",
+        "select",
+        "time",
+        "!",
+        "[[",
+        "]]",
+    }
+    for line in split_lines(text):
+        words = shlex.split(line, comments=True)
+        if not words:
+            continue
+        if words[0] in reserved:
+            raise LoaderConflictError("cannot inspect direnv: unsupported compound shell command")
+        quote = ""
+        escaped = False
+        for index, char in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\" and quote != "'":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            elif quote != "'" and char in "$`":
+                raise LoaderConflictError("cannot inspect direnv: unsupported shell expansion")
+            elif not quote:
+                if char in "\"'":
+                    quote = char
+                elif char == "#" and (index == 0 or line[index - 1].isspace()):
+                    break
+                elif char in ";|&(){}<>":
+                    raise LoaderConflictError("cannot inspect direnv: unsupported shell structure")
+
+
+def validate_loader_config(cwd: Path, name: str) -> None:
+    path = loader_config_path(cwd, name)
+    text = read_optional_editable_text(path, root=cwd)
+    if text is None:
+        return
+    if name == "direnv":
+        lines = split_lines(text)
+        markers = [line for line in lines if line in {_DIRENV_BEGIN, _DIRENV_END}]
+        if markers not in ([], [_DIRENV_BEGIN, _DIRENV_END]):
+            raise LoaderConflictError("cannot inspect direnv: malformed splashdown dotenv markers")
+        _validate_direnv_shell(text)
+    if path.suffix == ".toml":
+        tomllib.loads(text)
+    elif path.suffix == ".json" and not isinstance(json.loads(text), dict):
+        raise ValueError("invalid loader object")
+
+
+def validated_loader_plan(cwd: Path, name: str, env_file: str) -> WirePlan:
+    validate_loader_config(cwd, name)
+    return LOADERS[name].plan(cwd, env_file)
+
+
+def direnv_approval(cwd: Path, executable: str) -> tuple[str, str]:
+    result = subprocess.run(
+        [executable, "status", "--json"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode:
+        raise subprocess.SubprocessError(f"direnv status failed (exit {result.returncode})")
+    data = json.loads(result.stdout)
+    state = data.get("state") if isinstance(data, dict) else None
+    if not isinstance(state, dict) or "foundRC" not in state:
+        raise ValueError("direnv status returned no foundRC observation")
+    found = state["foundRC"]
+    if found is None:
+        return "problem", "direnv did not find this project's .envrc."
+    if not isinstance(found, dict) or found.get("path") != str(cwd / ".envrc"):
+        raise ValueError("direnv status did not identify this project's exact .envrc")
+    allowed = found.get("allowed")
+    if type(allowed) is not int or allowed not in {0, 1, 2}:
+        raise ValueError("direnv status returned an unsupported approval value")
+    if allowed == 0:
+        return "ok", "direnv reports this .envrc allowed; parent-shell loading is not observed."
+    label = {1: "not allowed", 2: "denied"}[allowed]
+    return "problem", f"direnv reports this .envrc {label}."

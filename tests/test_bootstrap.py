@@ -823,7 +823,7 @@ def test_trust_does_not_edit_tracked_husky_hook(tmp_path, capsys):
         ),
     ],
 )
-def test_doctor_fix_migrates_exact_legacy_lefthook_job(tmp_path, old_run, detail):
+def test_configuration_repair_migrates_exact_legacy_lefthook_job(tmp_path, old_run, detail):
     _git_init(tmp_path)
     _write_recipe(tmp_path, "true")
     path = tmp_path / "lefthook.yml"
@@ -832,7 +832,7 @@ def test_doctor_fix_migrates_exact_legacy_lefthook_job(tmp_path, old_run, detail
     )
 
     assert sd.post_checkout_readiness(tmp_path).detail == detail
-    assert sd.cmd_doctor(tmp_path, fix=True) == 0
+    sd._configure_post_checkout_hook(tmp_path)
 
     text = path.read_text()
     assert '      run: splash hook post-checkout "{1}" "{2}" "{3}" >&2 || true\n' in text
@@ -875,8 +875,9 @@ def test_bootstrap_reuses_react_native_hook_check(tmp_path, capsys):
 
     assert sd.cmd_doctor(tmp_path) == 1
 
-    output = capsys.readouterr().err
-    assert sum("  ✗  hook:" in line for line in output.splitlines()) == 1
+    output = capsys.readouterr().out
+    assert sum("hook: skipped:" in line for line in output.splitlines()) == 1
+    assert sum("hook-activation: problem:" in line for line in output.splitlines()) == 1
 
 
 def test_trust_upgrades_an_exact_legacy_native_hook(tmp_path):

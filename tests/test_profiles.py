@@ -1387,7 +1387,7 @@ services:
 """)
     check = sd.compose_wiring_checks(tmp_path)[0]
     status, detail = check.detect(tmp_path)
-    assert status == "problem"
+    assert status == "warning"
     assert "5432" in detail
     assert "myapp_db" in detail
     assert check.autofix is None  # YAML rewriting is not safely mechanical
@@ -1422,7 +1422,7 @@ def test_compose_check_flags_flow_style_ports(tmp_path):
         tmp_path,
         "services:\n  db:\n    ports: ['5432:5432']\n  db-test:\n    ports: [\"5433:5432\"]\n",
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "5432" in detail
     assert "5433" in detail
 
@@ -1438,7 +1438,7 @@ def test_compose_check_flags_an_inline_container_name(tmp_path):
     status, detail = _compose_detect(
         tmp_path, "services:\n  db: { container_name: myapp_db, image: postgres:16 }\n"
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "myapp_db" in detail
     assert "postgres" not in detail  # the value stops at the flow-mapping comma
 
@@ -1456,7 +1456,7 @@ def test_compose_check_flags_a_hardcoded_long_syntax_published_port(tmp_path):
         "services:\n  db:\n    ports:\n      - target: 5432\n        published: 5433\n"
         "        protocol: tcp\n",
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "5433" in detail
 
 
@@ -1479,7 +1479,7 @@ def test_compose_check_flags_a_host_ip_qualified_port(tmp_path):
     status, detail = _compose_detect(
         tmp_path, 'services:\n  db:\n    ports:\n      - "127.0.0.1:5432:5432/tcp"\n'
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "5432" in detail
 
 
@@ -1501,7 +1501,7 @@ def test_compose_check_flags_a_block_sequence_at_the_key_indent(tmp_path):
         tmp_path,
         'services:\n  db:\n    image: postgres:16\n    ports:\n    - "5432:5432"\n',
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "5432" in detail
 
 
@@ -1509,7 +1509,7 @@ def test_compose_check_flags_ports_inside_an_inline_flow_mapping(tmp_path):
     status, detail = _compose_detect(
         tmp_path, "services:\n  db: { image: postgres:16, ports: ['5432:5432'] }\n"
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "5432" in detail
 
 
@@ -1518,7 +1518,7 @@ def test_compose_check_flags_a_pinned_host_with_a_templated_container_port(tmp_p
     status, detail = _compose_detect(
         tmp_path, 'services:\n  db:\n    ports:\n      - "5432:${CONTAINER_PORT}"\n'
     )
-    assert status == "problem"
+    assert status == "warning"
     assert "5432" in detail
 
 
@@ -1536,7 +1536,7 @@ def test_compose_check_reports_a_ports_shape_it_cannot_read(tmp_path):
         tmp_path,
         "x-ports: &shared\n  - '5432:5432'\nservices:\n  db:\n    ports: *shared\n",
     )
-    assert status == "problem"
+    assert status == "incomplete"
     assert "*shared" in detail
 
 

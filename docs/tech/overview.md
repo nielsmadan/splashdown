@@ -22,14 +22,16 @@ is the canonical contributor summary. These docs go deeper, per subsystem.
 - [wiring.md](wiring.md) — `wiring.py`: framework-wiring checks and autopatches;
   `yamltext.py`: the comment-stripping and YAML value-region readers both the checks and the
   hook-configuration editors use; `jsontext.py`: the byte-preserving JSON member splicer they and
-  the loader wiring share; `doctor.py` owns check selection, execution, and rendering.
+  the loader wiring share; `doctor.py` owns check selection, execution, and repair accounting.
+  `cli_output.py` renders its shared results.
 - [cli-and-commands.md](cli-and-commands.md) — `cli.py` + `commands.py` + `status.py` +
   `cli_output.py` + `results.py` + `interaction.py` + `project_selection.py`: parser/dispatch,
   shared result and confirmation boundaries, recipe-free selection, and legacy output ownership.
   `terminal.py` supplies control-character escaping for diagnostics and the interactive picker.
   The same guide covers `hooks.py`, `hook_configs.py`, and quiet `completion.py` integration.
-  Port-owner snapshots live in `port_inspection.py`; bounded Watchman and device-network checks
-  live in `runtime_checks.py` and are composed by doctor and launch orchestration.
+  Port-owner snapshots live in `port_inspection.py`; tool prerequisites, Pods consistency,
+  bounded Watchman checks, and device-network hints live in `runtime_checks.py`. Doctor composes
+  diagnostics; launch orchestration uses the contextual device-network hints.
 - [platform-capabilities.md](platform-capabilities.md) — host support, capability errors, and the
   audited subprocess-failure contract.
 - [bootstrap.md](bootstrap.md) — clone trust, worktree completion, lifecycle locking, and the

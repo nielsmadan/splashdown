@@ -4,6 +4,7 @@ import os
 import stat
 import uuid
 from pathlib import Path
+from shutil import which
 
 
 class UneditablePath(ValueError):
@@ -193,3 +194,39 @@ def atomic_write_text(
         raise ValueError(f"could not safely write `{path}`: {error}") from error
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def checkout_controlled_executable(candidate: Path, cwd: Path, *, resolved: Path) -> bool:
+    candidate = Path(os.path.abspath(candidate))
+    checkout_roots = {cwd.absolute(), cwd.resolve()}
+    directories = {directory for base in checkout_roots for directory in (base, *base.parents)}
+    for directory in directories:
+        try:
+            (directory / ".git").lstat()
+        except FileNotFoundError:
+            continue
+        checkout_roots.update((directory, directory.resolve()))
+    return any(
+        candidate.is_relative_to(root) or resolved.is_relative_to(root) for root in checkout_roots
+    )
+
+
+def diagnostic_git_executable(cwd: Path, *, search_directory: Path | None = None) -> Path:
+    search_root = search_directory if search_directory is not None else cwd
+    search_path = os.pathsep.join(
+        str(search_root / entry) if not Path(entry).is_absolute() else entry
+        for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+    )
+    candidate = which("git", path=search_path)
+    if candidate is None:
+        raise ValueError("Git executable is unavailable; checkout configuration is unverified")
+    executable = Path(candidate).resolve()
+    if checkout_controlled_executable(Path(candidate), cwd, resolved=executable):
+        raise ValueError(
+            "Refusing to run checkout-controlled Git; checkout configuration is unverified"
+        )
+    if not stat.S_ISREG(executable.stat().st_mode):
+        raise ValueError(
+            "Git is not an executable regular file; checkout configuration is unverified"
+        )
+    return executable

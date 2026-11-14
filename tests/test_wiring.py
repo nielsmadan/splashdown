@@ -14,6 +14,8 @@ from conftest import (
     _make_ios,
 )
 
+pytestmark = pytest.mark.usefixtures("controlled_doctor_toolchains")
+
 
 def _native_hook(cwd: Path) -> Path:
     raw = Path(
@@ -447,21 +449,21 @@ def test_doctor_help_in_cli(capsys):
         sd.main(["doctor", "--help"])
     out = capsys.readouterr().out
     assert "--fix" in out
-    assert "--framework" in out
+    assert "--framework" not in out
 
 
 def test_doctor_no_framework_returns_1(tmp_path, capsys):
     rc = sd.cmd_doctor(tmp_path)
     assert rc == 1
-    err = capsys.readouterr().err
-    assert "framework" in err.lower()
+    err = capsys.readouterr().out
+    assert "splashdown.toml" in err
 
 
-def test_doctor_unknown_framework_returns_usage_error(tmp_path, capsys):
-    rc = sd.cmd_doctor(tmp_path, framework_override="nonesuch")
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "unknown framework" in err.lower()
+def test_doctor_rejects_removed_framework_flag(tmp_path, capsys):
+    with pytest.raises(SystemExit) as error:
+        sd.main(["--cwd", str(tmp_path), "doctor", "--framework", "vite"])
+    assert error.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 def test_doctor_cli_rejects_unknown_framework(capsys):
@@ -471,25 +473,16 @@ def test_doctor_cli_rejects_unknown_framework(capsys):
     assert "nonesuch" in capsys.readouterr().err
 
 
-def test_doctor_known_checkless_framework_reports_healthy(tmp_path, capsys):
-    # nextjs reads PORT straight from the environment — "checked, nothing to
-    # wire", not a shrug.
-    assert sd.PROFILES["nextjs"].env_only  # premise: still checkless and env-only
-    rc = sd.cmd_doctor(tmp_path, framework_override="nextjs")
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "no wiring checks needed for" in err
-    assert "no wiring checks defined" not in err
+def test_doctor_known_checkless_framework_reports_coverage(tmp_path, capsys):
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "nextjs"\n')
+    assert sd.cmd_doctor(tmp_path) == 0
+    assert "No built-in framework wiring checks" in capsys.readouterr().out
 
 
-def test_doctor_checkless_but_not_env_only_keeps_the_shrug(tmp_path, capsys):
-    # Skipping Expo's optional Watchman check must not imply its Metro config was verified.
-    assert not sd.PROFILES["expo"].env_only
-    rc = sd.cmd_doctor(tmp_path, framework_override="expo")
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "watchman-root: not applicable" in err
-    assert "no wiring checks needed for" not in err
+def test_doctor_checkless_framework_reports_skips(tmp_path, capsys):
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "expo"\n')
+    assert sd.cmd_doctor(tmp_path) == 0
+    assert "watchman-root: skipped: Optional Watchman is absent" in capsys.readouterr().out
 
 
 def test_doctor_checks_app_subdirectory_from_recipe(tmp_path, capsys):
@@ -500,35 +493,42 @@ def test_doctor_checks_app_subdirectory_from_recipe(tmp_path, capsys):
     (app / "vite.config.ts").write_text("""\
 import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, import.meta.dirname, "");
+  const env = loadEnv(mode, import.meta.dirname, "VITE_");
   return { server: { port: Number(env.WEB_DEV_PORT ?? 5173) } };
 });
 """)
     (tmp_path / "splashdown.toml").write_text(
-        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n'
+        '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = ["WEB_DEV_PORT"]\n'
+        '[resources.WEB_DEV_PORT]\ntype="port"\nrange=[4000,4100]\n'
     )
     assert sd.cmd_doctor(tmp_path) == 1
-    err = capsys.readouterr().err
+    err = capsys.readouterr().out
     assert "not applicable" not in err
     assert sd.cmd_doctor(tmp_path, fix=True) == 0
-    assert "process.env.WEB_DEV_PORT" in (app / "vite.config.ts").read_text()
+    state = sd.constants.state_directory()
+    assert not state.is_relative_to(tmp_path)
+    assert len(list(state.glob("checkout-operation-*.lock"))) == 1
+    assert (
+        "Number((process.env.WEB_DEV_PORT ?? env.WEB_DEV_PORT) ?? 5173)"
+        in (app / "vite.config.ts").read_text()
+    )
 
 
-def test_doctor_ambiguous_multi_app_reports_candidates(tmp_path, capsys):
-    (tmp_path / "splashdown.toml").write_text(
+def test_doctor_multi_app_reports_missing_declared_directories(tmp_path, capsys):
+    (tmp_path / sd.RECIPE_NAME).write_text(
         '[apps.api]\npath = "apps/api"\nprofile = "node-backend"\nresources = []\n'
         '[apps.web]\npath = "apps/web"\nprofile = "vite"\nresources = []\n'
     )
     assert sd.cmd_doctor(tmp_path) == 1
-    err = capsys.readouterr().err
-    assert "ambiguous" in err
-    assert "api" in err and "web" in err
+    out = capsys.readouterr().out
+    assert "Configured app directory is missing" in out
+    assert "apps/api" in out and "apps/web" in out
 
 
-def test_doctor_rejects_unknown_framework_from_recipe(tmp_path):
-    (tmp_path / "splashdown.toml").write_text('[project]\nframework = "nonesuch"\n')
-    with pytest.raises(ValueError, match=r"\[project\.framework\]"):
-        sd.cmd_doctor(tmp_path)
+def test_doctor_rejects_unknown_framework_from_recipe(tmp_path, capsys):
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "nonesuch"\n')
+    assert sd.cmd_doctor(tmp_path) == 1
+    assert "project.framework" in capsys.readouterr().out
 
 
 def test_doctor_uses_filesystem_when_no_recipe(tmp_path):
@@ -616,16 +616,11 @@ def test_rn_hook_husky_autofix_warns_until_husky_installs_its_hooks(tmp_path):
     assert "once its hooks are installed" in detail
 
 
-def test_doctor_fix_wires_hook_in_clean_rn_dir(tmp_path):
+def test_doctor_fix_does_not_activate_hook_in_clean_rn_dir(tmp_path):
     _git_init(tmp_path)
-    (tmp_path / "package.json").write_text('{"dependencies":{"react-native":"0.83"}}')
-    (tmp_path / "metro.config.js").write_text(
-        "module.exports = { server: { port: Number(process.env.RCT_METRO_PORT) || 8081 } };\n"
-    )
-    assert sd.cmd_doctor(tmp_path) == 1
-    assert sd.cmd_doctor(tmp_path, fix=True) == 0
-    assert sd.cmd_doctor(tmp_path) == 0
-    assert _native_hook(tmp_path).read_text() == sd.hooks.POST_CHECKOUT_HOOK
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "react-native"\n')
+    assert sd.cmd_doctor(tmp_path, fix=True) == 1
+    assert not _native_hook(tmp_path).exists()
 
 
 def test_rn_metro_not_applicable_without_config(tmp_path):
@@ -648,7 +643,7 @@ def test_rn_metro_detect_problem_for_literal(tmp_path):
 
 def test_rn_metro_autofix_replaces_literal(tmp_path):
     (tmp_path / "metro.config.js").write_text(
-        "const config = {\n  server: {\n    port: 8083,\n  },\n};\n"
+        "const config = {\n  server: {\n    port: 8083,\n  },\n};\nmodule.exports = config;\n"
     )
     sd._rn_metro_autofix(tmp_path)
     text = (tmp_path / "metro.config.js").read_text()
@@ -705,7 +700,9 @@ def test_rn_xcode_autofix_refuses_symlinked_parent_directory(tmp_path):
 
 
 def test_rn_metro_autofix_idempotent(tmp_path):
-    (tmp_path / "metro.config.js").write_text("const config = { server: { port: 8083 } };\n")
+    (tmp_path / "metro.config.js").write_text(
+        "const config = { server: { port: 8083 } };\nmodule.exports = config;\n"
+    )
     sd._rn_metro_autofix(tmp_path)
     once = (tmp_path / "metro.config.js").read_text()
     sd._rn_metro_autofix(tmp_path)
@@ -752,7 +749,7 @@ def test_rn_metro_autofix_noop_for_unrecognized_shape(tmp_path):
     (tmp_path / "metro.config.js").write_text(text)
     sd._rn_metro_autofix(tmp_path)
     assert (tmp_path / "metro.config.js").read_text() == text
-    assert sd._rn_metro_detect(tmp_path)[0] == "problem"
+    assert sd._rn_metro_detect(tmp_path)[0] == "incomplete"
 
 
 def test_rn_pkg_not_applicable_without_pkg(tmp_path):
@@ -782,7 +779,7 @@ def test_rn_pkg_detect_problem_with_equals_form(tmp_path):
     assert sd._rn_pkg_detect(tmp_path)[0] == "problem"
 
 
-def test_rn_pkg_autofix_strips_port_flag(tmp_path):
+def test_rn_pkg_autofix_preserves_port_as_fallback(tmp_path):
     (tmp_path / "package.json").write_text(
         json.dumps(
             {
@@ -800,9 +797,9 @@ def test_rn_pkg_autofix_strips_port_flag(tmp_path):
     )
     sd._rn_pkg_autofix(tmp_path)
     data = json.loads((tmp_path / "package.json").read_text())
-    assert data["scripts"]["start"] == "react-native start"
-    assert data["scripts"]["ios"] == "react-native run-ios"
-    assert data["scripts"]["android"] == "react-native run-android"
+    assert data["scripts"]["start"] == "react-native start --port ${RCT_METRO_PORT:-8083}"
+    assert data["scripts"]["ios"] == "react-native run-ios --port ${RCT_METRO_PORT:-8083}"
+    assert data["scripts"]["android"] == "react-native run-android --port ${RCT_METRO_PORT:-8083}"
     assert data["scripts"]["test"] == "jest"
     assert data["dependencies"]["react-native"] == "0.83"
     assert sd._rn_pkg_detect(tmp_path)[0] == "ok"
@@ -827,7 +824,7 @@ def test_rn_pkg_targets_react_native_scripts_by_command(tmp_path):
     sd._rn_pkg_autofix(tmp_path)
     assert (
         json.loads((tmp_path / "package.json").read_text())["scripts"]["dev"]
-        == "react-native start"
+        == "react-native start --port ${RCT_METRO_PORT:-8083}"
     )
 
 
@@ -1113,11 +1110,12 @@ def test_doctor_checks_the_xcode_wiring_against_the_recipe_destination(tmp_path,
     _make_ios(tmp_path, _xcode_wiring_for(".env"))
     (tmp_path / "splashdown.toml").write_text(
         '[project]\nframework = "react-native"\nenv_file = ".env"\n'
+        '[resources.RCT_METRO_PORT]\ntype="port"\nrange=[8082,8180]\n'
     )
 
     sd.cmd_doctor(tmp_path)
 
-    assert "rn-xcode-env: ios/.xcode.env wires RCT_METRO_PORT to .env" in capsys.readouterr().err
+    assert "rn-xcode-env: ok:" in capsys.readouterr().out
 
 
 def test_doctor_reports_xcode_wiring_that_does_not_name_the_recipe_destination(tmp_path, capsys):
@@ -1125,11 +1123,12 @@ def test_doctor_reports_xcode_wiring_that_does_not_name_the_recipe_destination(t
     _make_ios(tmp_path, _xcode_wiring_for("splashdown.env"))
     (tmp_path / "splashdown.toml").write_text(
         '[project]\nframework = "react-native"\nenv_file = ".env"\n'
+        '[resources.RCT_METRO_PORT]\ntype="port"\nrange=[8082,8180]\n'
     )
 
     assert sd.cmd_doctor(tmp_path) == 1
-    err = capsys.readouterr().err
-    assert "rn-xcode-env: ios/.xcode.env reads ${SRCROOT}/../splashdown.env" in err
+    err = capsys.readouterr().out
+    assert "rn-xcode-env: problem: ios/.xcode.env reads ${SRCROOT}/../splashdown.env" in err
     assert "not the configured .env" in err
 
 
@@ -1184,7 +1183,7 @@ def test_cmd_init_scanned_rn_wires_everything(tmp_path):
     assert (tmp_path / "splashdown.local.toml").exists()
     assert (tmp_path / "mise.toml").exists()
     pkg = json.loads((tmp_path / "package.json").read_text())
-    assert "--port" not in pkg["scripts"]["start"]
+    assert pkg["scripts"]["start"] == "react-native start --port ${RCT_METRO_PORT:-8083}"
     assert "process.env.RCT_METRO_PORT" in (tmp_path / "metro.config.js").read_text()
     assert sd._XCODE_BEGIN in (tmp_path / "ios" / ".xcode.env").read_text()
     assert "post-checkout:" in (tmp_path / "lefthook.yml").read_text()
@@ -1195,11 +1194,12 @@ def test_cmd_init_scanned_rn_wires_everything(tmp_path):
         ["git", "-C", str(tmp_path), "config", "--get", "core.hooksPath"], capture_output=True
     )
     assert r.returncode != 0 or not r.stdout.strip()
-    assert sd.cmd_doctor(tmp_path) == 0
+    assert sd.cmd_doctor(tmp_path) == 1
 
 
 def test_doctor_fix_full_rn_project(tmp_path):
     _git_init(tmp_path)
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "react-native"\n')
     (tmp_path / "package.json").write_text(
         json.dumps(
             {
@@ -1224,18 +1224,17 @@ def test_doctor_fix_full_rn_project(tmp_path):
     (tmp_path / "lefthook.yml").write_text(
         "pre-commit:\n  commands:\n    lint:\n      run: echo lint\n"
     )
+    before = {
+        name: (tmp_path / name).read_bytes()
+        for name in ("package.json", "metro.config.js", "ios/.xcode.env", "lefthook.yml")
+    }
     assert sd.cmd_doctor(tmp_path) == 1
-    assert sd.cmd_doctor(tmp_path, fix=True) == 0
-    assert sd.cmd_doctor(tmp_path) == 0
-    pkg = json.loads((tmp_path / "package.json").read_text())
-    for name in ("start", "ios", "android"):
-        assert "--port" not in pkg["scripts"][name]
-    assert "process.env.RCT_METRO_PORT" in (tmp_path / "metro.config.js").read_text()
-    assert sd._XCODE_BEGIN in (tmp_path / "ios" / ".xcode.env").read_text()
-    lh = (tmp_path / "lefthook.yml").read_text()
-    assert "post-checkout:" in lh
-    assert "splashdown:" in lh
-    assert "lint:" in lh
+    assert sd.cmd_doctor(tmp_path, fix=True) == 1
+    assert sd.cmd_doctor(tmp_path) == 1
+    assert {name: (tmp_path / name).read_bytes() for name in before if name != "lefthook.yml"} == {
+        name: content for name, content in before.items() if name != "lefthook.yml"
+    }
+    assert sd.hooks._LEFTHOOK_RUN in (tmp_path / "lefthook.yml").read_text()
 
 
 def test_app_inventory_is_dataclass_with_name_path_profile(tmp_path):
@@ -1617,25 +1616,29 @@ def test_revert_gitignore_leaves_an_unmarked_file_alone(tmp_path):
 
 def test_doctor_runs_compose_check_alongside_the_framework(tmp_path, capsys):
     # A compose file is project-level: the check runs at the repo root whatever
-    # framework resolved, and its problem is enough to fail the run.
+    # framework resolved, and fixed ports remain advisory.
     (tmp_path / "astro.config.mjs").write_text(
         "export default { server: { port: Number(process.env.WEB_DEV_PORT) || 4321 } };\n"
     )
     (tmp_path / "compose.yaml").write_text(
         'services:\n  db:\n    image: postgres:16\n    ports:\n      - "5432:5432"\n'
     )
-    assert sd.cmd_doctor(tmp_path) == 1
-    err = capsys.readouterr().err
+    (tmp_path / sd.RECIPE_NAME).write_text(
+        '[project]\nframework = "astro"\n[resources.WEB_DEV_PORT]\ntype="port"\nrange=[4300,4400]\n'
+    )
+    assert sd.cmd_doctor(tmp_path) == 0
+    err = capsys.readouterr().out
     assert "astro-config-port" in err
     assert "compose-hardcoded-ports" in err
 
 
 def test_doctor_compose_check_runs_without_any_framework_checks(tmp_path, capsys):
-    # nextjs is env-only and contributes no checks, but a compose problem must
+    # nextjs is env-only and contributes no checks, but a Compose warning must
     # still be reported rather than swallowed by the "nothing to check" branch.
     (tmp_path / "compose.yaml").write_text('services:\n  db:\n    ports:\n      - "5432:5432"\n')
-    assert sd.cmd_doctor(tmp_path, framework_override="nextjs") == 1
-    err = capsys.readouterr().err
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "nextjs"\n')
+    assert sd.cmd_doctor(tmp_path) == 0
+    err = capsys.readouterr().out
     assert "compose-hardcoded-ports" in err
     assert "no wiring checks needed" not in err
 
@@ -1648,8 +1651,8 @@ def test_doctor_compose_check_runs_at_root_for_a_subdirectory_app(tmp_path, caps
     (tmp_path / "splashdown.toml").write_text(
         '[apps.web]\npath = "apps/web"\nprofile = "astro"\nresources = []\n'
     )
-    assert sd.cmd_doctor(tmp_path) == 1
-    err = capsys.readouterr().err
+    assert sd.cmd_doctor(tmp_path) == 0
+    err = capsys.readouterr().out
     assert "compose-hardcoded-ports" in err
     assert "not applicable" not in err
 
@@ -1717,7 +1720,6 @@ def test_astro_check_ignores_commented_out_wiring(tmp_path):
 
 
 def test_doctor_reports_a_raising_check_instead_of_crashing(tmp_path, capsys, monkeypatch):
-    # A detect() that blows up must cost one ✗, not the whole run.
     def boom(cwd):
         raise OSError("permission denied")
 
@@ -1730,9 +1732,10 @@ def test_doctor_reports_a_raising_check_instead_of_crashing(tmp_path, capsys, mo
         autofix=None,
         manual_instructions=None,
     )
-    monkeypatch.setattr(sd.doctor, "_wiring_checks_for_framework", lambda f, c, e: [broken])
-    rc = sd.cmd_doctor(tmp_path, framework_override="react-native", fix=False)
-    err = capsys.readouterr().err
+    monkeypatch.setattr(sd.doctor, "_app_checks", lambda app, recipe: [broken])
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "react-native"\n')
+    rc = sd.cmd_doctor(tmp_path)
+    err = capsys.readouterr().out
     assert rc != 0
     assert "boom" in err
     assert "permission denied" in err
@@ -1847,8 +1850,8 @@ def test_doctor_reports_the_hook_check_inapplicable_in_a_nested_project(tmp_path
 
     sd.cmd_doctor(nested)
 
-    err = capsys.readouterr().err
-    assert "hook: not applicable" in err
+    err = capsys.readouterr().out
+    assert "hook: skipped: No project-root Git post-checkout integration applies" in err
     assert "splash doctor --fix" not in err
 
 
@@ -1942,6 +1945,7 @@ def test_rn_hook_is_ok_once_the_manager_hook_is_installed(tmp_path, monkeypatch)
     hook = tmp_path / ".git" / "hooks" / "post-checkout"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\n# File generated by pre-commit: https://pre-commit.com\n")
+    hook.chmod(0o755)
 
     status, detail = sd._rn_hook_detect(tmp_path)
 
@@ -1949,12 +1953,16 @@ def test_rn_hook_is_ok_once_the_manager_hook_is_installed(tmp_path, monkeypatch)
     assert detail == "pre-commit forwards post-checkout events"
 
 
-def test_doctor_reports_a_warning_without_failing(tmp_path, capsys):
+def test_doctor_reports_inactive_required_hook_as_problem(tmp_path, capsys):
+    _git_init(tmp_path)
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "react-native"\n')
     (tmp_path / ".pre-commit-config.yaml").write_text("repos:\n  - repo: local\n    hooks:\n")
     sd.wire_pre_commit(tmp_path)
-
-    assert sd.doctor._run_doctor_targets([(sd.wiring._HOOK_WIRING_CHECK, tmp_path)], fix=False) == 0
-    assert "⚠  hook: pre-commit forwards post-checkout events once" in capsys.readouterr().err
+    assert sd.cmd_doctor(tmp_path) == 1
+    assert (
+        "hook-activation: problem: pre-commit post-checkout integration is inactive"
+        in capsys.readouterr().out
+    )
 
 
 def test_rn_hook_overcommit_reports_a_problem(tmp_path):
@@ -2123,6 +2131,7 @@ def test_readiness_reports_an_installed_manager_hook_as_active(tmp_path):
     hook = _native_hook(tmp_path)
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\n# File generated by pre-commit: https://pre-commit.com\n")
+    hook.chmod(0o755)
 
     readiness = sd.post_checkout_readiness(tmp_path)
 
@@ -2284,13 +2293,13 @@ def test_rn_pkg_autofix_keeps_the_formatting_it_did_not_write(tmp_path):
     sd._rn_pkg_autofix(tmp_path)
 
     text = (tmp_path / "package.json").read_text()
-    assert '\t\t"start": "react-native start",\n' in text
+    assert '\t\t"start": "react-native start --port ${RCT_METRO_PORT:-8081}",\n' in text
     assert '\t\t"lint": "eslint ."\n' in text
     assert '\t"dependencies": { "react-native": "0.83" }\n' in text
     assert text.count("\t") == original.count("\t")
 
 
-def test_rn_pkg_autofix_strips_every_script_in_one_pass(tmp_path):
+def test_rn_pkg_autofix_rewrites_every_script_with_a_managed_port_fallback(tmp_path):
     (tmp_path / "package.json").write_text(
         '{"scripts": {"start": "react-native start --port 8081",'
         ' "ios": "react-native run-ios --port 8081"}}\n'
@@ -2299,7 +2308,10 @@ def test_rn_pkg_autofix_strips_every_script_in_one_pass(tmp_path):
     sd._rn_pkg_autofix(tmp_path)
 
     scripts = json.loads((tmp_path / "package.json").read_text())["scripts"]
-    assert scripts == {"start": "react-native start", "ios": "react-native run-ios"}
+    assert scripts == {
+        "start": "react-native start --port ${RCT_METRO_PORT:-8081}",
+        "ios": "react-native run-ios --port ${RCT_METRO_PORT:-8081}",
+    }
 
 
 @pytest.mark.parametrize("character", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85"])
@@ -2332,3 +2344,41 @@ def test_lefthook_wiring_keeps_crlf_line_endings(tmp_path):
     raw = (tmp_path / "lefthook.yml").read_bytes()
     assert raw.count(b"\r\n") == raw.count(b"\n")
     assert b"    splashdown:\r\n" in raw
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize(
+    "managed",
+    [
+        "post-checkout: \t\n  parallel: true\n",
+        (
+            "post-checkout: \t\n  commands: \t\n    check: # preserve\n"
+            '      run: echo "splashdown: # keep"\n'
+        ),
+        (
+            "post-checkout: \t\n  commands: \t\n    splashdown: \t\n"
+            f"      run: {sd.hooks._LEFTHOOK_LEGACY_RUN}\n"
+        ),
+    ],
+)
+def test_lefthook_wiring_locates_canonical_keys_and_preserves_other_bytes(
+    tmp_path, newline, managed
+):
+    unrelated = "pre-commit:\n  commands: {}\n# commands : ignored\n"
+    path = tmp_path / "lefthook.yml"
+    path.write_bytes((unrelated + managed).replace("\n", newline).encode())
+
+    assert sd.hooks._wire_post_checkout_lefthook(tmp_path) is True
+    assert sd.hooks._lefthook_state(tmp_path) == "ok"
+
+    run = f"      run: {sd.hooks._LEFTHOOK_RUN}\n"
+    old_run = f"      run: {sd.hooks._LEFTHOOK_LEGACY_RUN}\n"
+    if old_run in managed:
+        expected = managed.replace(old_run, run)
+    elif "  commands:" in managed:
+        expected = managed.replace("  commands: \t\n", "  commands: \t\n    splashdown:\n" + run)
+    else:
+        expected = managed.replace(
+            "post-checkout: \t\n", "post-checkout: \t\n  commands:\n    splashdown:\n" + run
+        )
+    assert path.read_bytes() == (unrelated + expected).replace("\n", newline).encode()

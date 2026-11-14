@@ -9,7 +9,13 @@ from .device_types import LaunchDestination
 from .errors import DeviceError
 from .inventory import AppInventory
 from .package_json import package_dependencies, read_package_json
-from .profile_core import Profile, _manual_port_guidance, _profile_port
+from .profile_core import (
+    Profile,
+    _manual_port_guidance,
+    _profile_port,
+    managed_ports,
+    resource_scope_check,
+)
 from .recipe import Recipe
 from .runners import (
     _IOS_NATIVE_DESTINATION_ERROR,
@@ -20,7 +26,7 @@ from .runners import (
     _ios_native_scheme,
     _rn_run,
 )
-from .wiring import _HOOK_WIRING_CHECK, WiringCheck, rn_wiring_checks
+from .wiring import _HOOK_WIRING_CHECK, WiringCheck, rn_wiring_checks, wiring_destination
 
 _RN_LAUNCH_SCRIPT_RE = re.compile(
     r"(?:^|[\s;&|])react-native\s+(?:start|run-ios|run-android)(?=$|[\s;&|])"
@@ -118,7 +124,14 @@ class ReactNativeProfile(Profile):
         return _DEFAULT_MOBILE_TARGETS
 
     def wiring_checks(self, app: AppInventory, env_file: str) -> list[WiringCheck]:
-        return rn_wiring_checks(env_file)
+        ports = managed_ports(app, "RCT_METRO_PORT", env_file)
+        if len(ports) != 1:
+            return [_HOOK_WIRING_CHECK, resource_scope_check(ports)]
+        port = ports[0]
+        destination = port.destination if port.writer.startswith("envfile=") else None
+        if destination is not None and app.managed_resources is not None:
+            destination = wiring_destination(app.path, app.project_path or app.path, destination)
+        return rn_wiring_checks(destination, port.name)
 
     def agent_guidance(self, app: AppInventory, port_names: list[str]) -> list[str]:
         port = _profile_port(port_names, "RCT_METRO_PORT")

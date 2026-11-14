@@ -1662,7 +1662,7 @@ def test_vite_profile_skips_api_dev_port_when_no_proxy(tmp_path):
     assert "API_DEV_PORT" not in res
 
 
-def test_vite_wiring_check_detects_loadenv_pattern(tmp_path):
+def test_vite_wiring_check_accepts_loadenv_inherited_values(tmp_path):
     (tmp_path / "vite.config.ts").write_text("""
 import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
@@ -1672,16 +1672,16 @@ export default defineConfig(({ mode }) => {
 """)
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     checks = sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-    check = next(c for c in checks if c.id == "vite-config-process-env")
+    check = next(c for c in checks if c.id == "vite-port-wired")
     status, _ = check.detect(tmp_path)
-    assert status == "problem"
+    assert status == "ok"
 
 
 def test_vite_wiring_check_autofix_swaps_loadenv_for_process_env(tmp_path):
     (tmp_path / "vite.config.ts").write_text("""\
 import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, import.meta.dirname, "");
+  const env = loadEnv(mode, import.meta.dirname, "VITE_");
   const webPort = Number(env.WEB_DEV_PORT ?? 5173);
   return { server: { port: webPort } };
 });
@@ -1690,7 +1690,7 @@ export default defineConfig(({ mode }) => {
     check = next(
         c
         for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-        if c.id == "vite-config-process-env"
+        if c.id == "vite-port-wired"
     )
     check.autofix(tmp_path)
     text = (tmp_path / "vite.config.ts").read_text()
@@ -1711,30 +1711,31 @@ export default defineConfig(({ mode }) => {
 def _vite_process_env_check(tmp_path, env_file: str):
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     return next(
-        c
-        for c in sd.PROFILES["vite"].wiring_checks(app, env_file)
-        if c.id == "vite-config-process-env"
+        c for c in sd.PROFILES["vite"].wiring_checks(app, env_file) if c.id == "vite-port-wired"
     )
 
 
-def test_vite_loadenv_is_left_alone_when_vite_loads_the_destination_itself(tmp_path):
+def test_vite_loadenv_accepts_inherited_values_with_a_dotenv_destination(tmp_path):
     (tmp_path / "vite.config.ts").write_text(_VITE_LOAD_ENV_CONFIG)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+    assert check.detect(tmp_path) == (
+        "ok",
+        "server.port consumes WEB_DEV_PORT from the inherited environment or native loadEnv",
+    )
 
     check.autofix(tmp_path)
     assert (tmp_path / "vite.config.ts").read_text() == _VITE_LOAD_ENV_CONFIG
 
 
-def test_vite_loadenv_is_rewritten_for_a_destination_vite_does_not_load(tmp_path):
+def test_vite_loadenv_accepts_inherited_values_for_a_destination_vite_does_not_load(tmp_path):
     (tmp_path / "vite.config.ts").write_text(_VITE_LOAD_ENV_CONFIG)
     check = _vite_process_env_check(tmp_path, "splashdown.env")
 
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "ok"
 
     check.autofix(tmp_path)
-    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+    assert (tmp_path / "vite.config.ts").read_text() == _VITE_LOAD_ENV_CONFIG
 
 
 def test_vite_loadenv_with_vites_default_prefix_is_still_rewritten(tmp_path):
@@ -1748,29 +1749,35 @@ def test_vite_loadenv_with_vites_default_prefix_is_still_rewritten(tmp_path):
     assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
 
 
-def test_vite_loadenv_from_process_cwd_loads_the_destination(tmp_path):
+def test_vite_loadenv_from_process_cwd_accepts_inherited_values(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "process.cwd()")
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+    assert check.detect(tmp_path) == (
+        "ok",
+        "server.port consumes WEB_DEV_PORT from the inherited environment or native loadEnv",
+    )
 
     check.autofix(tmp_path)
     assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_through_path_resolve_loads_the_destination(tmp_path):
+def test_vite_loadenv_through_path_resolve_accepts_inherited_values(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "path.resolve(__dirname)")
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+    assert check.detect(tmp_path) == (
+        "ok",
+        "server.port consumes WEB_DEV_PORT from the inherited environment or native loadEnv",
+    )
 
     check.autofix(tmp_path)
     assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_through_a_local_binding_loads_the_destination(tmp_path):
+def test_vite_loadenv_through_a_local_binding_accepts_inherited_values(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace(
         "export default defineConfig",
         "const envDir = process.cwd();\nexport default defineConfig",
@@ -1778,13 +1785,16 @@ def test_vite_loadenv_through_a_local_binding_loads_the_destination(tmp_path):
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path) == ("ok", "vite.config loads .env itself through loadEnv")
+    assert check.detect(tmp_path) == (
+        "ok",
+        "server.port consumes WEB_DEV_PORT from the inherited environment or native loadEnv",
+    )
 
     check.autofix(tmp_path)
     assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_through_a_binding_naming_another_directory_is_rewritten(tmp_path):
+def test_vite_loadenv_through_a_binding_naming_another_directory_accepts_inherited_values(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace(
         "export default defineConfig",
         'const envDir = path.resolve(__dirname, "config");\nexport default defineConfig',
@@ -1792,53 +1802,53 @@ def test_vite_loadenv_through_a_binding_naming_another_directory_is_rewritten(tm
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "ok"
 
     check.autofix(tmp_path)
-    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+    assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_from_another_directory_is_still_rewritten(tmp_path):
+def test_vite_loadenv_from_another_directory_accepts_inherited_values(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", '"./config"')
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "ok"
 
     check.autofix(tmp_path)
-    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+    assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_from_a_subdirectory_of_the_root_is_still_rewritten(tmp_path):
+def test_vite_loadenv_from_a_subdirectory_of_the_root_accepts_inherited_values(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", 'path.resolve(__dirname, "env")')
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env")
 
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "ok"
 
     check.autofix(tmp_path)
-    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+    assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_does_not_cover_a_mode_specific_destination(tmp_path):
+def test_vite_loadenv_inherits_independently_of_a_mode_specific_destination(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "process.cwd()")
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env.production")
 
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "ok"
 
     check.autofix(tmp_path)
-    assert "process.env.WEB_DEV_PORT" in (tmp_path / "vite.config.ts").read_text()
+    assert (tmp_path / "vite.config.ts").read_text() == config
 
 
-def test_vite_loadenv_covers_the_development_mode_destination(tmp_path):
+def test_vite_loadenv_inherits_independently_of_a_development_mode_destination(tmp_path):
     config = _VITE_LOAD_ENV_CONFIG.replace("import.meta.dirname", "process.cwd()")
     (tmp_path / "vite.config.ts").write_text(config)
     check = _vite_process_env_check(tmp_path, ".env.development")
 
     assert check.detect(tmp_path) == (
         "ok",
-        "vite.config loads .env.development itself through loadEnv",
+        "server.port consumes WEB_DEV_PORT from the inherited environment or native loadEnv",
     )
 
     check.autofix(tmp_path)
@@ -1853,7 +1863,7 @@ def test_vite_wiring_check_preserves_process_env_fallback_chain(tmp_path):
 import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, import.meta.dirname, "");
-  const webPort = Number(process.env.WEB_PORT || env.WEB_PORT || 5173);
+  const webPort = Number(process.env.WEB_DEV_PORT || env.WEB_DEV_PORT || 5173);
   return { server: { port: webPort } };
 });
 """
@@ -1862,7 +1872,7 @@ export default defineConfig(({ mode }) => {
     check = next(
         c
         for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-        if c.id == "vite-config-process-env"
+        if c.id == "vite-port-wired"
     )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
@@ -1870,14 +1880,12 @@ export default defineConfig(({ mode }) => {
     assert (tmp_path / "vite.config.ts").read_text() == original
 
 
-def test_vite_wiring_check_still_fixes_uncovered_env_access(tmp_path):
-    # One name has a process.env fallback, the other doesn't — only the bare one
-    # gets rewritten.
+def test_vite_wiring_check_preserves_unrelated_proxy_env_access(tmp_path):
     (tmp_path / "vite.config.ts").write_text("""\
 import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, import.meta.dirname, "");
-  const webPort = Number(process.env.WEB_PORT || env.WEB_PORT || 5173);
+  const webPort = Number(process.env.WEB_DEV_PORT || env.WEB_DEV_PORT || 5173);
   const apiPort = Number(env.API_DEV_PORT ?? 8080);
   return { server: { port: webPort, proxy: { "/api": `http://localhost:${apiPort}` } } };
 });
@@ -1886,13 +1894,13 @@ export default defineConfig(({ mode }) => {
     check = next(
         c
         for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-        if c.id == "vite-config-process-env"
+        if c.id == "vite-port-wired"
     )
-    assert check.detect(tmp_path)[0] == "problem"
+    assert check.detect(tmp_path)[0] == "ok"
     check.autofix(tmp_path)
     text = (tmp_path / "vite.config.ts").read_text()
-    assert "process.env.WEB_PORT || env.WEB_PORT" in text
-    assert "process.env.API_DEV_PORT ?? 8080" in text
+    assert "process.env.WEB_DEV_PORT || env.WEB_DEV_PORT" in text
+    assert "env.API_DEV_PORT ?? 8080" in text
     assert check.detect(tmp_path)[0] == "ok"
 
 
@@ -1911,8 +1919,10 @@ def test_vite_port_wired_check_flags_config_that_never_names_the_port(tmp_path):
     status, detail = check.detect(tmp_path)
     assert status == "problem"
     assert "WEB_DEV_PORT" in detail
-    # Report-only: rewriting an arbitrary config to add server.port isn't safe.
-    assert check.autofix is None
+    before = (tmp_path / "vite.config.ts").read_bytes()
+    assert check.autofix is not None
+    check.autofix(tmp_path)
+    assert (tmp_path / "vite.config.ts").read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -1930,16 +1940,15 @@ def test_vite_checks_pass_on_correctly_wired_configs(tmp_path, body):
     app = sd.AppInventory(name="web", path=tmp_path, profile="vite")
     for check in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env"):
         assert check.detect(tmp_path)[0] == "ok", check.id
-    assert sd.cmd_doctor(tmp_path, fix=True, framework_override="vite") == 0
+    (tmp_path / sd.RECIPE_NAME).write_text('[project]\nframework = "vite"\n')
+    assert sd.cmd_doctor(tmp_path, fix=True) == 0
 
 
-def test_vite_autofix_rewrites_every_uncovered_match(tmp_path):
-    # Two bare `env.X` reads: the substitution walks matches in reverse so the
-    # earlier match's offsets stay valid after the later one is spliced.
+def test_vite_autofix_repairs_managed_read_and_preserves_proxy(tmp_path):
     (tmp_path / "vite.config.ts").write_text("""\
 import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, import.meta.dirname, "");
+  const env = loadEnv(mode, import.meta.dirname, "VITE_");
   const a = Number(env.WEB_DEV_PORT ?? 1);
   const b = Number(env.API_DEV_PORT ?? 2);
   return { server: { port: a, proxy: { "/api": `http://localhost:${b}` } } };
@@ -1949,12 +1958,12 @@ export default defineConfig(({ mode }) => {
     check = next(
         c
         for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-        if c.id == "vite-config-process-env"
+        if c.id == "vite-port-wired"
     )
     check.autofix(tmp_path)
     text = (tmp_path / "vite.config.ts").read_text()
-    assert "const a = Number(process.env.WEB_DEV_PORT ?? 1);" in text
-    assert "const b = Number(process.env.API_DEV_PORT ?? 2);" in text
+    assert "const a = Number((process.env.WEB_DEV_PORT ?? env.WEB_DEV_PORT) ?? 1);" in text
+    assert "const b = Number(env.API_DEV_PORT ?? 2);" in text
 
 
 def test_vite_wiring_check_idempotent(tmp_path):
@@ -1965,7 +1974,7 @@ def test_vite_wiring_check_idempotent(tmp_path):
     check = next(
         c
         for c in sd.PROFILES["vite"].wiring_checks(app, "splashdown.env")
-        if c.id == "vite-config-process-env"
+        if c.id == "vite-port-wired"
     )
     status, _ = check.detect(tmp_path)
     assert status == "ok"
@@ -2711,7 +2720,7 @@ def test_init_reports_a_wiring_check_whose_detect_raises(tmp_path, capsys):
     sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
 
     err = capsys.readouterr().err
-    assert "exploding: check could not run: vite.config.* not found" in err
+    assert "exploding: inspection incomplete: vite.config.* not found" in err
     assert "Wire it by hand." in err
 
 
@@ -2731,13 +2740,14 @@ def test_init_reports_a_wiring_recheck_whose_detect_raises(tmp_path, capsys):
         detect=detect,
         autofix=lambda _cwd: None,
         manual_instructions=lambda _cwd: "Wire it by hand.",
+        files=lambda cwd: (cwd / "config",),
     )
     report = _stub_init_report()
 
     sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
 
     err = capsys.readouterr().err
-    assert "vanishing: check could not run: vite.config.* disappeared" in err
+    assert "vanishing: repair or recheck incomplete: vite.config.* disappeared" in err
     assert "Wire it by hand." in err
 
 
@@ -3029,3 +3039,133 @@ def test_deinit_names_the_outdated_lefthook_entry_it_preserves(tmp_path, registr
         "note: left splashdown's post-checkout entry in lefthook.yml (lefthook)"
         in capsys.readouterr().err
     )
+
+
+def test_init_detection_failure_never_repairs(tmp_path, capsys):
+    path = tmp_path / "config"
+    path.write_text("original")
+
+    def detect(_):
+        raise ValueError("unreadable")
+
+    check = sd.WiringCheck(
+        "unsafe",
+        "unsafe",
+        lambda _: True,
+        detect,
+        lambda _: path.write_text("changed"),
+        lambda _: "Inspect manually.",
+        files=lambda _: (path,),
+    )
+    report = _stub_init_report()
+    sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
+    assert path.read_text() == "original"
+    assert report.changed == []
+    assert "inspection incomplete: unreadable" in capsys.readouterr().err
+
+
+def test_init_accounts_partial_edit_and_isolates_guidance_failure(tmp_path, capsys):
+    path = tmp_path / "config"
+    path.write_text("original")
+
+    def repair(_):
+        path.write_text("partial")
+        raise ValueError("repair failed")
+
+    def guidance(_):
+        raise ValueError("guidance failed")
+
+    check = sd.WiringCheck(
+        "partial",
+        "partial",
+        lambda _: True,
+        lambda _: ("problem", "broken"),
+        repair,
+        guidance,
+        files=lambda _: (path,),
+    )
+    report = _stub_init_report()
+    sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
+    assert report.changed == ["config"]
+    assert path.read_text() == "partial"
+    assert "guidance incomplete" in capsys.readouterr().err
+
+
+def test_init_final_resource_names_reach_repeated_app_checks(tmp_path, monkeypatch):
+    for name in ("first", "second"):
+        path = tmp_path / "apps" / name
+        path.mkdir(parents=True)
+        (path / "astro.config.mjs").write_text("export default {};\n")
+        (path / "package.json").write_text('{"dependencies":{"astro":"*"}}')
+    (tmp_path / "package.json").write_text('{"workspaces":["apps/*"]}')
+    sd.cmd_init(tmp_path, loader_override="none")
+    recipe = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert len(recipe.apps) == 2
+    assert all(app["resources"] == [] for app in recipe.apps.values())
+    assert all(
+        (tmp_path / app["path"] / "astro.config.mjs").read_text() == "export default {};\n"
+        for app in recipe.apps.values()
+    )
+    assert sd.doctor.run_doctor(tmp_path).exit_code == 0
+    configured = ""
+    for index, (name, app) in enumerate(recipe.apps.items()):
+        port = f"CUSTOM_{index}"
+        configured += f'[resources.{port}]\ntype="port"\nrange=[4300,4400]\n'
+        configured += (
+            f'[apps.{name}]\npath="{app["path"]}"\nprofile="astro"\nresources=["{port}"]\n'
+        )
+    (tmp_path / sd.RECIPE_NAME).write_text(configured)
+    result = sd.doctor.run_doctor(tmp_path, fix=True)
+    assert result.exit_code == 0
+    for index, app in enumerate(recipe.apps.values()):
+        assert (
+            f"process.env.CUSTOM_{index}"
+            in (tmp_path / app["path"] / "astro.config.mjs").read_text()
+        )
+
+
+def test_init_wiring_uses_final_parsed_resources_after_pruning(tmp_path, monkeypatch):
+    (tmp_path / "vite.config.ts").write_text(
+        "export default { server: {port: Number(process.env.WEB_DEV_PORT)}, proxy: {} };"
+    )
+    seen = []
+    profile = sd.PROFILES["vite"]
+    checks = profile.wiring_checks
+
+    def record(app, destination):
+        seen.append(app.managed_resources)
+        return checks(app, destination)
+
+    monkeypatch.setattr(profile, "wiring_checks", record)
+    sd.cmd_init(tmp_path, loader_override="none")
+    parsed = sd.Recipe.load(tmp_path / sd.RECIPE_NAME)
+    assert [resource.name for resource in seen[0]] == ["WEB_DEV_PORT"]
+    assert parsed.apps["main"]["resources"] == ["WEB_DEV_PORT"]
+    assert set(parsed.resources) == {"WEB_DEV_PORT"}
+
+
+def test_init_interrupted_enumeration_keeps_known_changed_file(tmp_path):
+    path = tmp_path / "config"
+    path.write_text("original")
+    calls = 0
+
+    def files(_):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise KeyboardInterrupt
+        return (path,)
+
+    check = sd.WiringCheck(
+        "partial",
+        "partial",
+        lambda _: True,
+        lambda _: ("problem", "broken"),
+        lambda _: path.write_text("changed"),
+        None,
+        files=files,
+    )
+    report = _stub_init_report()
+    with pytest.raises(KeyboardInterrupt):
+        sd.commands._apply_init_wiring_check(check, tmp_path, tmp_path, report)
+    assert report.changed == ["config"]
