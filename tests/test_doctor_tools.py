@@ -525,6 +525,7 @@ def test_android_sdk_and_jdk_files_are_inspected_without_execution(tmp_path, mon
 def test_macos_java_shim_does_not_establish_a_jdk(monkeypatch):
     monkeypatch.setattr(runtime_checks.sys, "platform", "darwin")
     monkeypatch.setattr(runtime_checks.shutil, "which", lambda *_, **__: "/usr/bin/java")
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
     fact = ToolObservations().executable("java")
     assert fact.available is None
     assert "configure JAVA_HOME" in fact.detail
