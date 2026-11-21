@@ -88,7 +88,7 @@ jobs:
           mkdir -p .cache/release
           uv run pytest tests/ scripts/ -q --cov --cov-branch \
             --cov-report=term-missing --cov-fail-under=80 \
-            --basetemp=.cache/release/pytest
+            --basetemp="$RUNNER_TEMP/splashdown-pytest"
       - name: Build sdist then wheel from sdist
         run: |
           rm -rf dist build

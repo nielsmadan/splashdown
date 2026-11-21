@@ -57,17 +57,26 @@ def test_project_metadata_rejects_invalid_or_mismatched_version(
         release_workflow.project_metadata(tag, project)
 
 
-def test_workflow_coverage_step_runs_from_a_fresh_directory(tmp_path: Path) -> None:
+def test_workflow_coverage_step_keeps_temporary_directories_outside_git(tmp_path: Path) -> None:
     workflow = SCRIPT.parent.parent / ".github/workflows/release.yml"
     match = re.search(
         r"      - name: Test with branch coverage\n        run: \|\n((?:          .*\n)+)",
         workflow.read_text(encoding="utf-8"),
     )
     assert match is not None
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "scripts").mkdir()
-    (tmp_path / "tests/test_temporary_directory.py").write_text(
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    runner_temp = tmp_path / "runner temp"
+    runner_temp.mkdir()
+    (checkout / "tests").mkdir()
+    (checkout / "scripts").mkdir()
+    (checkout / "tests/test_temporary_directory.py").write_text(
+        "import subprocess\n"
         "def test_temporary_directory(tmp_path):\n"
+        "    git = subprocess.run(['git', 'rev-parse', '--show-toplevel'],\n"
+        "                         cwd=tmp_path, capture_output=True, text=True)\n"
+        "    assert git.returncode == 128\n"
+        "    assert 'not a git repository' in git.stderr\n"
         "    result = tmp_path / 'result'\n"
         "    result.write_text('passed')\n"
         "    assert result.read_text() == 'passed'\n",
@@ -84,11 +93,15 @@ def test_workflow_coverage_step_runs_from_a_fresh_directory(tmp_path: Path) -> N
         encoding="utf-8",
     )
     uv.chmod(0o755)
-    environment = dict(os.environ, PATH=f"{commands}{os.pathsep}{os.defpath}")
+    environment = dict(
+        os.environ,
+        PATH=f"{commands}{os.pathsep}{os.defpath}",
+        RUNNER_TEMP=str(runner_temp),
+    )
     environment.pop("PYTEST_ADDOPTS", None)
     completed = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", textwrap.dedent(match[1])],
-        cwd=tmp_path,
+        cwd=checkout,
         env=environment,
         text=True,
         capture_output=True,
@@ -96,6 +109,6 @@ def test_workflow_coverage_step_runs_from_a_fresh_directory(tmp_path: Path) -> N
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "1 passed" in completed.stdout
-    results = list((tmp_path / ".cache/release/pytest").glob("*/result"))
+    results = list((runner_temp / "splashdown-pytest").glob("*/result"))
     assert results
     assert all(path.read_text(encoding="utf-8") == "passed" for path in results)
