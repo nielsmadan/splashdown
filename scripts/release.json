@@ -1,9 +1,9 @@
 {
   "branch": "main",
-  "components": 3,
+  "version_parts": 3,
   "initial_version": "0.1.0",
   "sign": true,
-  "checks": [
+  "preflight": [
     [
       "just",
       "check"
@@ -61,5 +61,5 @@
     "git-cliff@2.13.1",
     "--bumped-version"
   ],
-  "publication": "GitHub release and Homebrew formula update"
+  "success_message": "GitHub release and Homebrew formula update"
 }

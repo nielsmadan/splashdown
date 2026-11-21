@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - uses: nielsmadan/curtaincall@v1.3.0
+      - uses: nielsmadan/curtaincall@v2.0.1
 
       - uses: actions/setup-python@v7.1.0
         with:
@@ -155,7 +155,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - uses: nielsmadan/curtaincall@v1.3.0
+      - uses: nielsmadan/curtaincall@v2.0.1
 
       - name: Revalidate trusted publication code
         env:
