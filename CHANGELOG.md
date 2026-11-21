@@ -4,6 +4,39 @@ All notable user-facing changes to splashdown. While the project is on `0.x` it 
 [Semantic Versioning](https://semver.org) loosely: breaking changes may land in a minor
 release and are called out under **Breaking Changes**.
 
+## [0.18.0] - 2026-11-21
+
+### Features
+
+- Simplify project initialization
+- Remove named recipe presets from init
+- Make init configuration-only and move activation to trust
+- Select loaders from configuration and reuse existing wiring
+- Make the env output destination configurable and key-scoped
+- Resolve the iOS scheme during run and drop the init flags
+- Honor the configured env destination in framework wiring
+- Support pre-commit, prek and simple-git-hooks for post-checkout
+- Keep agent guidance current and leave generated files alone
+- Ignore the destinations a recipe actually writes
+- Integrate Flyrail guidance
+- Improve checkout inspection
+- Add guided device onboarding
+- Expand device pairing instructions
+- Show physical device connection types
+- Diagnose every configured app safely
+
+### Bug Fixes
+
+- Harden device launch workflows
+- Detect react native apps using expo modules
+- Harden flyrail integration
+- Align target inventory output
+- Derive pyflyrail sdist version from uv.lock for pyflyrail bump
+- Wait for server startup in timeout test
+- Target physical ios devices in react native
+- Isolate android device claim conflicts
+- Improve physical device onboarding
+
 ## [0.17.0] - 2026-08-31
 
 ### Features
@@ -217,6 +250,7 @@ release and are called out under **Breaking Changes**.
 
 - --cwd/--format no longer clobbered when set before a subcommand
 
+[0.18.0]: https://github.com/nielsmadan/splashdown/compare/v0.17.0..v0.18.0
 [0.17.0]: https://github.com/nielsmadan/splashdown/compare/v0.16.0..v0.17.0
 [0.16.0]: https://github.com/nielsmadan/splashdown/compare/v0.15.0..v0.16.0
 [0.15.0]: https://github.com/nielsmadan/splashdown/compare/v0.14.0..v0.15.0
